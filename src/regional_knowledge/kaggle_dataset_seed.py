@@ -150,14 +150,14 @@ class SourceDatasetSeed:
             # directly to Kaggle. No provider credential reaches the notebook.
             bridge.snapshot_tickets = self.tickets
             async with self.capture_guard(binding):
-                proof = self.startup.history._coverage
+                proof = self.startup.coverage
                 await self._prepare_prefix(proof)
                 # Read the old accepted/applied boundary and its compact source
                 # heads under ONE short spool exclusion. Release it BEFORE the
                 # physical pg_basebackup and Dataset publication so later
                 # accepted commands can advance while this prefix is saved.
                 async with self.prefix_guard(binding):
-                    if proof is not self.startup.history._coverage or not self._prefix_ready(proof):
+                    if proof is not self.startup.coverage or not self._prefix_ready(proof):
                         raise SnapshotError('dataset_seed_requires_drained_prefix')
                     if await self.startup.config.spool.journal.head()!=proof.head:
                         raise SnapshotError('dataset_seed_capture_prefix_changed')

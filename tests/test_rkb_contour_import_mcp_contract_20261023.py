@@ -98,6 +98,19 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
+    # This is the server's global MCP initialize guidance, not a tools/list
+    # description. The native and legacy init workflows must not mix.
+    assert native.instructions.startswith("The Kaggle native importer accepts")
+    for native_init in (
+        "book_pages (default 1 page, maximum requested 4",
+        "book_ingest(stage) with up to four reviewed pages",
+        "One accepted native text packet becomes searchable",
+        "after its actual apply",
+        "book_ingest(finalize) only to record that reading ended",
+        "no whole-book activation or extra validation step",
+    ):
+        assert native_init in native.instructions, native_init
+    assert "Finalized source activation" not in native.instructions
     # Existing stage wire supports page-scoped regions/exact source spans.
     # Model chooses meaning boundaries; 256 tokens is not a new hard cap and a
     # 1-4-page packet is not a chunk or evidence of deployed tail handling.
@@ -127,7 +140,10 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "contiguous uncovered body suffix", "book_pages at next_cursor",
         "small, sentence-complete semantic chunks",
         "ordered exact span_refs or region_refs",
-        "retaining prior page/region/span provenance", "current span_refs wire",
+        "retaining prior page/region/span provenance",
+        "For span_refs supply page_id, region_key, start and end",
+        "the server derives source_text_sha256 from the known region text",
+        "the model must not calculate or supply a hash",
         "Stage only newly issued, visually reviewed page(s) in a 1-4-page packet",
         "do not re-stage the accepted prior page",
         "split sentences, invent missing text",
@@ -155,6 +171,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
     instruction = native.instructions
     assert instruction.count("Story body:") == 1
+    assert instruction.count("Say where and when the episode happened whenever the source does") == 1
+    assert instruction.count("Review the whole page for episodes") == 1
     for required in (
         "basic_variant.body for an ordinary reader or visitor",
         "the same saved text is read, voiced and posted",
@@ -170,6 +188,14 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "по Гаузе, сохранилась до его времени",
         "a year only when the source actually gives it",
         "never invent a calendar year or assert present-day survival",
+        "Say where and when the episode happened whenever the source does",
+        "(city, district, street, school, building, decade)",
+        "memoirs and biographies most easily lose this setting",
+        "When the source does not say where or when, do not invent it",
+        "treat a legend or burial tradition as attributed tradition",
+        "never as established historical fact",
+        "a famous visitor, a demolished landmark, a first performance, an invention,",
+        "a legend or burial tradition, an everyday custom such as where a traveller slept or what a trade was nicknamed",
         "Do not split one episode into a body plus separate facts_only candidates",
         "there is no story quota",
         "fetch that page with book_pages and stage both pages in one packet (up to 4)",
@@ -206,6 +232,10 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "book_find first" in legacy_ingest.description
     assert "book_ingest(reprocess)" in legacy.instructions
     assert "validate and finalize" in legacy.instructions
+    assert legacy.instructions.startswith("Search and retrieve sourced regional knowledge.")
+    assert "model review/stage, validate and finalize by following" in legacy.instructions
+    assert "Stage at most 8" not in legacy.instructions
+    assert "Finalized source activation" not in legacy.instructions
     # This fixture has only original intake, not a configured Case backend;
     # the PR330 Case-enabled MCP test separately checks search registration.
     assert "disagreement_search" not in native_tools

@@ -143,7 +143,7 @@ class _SchemaCycleCapture(_WorkCycleCapture):
         # Read maintenance can renew the capability for the SAME immutable
         # prefix during capture. Native capture still proves exact versions,
         # generation, cursor and writer before any publication is promoted.
-        current=self.startup.history._coverage
+        current=self.startup.coverage
         if (proof is None or current is None
                 or (current.database_generation,current.applied_sequence,current.accepted_sequence)
                 !=(proof.database_generation,proof.applied_sequence,proof.accepted_sequence)):
@@ -276,7 +276,7 @@ class SourceDatasetCheckpoints:
                 # capture is installed. Never label a legacy hash-pinned base
                 # as a checkpoint for an unobserved integer schema version.
                 raise SnapshotError('migration_checkpoint_schema_version_unavailable')
-            proof=self.startup.history._coverage
+            proof=self.startup.coverage
             if (proof is None or not proof.current() or proof.applied_sequence!=expected_sequence
                     or proof.accepted_sequence!=expected_sequence
                     or not self.startup.binding_current(binding)):
@@ -296,7 +296,7 @@ class SourceDatasetCheckpoints:
 
     async def _refresh(self,binding,*,planned_stop=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
-        latest=self.store.latest_checkpoint;proof=startup.history._coverage
+        latest=self.store.latest_checkpoint;proof=startup.coverage
         with queue.connect(write=False) as db:
             # Resume publication/readback after an API restart without another
             # capture or provider create/version operation.

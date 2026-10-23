@@ -32,9 +32,10 @@ async def owners(queue,ident,nonce,monkeypatch):
     startup.config=NS(queue=queue,spool=spool,writer_generation=db.writer_generation,
         history_adapter=NS(database=db),writer_owner=NS(run_id=ident),writer_current=lambda **kwargs:True)
     startup.dataset_seed=None;startup.closed=False;startup.running=True
-    startup.gate=NS(invalidate=lambda:None);startup.coverage=None
+    startup.gate=NS(invalidate=lambda:None)
     proof=NS(current=lambda:True,accepted_sequence=5,applied_sequence=5)
-    startup.history=NS(_coverage=proof,schema_version=db.schema_version,database=db)
+    startup.coverage=proof
+    startup.history=NS(_coverage=None,schema_version=db.schema_version,database=db)
     restorer=object.__new__(SourceRestoreCoordinator)
     restorer.startup=startup;restorer.queue=queue;restorer.database=db;restorer.complete=True;restorer.proof=None
     restorer.config=NS(launch_config_sha256=expected().hashes['launch_config'])
@@ -97,6 +98,7 @@ async def test_lost_receipt_after_worker_promotion_reconciles_before_ready_then_
     p=await owners(queue,ident,nonce,monkeypatch)
     initial,db,version,startup,owner,bridge,worker,effects,checkpoints,key,migrated=(
         p.initial,p.db,p.version,p.startup,p.owner,p.bridge,p.worker,p.effects,p.checkpoints,p.key,p.migrated)
+    proof=startup.coverage  # Retain the actual pre-disconnect synthetic cursor.
     producer=asyncio.create_task(owner.advance(initial))
     async def next_work():
         for _ in range(200):
@@ -136,6 +138,11 @@ async def test_lost_receipt_after_worker_promotion_reconciles_before_ready_then_
         with pytest.raises(PermissionError,match='binding expired'):await producer
         assert queue.accept_search_runtime(ident,token,generation,migrated).ok
         queue.heartbeat(ident,token,ready=True,connection_generation=generation)
+        # The old READY was invalidated during the lost receipt. Simulate the
+        # existing startup binding re-establishing its public coverage cursor;
+        # no history-verifier private cache is needed for this consumer.
+        assert startup.coverage is None
+        startup.coverage=proof
         assert await owner.advance(current_binding(queue))
         assert not await owner.advance(current_binding(queue))
         assert len(effects)==len(checkpoints)==1 and effects==[version]

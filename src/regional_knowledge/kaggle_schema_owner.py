@@ -119,7 +119,7 @@ class SourceSchemaMigrations:
                     startup.config.history_adapter.database.database_generation,startup.config.writer_generation,binding.run_id):
                 raise SnapshotError('migration_original_target_changed')
             async with spool._lock:
-                proof=startup.history._coverage
+                proof=startup.coverage
                 if (proof is None or not proof.current() or proof.accepted_sequence!=proof.applied_sequence
                         or proof.applied_sequence!=spool._source_covered_sequence or spool._writing):return False
                 with self.queue.connect() as db:

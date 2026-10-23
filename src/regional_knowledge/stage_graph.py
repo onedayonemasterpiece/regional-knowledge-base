@@ -175,6 +175,7 @@ def compile_model_stage(
     poi_facts: list[StagePoiFactInput] | None = None,
     poi_media_links: list[StagePoiMediaLinkInput] | None = None,
     allow_footnote_spans: bool = False,
+    derive_span_hashes: bool = False,
 ) -> IngestStagePayload:
     if graph.revision != revision:
         raise ValueError("staged graph revision mismatch")
@@ -316,7 +317,7 @@ def compile_model_stage(
                 raise ValueError("source span must point to a textual region")
             text = region.source_text
             digest=hashlib.sha256(text.encode("utf-8")).hexdigest()
-            if digest!=span.source_text_sha256:
+            if not derive_span_hashes and span.source_text_sha256 is not None and digest!=span.source_text_sha256:
                 raise ValueError("stale source region span hash")
             if span.end>len(text) or span.start>=span.end:
                 raise ValueError("source span beyond reviewed region text")

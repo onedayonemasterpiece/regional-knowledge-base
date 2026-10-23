@@ -101,6 +101,7 @@ def test_exact_version_retirement_no_incarnation_idempotent_restart(env):
         assert db.execute('select count(*) from bge_provider_terminal_receipts').fetchone()[0] == 1
 
 
+@pytest.mark.parametrize('phase',['ERROR','CANCEL_ACKNOWLEDGED'])
 @pytest.mark.parametrize('body,ctype', [
     ({'error': 'denied'}, 'application/json'),
     ({'code': 500, 'message': 'failed'}, 'application/json'),
@@ -109,15 +110,15 @@ def test_exact_version_retirement_no_incarnation_idempotent_restart(env):
     ([{'data': 'not a native log record'}], 'application/json'),
     ([{'stream_name': 'stdout', 'time': 1, 'data': 'END_OF_LOG'}], 'text/event-stream'),
 ])
-def test_non_terminal_json_sse_and_empty_are_not_proof(env, body, ctype):
+def test_non_terminal_json_sse_and_empty_are_not_proof(env, body, ctype, phase):
     q, now, _, row = env
-    api = API(row()); api.log = Response(body, ctype)
+    api = API(row()); api.phase=phase; api.log = Response(body, ctype)
     assert observe(api, row, now) is None
     assert row()['launch_state'] == 'dispatched'
     assert api.log.closed
 
 
-@pytest.mark.parametrize('phase', ['RUNNING', 'QUEUED', 'CANCEL_REQUESTED', 'CANCEL_ACKNOWLEDGED'])
+@pytest.mark.parametrize('phase', ['RUNNING', 'QUEUED', 'CANCEL_REQUESTED'])
 def test_phase_alone_and_cancel_ack_not_terminal(env, phase):
     _, now, _, row = env
     api = API(row()); api.phase = phase
@@ -125,11 +126,23 @@ def test_phase_alone_and_cancel_ack_not_terminal(env, phase):
     assert not any(c[0] == 'stream' for c in api.calls)
 
 
+def test_cancel_ack_with_exact_persisted_native_log_retires_only_that_session(env):
+    q,now,rid,row=env
+    api=API(row());api.phase='CANCEL_ACKNOWLEDGED'
+    proof=observe(api,row,now)
+    assert proof is not None and proof.status=='CANCEL_ACKNOWLEDGED'
+    assert [call[0]for call in api.calls]==['source','status','stream','source']
+    assert all(call[1]=='v93'for call in api.calls)
+    assert q.retire_provider_reservation(proof)
+    assert row()['launch_state']=='terminal'
+
+
+@pytest.mark.parametrize('phase',['ERROR','CANCEL_ACKNOWLEDGED'])
 @pytest.mark.parametrize('field,value', [('source_id', 'wrong-run'),
     ('source_ref', 'other-owner/stable-notebook'), ('source_nonce', 'wrong-nonce')])
-def test_wrong_version_or_source_binding(env, field, value):
+def test_wrong_version_or_source_binding(env, field, value, phase):
     _, now, _, row = env
-    api = API(row()); setattr(api, field, value)
+    api = API(row());api.phase=phase; setattr(api, field, value)
     assert observe(api, row, now) is None
 
 

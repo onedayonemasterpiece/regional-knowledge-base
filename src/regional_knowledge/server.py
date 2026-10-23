@@ -6,6 +6,7 @@ from functools import wraps
 import logging
 import re
 import os
+import uvicorn
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -473,23 +474,6 @@ def build_server(
     mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
-            ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
-             "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
-             "book_pages currently returns one visual page per call, regardless of requested batch_size. "
-             "Ordinary owner-only import is shared-searchable, NOT owner-private: the authorized owner "
-             "attests legality once, without a mandatory per-book public_rights declaration or a new "
-             "legal verification step. Optional legacy source_import.public_rights remains supported. "
-             "Owner authentication never grants private Case or original-document reads to others. "
-             "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
-             "request a new upload unless the verified archived original is unavailable. "
-             "Follow every book_pages continuation before using clipped source text. "
-             "Stage exact observed native blocks or unique source spans with their actual bounding boxes; "
-             "source_import.research must contain the calling model's explicit state and reachable continuation. "
-             "Only when sufficient evidence supports an actual narrative may story candidates supply "
-             "basic_variant.body with a complete evidence map. Otherwise omit basic_variant and explicitly "
-             "report needs_context or facts_only; never invent a body from title or summary. "
-             "Finalized source activation does not establish retrieval acceptance or exhaustive semantic coverage. "
-             if selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None else "") +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
             "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
             "it through book_pages, model review/stage, validate and finalize by following "
@@ -566,11 +550,12 @@ def build_server(
         ) if selected!='kaggle_source' else (
             "The Kaggle native importer accepts an owner-authorized PDF/DjVu original up to 128 MiB and 2500 physical pages, subject to verified original intake. Ordinary owner-only start is shared-searchable without a mandatory per-book public_rights declaration; the owner's legal attestation is retained. Authentication does not grant another actor access to private Case, original or scan proof. Use exactly the ordinary workflow: book_ingest(start) with the attached original, then book_pages (default 1 page, maximum requested 4; the renderer may return just one actual ImageContent), model visual/source review, book_ingest(stage) with up to four reviewed pages and source passage evidence (page_id and region_key with a current chunk_key or an already accepted chunk_id), repeat with returned cursor/next_action, then book_ingest(finalize) only to record that reading ended. One accepted native text packet becomes searchable by registered search, knowledge_search or fetch after its actual apply, not merely after a pending stage request. There is no whole-book activation or extra validation step before the first page can be found. A rejected page can be corrected and retried in the same ingestion; an independently accepted earlier page remains searchable. Optional story, fact, illustration, map and POI enrichment may remain pending or reject without rolling back accepted source text. "
             "Build semantically coherent source chunks with model-chosen boundaries at changes of thought, typically about 256 BGE tokens (roughly 800-1000 characters when appropriate; a guideline rather than a hard limit), within the existing exact token bound; a printed paragraph, physical page or stage packet is not a mandatory chunk boundary. Preserve whole sentences: split a long or visually unbroken paragraph at a complete sentence when the idea changes, using exact span_refs and source_text offsets; combine short adjacent paragraphs about the same idea into one appropriately sized chunk using source-backed region_refs or span_refs. Read continuing text with book_pages; one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages, not one oversized chunk. If a completed thought spans pages and fits current limits, one chunk may use ordered region_refs OR exact span_refs from both real page_ids and source regions; preserve original page/region/span provenance and never invent unseen continuation or force a whole packet into one chunk. "
-            "If book_ingest(status) returns next_action=continue_tail, use its tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end; start/end are exact Unicode codepoint offsets in the original source region) for the contiguous uncovered body suffix on the last accepted packet page. Read the next page with book_pages at next_cursor; the model then chooses small, sentence-complete semantic chunks with ordered exact span_refs or region_refs across the accepted prior tail and newly issued, reviewed page(s), retaining prior page/region/span provenance and the returned source_text_sha256 for the current span_refs wire. Stage only newly issued, visually reviewed page(s) in a 1-4-page packet: do not re-stage the accepted prior page, split sentences, invent missing text, use system-chosen split/merge boundaries, or finalize while status still indicates continue_tail. "
+            "If book_ingest(status) returns next_action=continue_tail, use its tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end; start/end are exact Unicode codepoint offsets in the original source region) for the contiguous uncovered body suffix on the last accepted packet page. Read the next page with book_pages at next_cursor; the model then chooses small, sentence-complete semantic chunks with ordered exact span_refs or region_refs across the accepted prior tail and newly issued, reviewed page(s), retaining prior page/region/span provenance. For span_refs supply page_id, region_key, start and end; the server derives source_text_sha256 from the known region text, so the model must not calculate or supply a hash. Stage only newly issued, visually reviewed page(s) in a 1-4-page packet: do not re-stage the accepted prior page, split sentences, invent missing text, use system-chosen split/merge boundaries, or finalize while status still indicates continue_tail. "
             "Mark knowledge_reviewed and story_candidates_reviewed only after actually considering the page. "
             "Story body: write basic_variant.body for an ordinary reader or visitor; the same saved text is read, voiced and posted. One body tells one thing about a concrete person, place or event, usually 2-6 connected sentences. Open with the subject and what happened, not with the book: no 'the author writes', 'Gause reports', 'according to the book', 'in footnote N', 'the source/fragment does not name'; page, footnote and author belong in evidence_refs. Inside the body attribute only an opinion, estimate, legend, recollection or disputed account ('по мнению Гаузе', 'как вспоминал Наунин'); state plain dated facts directly. Keep the concrete source detail that makes the episode worth telling: who acted and how, what was at stake, a first or only, a named leader, a printed turn of phrase; it outranks secondary figures. "
             "For a place, keep source-grounded details that explain it to a visitor: the origin of a name (coat of arms, patron or older language), a documented change of use, and what the source says survived. When a building's changing uses form one coherent episode with a source-backed development or outcome, include that in the body; when they are merely a dated list, keep them as facts/observations instead of forcing a Story. The source's 'today', 'до наших дней' or 'сохранилась до наших дней' refers to the author's time, not 2026: use attribution such as 'по Гаузе, сохранилась до его времени' or a year only when the source actually gives it; never invent a calendar year or assert present-day survival without contemporary evidence. "
-            "Copy every date, name, number, unit and historical place name you use exactly as printed. Each sentence advances the same thought; end with the known outcome, or the honest limit in the story's own terms ('Why they withdrew is unknown; Gause suggests ...'). Do not split one episode into a body plus separate facts_only candidates: the outcome, name, consequence or open question that closes it belongs in the same body. Add no motive, cause, emotion, dialogue or present-day site absent from the evidence; 'after' is not 'because'. A title beginning How/Why must be answered by the body. A list of figures, names or institutions is not a story: keep it as facts and observations without a body; there is no story quota. Review the whole page for episodes, including ones inside long paragraphs about something else (a famous visitor, a demolished landmark, a first performance, an invention). If an episode continues onto the next page, fetch that page with book_pages and stage both pages in one packet (up to 4) so the body is written once with its ending; use needs_context only when the missing part is still out of reach, and name it. "
+            "Say where and when the episode happened whenever the source does (city, district, street, school, building, decade), so the reader can place it in the region; memoirs and biographies most easily lose this setting. When the source does not say where or when, do not invent it; treat a legend or burial tradition as attributed tradition, never as established historical fact. "
+            "Copy every date, name, number, unit and historical place name you use exactly as printed. Each sentence advances the same thought; end with the known outcome, or the honest limit in the story's own terms ('Why they withdrew is unknown; Gause suggests ...'). Do not split one episode into a body plus separate facts_only candidates: the outcome, name, consequence or open question that closes it belongs in the same body. Add no motive, cause, emotion, dialogue or present-day site absent from the evidence; 'after' is not 'because'. A title beginning How/Why must be answered by the body. A list of figures, names or institutions is not a story: keep it as facts and observations without a body; there is no story quota. Review the whole page for episodes, including ones inside long paragraphs about something else (a famous visitor, a demolished landmark, a first performance, an invention, a legend or burial tradition, an everyday custom such as where a traveller slept or what a trade was nicknamed). If an episode continues onto the next page, fetch that page with book_pages and stage both pages in one packet (up to 4) so the body is written once with its ending; use needs_context only when the missing part is still out of reach, and name it. "
             "Write every basic_variant.body in Russian, including stories drawn from German or English originals; retain evidence_refs, exact quotations and source proof in the original language. "
             "When an episode finishes on the current page after its earlier pages were already accepted, write the single complete body on this ending page with evidence_refs to the accepted earlier pages; do not restage them, create a second phase or invent new pending state. "
             "On the first cover, title, title-verso and imprint pages, populate the existing book metadata from the actual printing: metadata.title, metadata.authors, metadata.publication_year and metadata.language; metadata.catalog.kind (book/journal_issue/article), editors, translators, publisher, date, edition, identifiers and topics (themes). Set metadata.catalog.cover_page to the observed zero-based physical page index together with metadata.catalog.cover_kind (cover, title_page or issue_cover). Do not invent unknown authors, editors, dates, identifiers, book type, topics or cover details; leave unsupported fields unset. "
@@ -1705,17 +1690,26 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
             context=expert_executor_context)
         from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
         expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
-    build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver,
+    mcp=build_server(profile=profile,target_startup=target_startup,
+        projects_hub_receiver=projects_hub_receiver,
         expert_slack_ingress=expert_slack_ingress,
         expert_evidence_receiver=expert_evidence_receiver,
         expert_claim_receiver=expert_claim_receiver,
         expert_result_receiver=expert_result_receiver,
-        expert_recovery_receiver=expert_recovery_receiver).run(
-        transport="streamable-http",
-        stateless_http=True,
-        json_response=True,
-        transport_security=_transport_security(
-            target_startup.config.oauth_provider.resource if target_startup is not None else None),
+        expert_recovery_receiver=expert_recovery_receiver)
+    # The MCP SDK's .run() configures Uvicorn without a graceful timeout.
+    # Keep its actual ASGI app/lifespan and bound only the HTTP connection drain.
+    uvicorn.run(
+        mcp.streamable_http_app(
+            stateless_http=True,
+            json_response=True,
+            transport_security=_transport_security(
+                target_startup.config.oauth_provider.resource if target_startup is not None else None),
+        ),
+        host="127.0.0.1",
+        port=8000,
+        log_level=mcp.settings.log_level.lower(),
+        timeout_graceful_shutdown=10,
     )
 
 
