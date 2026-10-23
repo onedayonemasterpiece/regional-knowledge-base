@@ -460,8 +460,7 @@ class TargetRuntime:
                     yield connection
             history_handler=NativeSourceHistoryObserver(acquire=acquire_history,database=self.database,identity=identity,
                 registry=current_registry(),current=lambda binding:
-                    not self.closed and binding[:2]==(run_id,runtime_incarnation),
-                restored_database=self.restored_database)
+                    not self.closed and binding[:2]==(run_id,runtime_incarnation))
             self.source_history_observer=history_handler
         observation=None
         if self.target.get('bootstrap_only'):

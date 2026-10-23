@@ -54,7 +54,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
             raise ValueError('bounded exact GEO bootstrap operation keys required')
         self.geo_bootstrap_operations=frozenset(geo_bootstrap_operation_keys)
         self._native_prefix=None
-        self._restored_baseline=False
         # A retained native history transaction owns SHARE table locks between
         # phases. Ordinary writes must wait for its close/abort, including when
         # the control-side observation timed out or lost its open receipt.
@@ -118,13 +117,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         # no open history transaction or persisted domain continuation state.
         return await self._phase(binding,dict(action='source_tails',source_id=source_id,
             ingestion_id=ingestion_id,nonce=secrets.token_hex(16)))
-
-    async def adopt_recovered(self,cap,binding):
-        coverage=await super().adopt_recovered(cap,binding)
-        self._native_prefix='restore:'+_hash(cap.control)
-        self._restored_baseline=True
-        self.spool._native_history_unsettled=False
-        return coverage
 
     async def restore(self,binding):
         # A read capability can expire while its *native* verified prefix still
@@ -202,8 +194,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     # native transaction opens. Keep at most four reads in flight
                     # and retain the original aggregate history byte limits.
                     checkpoint_key=self._checkpoint_key(key[3])
-                    checkpoint=(None if self._restored_baseline and mode!='full'
-                        else await j._read(checkpoint_key,8192))
+                    checkpoint=await j._read(checkpoint_key,8192)
                     remote_outcomes={};remote_bytes=0
                     retained=list(known.values())
                     for offset in range(0,len(retained),4):
@@ -236,7 +227,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 'observer_sha256':self.observer_hash}.items())):
                         raise SpoolConflict('native source observation binding differs')
                     remote=checkpoint;publish_genesis=False
-                    if remote is None and not (self._restored_baseline and mode!='full'):
+                    if remote is None:
                         # Only the actual pre-attachment empty-generation intent
                         # permits first genesis, alongside empty native+remote facts.
                         from .kaggle_target_launch import read_empty_intent
@@ -248,7 +239,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 or intent.get('database',{}).get('writer_generation')!=self.writer_generation):
                             raise SpoolConflict('empty generation intent differs')
                         publish_genesis=True
-                    elif remote is not None:self._verify_genesis(remote.data,key[3],expected_closure=None)
+                    else:self._verify_genesis(remote.data,key[3],expected_closure=None)
                     expected=set(range(1,applied+1)) if mode=='full' else set(range(previous.applied_sequence+1,applied+1))|set(pending_earlier)
                     if mode=='renew':expected=set()
                     observations={};after=0
@@ -328,7 +319,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         {seq:value[0] for seq,value in observations.items()},None if mode=='full' else previous.case_state)
                         if mode=='full' or previous.case_state is not None else None)
                     self._native_prefix=closed['prefix']
-                    if mode=='full':self._restored_baseline=False
                     coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,head,accepted,applied,tuple(pending),case_state)
                     self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
                     s._source_covered_sequence=accepted;s._source_version=object()

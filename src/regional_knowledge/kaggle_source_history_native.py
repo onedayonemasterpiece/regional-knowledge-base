@@ -54,8 +54,7 @@ class _Session:
 
 
 class NativeSourceHistoryObserver:
-    def __init__(self,*,acquire,database,identity,registry,current,lease_seconds=10,max_commands=10000,probe=None,
-                 restored_database=None):
+    def __init__(self,*,acquire,database,identity,registry,current,lease_seconds=10,max_commands=10000,probe=None):
         if (not callable(acquire) or not callable(current) or type(lease_seconds) not in (int,float)
                 or not 0<lease_seconds<=10 or type(max_commands) is not int or not 1<=max_commands<=10000):
             raise ValueError('bounded fixed native history owner required')
@@ -65,7 +64,6 @@ class NativeSourceHistoryObserver:
         self.code_hash=observer_fingerprint()
         self.registry_hash=digest(canonical(sorted(h.fingerprint for h in registry.handlers.values())))
         self._sessions={};self._prefixes={};self._lock=asyncio.Lock();self.generation=None
-        if restored_database is not None:self._restore_baseline(restored_database)
 
     def attached(self,generation):self.generation=generation
     def detached(self,generation):
@@ -127,21 +125,6 @@ class NativeSourceHistoryObserver:
         else:raise NativeHistoryError('native_history_action_unsupported')
         if len(canonical(value))>120*1024:raise NativeHistoryError('native_history_response_bound')
         return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':value}
-
-    def _restore_baseline(self,cap):
-        # TargetRuntime has already verified this same factory-owned candidate.
-        # Seed the existing prefix directly; no maintenance action or history scan.
-        from .kaggle_restored_database import VerifiedInitializedDatabase
-        if (type(cap) is not VerifiedInitializedDatabase or cap not in cap._factory._capabilities
-                or cap.database!=self.database or cap.identity!=self.identity):
-            raise NativeHistoryError('native_history_restored_capability_required')
-        control=json.loads(cap.control)
-        if (control.get('schema_version')!=self.database.schema_version
-                or control.get('registry_sha256')!=self.registry_hash
-                or control.get('sequence')!=cap.applied_sequence):
-            raise NativeHistoryError('native_history_restored_closure_changed')
-        self._prefixes['restore:'+digest(cap.control)]={'sequence':cap.applied_sequence,
-            'closure':[self.database.schema_version,self.registry_hash,self.code_hash,control['routes']]}
 
     async def _open(self,binding,args):
         expected={'action','mode','nonce','schema_version','registry_sha256','observer_sha256',

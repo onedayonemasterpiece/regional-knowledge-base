@@ -222,60 +222,6 @@ class NativeSourceHistoryVerifier:
     async def restore(self, binding):
         return await self._verify(binding, genesis=False)
 
-    async def adopt_recovered(self,cap,binding):
-        """Adopt a real physical-restore capability, never a serialized receipt."""
-        from .pg_snapshot_recovery import ControllerRecoveryProof
-        if type(cap) is not ControllerRecoveryProof:
-            raise SpoolConflict('owner-retained physical recovery capability required')
-        s=self.spool;key=binding_key(binding)
-        async with s._lock:
-            s.invalidate_source_history();self._coverage=None
-            version=s._source_version
-            await cap.verify_for(cap.database,*cap.identity)
-            if len(cap.control)>self.max_history_bytes:raise SpoolConflict('restored source control byte budget exceeded')
-            control=json.loads(cap.control)
-            if (key[3]!=cap.database.database_generation or self.writer_generation!=cap.database.writer_generation
-                    or not self.binding_current(binding)
-                    or not self._routes_current() or self._registry_hash()!=self.registry_hash
-                    or control.get('schema_version')!=self.schema_version
-                    or control.get('registry_sha256')!=self.registry_hash
-                    or control.get('routes')!=sorted(self.routes)
-                    or control.get('sequence')!=cap.applied_sequence
-                    or control.get('journal_head')!=(cap.journal_head.reference.wire() if cap.journal_head else None)
-                    or not await self._head_unchanged(cap.journal_head)):
-                raise SpoolConflict('restored source closure or journal binding differs')
-            changes=[];seen=set()
-            for row in control['heads']:
-                if (not isinstance(row,list) or len(row)!=6 or row[0] in seen
-                        or type(row[1]) is not int or not 1<=row[1]<=cap.applied_sequence
-                        or not isinstance(row[2],str) or len(row[2])!=64 or set(row[2])-set('0123456789abcdef')
-                        or type(row[3]) is not int or row[3] not in (0,1) or row[4:]!=[0,0]):
-                    raise SpoolConflict('restored source control checkpoint shape differs')
-                source=_uuid(row[0]);seen.add(source)
-                changes.append(SourceChange(source,row[1],row[2],bool(row[3]),False,False))
-            # WSS has no Dev-side PG connection: cap.verify_for above already
-            # checks the native factory's actual process/writer/cursor/readiness.
-            if self.acquire is not None:
-                catalog,fields=await NativeDatabaseProbe(timeout_seconds=min(2,self.timeout_seconds))(acquire=self.acquire)
-                if (fields['database_generation']!=key[3] or fields['applied_seq']!=cap.applied_sequence
-                        or fields['schema_version']!=self.schema_version or s._writing or s._source_version is not version):
-                    raise SpoolConflict('restored source native target differs')
-                async with self.acquire() as connection:
-                    if (connection.info.host!=cap.database.socket or connection.info.port!=cap.database.port
-                            or connection.info.dbname!=cap.database.dbname):
-                        raise SpoolConflict('restored source connection is not the verified candidate')
-            elif getattr(self,'database',None)!=cap.database:
-                raise SpoolConflict('restored source native target differs')
-            if s._writing or s._source_version is not version or not self.binding_current(binding):
-                raise SpoolConflict('restored source native target differs')
-            await s._write(s._replace_source_heads,tuple(changes))
-            coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,secrets.token_hex(24),
-                cap.journal_head,cap.applied_sequence,cap.applied_sequence,())
-            self._coverage=coverage;s._source_anchor=coverage
-            s._source_head=cap.journal_head.reference if cap.journal_head else None
-            s._source_covered_sequence=cap.applied_sequence;s._source_version=object()
-            return coverage
-
     async def extend(self,binding):
         """Verify only the contiguous suffix of an identical retained prefix."""
         s,j=self.spool,self.spool.journal; key=binding_key(binding)
