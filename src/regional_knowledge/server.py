@@ -311,7 +311,7 @@ class KnowledgeMCPServer(MCPServer):
         if getattr(self,'_target_geo_available',False):
             allowed.update({'geo_lookup','graph_fetch','poi_context'})
         if getattr(self,'_target_catalog_available',False):
-            allowed.add('book_find')
+            allowed.update({'book_find','catalog'})
         if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
         if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
@@ -1265,6 +1265,13 @@ def build_server(
 
     @mcp.tool(title="Browse and correct the source catalog", description="List/find/get accessible books, journal issues and articles; cover returns a real cover/title page. Update corrects owned source descriptive metadata at expected_revision without reimport or changing source/ACL/vectors. For fragments label form explicitly; do not invent issue details. Article boundaries use book_ingest start with parent_id and exact region_ids. Empty query lists sources; cursor paginates.", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False))
     async def catalog(command: Literal['list','find','get','cover','update'] = 'list', query: str = '', document_id: str | None = None, kind: Literal['book','journal_issue','article'] | None = None, cursor: str | None = None, limit: Annotated[int, Field(ge=1,le=100)] = 20, metadata: CatalogUpdateInput | None = None) -> dict[str,Any] | list[TextContent | ImageContent]:
+        if selected=='kaggle_source':
+            # This slice exposes only the existing source-owned PG read.
+            # No implicit SQLite fallback, catalog write, crop or new source.
+            if (command!='get' or kind not in (None,'book') or not document_id
+                    or query!='' or cursor is not None or metadata is not None or limit!=20):
+                raise ToolError('{"status":"unavailable","reason":"target_catalog_operation_unavailable"}')
+            return await backend.catalog_get(document_id,_principal())
         method=getattr(backend,'catalog',None)
         if method is None:raise RuntimeError('SQLite catalog is not enabled')
         if command in ('get','cover','update') and not document_id:raise ValueError('document_id required')
