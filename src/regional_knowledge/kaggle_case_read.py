@@ -38,6 +38,50 @@ async def execute_case_read(request,*,acquire):
                         installed=await cursor.fetchone()
                         if not installed or type(installed[0]) is not int or installed[0]<10:
                             raise ReadUnavailable('not_ready')
+                        if request.section=='search':
+                            # Existing Case ACL/source authority, not a new model or
+                            # backend dedup decision. PG candidates are for the
+                            # calling model to evaluate by question/place/source.
+                            await execute("""
+                                SELECT c.case_id, c.revision, c.acl_revision, c.event_seq, c.state,
+                                  left(c.data->>'question',2000),left(coalesce(c.data->>'context',''),1000)
+                                FROM rkb_v4.disagreement_cases c
+                                WHERE rkb_v4.case_role_v1(c.case_id,%s::uuid)>=1
+                                  AND rkb_v4.case_sources_v1(c.case_id) IS NOT NULL
+                                  AND c.case_id>%s::uuid
+                                  AND (%s='' OR position(lower(%s) in lower(
+                                      coalesce(c.data->>'question','')||' '||
+                                      coalesce(c.data->>'context',''))) > 0)
+                                  AND (%s='' OR position(lower(%s) in lower(
+                                      coalesce(c.data->>'question','')||' '||
+                                      coalesce(c.data->>'context',''))) > 0)
+                                  AND (%s::uuid IS NULL OR EXISTS(
+                                      SELECT 1 FROM rkb_v4.disagreement_evidence e
+                                      WHERE e.case_id=c.case_id AND e.source_id=%s::uuid))
+                                ORDER BY c.case_id LIMIT %s
+                            """,(request.actor.person_id,request.after_case_id or '00000000-0000-0000-0000-000000000000',
+                                 request.search_query or '',request.search_query or '',
+                                 request.place or '',request.place or '',
+                                 request.source_id,request.source_id,request.limit+1))
+                            rows=await cursor.fetchall()
+                            selected=rows[:request.limit]
+                            candidates=[dict(case_id=str(row[0]),case_revision=row[1],acl_revision=row[2],
+                                event_seq=row[3],state=row[4],question=row[5],context=row[6])
+                                for row in selected]
+                            # Origin/provenance check limited to actual returned IDs.
+                            if candidates:
+                                await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',
+                                    ([item['case_id'] for item in candidates],))
+                                if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
+                            record=dict(section='search',items=candidates,has_more=len(rows)>request.limit,
+                                next_after_case=candidates[-1]['case_id'] if candidates else None)
+                            result=CaseReadResult(**_identity(request),status='ok',
+                                record_b64=base64.b64encode(canonical(record)).decode(),
+                                observed_data_seq=observed['data'],observed_projection_seq=observed['projection'],
+                                observed_visibility_epoch=observed['visibility'],
+                                observed_database_generation=observed['database'])
+                            if loop.time()>=deadline:raise TimeoutError
+                            return result
                         await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',([request.case_id],))
                         if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
                         if request.section=='operation':
