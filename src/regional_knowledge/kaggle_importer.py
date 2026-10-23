@@ -51,6 +51,15 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
 
 
+# The owner has authorized ordinary legal shared-source import without a
+# per-book rights questionnaire. This is an honest attestation, NOT a fabricated
+# license/public-domain status. Preserve exact explicitly supplied old rights.
+OWNER_IMPORT_ATTESTATION = canonical({
+    "basis": "owner_attestation",
+    "policy": "owner_legal_shared_source_import_v1",
+}).decode()
+
+
 def digest(value):
     return hashlib.sha256(value).hexdigest()
 
@@ -244,8 +253,8 @@ class KaggleSourceImporter:
             state=state, message=message, next_action=action, **kwargs)
 
     async def _start(self, access, *, file, metadata, source_import):
-        if file is None or source_import is None or source_import.public_rights is None:
-            raise failure('attached_source_and_explicit_public_rights_required', status='invalid_query')
+        if file is None:
+            raise failure('attached_source_required', status='invalid_query')
         mime = (file.mime_type or '').lower().split(';', 1)[0]
         if mime not in {'application/pdf', 'application/x-pdf','image/vnd.djvu','image/x.djvu',
                 'application/x-djvu','application/vnd.djvu','application/octet-stream'}:
@@ -257,17 +266,23 @@ class KaggleSourceImporter:
             raise failure('target_source_components_unavailable')
         actor = access.authority.person_id
         metadata_bytes = canonical(metadata)
-        rights = canonical(source_import.public_rights.model_dump(mode='json')).decode()
+        rights = (canonical(source_import.public_rights.model_dump(mode='json')).decode()
+            if source_import is not None and source_import.public_rights is not None else None)
         if len(metadata_bytes) > 16384:
             raise failure('small_import_metadata_bound')
         with self.queue.connect() as db:
             prior = db.execute('SELECT * FROM rkb_source_intake_control WHERE person_id=? AND file_id=?',
                 (actor, file.file_id)).fetchone()
             if prior is not None:
-                if prior['metadata_json'] != metadata_bytes.decode() or prior['rights_json'] != rights:
+                # Absence of a redundant rights declaration never rewrites an
+                # existing receipt; an explicitly different declaration does.
+                if (prior['metadata_json'] != metadata_bytes.decode()
+                        or (rights is not None and prior['rights_json'] != rights)):
                     raise failure('existing_file_intake_differs', status='invalid_query')
+                rights = prior['rights_json']
                 row = dict(prior)
             else:
+                rights = rights if rights is not None else OWNER_IMPORT_ATTESTATION
                 if self.native_intake is not None and db.execute(
                         "SELECT 1 FROM rkb_source_intake_control WHERE person_id=? AND phase NOT IN ('finalized','failed') LIMIT 1",
                         (actor,)).fetchone():

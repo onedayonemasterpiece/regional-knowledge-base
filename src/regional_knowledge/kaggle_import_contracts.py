@@ -7,8 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .contracts import RightsStatus, Visibility
-from .rights import assert_visibility_allowed
+from .contracts import RightsStatus
 
 
 class ImportInput(BaseModel):
@@ -24,8 +23,8 @@ class PublicImportRights(ImportInput):
     def public_basis(self):
         if len(json.dumps(self.evidence, allow_nan=False).encode()) > 8192:
             raise ValueError('public rights evidence bound')
-        assert_visibility_allowed(Visibility.PUBLIC, self.rights_status,
-            evidence=self.evidence, policy_version=self.policy_version)
+        # Optional legacy metadata is recorded as the owner's declaration,
+        # not independently re-adjudicated during an owner-only book start.
         return self
 
 
@@ -70,11 +69,7 @@ class SourceResearchInput(ImportInput):
 
 
 class TargetSourceImportInput(ImportInput):
+    # Both options are optional; a normal authorized start requires neither.
+    # Retain the existing typed compatibility payload when explicitly supplied.
     public_rights: PublicImportRights | None = None
     research: SourceResearchInput | None = None
-
-    @model_validator(mode='after')
-    def explicit_input(self):
-        if self.public_rights is None and self.research is None:
-            raise ValueError('public rights or model-authored research required')
-        return self
