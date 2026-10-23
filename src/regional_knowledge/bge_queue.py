@@ -978,6 +978,29 @@ class BgeQueue:
         with self.connect(write=False) as db:
             return self._status(db,self.clock())
 
+    def stop_eligible(self, run_id, token, connection_generation):
+        """Read-only authenticated STOP predicate; never proof of provider terminal.
+
+        A former owner can stop after handover; the current owner stops only
+        at nine hours. Pending/claimed work and unknown writer publication
+        retain their original run even when its compute resource looks idle.
+        """
+        from .queue_writer import pending
+        now = self.clock()
+        with self.connect(write=False) as db:
+            run = self._authorize(db, run_id, token, now)
+            self._dispatch_authorize(run, connection_generation)
+            if self._run_expired(run, now):
+                return False
+            current = db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+            if current == run_id and now - run['started'] < 9 * 3600:
+                return False
+            if pending(db, run_id):
+                return False
+            return db.execute(
+                "SELECT 1 FROM jobs WHERE run_id=? AND state IN ('pending','claimed') LIMIT 1",
+                (run_id,)).fetchone() is None
+
     def request_idle_drain(self, run_id, *, provider_ref, provider_version):
         """Operator requests planned closure of the exact idle current run.
 

@@ -217,6 +217,28 @@ def channel_route(queue, *, read_telemetry=None):
             async def status():
                 return await queue_call(queue.channel_status, run_id, token, generation)
 
+            stop_sent = False
+
+            async def maybe_stop():
+                nonlocal stop_sent
+                if stop_sent:
+                    return True
+                predicate = getattr(queue, 'stop_eligible', None)
+                if predicate is None or not await queue_call(predicate, run_id, token, generation):
+                    return False
+                if shared is not None:
+                    state = shared.status()
+                    resource = state['resource']
+                    if (state['document_result_pending'] or
+                            resource is not None and resource.run_id == run_id):
+                        return False
+                # Same authenticated WSS, exact run/incarnation, no new frame.
+                # A delivered STOP is not native provider terminal evidence.
+                stop_sent = True
+                await send('STOP', run_id=run_id, launch_nonce=hello['launch_nonce'],
+                           runtime_incarnation=hello['runtime_incarnation'])
+                return True
+
             def bootstrap_idle_current():
                 # An idle baseline is control evidence only. Reauthenticate and
                 # bind it to the persisted finite plan on every reception.
@@ -282,6 +304,10 @@ def channel_route(queue, *, read_telemetry=None):
                     if not promoted or shared is None or probe_nonce is not None:
                         observed = await status()
                         await promote(observed)
+                    # Inspect the original run before admission for a successor
+                    # can fence this channel. Never stop merely on draining.
+                    if promoted and await maybe_stop():
+                        await asyncio.Event().wait()  # Sender waits for the worker's ordinary close.
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
@@ -468,8 +494,9 @@ def channel_route(queue, *, read_telemetry=None):
                         await queue_call(queue.heartbeat, run_id, token,
                                          diagnostics=frame.get('diagnostics'),
                                          connection_generation=generation)
-                        await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
-                                   if observed['provider_version'] is not None else None))
+                        if not await maybe_stop():
+                            await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
+                                       if observed['provider_version'] is not None else None))
                     elif frame['type']=='SNAPSHOT_UPLOAD_INTENT':
                         _fields(frame,(*common,'request_id','job_id','claim','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation','operation_key','size','sha256'))
