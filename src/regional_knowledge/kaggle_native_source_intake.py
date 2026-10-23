@@ -195,9 +195,13 @@ class NativeSourceIntake:
     def _can_settle(state,entry):
         if entry.outcome_state=='DURABLE':return True
         if state.get('packet_mode') and state['pending_kind']=='finish':
+            # A native reading-completion commit is useful immediately at
+            # APPLIED. Dataset Saved is a later, independently observed
+            # checkpoint; UNKNOWN, unaccepted and unproved apply stay pending.
             return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
-                and entry.apply_receipt is not None and getattr(entry,'apply_state',None)=='REJECTED_PRECONDITION'
-                and entry.apply_receipt.status=='rejected_precondition')
+                and entry.apply_receipt is not None and
+                (getattr(entry,'apply_state',None),entry.apply_receipt.status) in
+                    (('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition')))
         if state['pending_kind']=='batch' or state.get('packet_mode') and state['pending_kind']=='stage':
             return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
                 and entry.apply_receipt is not None and
@@ -358,7 +362,7 @@ class NativeSourceIntake:
         from .product_telemetry import emit_product_event
         emit_product_event({'event':'import.phase','phase':{
             'stage':'stage','seal':'seal','materialize':'materialize',
-            'activate':'activation','batch':'stage','finish':'saved'}[kind], 'status':'applied',
+            'activate':'activation','batch':'stage','finish':'reading_complete'}[kind], 'status':'applied',
             'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
         return updated
 
