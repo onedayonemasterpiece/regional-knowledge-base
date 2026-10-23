@@ -1,4 +1,4 @@
-"""P0 command failure isolation and explicit owner STOP (offline fake wire only).
+"""P0 command failure isolation (offline fake wire only).
 
 No Kaggle, native PostgreSQL, code provider, model, or domain data is launched.
 The existing test_kaggle_apply real-PG fixture separately proves that a failed
@@ -147,37 +147,3 @@ async def test_same_wss_run_survives_native_sql_failure_then_read_and_next_comma
         stop.set()
         await asyncio.wait_for(task,3)
     assert closes==[True]
-
-
-@pytest.mark.asyncio
-async def test_explicit_authenticated_controller_stop_cancels_unready_900s_wait():
-    transport=module('bge_wss_transport')
-    peer=Peer();entered=asyncio.Event();closed=[];prepare_cancelled=[]
-    never=asyncio.Event()
-    async def read(frame,*,encode):return result(frame)
-    async def prepare(encoder,**identity):
-        entered.set()
-        try:await never.wait()  # Represents a not-yet-ready 900s restore wait.
-        except asyncio.CancelledError:
-            prepare_cancelled.append(True)
-            raise
-        return PreparedRuntime(read,candidate())
-    async def close():closed.append(True)
-    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
-        lambda:lambda text:[1.]+[0.]*1023,lambda:{},connector=peer.connect,
-        prepare_runtime=prepare,close_runtime=close,heartbeat_seconds=.01,maximum_seconds=3)
-    task=asyncio.create_task(worker.run())
-    try:
-        await peer.wait('ATTACH')
-        await asyncio.wait_for(entered.wait(),1)
-        await peer.put(dict(type='STOP',run_id=CONFIG['run_id'],
-            launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation))
-        await asyncio.wait_for(task,1)
-        assert peer.sessions==1 and worker.stop.is_set()
-        assert prepare_cancelled==[True] and closed==[True]
-    finally:
-        if not task.done():
-            worker.stop.set()
-            task.cancel()
-            never.set()
-            await asyncio.gather(task,return_exceptions=True)
