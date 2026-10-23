@@ -165,9 +165,15 @@ async def test_server_main_uses_fixed_owner_composition_without_legacy_backend(o
     monkeypatch.setattr('regional_knowledge.kaggle_source_owners.configured_source_service',lambda:startup)
     monkeypatch.setattr(server,'backend_from_env',lambda:pytest.fail('legacy fallback'))
     called=[]
-    monkeypatch.setattr(server.KnowledgeMCPServer,'run',lambda self,**kwargs:called.append(self._target_startup))
+    real_app=server.KnowledgeMCPServer.streamable_http_app
+    def capture_app(instance,**options):
+        called.append(instance._target_startup)
+        return real_app(instance,**options)
+    launched=[]
+    monkeypatch.setattr(server.KnowledgeMCPServer,'streamable_http_app',capture_app)
+    monkeypatch.setattr(server.uvicorn,'run',lambda app,**kwargs:launched.append(app))
     server.main()
-    assert called==[startup]
+    assert called==[startup] and len(launched)==1
     await startup.source_dispatch.aclose();startup.config.spool.close();startup.config.writer_owner.close()
 
 
