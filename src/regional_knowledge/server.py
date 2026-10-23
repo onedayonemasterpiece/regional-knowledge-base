@@ -306,6 +306,8 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_cases_available',False):
             allowed.update({'disagreement_search','disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
+        if getattr(self,'_target_participants_available',False):
+            allowed.add('participants_manage')
         if getattr(self,'_target_graph_available',False):
             allowed.update({'graph_fetch','entity_list'})
         if getattr(self,'_target_geo_available',False):
@@ -587,6 +589,8 @@ def build_server(
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
     mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
+    mcp._target_participants_available = (selected=='kaggle_source' and profile=='full'
+        and target_startup.authority.participants is target_startup.config.participants)
     mcp._target_editorial_available = (selected=='kaggle_source' and getattr(target_startup,'editorial',None) is not None)
     mcp._target_graph_available = (selected=='kaggle_source' and target_startup.gate.graph_supported())
     mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
@@ -709,6 +713,10 @@ def build_server(
     if profile in story_profiles and mcp._target_cases_available:
         from .kaggle_case_tools import register_case_tools
         register_case_tools(mcp,target_startup.cases_backend,_principal)
+
+    if mcp._target_participants_available:
+        from .kaggle_participant_tools import register_participant_tools
+        register_participant_tools(mcp,target_startup,_principal)
 
     if profile in story_profiles and mcp._target_graph_available:
         from .kaggle_source_graph_tools import register_source_graph_tools
