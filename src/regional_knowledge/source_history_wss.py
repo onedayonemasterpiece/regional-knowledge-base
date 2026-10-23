@@ -54,6 +54,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
             raise ValueError('bounded exact GEO bootstrap operation keys required')
         self.geo_bootstrap_operations=frozenset(geo_bootstrap_operation_keys)
         self._native_prefix=None
+        self._restored_baseline=False
         # A retained native history transaction owns SHARE table locks between
         # phases. Ordinary writes must wait for its close/abort, including when
         # the control-side observation timed out or lost its open receipt.
@@ -117,6 +118,62 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
         # no open history transaction or persisted domain continuation state.
         return await self._phase(binding,dict(action='source_tails',source_id=source_id,
             ingestion_id=ingestion_id,nonce=secrets.token_hex(16)))
+
+    async def adopt_recovered(self,cap,binding):
+        """A verified Dataset base is the baseline; only later deltas need history."""
+        from .pg_snapshot_recovery import ControllerRecoveryProof
+        if type(cap) is not ControllerRecoveryProof:
+            raise SpoolConflict('owner-retained physical recovery capability required')
+        s=self.spool;key=binding_key(binding)
+        async with s._lock:
+            s.invalidate_source_history();self._coverage=None;self._native_prefix=None
+            version=s._source_version
+            await cap.verify_for(cap.database,*cap.identity)
+            if len(cap.control)>self.max_history_bytes:
+                raise SpoolConflict('restored source control byte budget exceeded')
+            control=json.loads(cap.control)
+            if (cap.database!=self.database or key[3]!=cap.database.database_generation
+                    or self.writer_generation!=cap.database.writer_generation
+                    or not self.binding_current(binding) or not self._routes_current()
+                    or self._registry_hash()!=self.registry_hash
+                    or control.get('schema_version')!=self.schema_version
+                    or control.get('registry_sha256')!=self.registry_hash
+                    or control.get('routes')!=sorted(self.routes)
+                    or control.get('sequence')!=cap.applied_sequence
+                    or control.get('journal_head')!=(cap.journal_head.reference.wire() if cap.journal_head else None)
+                    or not await self._head_unchanged(cap.journal_head)):
+                raise SpoolConflict('restored source closure or journal binding differs')
+            changes=[];seen=set()
+            for row in control['heads']:
+                if (not isinstance(row,list) or len(row)!=6 or row[0] in seen
+                        or type(row[1]) is not int or not 1<=row[1]<=cap.applied_sequence
+                        or type(row[2]) is not str or len(row[2])!=64 or set(row[2])-set('0123456789abcdef')
+                        or type(row[3]) is not int or row[3] not in (0,1) or row[4:]!=[0,0]):
+                    raise SpoolConflict('restored source control checkpoint shape differs')
+                source=_uuid(row[0]);seen.add(source)
+                changes.append(SourceChange(source,row[1],row[2],bool(row[3]),False,False))
+            nonce=secrets.token_hex(24)
+            observed=await self._phase(binding,dict(action='restore_prefix',nonce=nonce))
+            expected=dict(nonce=nonce,applied_sequence=cap.applied_sequence,
+                database_generation=key[3],writer_generation=self.writer_generation,
+                schema_version=self.schema_version,registry_sha256=self.registry_hash,
+                observer_sha256=self.observer_hash,control_sha256=_hash(cap.control))
+            prefix=observed.get('prefix')
+            if (any(observed.get(k)!=v for k,v in expected.items())
+                    or type(prefix) is not str or not 1<=len(prefix)<=256
+                    or s._writing or s._source_version is not version or not self.binding_current(binding)
+                    or not await self._head_unchanged(cap.journal_head)):
+                raise SpoolConflict('restored source native target differs')
+            await s._write(s._replace_source_heads,tuple(changes))
+            coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,
+                cap.journal_head,cap.applied_sequence,cap.applied_sequence,())
+            self._native_prefix=prefix;self._coverage=coverage;s._source_anchor=coverage
+            self._restored_baseline=True
+            s._source_head=cap.journal_head.reference if cap.journal_head else None
+            s._source_covered_sequence=cap.applied_sequence;s._source_version=object()
+            s._native_history_unsettled=False
+            _LOG.info('source_restore_adopted sequence=%s database_generation=%s',cap.applied_sequence,key[3])
+            return coverage
 
     async def restore(self,binding):
         # A read capability can expire while its *native* verified prefix still
@@ -194,7 +251,8 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     # native transaction opens. Keep at most four reads in flight
                     # and retain the original aggregate history byte limits.
                     checkpoint_key=self._checkpoint_key(key[3])
-                    checkpoint=await j._read(checkpoint_key,8192)
+                    checkpoint=(None if self._restored_baseline and mode!='full'
+                        else await j._read(checkpoint_key,8192))
                     remote_outcomes={};remote_bytes=0
                     retained=list(known.values())
                     for offset in range(0,len(retained),4):
@@ -227,7 +285,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 'observer_sha256':self.observer_hash}.items())):
                         raise SpoolConflict('native source observation binding differs')
                     remote=checkpoint;publish_genesis=False
-                    if remote is None:
+                    if remote is None and not (self._restored_baseline and mode!='full'):
                         # Only the actual pre-attachment empty-generation intent
                         # permits first genesis, alongside empty native+remote facts.
                         from .kaggle_target_launch import read_empty_intent
@@ -239,7 +297,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 or intent.get('database',{}).get('writer_generation')!=self.writer_generation):
                             raise SpoolConflict('empty generation intent differs')
                         publish_genesis=True
-                    else:self._verify_genesis(remote.data,key[3],expected_closure=None)
+                    elif remote is not None:self._verify_genesis(remote.data,key[3],expected_closure=None)
                     expected=set(range(1,applied+1)) if mode=='full' else set(range(previous.applied_sequence+1,applied+1))|set(pending_earlier)
                     if mode=='renew':expected=set()
                     observations={};after=0
@@ -319,6 +377,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                         {seq:value[0] for seq,value in observations.items()},None if mode=='full' else previous.case_state)
                         if mode=='full' or previous.case_state is not None else None)
                     self._native_prefix=closed['prefix']
+                    if mode=='full':self._restored_baseline=False
                     coverage=_Coverage(key[3],self,binding,key,self.clock()+self.coverage_seconds,nonce,head,accepted,applied,tuple(pending),case_state)
                     self._coverage=coverage;s._source_anchor=coverage;s._source_head=head.reference if head else None
                     s._source_covered_sequence=accepted;s._source_version=object()

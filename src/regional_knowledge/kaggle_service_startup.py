@@ -40,6 +40,7 @@ class SourceHistorySession(Protocol):
     coverage_seconds: float
 
     async def restore(self, binding: TargetReadBinding) -> SourceHistoryCoverage: ...
+    async def adopt_recovered(self, proof: object, binding: TargetReadBinding) -> SourceHistoryCoverage: ...
     async def extend(self, binding: TargetReadBinding) -> SourceHistoryCoverage: ...
     async def source_tail_refs(self, binding: TargetReadBinding, source_id: str, ingestion_id: str) -> dict: ...
 
@@ -420,7 +421,12 @@ class TargetServiceStartup:
                     if self.geo_gate is not None:self.geo_gate.invalidate()
                     self.case_gate.invalidate()
                 self.binding=binding
-                coverage=await self.history.restore(binding)
+                restored=getattr(self.restorer,'proof',None)
+                if (restored is not None and getattr(self.history,'_coverage',None) is None
+                        and getattr(self.history,'_native_prefix',None) is None):
+                    coverage=await self.history.adopt_recovered(restored,binding)
+                else:
+                    coverage=await self.history.restore(binding)
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage

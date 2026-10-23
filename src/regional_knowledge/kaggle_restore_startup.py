@@ -180,7 +180,8 @@ class SourceRestoreCoordinator:
         if self.writer.current(database_generation=binding.database_generation,writer_generation=binding.writer_generation):
             # Exact persisted activation already completed. Ordinary accepted
             # writes may have advanced since then: never replay the old base.
-            # Startup still performs full native history verification next.
+            # A fresh physical recovery is adopted as a verified history base;
+            # API-only reconnects retain their existing native prefix checks.
             self.binding=binding
             if self.dispatch is None and (getattr(self.startup,'dataset_seed',None) is not None
                     or self.config.dataset_checkpoint is not None):

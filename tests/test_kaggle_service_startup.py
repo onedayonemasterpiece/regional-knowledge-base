@@ -152,6 +152,25 @@ async def test_schema_promotion_rebuilds_retired_prefix_without_failed_delta_tic
 
 
 @pytest.mark.asyncio
+async def test_restored_startup_adopts_verified_base_instead_of_lifetime_history(service,monkeypatch):
+    s=service;startup=s.startup;s.adapter.available=True
+    cap=object();seen=[]
+    async def close():pass
+    startup.restorer=SimpleNamespace(complete=True,proof=cap,aclose=close)
+    original=s.adapter.restore
+    async def adopt(proof,binding):
+        assert proof is cap
+        seen.append(binding)
+        return await original(binding)
+    monkeypatch.setattr(s.adapter,'adopt_recovered',adopt,raising=False)
+    monkeypatch.setattr(s.adapter,'restore',lambda binding:pytest.fail('lifetime history on restored base'))
+    async with startup.lifespan(None):
+        await startup.refresh()
+        assert startup.reads_current() and seen==[startup.binding]
+    startup.restorer=None
+
+
+@pytest.mark.asyncio
 async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_fallback(service,monkeypatch):
     s=service;startup=s.startup;s.adapter.available=True
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.target.principal)
