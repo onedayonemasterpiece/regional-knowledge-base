@@ -299,13 +299,13 @@ def channel_route(queue, *, read_telemetry=None):
                 nonlocal last_work, cancelled_work
                 resume_pending = True
                 while True:
+                    if not promoted or shared is None or probe_nonce is not None:
+                        observed = await status()
+                        await promote(observed)
                     # Inspect the original run before admission for a successor
                     # can fence this channel. Never stop merely on draining.
                     if promoted and await maybe_stop():
                         await asyncio.Event().wait()  # Sender waits for the worker's ordinary close.
-                    if not promoted or shared is None or probe_nonce is not None:
-                        observed = await status()
-                        await promote(observed)
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
