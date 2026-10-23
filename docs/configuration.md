@@ -32,7 +32,7 @@ Precompiled artifact закреплён source SHA/toolchain/dependency lock/has
 | Remote accepted commit | Existing Yandex private recovery storage; exact payload/intent/hash/version readback перед accepted. Saved дополнительно требует domain commit и remote exact outcome/receipt. Group-commit batching window **≤1 s**, не cloud RTT. |
 | Control checkpoint | **15 min**; новые accepted mutations, реальные turns и revocations защищает tail до ACK. |
 | PG base cadence | **4 h при изменениях**, раньше по replay budget/byte pressure/planned handover; без изменений skip. |
-| Independent-from-Kaggle backup | Одна latest verified Yandex base примерно ежедневно; old+candidate overlap до проверки. |
+| Independent-from-Kaggle backup | Подтверждённая Dataset version копируется в Yandex S3 раз в неделю; exact version/date и old+candidate overlap до проверки. Старый online tail не подменяет Dataset primary. |
 | Useful idle | **30 min** от полезного спроса; socket Ping/Pong не продлевает этот таймер. |
 | Lifecycle budgets | Конечный per-run wall budget и stage deadlines; начальный control-loss grace 10 min. Stop/readback не заменяется TTL; неизвестный исход удерживает capacity. |
 | Provider reconciliation | Один controller; начальные start/stop polls ≥30 s, healthy 5 min, error backoff до2 min с jitter/Retry-After. Это настраиваемые defaults, не provider SLA; WSS progress приходит сразу. |

@@ -1,5 +1,7 @@
 # Хранение, восстановление и ограничение объёма
 
+Уточнение владельца 21.10.2026: [alignment](designs/rkb-owner-alignment-20261021.md), [аудит](reports/rkb-requirements-code-audit-20261021.md). **Основное постоянное хранение — versioned Kaggle Dataset; Yandex S3 — независимый weekly backup.** Ниже сохраняются snapshot/replay/ACK invariants, но старый online-S3 binding не переутверждается автоматически. До доказанного внешнего покрытия соответствующие новые writes остаются pending, старые accepted recovery records не удаляются. Telegram media verification — только доступность по locator, не PG snapshot integrity.
+
 Обновлено 20.10.2026. Целевой контракт для [единого handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md); новая реализация не развёрнута этой документационной работой. [Исходная SQLite/Supabase схема](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/storage.md) сохранена как immutable historical record.
 
 ## Один рабочий corpus
@@ -8,7 +10,7 @@ PostgreSQL 17 с pinned pgvector на Kaggle хранит exact accepted text, b
 
 Небольшой временный PG17/pgvector/PostGIS fixture на DevCoveer допустим для SQL/schema/permissions/migration checks при измеренном CPU/RAM/disk headroom, конечном deadline и cleanup owner; предпочтительно существующее CI/окружение. Только малые разрешённые/synthetic данные и готовые test vectors, без полного corpus и BGE/E5 weights/inference. Изолированный fixture не публикуется в общий поиск и не становится target БД; подробный контракт — [handoff](prompts/rkb-scalable-kaggle-implementation-20261019.md), §6.6.
 
-Originals и illustrations сохраняются существующим VibePublish/Telegram archive owner. Private Dataset хранит согласованные PG snapshots; существующий Yandex recovery storage — immutable command/control/receipt tail, accepted payloads и проверенную daily base. Source binary archive, recovery storage, working DB и temporary caches имеют разные lifecycle и budgets.
+Originals и illustrations сохраняются напрямую из Kaggle в Telegram через Telethon, без VibePublish/Dev bulk proxy. Private Kaggle Dataset — основной versioned persistence согласованного PG состояния; run восстанавливается из exact confirmed version и сохраняет туда изменения. Yandex S3 получает независимую backup-копию раз в неделю. Source media archive, working PG, Dataset recovery state и временные caches имеют разные lifecycle/budgets; старый SQLite archive не является target PG snapshot.
 
 Exact source_text и детерминированный search_material имеют собственные hashes и material version. Passages ссылаются на точные source spans; не размножать полную страницу ради каждого embedding. Model/human accepted decisions сохраняются точно: PDF SHA и повторная модель не воспроизводят прежний accepted result. Старые derived vectors можно убрать после безопасной смены revision; provenance и принятые значения нельзя подменить пересчётом.
 
@@ -25,25 +27,25 @@ Temporary Dataset создаётся лишь для необходимого pr
 | Граница | Значение |
 |---|---|
 | Local intake receipt | pending: известны request/idempotency key и временно сохранён input; финальное accepted ещё не обещано. |
-| Remotely sealed intent | Точный immutable payload и resolved intent доступны в Yandex recovery storage, hashes/size/version подтверждены readback; команда может получить accepted. |
+| Remotely persisted intent | Точный input/intent внешне закреплён выбранным Dataset/checkpoint/continuation протоколом; coverage подтверждено. До этого received/pending. Существующий online S3 seal не подменяет выбранный Dataset primary молча. |
 | Applied / Saved | PG transaction сохранила domain effects, applied_ops и непрерывный cursor; exact outcome/receipt также remotely verified. Cloud intake сам по себе не applied. |
 | Delivered | Единственный sender подтвердил native receipt/readback конкретного result hash. Unknown outcome остаётся UNKNOWN до reconciliation. |
 
 Accepted mutations и durable user turns группируются в bounded group commit: готовая группа ждёт flush не более 1 секунды. Это верхняя граница накопления, не обязательный sleep и не обещание provider latency: при свободном uploader готовый singleton можно отправить сразу. Ошибка remote commit оставляет pending и не превращается в Saved. Обычный read-only поиск не ставится в очередь remote journal и не требует S3 round trip.
 
-Existing S3ObjectStore — transport put/get/delete. Immutable create/seal, exact verification и conditional manifest CAS ещё реализуются поверх него. [Yandex PutObject](https://yandex.cloud/en/docs/storage/s3/api-ref/object/upload) документирует If-Match/If-None-Match; runtime probe проверяет конкретный SDK/bucket и competing-writer race, а не существование headers в спецификации. Segment содержит sequence range/count, payload hashes и previous hash. Manifest принимает только verified continuous chain; orphan upload не accepted.
+NEW уже реализует части S3 immutable create/seal/CAS; это существующий recovery binding, а не доказательство Dataset-primary публикации. Переиспользовать общие semantics и явно проверить выбранный Dataset/continuation adapter; не вводить скрытую online-S3 зависимость только потому, что этот код уже есть. [Yandex PutObject](https://yandex.cloud/en/docs/storage/s3/api-ref/object/upload) документирует If-Match/If-None-Match; runtime probe проверяет конкретный SDK/bucket и competing-writer race, а не существование headers в спецификации. Segment содержит sequence range/count, payload hashes и previous hash. Manifest принимает только verified continuous chain; orphan upload не accepted.
 
 Стартовые implementation defaults для DevCoveer raw spool — **4 часа и hard cap 512 MiB**; до cutover измерить их достаточность под accepted payload sizes и write bursts. Числа не относятся к сроку жизни диалога, UNKNOWN send, private draft или unresolved case. Компактные request/receipt/UNKNOWN metadata сохраняются до reconciliation и переносятся в control checkpoint. Terminal receipt horizon 30 days допустим только для verifiable server-issued request IDs: expired ID не становится новой execution. Arbitrary legacy keys не GC вслепую. Pending callbacks используют durable artifact refs, а не удерживают месяцы raw body на DevCoveer.
 
-Local GC удаляет raw bytes после remotely sealed payload + verified metadata. Он **не ждёт самой старой daily base**. Нельзя объявлять неподтверждённые bytes защищёнными по успешному socket send или upload request. Age/byte pressure заранее ограничивает новые admissions; при неисправном recovery backend нет финального accepted ACK. Ни возраст, ни заполненный диск не разрешают удалить единственную копию уже подтверждённого результата.
+Local GC удаляет raw bytes после remotely sealed payload + verified metadata. Он **не ждёт самой старой weekly backup** после доказанного внешнего покрытия; это не разрешает удалять ещё непокрытый payload. Нельзя объявлять неподтверждённые bytes защищёнными по успешному socket send или upload request. Age/byte pressure заранее ограничивает новые admissions; при неисправном recovery backend нет финального accepted ACK. Ни возраст, ни заполненный диск не разрешают удалить единственную копию уже подтверждённого результата.
 
 ## Base, tail и checkpoint
 
 1. PostgreSQL base — consistent physical backup с нужным WAL и indexes. Обычный cp работающего data directory запрещён. Logical dump применяется для малого fixture либо обоснованного version/schema upgrade с отдельным измерением restore/index rebuild.
-2. Exact command/control/receipt tail хранится immutable в существующем Yandex recovery storage. Resolved payload включает выбранные IDs, logical timestamps, preconditions и codec/schema version. Результаты модели не генерируются заново при replay.
+2. Exact command/control/receipt continuation должен быть восстановим в рамках выбранного Dataset-primary протокола. В NEW используется online S3 tail: его смена или дополнительная роль требует явного решения, а не подмены weekly backup. Resolved payload включает выбранные IDs, logical timestamps, preconditions и codec/schema version; модель не вызывается заново для принятого решения. До доказанного покрытия — pending; прежние accepted bytes сохраняются.
 3. Control checkpoint создаётся каждые **15 минут**. Accepted turns, grants/revocations и effects не ждут этого интервала: их изменения защищает remote tail до финального ACK.
 4. Changed PG base создаётся каждые **4 часа**, а также раньше при превышении replay-time/byte budget или перед planned handover. Без изменений полную копию не создавать. Index rebuild и reembedding не являются частью каждого checkpoint.
-5. Примерно раз в сутки сохранить одну проверенную независимую от Kaggle PG base в Yandex. Временно нужны old + candidate; удалить old можно после проверки новой копии. Yandex base и Yandex tail находятся в одном failure domain и не считаются независимыми резервами друг друга.
+5. Раз в неделю сохранить в Yandex независимую копию подтверждённой Dataset version с manifest/cursor и датой. Временно нужны old + candidate; прежняя копия удаляется только после годной замены и проверки retention dependencies. Weekly backup не содержит автоматически весь более свежий хвост; показывать фактическую version/age и гарантии отдельно.
 6. Remote-tail GC сохраняет все интервалы, нужные **designated retained verified baselines** и unfinished consumers. Отставшая копия либо остаётся с полным recovery chain, либо явно выводится из набора recoverable baselines после годной замены. Нельзя удалить её tail и продолжать показывать её как восстановимую.
 7. Readers pin exact snapshot version, не Dataset latest; их leases и восстановительные зависимости учитываются до version GC.
 
@@ -85,14 +87,14 @@ Ingress проверяет resource-bound identity и передаёт комп�
 
 - Kaggle writable mount: PG heap/TOAST/indexes, WAL, temp, staging, restored data, candidate backup и download/render cache;
 - private Dataset quota: retained base versions и upload overlap;
-- Yandex: designated bases, immutable tail/payloads, pending artifacts и overlap;
+- Yandex: weekly backup versions и overlap; текущий legacy online tail учитывать отдельно до явного решения о replacement, не скрывать его расход;
 - DevCoveer: raw spool, compact metadata/checkpoints и bounded network buffers.
 
 Gates: steady usage **≤80%**, крупнейший import/restore/snapshot/cutover peak **≤90%** каждого applicable budget. Minimum benchmark — **100 book-equivalent sources и 100000 active chunks**; это не product limit. Raw-vector arithmetic не заменяет measured index/volume usage.
 
 Приоритет владельца — полезное уменьшение E2E latency, в том числе на 0.5 s. Полезные bounded caches, FP32 vectors и indexed serving projections допустимы в этом budget; экономия bytes сама по себе не оправдывает дополнительные roundtrips, recompute или распаковку на каждом read. Выигрыш подтверждается сопоставимым измерением, а не объявляется по выбору Go/Rust/native реализации.
 
-По текущей [Kaggle Dataset документации](https://www.kaggle.com/docs/datasets): 200 GB на Dataset, 200 GB суммарно private datasets, максимум 50 top-level files. Archives распаковываются; zip не обходит лимит. [Notebook docs](https://www.kaggle.com/docs/notebooks) отдельно указывают 20 GB autosaved working space и конечную session lifetime. Реальный аккаунт, mounts и свободные quotas проверяются перед cutover; Dataset capacity не равна рабочему диску PG.
+Пределы Dataset/private storage, числа files, writable notebook space и session lifetime проверяются по [Kaggle Dataset docs](https://www.kaggle.com/docs/datasets), [Notebook docs](https://www.kaggle.com/docs/notebooks) и actual account/mounts непосредственно перед внедрением. Прежние числовые оценки не считаются текущей квотой аккаунта. Dataset capacity не равна рабочему диску PG; фактическое expanded/stored accounting и overlap должны быть измерены.
 
 [CLI](https://github.com/Kaggle/kaggle-cli/blob/main/docs/datasets.md) создаёт versions асинхронно и предоставляет status/delete-old-versions. Не предполагать транзакционный append, дешёвую incremental upload или selective version GC. Current + candidate и reader pins входят в budget; при необходимости использовать ограниченную ротацию целых generation datasets после verified replacement, не Dataset на каждую книгу. Сжатие проверяется по фактическому stored/uncompressed accounting.
 
@@ -110,13 +112,13 @@ REINDEX допустим при доказанном bloat/повреждени�
 
 Принятый текст и библиография доступны всем; иллюстрации также доступны всем через соответствующий artifact. Stripe quote scans разрешены owner/demo/expert/local_historian. Full PDF/DjVu, full-page previews и private draft history остаются private. Region/figure grant не разрешает страницу целиком или чужие annotations. До preview, render, callback и delivery проверяются текущая роль, audience, source revision и artifact scope.
 
-Exact hashes используются для integrity/dedup, не как угадываемый публичный object key. В MCP возвращаются opaque source/artifact IDs и authorized retrieval; raw storage keys, credentials и signed URLs не попадают в public logs. Recovery snapshots закрыты: public text projection не делает всю БД public.
+Exact hashes используются для snapshot/code/accepted-command integrity и исходной edition identity, не как публичный object key и не как обязательный Telegram upload/download proof. Доступность ожидаемого media по locator достаточна для архивной операции. В MCP возвращаются opaque source/artifact IDs и authorized retrieval; raw storage keys, credentials и signed URLs не попадают в public logs. Recovery snapshots закрыты: public text projection не делает всю БД public.
 
 Сохраняются bounded streaming, incremental hash, MIME/signature/container validation и SSRF guard загрузки: HTTPS/443, без credentials/redirects/IP-literal/localhost/private DNS targets; approved DNS pins, без proxy/cookie inheritance и неожиданной content decompression. Существующий source size default 128 MiB и operator ceiling 512 MiB проверяются до и во время download. Это размер входного файла, не spool budget.
 
 Original cache и proof cache имеют свои отдельные byte/idle caps и cross-process leases. Exact preview/hash/rotation/transform сохраняется до terminal locator callback; утрата preview требует новой generation и повторной локализации. Подтверждённый callback/artifact ref позволяет освободить временные bytes. Сессии Telegram независимы и имеют exclusive lease; account FLOOD_WAIT остаётся общим пределом.
 
-Concurrent reads одного exact source SHA могут разделять одну in-flight загрузку и verified immutable cache object под lease. Hash проверяется при streaming download/restore и atomic install; warm read неизменённого проверенного объекта не требует повторного полного hashing/repacking/reembedding. Изменение bytes/identity или сомнение в integrity требует повторной verification до использования. Каждый вывод всё равно проверяет текущие права. Cache keys/refs различают source/render generation, actual geometry, artifact class и scope; public illustration не переиспользует restricted page/quote rendition как публичный ответ.
+Concurrent reads одного exact source SHA могут разделять одну in-flight загрузку и verified immutable cache object под lease. Для Telegram source/media проверяется зарегистрированный доступный locator; custom download/hash verification не вводится. Local generation/source binding отличает cache entries; warm read неизменённого объекта не требует повторного скачивания/repacking/reembedding. Snapshot/code restore имеет отдельную обязательную integrity verification. Каждый вывод всё равно проверяет текущие права. Cache keys/refs различают source/render generation, actual geometry, artifact class и scope; public illustration не переиспользует restricted page/quote rendition как публичный ответ.
 
 Source deletion/withdrawal сначала отзывает видимость и delivery grants, затем отменяет разрешённые downstream projections и выполняет checked lifecycle. Незавершённый consumer, legal retention и историческое evidence не стираются случайным cache GC. Не менять исходный чужой archive/POI/map owner.
 

@@ -1,467 +1,91 @@
-# RKB: сквозная историческая адресация и проверка целесообразности нейромодели
+# RKB: сквозная историческая адресация — единое решение
 
-Дата: 2026-10-20. Версия исследования: 1.0. Статус: **проект дополнения к v4 для следующего этапа реализации; архитектурный анализ выполнен, пилот и измерения NOT RUN**.
+**23 октября 2026. Статус:** source-backed **проект решения для RKB-Продукт и Opus**. Реализация/тест исторического соответствия/live — **NOT RUN**. Продолжение **того же draft PR158**, а не новая параллельная концепция. [Полное исследование 20.10 (immutable original @80e1b0d)](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/80e1b0d0b1b79a843096090b33a7c8e4c473fb6b/docs/design/rkb-historical-addressing-and-model-evaluation-20261020.md) содержит исследовательские R0/P1/P2/P3 и 28 потенциальных проверок; **они не являются реализованным API или обязательным новым компонентом**. Этот документ — единственный действующий предлагаемый design в PR158.
 
-Основание — [поручение и обсуждение владельца](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792493476651079) и [единое задание v4](../prompts/rkb-scalable-kaggle-implementation-20261019.md). Документ подготовлен ChatGPT с двумя консультациями Claude Opus 5.5, критикой dot, проверкой исходников и первичных источников. Это предложение для кодового агента или следующего окна ChatGPT; мнение консультанта не означает owner approval каждого решения.
+Baseline сравнения: RKB `main@c35ad8903c159c894369b5e5d121f809f6566d61` (содержит PR320), Street Story `main@de75352038effe9320cc6ab5ccb4ef05cd59977b`, Regional Cartography `main@b4b65abf9dca495fac3450b88a40845650d63b8b`. [Одобренная предметная постановка](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792744773999769). Текущий runtime/provider, установленный клиент и действительный корпус этим чтением исходников не инспектировались.
 
-## 1. Решение и практическая ценность
+## 1. Выбор без дополнительных подсистем
 
-**Сквозную историческую адресацию развивать целесообразно.** Она позволяет искать материал по современному или прежнему названию, связывать рассказ с местом нужной эпохи, находить события рядом и показывать основания спорной локализации. Под «полноценной» понимается поддержка всех нужных уровней и честного отсутствия данных. Это не обещание полного покрытия каждого исторического дома области.
+**Принять baseline PR158:** одна логическая операция разрешения исторического места **внутри RKB рядом с существующим PG/Kaggle**, а не отдельный сервис. Использовать source-place/graph, typed source evidence, индексируемые historic/current aliases и source-time, при необходимости `pg_trgm`, PostGIS и уже имеющийся BGE-M3. Это *предлагаемая логика для существующих tool/read/mutation контуров*, **не новый публичный MCP method и не новая физическая схема в этом docs PR**. GPU/new NN/ranker/fine-tune P2/P3 **не нужны по умолчанию**: допустимы лишь по измеренным category errors и преимуществу на независимых source/address/epoch families.
 
-**Отдельная нейромодель пока не обоснована результатами измерений.** Её полезность проверяется на конкретной задаче: извлечение упоминаний, распознавание OCR/вариантов написания либо выбор среди найденных мест. Проверенный каталог, исторические состояния, источники и исправления нужны при любом алгоритме.
+**Ровно один владелец каждого объекта:**
 
-Первое изменение текущей реализации — корректный географический контракт. Самое срочное: независимость существующего place ID от seed-книги при GEO-only переносе, типизированные времена и адресные назначения, различение упоминания и места события. Исследование модели не блокирует эти изменения.
-
-| Вопрос владельца | Вывод этого раунда |
-| --- | --- |
-| Можно ли связывать текст с городом, поселением, районом, площадью, улицей, домом? | Да, с сохранением уровня, подтверждённого источником. Координаты необязательны. |
-| Подойдёт ли PG с расширениями? | Это совместимый baseline существующего v4: PG, PostGIS, индексируемые имена, временные отношения и доказательства. Качество resolver ещё надо проверить. |
-| Поможет ли BGE? | Возможен дополнительный поиск по контексту; похожесть вектора не доказывает адресное тождество. Проверяется отдельно от обычного поиска книг. |
-| Нужна ли fine-tune модель? | Возможно, если ошибки сосредоточены в извлечении, OCR-вариантах или контекстном выборе и выигрыш воспроизводится на отложенных источниках. |
-| Есть ли смысл обучать с нуля? | Небольшой символьный matcher/классификатор/ранкер — допустимый эксперимент. Предобучение новой языковой модели для запоминания адресов сейчас не имеет доказанного основания. |
-| Где исполнять? | Baseline рядом с PG в Kaggle. При необходимости — один ограниченный модельный компонент. CPU предпочтителен; импортный GPU допустим лишь при измеренной общей пользе. |
-| Можно ли уже обещать скорость/точность на нашем железе? | Нет. В этом раунде ни такой сервис, ни его benchmark на фактическом Kaggle не запускались. |
-
-### 1.1. Продуктовые сценарии
-
-1. При импорте книги сохранить все значимые географические упоминания и связи с конкретными утверждениями, событиями и историями. Отсутствие карты не останавливает импорт.
-2. По старому имени найти место, его прежние и современные названия, период и источники; при омонимах вернуть кандидатов с различиями.
-3. По нынешнему адресу найти исторические объекты на этой территории. Совпадение участка, адреса и физического здания проверяется отдельно.
-4. Найти события рядом с выбранной точкой/улицей/территорией в заданную эпоху. Случайное упоминание места в тексте не становится местом события.
-5. Открыть дело о разногласии по локализации: альтернативные утверждения и геометрии видны вместе с основаниями; система не усредняет их в одну «истинную» точку.
-6. Позднее добавить карту, новое имя или исправленную привязку без повторного OCR, повторного импорта книги и пересчёта всех книжных векторов.
-7. Дать Мире и dot одинаковую географическую семантику через существующие RKB tools. Работоспособность обычного чтения не зависит от отдельного импортного GPU.
-
-## 2. Проверенное состояние проекта
-
-Аудит исходников выполнен по main **85676094cf1a019fd34a29daa930d4ebb16eedb7**. Реализация v4 на момент проверки — [draft PR157](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/157), head **58792b162f625fb348f97e4cea84601b52afabf6**. Отдельный draft журнала разногласий — [PR151](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/151), проверенный head **adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4**. Это снимки исходников, не диагностика развёрнутого runtime. Перед публикацией повторно проверен PR157: head **2fc7b4b4041fb02cf2f0ab2ac360dafa894d5f76**. В [семи последующих коммитах](https://github.com/onedayonemasterpiece/regional-knowledge-base/compare/58792b162f625fb348f97e4cea84601b52afabf6...2fc7b4b4041fb02cf2f0ab2ac360dafa894d5f76) развивались recovery/WSS/search; проверенные graph/entity/geo/story участки и ordinary reimport test не изменены. Таблица ниже привязана к точным версиям аудита.
-
-v4 уже предусматривает PostgreSQL/pgvector/PostGIS, BGE-only в Kaggle, exact alias branch, условный pg_trgm, spatial indexes, GEO-only перенос, minimal identity manifest до fresh imports и позднее обогащение географией. Поэтому отдельная NoSQL/graph DB и второй сервис-владелец мест не нужны для реализации этой идеи.
-
-| Проверенный участок | Наблюдение | Дельта к будущему PG слою |
+| Объект | Authority | Степень внедрения по source |
 | --- | --- | --- |
-| [graph_service.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/85676094cf1a019fd34a29daa930d4ebb16eedb7/src/regional_knowledge/graph_service.py), GraphService.read | Сущность читается только при rkb_graph_active(document_id, revision) её seed-документа | Stable place ID не должен исчезать из-за непереноса старой книги. Доступ к полям продолжает зависеть от актуальных допустимых оснований. |
-| [entity_graph.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/85676094cf1a019fd34a29daa930d4ebb16eedb7/src/regional_knowledge/entity_graph.py) | Alias/relation time_scope — строка; place_kind — открытое текстовое поле; GraphEvidence требует chunk/page/region UUID | Добавить нормализованное время рядом с оригиналом, typed address assignments и anchors для карты/реестра. Не создавать фиктивные chunks. |
-| [geo_resolution.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/85676094cf1a019fd34a29daa930d4ebb16eedb7/src/regional_knowledge/geo_resolution.py) | enqueue_mention создаёт period с unknown precision; lookup отбирает LIMIT до последующей проверки года | Сохранять temporal semantics. Применять обоснованные eligibility-предикаты до pagination; неизвестное время не превращать в подтверждённое совпадение. |
-| [story_registry.py](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/85676094cf1a019fd34a29daa930d4ebb16eedb7/src/regional_knowledge/story_registry.py) | link_entity прямо обозначен как навигация; occurred_at уже существует в графе | Переиспользовать occurred_at и расширять недостающие typed links/evidence; навигацию не переобозначать как доказанный факт. |
-| [disagreement_contracts.py, PR151](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/adf78a50013e2d8a2fbbe425c61f4ac479eaa0c4/src/regional_knowledge/disagreement_contracts.py) | CaseCreate/CaseRevise не задают полноценные typed geo links | Привязывать предмет дела и альтернативные локализации без обязательной Story или единственного POI. |
-| [PG search slice PR157](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/58792b162f625fb348f97e4cea84601b52afabf6/docs/operations/kaggle-pg-search.md) | Passage-search срез прямо помечен undeployed; alias/entity retrieval и product acceptance ещё не доказаны | Не объявлять исторический геокодер готовым по тестам passage-search. Учесть дополнение при последующем graph/GEO срезе. |
+| Исходное упоминание, RKB source-place ID, aliases, датированная адресная связь, роли material → place, Case/evidence | RKB target | `poi_ref` и `occurred_at`/`located_in` уже typed, но cross-source историко-современный resolver **не подтверждён** |
+| Растры/карты, GCP, современная/историческая геометрия, CRS, локальная ошибка и версия пространственного утверждения | **Regional Cartography** | `cartography.resolve.v1` существует, accepted house geometry на весь регион **не доказана** |
+| Идентичность физического POI, его жизненный цикл и receipts | **Street Story** | Существующий `streetstory://poi/…`; имя/координаты RKB не вправе автоматически создать или слить POI |
 
-Обычный переимпорт той же seed-книги уже имеет [тест сохранения UUID/POI/map refs](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/58792b162f625fb348f97e4cea84601b52afabf6/tests/test_reimport_entity_activation.py). Не утверждать, что переимпорт вообще ломает identity: не закрыт именно seedless GEO bootstrap. Dot независимо подтвердил эту границу по PR157.
+RKB хранит **внешние owner refs**, не копирует POI/geometry как вторую власть. Улица, район, площадь, дом, участок, поколение здания, населённый пункт и POI — не взаимозаменяемые identities; смена таблички не доказывает прежнюю трассу или сохранившийся дом. Стабильная place identity не должна зависеть от seed-книги, но *видимые* labels/assertions всегда проверяют действующую eligibility и provenance. GEO-only legacy anchors не восстанавливают старый book corpus.
 
-Эти выводы не требуют остановить текущую разработку recovery/WSS/search. Перед изменением схемы агент сверяет новый HEAD и актуальный diff: указанные gaps могли быть исправлены параллельно.
+## 2. Один логический контракт input → output
 
-## 3. Одна модель мест и чёткое владение
+**Вход:** exact original place spelling/адрес (включая строковый домовой номер с литерой), surrounding source text + source_id/revision/page/region/quote; язык, settlement/admin context, role (mention/event location/publication place/residence/etc.), уточнённое `event_time`, *отдельное* `naming_time` и `publication_time`, требуемый уровень и current actor/audience. Modern-reference date и already-known RKB ID/Street Story POI optional. Неустановленное время остаётся `unknown`/`null`, а не заполняется годом книги.
 
-«Газеттир» здесь — реестр географических мест, их имён, периодов, отношений и источников. Он развивается внутри существующего RKB graph; это не новый независимый каталог.
+**Ответ:** ограниченные current-authorized candidates и одно итоговое решение только при наличии основания:
 
-| Владелец | Ответственность |
+| Поле/смысл | Контракт |
 | --- | --- |
-| RKB | Существующие source-side place/entity IDs; утверждения источников, имена и упоминания, адресные наблюдения, связи с материалом, решения о привязке, разногласия |
-| Street Story | Каноническая физическая POI identity, её lifecycle и owner receipts |
-| Regional Cartography | Карты/наблюдения, геопривязка, геометрия, топология и интерпретации между эпохами |
-| RKB PG read projections | Разрешённые versioned представления для поиска рядом с corpus; ссылки на владельца и его revision сохраняются |
-| Мира / dot / импортирующая модель | Потребление поиска и явные семантические решения в пределах действующих полномочий |
+| `status`/`precision` | `resolved` до **settlement/district/square/street/street-segment/house/building** с отдельно названным уровнем; `ambiguous`, `unresolved`, `not_found_in_coverage` или `not_a_place`. `partial/unavailable` для недоступной части системы **не** выдавать за not found |
+| `historical` | existing RKB source-place ID, исходный historical name/address для конкретной эпохи, source/owner provenance, подтверждённый тип (улица ≠ район ≠ дом); несколько обоснованных candidates — не «первый выиграл» |
+| `modern` | Современное имя/адрес/компоненты **только** при evidence-backed correspondence. Может оставаться null; распознанная улица без номера → точность до улицы, не до дома |
+| `geometry` | Nullable `cartography://…` owner ref, revision, CRS, type, observed epoch, method/error/uncertainty; centroid/pin не является historical door/footprint. Нет геометрии — не придумывать координаты |
+| `related` | Датированные и проверенные связанные район, площадь, улица/segment, дом/участок, населённый пункт и отдельно подтверждённый `streetstory://poi/…`; neighbor/containment не выводить только по близости точек |
+| `proof`/`coverage` | Точный source locator, assertion/owner revision, temporal basis, coverage period/area/gaps, current auth, reasons и possible next_action; не раскрывать private source/Case/scan через alias/ranking/cache |
 
-Cardinality не считать универсальной 1:1: один source-side place может иметь несколько картографических observations/состояний разных эпох. Physical POI binding относится к конкретному физическому предмету/поколению; для агрегата или нескольких преемников нужны типизированные отношения. Существующий canonical_poi_ref остаётся совместимым кратким представлением однозначного binding, а не контейнером для случайно выбранного объекта из множества.
+**Время и адресный смысл:** «как называлась эта улица в 1910?» проверяет contemporaneous naming, а «в 1910 на нынешней улице X» сначала разрешает нынешнюю reference, затем историческую территорию/segment 1910. Издание 1935 не делает каждое описанное событие «событием 1935 года». Переименование ≠ перенумерация ≠ новый дом на старом участке. Matching name, house number, map proximity, BGE cosine и pg_trgm — кандидатообразование, **не** доказанный `same_as`.
 
-Сохранить существующие UUID и external owner refs. Не генерировать новый Street Story key из имени, координат или RKB UUID. Отсутствие owner POI не означает отсутствие source-side места.
+## 3. Один model page pass, без блокировки текста GEO
 
-### 3.1. Различать предметы
+Модель на странице в обычном `start → book_pages` (target MCP default **1**, max request **4**, renderer может вернуть одну) определяет source place, actual evidence и семантическую роль. Если есть достойные кандидаты, **один bounded логический lookup на упоминание** выбирает существующий place ID в рамках existing permitted tooling, после чего link с ролью/evidence передаётся **в том же `book_ingest(stage)`** через существующие `entity_candidates`/`poi_facts` и связанные поля, если текущая typed schema их допускает. Не вызывать вторую обязательную модель в backend, не запускать второй проход или поиск по всей книге. `entity_list` сейчас требует ровно один source ID — полноценный cross-book resolver ещё не реализован; это честная future integration boundary, а не утверждение, что tool уже поддерживает весь input.
 
-Населённый пункт, административная территория, исторический квартал, остров, улица, участок улицы, площадь, земельный участок, физическое здание определённого поколения, адресное назначение и учреждение внутри здания — разные возможные предметы. place_kind остаётся расширяемым текстовым типом. Полный закрытый классификатор и отдельная таблица на каждый тип не требуются.
+Если alias/адрес не сопоставился — сохранить *дословное* имя, контекст, source locator, uncertainty и pending decision; **не** создавать выдуманный entity ID/POI/geometry. При добавлении проверенного исторического alias, карты или owner POI **досопоставить сохранённое упоминание**, точно обновив соответствующую link/projection через имеющуюся authorisation/idempotency и revision dependency, **без повторного OCR, перечитывания книги, нового backfill/reimport или полного re-embedding**.
 
-Адресное назначение связывает сырой адрес и разобранные компоненты с местом/объектом в периоде. Номер хранится строкой: 12a, 12/14, 3–5 и литеры не сводятся к одному integer. Сохраняются система/вариант нумерации и основание соответствия, если известны. Разбор диапазона и двойного номера не угадывается по одному знаку.
+PR320 перевёл target на **accepted stage packet → source text searchable без whole-book seal**. Поиск первой страницы Гаузе через MCP **не ждёт** географической интерпретации, картографического owner, story/image enrichment, согласования экспертов или реестра улиц. Отдельная ошибка enrichment не откатывает подтверждённый текст; потеря ответа по эффекту/UNKNOWN требует того же exact receipt/readback, а не новой команды. Заявление о live Saved остаётся отдельной проверкой.
 
-Переименование может менять только имя. Перенумерация меняет адресное назначение. Новый дом на прежнем участке может иметь другой physical identity. Слияние поселений, разделение улицы и частичное наложение трасс требуют датированных отношений, а не автоматического same_as. Для реконструкции здания нет default «тот же» или «новый»: решение и его предмет подтверждаются источниками.
+## 4. Read по именам, адресу и POI — источник, рассказ, событие, дело
 
-Историческая административная и церковная принадлежность не образуют одно дерево parent_id. У места могут быть разные отношения к округу, приходу, муниципалитету и физической территории. Современная Калининградская область — operational scope проекта; исторические объекты, пересекающие её границу, сохраняют исходную геометрию и контекст.
+Historic/current name, адрес или exact Street Story POI → тот же bounded actor-eligible graph/PG lookup по датам/aliases/refs → source fragments с literal evidence, связанный story `body`, dates/events/facts и Case (только если actor имеет Case grant), при наличии Cartography geometry owner ref. `mentions` не расширяется в `occurred_at` без доказательства. Место издания источника не назначается местом каждого события. На update/withdrawal/actor revocation исключить stale labels, закрытые Case, сканы и derived read projections.
 
-### 3.2. Минимальные логические записи
+**Найденное по исходникам, а не по живым запросам:**
 
-Это смысловой контракт для расширения existing entities/assertions/mentions, а не требование создать семь новых сервисов или семь отдельных registries.
+- RKB [`kaggle_source_graph_tools.py`](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/c35ad8903c159c894369b5e5d121f809f6566d61/src/regional_knowledge/kaggle_source_graph_tools.py): `entity_list` ограничен одним exact document ID, `graph_fetch` читает по известному ID; это **не** глобальный gazetteer. [`kaggle_geo_backend.py`](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/c35ad8903c159c894369b5e5d121f809f6566d61/src/regional_knowledge/kaggle_geo_backend.py) отдаёт retained private GEO owner refs, не полный accepted-source corpus.
+- RKB [`server.py`](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/c35ad8903c159c894369b5e5d121f809f6566d61/src/regional_knowledge/server.py) в существующем `GET /internal/street-story/poi-context` после service bearer делает `if not actor or not hasattr(backend,"corpus"): 503 scope_unavailable` и затем legacy `PoiRegistry(backend).context`. Target [`KaggleSourceBackend`](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/c35ad8903c159c894369b5e5d121f809f6566d61/src/regional_knowledge/kaggle_public_backend.py) **не объявляет `corpus`**. Это source-backed **условная причина 503 при настроенном bridge и valid bearer**, но **не** live HTTP evidence. Другой 503 — `bridge_unavailable`, чужой bearer — 401; лечить заменой target read adapter с existing service grant, а не удалением auth или новым endpoint.
+- [Street Story `rkb-poi-link.md`](https://github.com/onedayonemasterpiece/street-story/blob/de75352038effe9320cc6ab5ccb4ef05cd59977b/docs/rkb-poi-link.md): `GET /v1/pois/{poi_id}/knowledge` и исходный внутренний RKB bridge предусмотрены; device token не пересылается в RKB; Street Story владеет POI, связанный RKB fragment не размножается по POI name.
+- [Regional Cartography README](https://github.com/onedayonemasterpiece/regional-cartography/blob/b4b65abf9dca495fac3450b88a40845650d63b8b/README.md) и [`cartography.resolve.v1`](https://github.com/onedayonemasterpiece/regional-cartography/blob/b4b65abf9dca495fac3450b88a40845650d63b8b/contracts/cartography.resolve.v1.schema.json): карта/геометрия и её provenance остаются у автора карты.
 
-| Запись | Минимальное содержание |
-| --- | --- |
-| Identity | Стабильный existing entity ID, открытый тип, lifecycle, exact external owner references |
-| Name assertion | Буквальное написание, язык/письменность/роль имени, normalized key и normalizer_version, temporal evidence, источник |
-| Place/address relation | Участники, тип связи, оригинальный адрес/номер, разобранные nullable компоненты, время, evidence и статус |
-| Mention/content link | Точный материал и revision/span/locator, роль связи, выбранный place/state либо неопределённость, source-bound основание |
-| Geometry reference/projection | Owner ID/revision, geometry/state/CRS, derivation, уровень и оценка точности, период, source/policy dependencies |
-| Evidence anchor | Книга/page/region/chunk; либо map-sheet + pixel/geometry locator; либо register-entry; либо минимальный legacy GEO anchor |
-| Decision | Явное принятое решение, actor/method/model+catalog versions, точные inputs/outcome, idempotency и supersede-history |
+**Следующее integration, не текущая реализация:** сохранить действующий bridge URL, owner service permission и Street Story device auth; переключить только target handler от legacy corpus к правомочному source/PG reader с current ACL и exact POI owner binding. Accepted source fragments/real stories/facts/events/cases требуют отдельного source-level E2E и не возникают автоматически из GEO-only refs.
 
-Имена и адреса одного источника с разными периодами/ролями не схлопываются только по normalized string. Совпавшие написания у разных объектов остаются разными assertions.
+## 5. Реальные, проверяемые исторические кейсы
 
-## 4. Время, неопределённость и доказательство
-
-### 4.1. Время события не равно времени имени
-
-| Временная характеристика | Что означает |
-| --- | --- |
-| event_time | Когда произошло описываемое событие |
-| naming_time_context | К какой эпохе относится использованное автором имя; может быть unknown |
-| name_valid_time | Когда конкретное имя засвидетельствовано/действовало |
-| state/address/geometry_valid_time | Время состояния, адресного назначения или геометрии |
-| source_time / source_as_of | Дата издания и отдельно дата наблюдения/сбора материала, если известна |
-| recorded_at / revision | Когда система получила или исправила знание |
-
-Хранить исходную датировку, нормализованные границы, precision, certainty и основание. Не превращать unknown в доказанный бесконечный интервал. Отдельно представлять observation dates, неопределённые границы и подтверждённую непрерывность. Два наблюдения 1928 и 1931 годов сами по себе не доказывают непрерывный статус между ними.
-
-**Контрпример:** автор 2020 года пишет: «В 1910 году на нынешней улице X…». Система сначала разрешает нынешнее имя, затем ищет исторический объект/сегмент/состояние 1910 года. Новый alias не отсекается потому, что его ещё не было в 1910-м.
-
-Если написано только «В 1910 на улице X», naming_time_context может остаться неизвестным. Оно не подставляется автоматически ни из publication_time, ни из event_time. Несовместимость эпох остаётся объяснимым сигналом кандидата; ложного resolved не возникает.
-
-Запрос «как улица называлась в 1910» требует проверки имени на указанную дату. Запрос «что было в 1910 на нынешней улице X» имеет другую семантику. Это различие входит в read-контракт, а не только в промпт модели.
-
-### 4.2. Разные уровни уверенности
-
-Разделять:
-
-- установлено ли, о каком месте говорится;
-- подтверждено ли нужное историческое состояние/имя;
-- какая геометрия есть и насколько она точна;
-- какие источники покрывают территорию/эпоху;
-- что именно утверждает источник и что принято как интерпретация.
-
-Cosine, trigram similarity, ts_rank и softmax не считать вероятностью истинности. Калиброванная вероятность допускается только с указанием проверенной версии/выборки; неизвестную оценку оставлять null.
-
-Статус resolved на уровне улицы возможен при неизвестном доме и отсутствии геометрии. Визуальный marker/centroid допускается только как явно обозначенная точка представления территории; он не превращается в исторический вход, точный адрес или footprint.
-
-### 4.3. Покрытие и отрицательный результат
-
-У источника/слоя хранить территорию, временной охват, тип доступных сведений, просмотренные части и известные пробелы. «Не найдено в нашем наборе» не равно «не существовало». Отсутствующие страницы, нераспознанный OCR, закрытая для нас транскрипция и карта без нужной детализации дают разные ограничения.
-
-В MOB Tilsit 1912 явно отсутствуют страницы 97–112 и 330–331 [S2]. Это реальный acceptance case. Даже полная книга жильцов не автоматически является полным реестром всех зданий или земельных участков.
-
-Карта с датой по библиотечному штампу не автоматически описывает состояние именно этого года [S6]. Контрольные точки геопривязки, количество GCP и красивое наложение не доказывают адресную точность; нужна независимая проверка и локальная ошибка.
-
-## 5. Географическая связь материала
-
-Применяется общая семантика links для chunks, source assertions/facts, events, stories/variants, cases и illustrations. Существующие story navigation links сохраняются как навигация.
-
-| Роль | Значение |
-| --- | --- |
-| mentions | Материал упоминает место; событие там не подразумевается |
-| occurred_at | Конкретное событие/эпизод локализовано здесь по указанному evidence |
-| located_in | Пространственная принадлежность объекта/места с temporal scope |
-| residence / organization_at | Адресное наблюдение о лице/организации, не новое здание |
-| origin / destination / route_via | Роль в перемещении/маршруте |
-| depicts / map_of | Иллюстрация или карта относится к месту |
-| disputed_location | Место является альтернативой или предметом дела о разногласии |
-| proximity_reference | «У ворот», «за кирхой» и подобное; относительность не скрывается |
-
-Один chunk может содержать несколько мест, дат и событий. Связь с целым chunk не размножается на каждое его утверждение. Для «напечатано в Берлине, описывает пожар в Кёнигсберге» place of publication не становится местом пожара.
-
-Связь сохраняет exact source/content revision, использованные assertion/geometry revisions и источник собственного основания. Catalog version фиксирует условия решения: добавление несвязанного места или alias не инвалидирует все предыдущие links. Пересмотр вызывается изменением конкретной существенной зависимости. Географическая подпись без определения роли остаётся mentions/unknown. Public case page и карта отображают только разрешённые сведения; выбор видимого POI не открывает private draft или исходный скан.
-
-Новая карта обогащает существующие IDs и links. Исправление identity/адреса создаёт superseding decision и адресно помечает зависимые проекции; не переписывает текст автора и не запускает весь импорт заново. Если ошибочно объединены разные места, разрешено создать уточнённые IDs, сохранив исходный ID и историю решений. Redirect/supersedes не переносит автоматически все прежние события в один выбранный объект: зависимые bindings получают needs_recheck либо проверенное новое назначение. Старый результат воспроизводим с явным superseded status. Ошибка связывания, различие эпох и реальное разногласие источников различаются. Создание case использует существующий workflow; не нужна отдельная «машина истины».
-
-## 6. Контракт разрешения места и поисковый путь
-
-Resolver — логическая операция внутри существующей RKB поверхности. Не добавлять набор самостоятельных MCP tools только ради каждого внутреннего шага. Конкретную маршрутизацию через existing operation groups агент выбирает после сверки актуальных контрактов; отсутствие нового имени инструмента не мешает зафиксировать общий результат.
-
-### 6.1. Вход и ответ
-
-Вход: исходный текст/упоминание либо уже известный place ref, доступный source/context, язык, требуемый уровень, event_time, naming_time_context, область и при необходимости исторический scope. Каждый контекстный фильтр отличает явно заданное/засвидетельствованное значение от модельной гипотезы. Слабое предположение не становится жёстким SQL-исключением.
-
-Resolver соблюдает текущие ограничения query/context/batch и общий deadline v4. Длинный материал передаётся через существующие source refs и bounded source workflow. Несколько упоминаний возвращают отдельные результаты; неполная обработка даёт explicit partial/continuation без молчаливого truncation и без нового deadline на каждое место.
-
-| Часть ответа | Содержание |
-| --- | --- |
-| resolution | resolved / ambiguous / unresolved / not_a_place; resolved означает поддержанный результат на объявленном уровне, а не новую запись или owner verification |
-| reason | Например insufficient_context, candidate_not_in_catalog, temporal_uncertainty, coverage_gap, dependency_unavailable; классификация отсутствия сама может быть unknown |
-| scope | in_region / outside_region / cross_border / unknown, с explicit scope_ref и scope_time при историческом запросе |
-| coverage | Какие данные рассмотрены; full/partial/unknown в заявленных границах, известные gaps. Не обещать глобальную полноту |
-| candidates | Ограниченный список existing place IDs, matched names, типы, различия, временная совместимость, evidence refs; порядок детерминирован при равных признаках |
-| geometry | Nullable owner geometry ref/revision, тип, derivation, temporal state, precision и uncertainty; owner POI binding — отдельное состояние |
-| provenance | Источник/точный locator, assertion refs, method/normalizer/catalog/model versions; только допустимые текущему actor/audience данные |
-| freshness | Существующие generation/min-data-seq/deadline semantics; неполная проекция или timeout не превращаются в успешное «ничего нет» |
-| next_action | Кратко: уточнить населённый пункт, прочитать соседний фрагмент, проверить карту, сохранить выбранную связь существующим mutation |
-
-Единственный найденный alias или первый кандидат не означает принятого source→place тождества. Ответ различает ранее принятое binding и предложенный результат сопоставления. Semantic acceptance новой привязки остаётся явным действием текущего авторизованного workflow. Известный ID или ранее принятая связь могут разрешаться однозначно без повторного семантического выбора.
-
-Не смешивать три ситуации: source-side место установлено, owner POI пока не связан; место установлено, геометрии нет; идентичность места неизвестна. Текущие legacy unresolved/outside_coverage адаптеры сохраняют честную семантику и версионируются там, где нового состояния нельзя выразить без потерь.
-
-Обычный ответ содержит shortlist и компактные основания. Полные контуры и расширенная provenance читаются отдельно по действующим refs. Кандидаты не включают скрытые имена/число private объектов через объяснение, scores или autocomplete.
-
-### 6.2. Baseline алгоритма
-
-1. Нормализовать текст без потери оригинала: Unicode/case, известные варианты сокращений, мягкая обработка переноса/OCR. Русская транслитерация, немецкая морфология, литеры и номера имеют независимые признаки. Агрессивная нормализация не склеивает идентичности.
-2. Найти exact aliases и структурированные адресные компоненты. Отдельное поисковое представление имён не обязано использовать тот же stemming, что книжный FTS.
-3. При необходимости добавить индексируемые pg_trgm candidates. GiST nearest-distance и GIN selective matching — разные планы; выбор по EXPLAIN и реальному размеру каталога [T1].
-4. Учесть подтверждённый settlement/admin context, тип, временную совместимость и отношения. Фильтрация до final LIMIT не означает запрещённый фильтр alias по event_time: применяется только корректный для запроса temporal predicate.
-5. При экспериментально подтверждённой пользе добавить независимую BGE ветвь по контекстным карточкам мест, затем ограниченное объединение/ранжирование.
-6. Вернуть уровень разрешения, альтернативы и неопределённость. Относительное описание без достаточного spatial evidence остаётся относительным; «напротив» не выводится из одного ST_DWithin.
-
-PG/PostGIS отвечают за проверяемые temporal/spatial отношения, а не за историческую истинность исходной записи. ST_DWithin использует единицы SRID для geometry, метры для geography [T2]. Улицу нельзя считать единичной точкой для всех вопросов «рядом»; способ proximity/containment и геометрия нужной эпохи задаются явно.
-
-В небольшом отфильтрованном геокаталоге exact vector search может быть разумнее ANN. pgvector предупреждает о потере кандидатов при фильтрации после ANN scan [T3]. Сравнивать с exact oracle и явно учитывать incomplete recall; использовать bounded refill/iterative scan лишь при необходимости. Нельзя объявлять отсутствие геообъекта из-за пустого ANN результата.
-
-### 6.3. Read, сохранение и восстановление
-
-Read-only resolver не создаёт durable decisions, POI или source entities. Его telemetry остаётся асинхронной и ограниченной. Не добавлять журнал со всеми текстами/кандидатами на критический путь чтения.
-
-Принятое семантическое решение сохраняет вызывающая модель через существующий authorized mutation: точные исходные значения, выбранные existing IDs/состояния, evidence, версии и idempotency key. Короткие существенные альтернативы допустимы; полный повторяемый candidate dump не обязателен.
-
-Повтор принятой операции возвращает тот же эффект. **Replay восстанавливает сохранённое решение и IDs, не заново вызывает модель ни на CPU, ни на GPU.** Новая модель/каталог могут предложить пересмотр, но не молча переписать прежнее принятое решение. Exact saved outcome фиксирует исторически принятое решение, но не даёт вечного разрешения раскрывать его evidence. После отзыва доступа внутреннее восстановление сохраняет IDs/статус операции без повторного inference; текущая выдача фильтрует закрытые assertions, источники и производные сведения. Это одинаково для обычного чтения, idempotent retry, restore/replay и смены маршрута Mira → dot. Нечитаемый/withdrawn source и текущие права проверяются в existing authority; нет новой системы IAM, очереди или dispatcher.
-
-## 7. GEO-only перенос и доступность
-
-Существующий entity ID становится независимой identity, а его поля представляются через допустимые assertions. Это исправление существующего графа. Просто удалить rkb_graph_active(seed) и всегда возвращать старый canonical_label — небезопасное и некорректное решение.
-
-1. **Неперенос старой книги не равен отзыву географического знания.** Minimal GEO manifest сохраняет допустимые GEO assertions и legacy_unanchored anchors: edition/SHA/locator, owner/source/policy provenance, историческое основание. Старый корпус не появляется в новом search.
-2. **ID не выдаёт права на прежние поля.** Имена, адреса, связи, цитаты и геометрии выдаются по актуально допустимым основаниям. Старый seed label не используется как обходной public fallback.
-3. **Отзыв одного основания проверяется по зависимостям.** Другой mention не считается независимой поддержкой, если его identity assignment целиком получено из отозванного основания. Достаточно явных dependency refs и статуса unsupported/recheck; сложный новый inference engine не нужен.
-4. **Если допустимых оснований не осталось, ID сохраняется для ссылок и replay.** Обычный поиск скрывает неподдержанные поля; exact-ID ответ следует текущей политике unavailable/redaction и не раскрывает существование private объекта постороннему.
-5. **Fresh reanchor требует exact edition/source SHA и проверенного page/region mapping.** Совпадение названия/года/похожей цитаты недостаточно. Новое OCR или другое издание не получают чужой provenance.
-6. **Исправления применяются адресно.** Affected projections/cache/late responses соблюдают существующие freshness barriers. Не переэмбеддить весь книжный корпус из-за нового названия улицы.
-7. **Public geography и restricted scan — разные классы данных.** Rights/provenance хранятся на соответствующем материале. scan_proof_read не становится новым обязательным разрешением на общедоступное имя или допустимую геометрию. Ссылка на источник не раскрывает private original URL или pixels.
-8. **Чужой владелец недоступен.** Сохранённый exact owner ref не подменяется локальной копией registry; ответ показывает last-known owner revision/availability. Проверка geometry state не блокирует ordinary source activation.
-
-Все принятые GEO decisions, typed anchors, correction state и external owner refs входят в существующий snapshot/tail и ordered migration contract v4. В реальном cutover необходим readback этих сущностей, а не только совпадение counts. Нет нового backup-сервиса или второго semantic replay.
-
-## 8. Что сравнивать с нейромоделью
-
-Сравнение проводится на одном зафиксированном каталоге и наборе источников. Ни одной ветви нельзя дать новые алиасы или проверенные соответствия, которых нет у другой, и затем назвать это преимуществом архитектуры.
-
-| Вариант | Состав и цель | Когда полезен | Основной риск |
-| --- | --- | --- | --- |
-| P0: без новой модели | Exact/normalized aliases, адресный parser, pg_trgm при необходимости, PG/PostGIS, явные правила/отказ | Проверить достаточность данных и обычного поиска | Нестандартное описание и сложный контекст могут не извлекаться |
-| P1: P0 + существующий BGE | Контекстные карточки мест и независимые dense candidates | Найти описательные ссылки и межъязыковой контекст | Dense similarity путает похожие имена/эпохи; encode и индексы не бесплатны |
-| P2: компактный обучаемый ranker | LR/GBDT или небольшой MLP по явным признакам; те же candidates | Выучить полезные сочетания признаков при небольшом CPU overhead | Плохой gold set и утечка известных адресов создают ложный выигрыш |
-| P3: один специализированный neural component | Char matcher при OCR/письменностях, NER при missed mentions или малый contextual ranker при wrong choice | Исправить установленный bottleneck | Дополнительные веса, разметка, latency, resource contention |
-| Отдельный эксперимент, не baseline | Генеративное text → coordinates либо новый языковой pretraining | Только при новом самостоятельном доказательстве пользы | Координата не доказывает объект/эпоху/источник, плохо исправляется и обновляется |
-
-Это не обязательство написать все варианты. После P0 выбирается следующий эксперимент по классу ошибок. Если dominant problem — пропущенные mentions, не нужно сначала требовать успешного reranker. Если объект отсутствует в справочнике, reranker не восстановит историческое доказательство; при этом он всё ещё может помогать на другой части корпуса.
-
-**«С нуля» нужно уточнять.** Обучить небольшой символьный matcher/MLP на проверенных парах — вполне осмысленная гипотеза. Обучить языковую модель с нуля, чтобы она хранила все адресные факты в весах, — другое исследование, для которого сейчас не показаны достаточные данные, экономия или качество. Закрытый classifier по фиксированным place IDs обязан отдельно пройти unseen-entity/new-catalog/NIL тесты; обновление каталога не должно неизбежно требовать обучения заново.
-
-В текущем v4 вызывающая модель всё равно читает источник для фактов, историй и разногласий. Поэтому отдельный NER может лишь дублировать часть уже выполняемой работы. Экономию признавать по реально устранённым обращениям/токенам/ручной работе, не по стоимости всего импорта. Онлайн-запрос dot/Миры также не требует обязательного второго LLM-прохода.
-
-Mordecai 3 демонстрирует архитектуру NER → gazetteer candidates → neural ranking, но не доказывает качество для исторических домов нашей области [T4]. HIPE отдельно оценивает NER и entity linking на историческом материале [T5]. Публикация BGE-M3 обосновывает многоязычный retrieval-компонент, но её общие результаты нельзя переносить на конкретные перенумерации/улицы RKB [T6].
-
-## 9. Проверяемый план исследования
-
-### 9.1. R0 — малый диагностический набор
-
-Подготовить **120–200 реальных упоминаний**: Кёнигсберг/Калининград, Тильзит/Советск и небольшой сельский контрастный фрагмент. Включить прозу, адресные записи и обычные вопросы; хотя бы два исторических среза и современный способ именования. Числа — ограничение первого исследовательского объёма, не доказательство статистической достаточности.
-
-Взять выбранные страницы из проверенных библиотечных источников и материалы, разрешённые текущим source workflow. Для геометрии начать с нескольких пригодных листов и существующих картографических данных после их inventory. Не скачивать десятки гигабайт и не строить весь город, прежде чем проверить полезность первых связей.
-
-Для каждого case сохранить source family/edition/SHA/locator, исходный surface/span, язык/OCR, event/naming/source time, допустимые IDs/состояния/гранулярность, источники обоснования и альтернативы. Не заставлять разметчика назначать единственный ID там, где источник неоднозначен. Различать установленный NIL в каталоге, недостаток контекста, outside scope и неизвестную причину отсутствия.
-
-Сначала измерить:
-
-- есть ли правильный объект/состояние в каталоге вообще;
-- извлечено ли нужное упоминание;
-- попал ли правильный объект в candidates;
-- почему проиграл при выборе;
-- можно ли получить требуемую геометрическую точность;
-- сколько усилий требует исправление данных против изменения алгоритма.
-
-### 9.2. R1 — сравнение baseline с выбранным улучшением
-
-Если R0 даёт смысловой сигнал, расширить набор примерно до **400–600 проверенных mentions и порядка 100 пользовательских вопросов** из нескольких независимых семейств источников. Это стартовый план, не обещание, что этого достаточно для fine-tune. Достаточность определяется learning curve, разнообразием и uncertainty результатов.
-
-Для calibration/selection и окончательной оценки использовать разные части. Весь уже просмотренный R0 относится к development: его примеры и связанные source/address families по заранее зафиксированным group IDs исключаются из финального blind test. Это правило действует и при ручной настройке parser, словарей, правил и порогов P0 без обучения модели. «Расширить набор» не означает включить диагностические случаи в окончательную оценку. Финальные blind cases не просматриваются для настройки алгоритма или адресного пополнения aliases; общая версия доступного каталога и условия known/unseen catalog срезов фиксируются до оценки.
-
-Источник, его переиздание, перевод/перепечатка, соседние фрагменты одной записи и исходный/исправленный OCR не расходятся между train и test как независимые примеры.
-
-Проверить отдельные срезы:
-
-- unseen source family;
-- объект есть в каталоге, но отсутствовал в training;
-- известный объект с новым alias; отдельно alias уже доступный в каталоге;
-- новая эпоха и ретроспективное нынешнее имя;
-- другой город/сельские омонимы;
-- NIL/absent candidate, outside operational region, no-place и ambiguous;
-- OCR, сокращения, русские падежи и немецкие/литовские/польские варианты в фактически имеющемся материале.
-
-Естественную выборку с реальными пропорциями и намеренно трудные cases отчитывать раздельно. Проверить часть разметки независимо и все спорные случаи; участие историка повышает качество gold set, но не вводит обязательное согласование каждой обычной операции RKB. Модельные ответы без проверки источника не становятся gold labels.
-
-### 9.3. Метрики
-
-| Уровень | Что измерить |
-| --- | --- |
-| Покрытие каталога | Доля случаев, для которых правильные entity/state вообще представлены; отдельно unknown |
-| Извлечение | Precision/recall/F1 mentions; пропущенные и ложные упоминания |
-| Candidate generation | Recall@1/@5/@20 на фиксированном catalog snapshot; отдельно oracle mention spans |
-| Выбор | ID + state + granularity correctness, временные ошибки, candidate-conditional качество |
-| Сквозной результат | Правильно обнаруженное и связанное место в исходном тексте; считать непосредственно, не перемножать несогласованные aggregate metrics |
-| Неопределённость | Risk/coverage, false confident links, NIL/ambiguous/outside confusion; multi-answer gold |
-| Геометрия | Соответствие допустимому контуру/сегменту и эпохе, ошибка с учётом source accuracy; отдельно ложное уточнение до дома |
-| Польза | Снижение ручных исправлений/модельных обращений, время принятого качественного результата |
-| Производительность | E2E p50/p95/p99, timeout/error/pending rate, throughput, CPU/RSS/working disk/index/model sizes |
-
-Попадание «в пределах города» не засчитывается как точный дом. Малый набор даже без ошибок не доказывает почти безошибочную массовую работу; доверительные интервалы учитывать по группам источников, а не считать повторяющиеся адреса независимыми.
-
-### 9.4. Фактическое оборудование и общий budget
-
-Снять CPU/vCPU, RAM, actual Kaggle limits, версии PG/extensions/normalizer/model/tokenizer, threads, batch size, размеры каталога/индексов. Не предполагать одинаковое железо после нового notebook run.
-
-Измерить warm/cold и cache hit/miss отдельно; 1 и 4 одновременных клиента, затем та же нагрузка с ограниченным импортом. Включить очередь, сеть, serialization, SQL/candidate search, encode/ranking и финальную проверку freshness. Зафиксировать влияние на остальные RKB операции, а не только microbenchmark одной модели.
-
-**Существующие цели v4 сохраняются:** warm backend p95 ≤1000 ms, public MCP p95 ≤1500 ms, hard evidence interaction deadline 2000 ms; источник — §14.1 основного handoff. Это целевые gates, не результаты нашего пилота. Они не означают отдельные 2000 ms на каждый новый географический шаг.
-
-P0 исполняется рядом с PG в Kaggle. P1 переиспользует существующий resident BGE и admission; веса не дублируются по числу workers. P3 добавляет модель только в Kaggle, если помещается в реальный общий CPU/RAM budget. Не возвращать E5, Supabase retrieval или локальную BGE на DevCoveer.
-
-Отдельный Kaggle worker либо GPU для импорта рассматривается после учёта startup, transfer, quotas, session lifetime, checkpoint, retry и сохранения результата. Быстрый inference не равен быстрому импорту. Training может использовать GPU при CPU serving; это разные решения. ONNX/INT8 для нового опционального компонента требуют проверки numerical/quality compatibility, а не обещания ускорения по названию формата. Это не разрешение менять защищённый BGE baseline: FP32, 1024 dimensions, tokenizer и 512-token контракт сохраняются. Их изменение возможно только через действующий protected change gate v4 и этим исследованием не требуется.
-
-### 9.5. Решение go/no-go и остановка исследования
-
-До финального held-out прогона зафиксировать одну основную метрику и минимально полезный эффект для конкретного эксперимента. Прирост coverage при той же precision, снижение ручной работы и ускорение при сопоставимом качестве — разные допустимые основания. Пороги консультантов «5 п. п.», «10 п. п.» или «2×» не переносить как новые protected требования без обоснования.
-
-Компонент принимается, если полезный эффект воспроизводится на held-out источниках, сохраняются времена/гранулярность/NIL и действующие resource/latency/recovery требования. Отрицательный или слишком неопределённый результат закрывает этот вариант на текущем корпусе; действующий PG baseline остаётся рабочим. Следующий раунд запускается по новым данным, классам ошибок или измеренному bottleneck, а не ради бесконечного выбора моделей.
-
-Если проблема в недостающих данных — адресно пополнить их и снова проверить P0. Если модель помогает только bulk import — оставить её опциональным импортным этапом. Не требовать качества именно CPU-исполнения как предварительного разрешения на GPU: сравниваются полные системы и фактические ресурсы. Принятые решения воспроизводятся из сохранённых результатов.
-
-## 10. Проверенные источники для пилота
-
-Проверено 2026-10-20 через страницы операторов/библиотек. «Доступен скан», «есть каталог», «есть транскрипция» и «есть проверенная геометрия» — разные результаты. Массовые загрузки, проверка OCR всех страниц и приёмка геопривязки в этом исследовании не выполнялись.
-
-| ID | Источник | Что подтверждено | Использование и ограничения |
-| --- | --- | --- | --- |
-| S1 | [MOB: Königsberg 1935][S1] | Реальное цифровое издание с постраничным просмотром, PURL/URN, Open Access и Public Domain Mark 1.0 | Основной поздний адресный источник. Полнота OCR, машинная выгрузка и готовые координаты домов не подтверждены. |
-| S2 | [MOB: Tilsit 1884][S2a] и [1912][S2] | В 1884 есть указатель улиц и 12 городских округов. В 1912 отсутствуют стр. 97–112 и 330–331; отмечены ошибки пагинации. PDM 1.0 в карточках | Второй город и ранние эпохи. Печатная страница и номер изображения — разные поля; missing pages — явный coverage gap. |
-| S3 | [Internet Archive: Address books for Königsberg][S3] | Составной объект существует; Item Size 29.3G, 55 PDF и наборы OCR/других представлений; есть сведения о Tesseract/Fraktur | Зеркало/агрегатор, полезный для отдельных выпусков. 29.3G не размер нормализованной БД и не мера полного покрытия. Проверять происхождение выбранного скана. |
-| S4 | [Ahnenspuren, Königsberg][S4] | Оператор заявляет полную обработку 1935 и 100 тысяч адресных записей; публичный вход — именной указатель. [Карта центра 1935 ещё не завершена][S4map] | Не считать 100 тысяч уникальных домов/точек. [Условия][S4terms] ограничивают использование и перепубликацию; готовый открытый bulk dataset не подтверждён. Не включать такую выгрузку как обеспеченный источник пилота. |
-| S5 | [План Königsberg 1905, Commons][S5] и [Wikimaps Warper][S5warp] | Растр 4320 × 3418, PDM в карточке, указатель улиц; в Warper опубликованы 81 GCP и export-ссылки | Доступная проверка street-level workflow. Это репродукция на агрегаторе с кратким происхождением «Schulatlas»; точное издание, датировка, error и домовая детализация требуют проверки. Не переносить состояние 1905 на 1935 без evidence. |
-| S6 | [Rumsey: Königsberg, лист 50][S6] | Масштаб 1:100 000; год 1893 в каталоге оценочный по штампу, оператор предупреждает о более ранних листах | Региональный контекст поселений и сети дорог. Не адресная точность дома. |
-| S7 | [Meyers: Tilsit][S7] и [описание GOV у CompGen][S7gov] | У Meyers видны source entry и разные административные/церковные связи. CompGen описывает GOV/LOD и разные условия выпусков | Внешние кандидаты и идентификаторы. Полнота области, актуальный bulk/API и право использования конкретного выпуска отдельно проверяются; GOV напрямую был недоступен в этом просмотре. |
-| S8 | [Herder: границы общин 1939][S8] и [GStA: Katasterkarten Ostpreußen][S8gsta] | Подтверждены каталоги исторических карт/границ и кадастрового фонда | План адресной проверки сложных случаев. Каталожная запись не означает доступный raster или готовый polygon. |
-| S9 | [Geofabrik: Kaliningrad][S9] | Региональные OSM выгрузки доступны; около 27.9 MB PBF на момент просмотра, также SHP/GeoPackage | Современная основа, не довоенная геометрия и не официальный адресный реестр. OSM используется с [его условиями/атрибуцией][S9license]; импортированная БД больше PBF. |
-
-ULB Düsseldorf Königsberg 1901 найден в каталоге/индексированном оглавлении, но прямое получение в этом проходе не подтверждено; не делать его обязательным условием старта. Современный ГАР/ФИАС можно подключать как источник официальных современных адресных идентификаторов после проверки конкретной выгрузки/условий, а не считать историческим геокодером.
-
-**Коррекции исходного приложенного исследования:**
-
-- Не найдено основания считать сохранение немецкой нумерации общим правилом. Одинаковый номер — признак для проверки, не доказательство преемственности дома.
-- В источниках «адресная запись о человеке/организации», «уникальный адрес», «домовладение» и «геокодированное здание» имеют разный смысл и разные counts.
-- Наличие OCR и десятков карт не гарантирует качественный training set. Нужны точные страницы, проверенные связи, неизвестные/неоднозначные примеры.
-- Права на исторический скан, чужую современную транскрипцию, векторизацию и современную базу учитываются отдельно. Это проверка пригодности выбранного источника, не новый общий approval-процесс для всех GEO записей.
-
-## 11. Приёмочные случаи
-
-Все перечисленные проверки для нового resolver **NOT RUN**. Они должны быть реализованы на границе соответствующего среза; бумажный статус и fixture не доказывают live acceptance.
-
-| ID | Сценарий | Ожидаемый результат |
+| Case | Исходное свидетельство | Минимальная проверяемая семантика |
 | --- | --- | --- |
-| GEO-A01 | Existing UUID перенесён без seed-книги | Допустимое GEO представление читается с legacy anchor; старый корпус не возвращён и fake accepted document не создан. |
-| GEO-A02 | Единственное допустимое основание отозвано | ID/replay сохранены; неподдержанные label/alias/geometry исчезают из обычной выдачи и stale cache. |
-| GEO-A03 | A отозван; независимый B поддерживает только одно имя | Видимы только поддержанные поля. Зависимый от A link B не считается независимым доказательством. |
-| GEO-A04 | Та же книга, иной scan/SHA; затем exact original с mapping | Первое не reanchor автоматически. Второе сохраняет ID и историю; повтор идемпотентен. |
-| GEO-T01 | Современное имя в рассказе о 1910 годе | Alias не отсекается event_time; historical state/geometry проверяются отдельно. |
-| GEO-T02 | Naming time unknown, две допустимые эпохи/омонима | Не подставляется publication/event time; альтернативы и temporal uncertainty видимы. |
-| GEO-T03 | «Как называлась в 1910» vs «что было на нынешней X в 1910» | Разные корректные временные операции; современная трасса не становится исторической. |
-| GEO-C01 | Верный temporal/live candidate расположен за первым LIMIT | Он доступен через корректный filtered/cursor query; has_more без продолжения не считается исправлением. |
-| GEO-C02 | Длинный текст/много упоминаний и исчерпание общего deadline | Bounded вход, отдельные результаты и explicit partial/continuation; нет silent truncation или нового бюджета на каждое место. |
-| GEO-I01 | Улица разделилась, дом заменён, участок сохранился | Датированные partial/split/replaced_at_site отношения; нет автоматического same_as по имени/координате. |
-| GEO-I02 | Адрес 80 отсутствует, похожий 8 существует; OCR неясен | Нет уверенного исправления номера; street-level либо unresolved с исходным surface. |
-| GEO-I03 | Два одноимённых поселения и неизвестный район | Ambiguous или более общий подтверждённый уровень, без произвольного local match. |
-| GEO-I04 | Исправление ошибочного merge после накопления событий | Исходные ID/решения сохранены; новые identities и supersedes не переносят все links автоматически. Зависимые bindings адресно проверены либо needs_recheck. |
-| GEO-G01 | Есть только улица/район; нет подтверждённого дома/полигона | Coarse result/null geometry. Centroid не выдан как дом; relative reference сохраняется. |
-| GEO-G02 | Исторический объект пересекает нынешнюю границу области | Operational scope и temporal membership разделены; исходный объект не обрезан молча. |
-| GEO-S01 | Tilsit 1912: запрос зависит от отсутствующей страницы | Coverage gap; отсутствие адреса не превращено в отрицательное историческое утверждение. |
-| GEO-S02 | Основание — только карта или адресный реестр | Typed anchor проходит без фиктивного chunk; source-specific locator и revision сохраняются. |
-| GEO-L01 | В одном chunk три места с разными ролями | Assertions/events/stories/cases получают только свои обоснованные links. Existing navigation остаётся навигацией. |
-| GEO-L02 | Две конфликтующие локализации одного события | Обе source-bound версии доступны; нет усреднения точки или автоматического победителя по rank. |
-| GEO-L03 | Найден единственный alias без принятого source binding | Read match не объявлен принятым историческим фактом; новое binding требует явного semantic acceptance. |
-| GEO-R01 | Read повторён; затем mutation повторён с тем же key | Read не создаёт durable эффекты; mutation возвращает тот же принятый ID/outcome без повторного model choice. |
-| GEO-R02 | Поздняя карта/alias revision и отзыв до delayed delivery | Адресное обновление, freshness/rights на выдаче; не весь OCR/BGE corpus заново. Несвязанный новый alias не инвалидирует прежние decisions. |
-| GEO-R03 | Owner service/optional model/GPU недоступны | Полезный bounded PG ответ и честные missing capability/geometry states; локальная BGE/E5 не запускается. |
-| GEO-R04 | Доступ отозван после acceptance; replay и маршрут Mira → dot | Внутренний outcome/ID сохранён без inference; текущий ответ не раскрывает закрытые evidence/assertions/производные поля и не расширяет права через replay. |
-| GEO-P01 | Неразрешённый private source участвует в candidates | Нет утечки через labels, coordinates, evidence, scores/counts/cache или source URLs. |
-| GEO-P02 | Публичное геоимя рядом с restricted scan proof | Имя не требует scan_proof_read; скан остаётся под действующими отдельными правами. |
-| GEO-E01 | Уже просмотренный R0, та же адресная семья/переиздание/OCR варианты | R0 и связанные source/address families исключены из final blind, включая ручную настройку P0. Зависимые примеры не разделены как независимые; blind set не меняется после подбора правил/порогов. |
-| GEO-E02 | Shared CPU + 4 клиента + import | Сняты E2E latency/resources и деградация основных RKB задач; сохранены v4 gates. |
+| **H1. Königstraße → улица Фрунзе** | [Муниципальная топонимия](https://www.klgd.ru/city/history/gubin/toponim.php), таблица района 1: `Штрассе «Дер СА» (бывшая Кёнигштрассе) → Фрунзе`. | Сопоставление **исторической и современной улицы** как source claim; дом/геометрия/точная длина совпадающего segment не подтверждены |
+| **H2. Paradeplatz → Университетская** | Та же официально опубликованная историческая таблица, в ней есть промежуточные названия. | Тип площади, датированные names, не подменять физическую историческую геометрию |
+| **H3. Steindamm → Житомирская и часть Ленинского проспекта** | Та же таблица; современная колонка содержит **два соответствия**, не одно. | Partial/split; не делать один `same_as` всей улицы |
+| **H4. Перенумерация Кёнигштрассе/Фрунзе** | Оригинальный [MOB Königsberg 1935](https://digital.martin-opitz-bibliothek.de/resolver/0010201-83-1935) и [картографическое сравнение 1912/1935 Ahnenspuren](https://www.ahnen-spuren.de/ostpreussen/kirchspiele/koenigsberg-stadt/stadtplaene/1935) с номерами на перекрёстках. | **Реальный проверяемый вопрос, но ни одна конкретная пара old→new № не подтверждена просмотром двух первичных страниц в этом раунде**. До проверки — `house_number_unknown` или street-only; одинаковый номер не подтверждает тот же дом |
+| **H5. «В 1910 на нынешней улице Фрунзе»** | H1 — реальное название; предложение — **контролируемый тестовый запрос, не цитата из книги**. | Найти современную reference, затем отдельно источник для состояния 1910; modern name не отсекается по event year |
+| **H6. Место издания ≠ событие** | У MOB 1935 каталогизирован `Erscheinungsort=Königsberg`. Для фактического события в другом городе требуется точно выбранный текст/страница, **пока НЕ проверено**. | Не создавать `occurred_at(Königsberg)` из publication metadata книги |
+| **H7. Пробелы источника** | [MOB Tilsit 1912](https://digital.martin-opitz-bibliothek.de/resolver/0028679-29-1912): исторический digital record, gaps отмечены в исследовании PR158. | Отсутствующий лист/частичный OCR → `coverage_gap`, а не утверждение, что места не было |
 
-Тесты ordinary reimport, уже имеющиеся в репозитории, продолжают действовать. Новые случаи дополняют именно незащищённые границы, а не требуют переписать весь тестовый набор.
+Честность evidence: **H1–H3** source-backed *топонимические* соответствия; **H4–H7** проверяемые реальные архивы и заранее объявленные позитивные/негативные сценарии, но house-level identity, точная геометрия, время события и historical source gold ещё **NOT RUN**. Никакая synthetic fixture или OCR-сниппет не признаётся историческим доказательством без сверки original page + owner геометрии.
 
-## 12. Порядок реализации и следующий запуск
+## 6. Раздельная приёмка, без раздувания P0
 
-| Этап | Результат | Критерий окончания |
+| Этап | Проверить | Что НЕ блокирует |
 | --- | --- | --- |
-| A. Совместимость GEO схемы | Stable existing identities, typed anchors/time/address semantics, content roles, projection eligibility | До production GEO identity manifest устранены seed dependence и невозможность представить нужные данные; focused cases проходят в изоляции. |
-| B. Минимальный resolver | P0 внутри существующих PG/read groups и общий DTO | Map-free/ambiguous/coarse/temporal/source cases читаются через actual client adapter; нет нового owner/store/LLM-pass. |
-| C. Данные R0 | Малый source-backed diagnostic set и coverage report | Известно, что теряется: данные, extraction, candidate retrieval, ranking или geometry. |
-| D. Один обоснованный эксперимент | P1/P2/P3 по выявленному bottleneck | Честный held-out comparison, ресурсный trace, решение go/no-go с причинами. |
-| E. Продуктовая связность | Chunk/fact/event/story/case/illustration → place/state → permitted evidence/map и обратный поиск | Реальный readback через MCP/Миру/dot в применимых сценариях; integration и recovery v4 не ослаблены. |
+| **P0 Гаузе** | Принятая первая страница этой же книги → обычный authenticated MCP source search/fetch, точный source/page/receipt, нет whole-book seal, UNKNOWN не выдан за success. Live доказательство отдельно | GEO, POI, карта, house numbers, ML, Story/Case enrichment |
+| **GEO-A post-P0** | H1–H6 на проверенных исторических/современных refs, 0/1/N кандидатов, улица-only, null geometry, late linking из source text без re-read; current ACL/withdrawal | Массовый геокодер каждого дома, миграция old books |
+| **GEO-B post-P0** | Street Story existing POI knowledge endpoint → actor-scoped target PG source fragments, story bodies, events, authorized Case; 503 причины устранены при unchanged service grant | Новый HTTP endpoint, новый владелец POI, открытие private Case |
+| **GEO-C post-P0** | Independent owner Cartography geometry, typed precision/epoch/split/renumber, traceable evidence и ambiguous cases | Псевдоточность одного растра или скана |
+| **P2/P3 условно** | Held-out source/address/epoch family failures и observed latency/CPU/quality vs baseline exact aliases/optional `pg_trgm`/BGE; тест нового ranking/model только по доказанной категории miss | Автоматическая fine-tune/специализированная нейромодель |
 
-A и B развивают необходимый GEO слой v4. Нейромодель не является prerequisite для завершения ядра RKB. Массовые карты/весь домовой архив не являются prerequisite для первого полезного resolver.
+**Protected** v4 readiness gates не ослабляются; Stage-P0 принимается отдельно от полной book-quality/restore/scale readiness. В этой docs работе нет PG schema/benchmark, source/SQL changes, P0 deployment, Kaggle/provider call, new services, backfill/reimport или historical E2E.
 
-Начинать кодовую работу по актуальному handoff и обязательному kaggle-warm-debugging skill, а не только по этому документу. Новые физические таблицы и миграции агент выбирает после diff актуальной схемы, сохраняя existing IDs/API и одну authority. Фиксировать фактически прочитанные версии и существующие parallel changes. Не изменять ветку PR157 чужими одновременными правками без координации.
+## 7. Решения для review и дальнейшей постановки
 
-### Готовое задание следующему исполнителю
+1. **RKB-Продукт + Opus:** подтвердить единственную owner model / input-output / street-only/uncertainty, разделение P0/GEO/ML, актуализацию `7/`12/`13 ТЗ. Review не означает, что resolver уже installed.
+2. После review — отдельный bounded implementation по (A) existing PG GEO/source alias and evidence join, (B) reverse read historic/modern/POI → accepted source fragments/stories/events/cases, (C) старый authenticated Street Story bridge → target PG вместо legacy `corpus`, (D) экспертиза нескольких real historic links owner Cartography/POI Street Story; не новый общий проект.
+3. **Шкипер** — единственный runtime/SQL/provider/deploy owner и сейчас занят P0. Ему не назначать работу по адресам до отдельного решения; P0 page→search не ждёт этой задачи. Изменения SQL/PG/схемы, внешних API, credential и provider в текущем PR отсутствуют.
 
-Продолжить RKB v4 с этим дополнением. Сначала сверить текущие main/PR heads и реализацию source graph/GEO. Устранить зависимость читаемости place identity от seed-книги, сохранив current assertion eligibility и права. Представить время события, время имени, адресное назначение, geometry provenance и typed source anchors. Переиспользовать occurred_at и существующие graph/geo queues; дополнить links для всех целевых видов материала. Реализовать минимальный P0 и проверку GEO-A/T/C/I/G/S/L/R/P cases на необходимом срезе. Затем собрать реальный R0, представить классификацию ошибок и выбрать только один полезный следующий эксперимент. Не заявлять модель, скорость, полное геопокрытие или production готовность без соответствующего readback/измерения. Сдать изменения, источники, benchmark manifest/results и короткий итог выбора в той же постановке.
-
-Это задание описывает следующий этап; в текущем исследовательском раунде реализация, обучение и массовый импорт не запускались.
-
-## 13. Консилиум: что изменилось после критики
-
-[Ответ dot с независимым аудитом и 10 вопросами](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792496654616289?thread_ts=1792493476.651079). Его участие подтверждено владельцем в исходном треде.
-
-Две консультации завершены через DevCoveer в provided_only режиме; actualModel в обоих readback — **claude-opus-5-5**. Консультант не читал runtime и не выполнял benchmark: ему были переданы исходный контракт и результаты source audit. Второй раунд отдельно проверял возражения к первому. Полные служебные трассы и внутренние пути не включены в публичный проект.
-
-| Вопрос | Синтез |
-| --- | --- |
-| Naming time против event time | Принято из критики Opus; dot уточнил, что unknown нельзя превращать в другой жёсткий фильтр. |
-| Seedless GEO identity | Root source audit и независимый dot audit подтвердили риск. Добавлено раздельное существование ID и право на поля/основания. |
-| «Переимпорт сломан» | Уточнено по dot: ordinary same-seed reimport уже защищён тестом; gap относится к GEO-only bootstrap. |
-| Связь истории с местом | occurred_at уже есть. Расширяются недостающие semantic links, а не изобретается весь relation graph заново. |
-| «Модель с нуля всегда бессмысленна» | Отклонено. Малый matcher/MLP допустим, новый языковой pretraining пока не обоснован. |
-| Missing gazetteer автоматически запрещает ML | Отклонено как blanket rule. Ошибки данных и ранжирования оцениваются отдельно; модель может помогать на покрытом подмножестве. |
-| GPU можно обсуждать только после CPU-quality победы | Отклонено. Важны общий эффект и lifecycle; CPU остаётся предпочтением для serving, не искусственным барьером исследования. |
-| Replay через повтор CPU inference | Отклонено. Принятые решения replay из exact saved outcome по v4. |
-| Saved outcome после отзыва доступа | По [дополнительной критике dot](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792496937242079?thread_ts=1792493476.651079) добавлен явный acceptance: replay сохраняет решение, а выдача соблюдает текущую eligibility, в том числе Mira → dot. |
-| Новый scan_proof gate для географии | Отклонено. Источник/геометрия/скан имеют отдельные существующие policy semantics. |
-| Заявление о высокой точности по 120–200 примерам | Не принимается. Это диагностика; статистическая оценка и source splits — следующий этап. |
-| Утечка диагностического R0 в final blind | По [заключительному review dot](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1792498465949539?thread_ts=1792493476.651079) явно исключены R0 и связанные source/address families, в том числе после ручной настройки P0. Заголовок R1 также уточнён: следующий компонент выбирается по bottleneck. |
-
-### Оставшиеся исследовательские вопросы
-
-1. Каково фактическое покрытие имён, адресных назначений и геометрии по эпохам в уже сохранённом GEO? Inventory ещё не выполнен.
-2. Какая доля ошибок P0 будет связана с недостатком данных, extraction, OCR-вариантами и контекстным выбором? R0 ещё не выполнен.
-3. Даст ли существующий BGE дополнительный recall на карточках мест при приемлемой цене CPU? Не измерено.
-4. Нужна ли малая char/context модель, или правила/данные/компактный ранкер закрывают практически значимый остаток? Не измерено.
-5. Какие адресные книги и крупномасштабные планы дают проверяемые house-level correspondences? Первичные источники найдены, постраничная разметка/геопривязка впереди.
-6. Какова фактическая цена ручной проверки и число проблемных запросов? Это определит минимально полезный эффект следующего эксперимента.
-
-Эти вопросы не мешают зафиксировать контракт и устранить структурные риски миграции. Они не объявляются подтверждённым основанием для немедленного обучения новой модели.
-
-## 14. Ссылки на технические основания
-
-- [T1: PostgreSQL 17 pg_trgm][T1] — indexed similarity, различие GiST/GIN nearest matching.
-- [T2: PostGIS ST_DWithin][T2] — пространственный predicate и единицы расстояния.
-- [T3: pgvector, exact/approximate search и filtering][T3] — ANN может терять результаты при фильтрации.
-- [T4: Mordecai 3][T4] — NER, gazetteer candidates, contextual neural ranking и null candidate.
-- [T5: HIPE-2022 tasks][T5] — разделение NER и entity linking для исторического материала.
-- [T6: BGE-M3][T6] — многоязычные retrieval representations; не измерение RKB адресации.
-- [T7: PostgreSQL 17 range types][T7] — механизм интервалов; историческая неопределённость остаётся отдельной семантикой.
-- [T8: ONNX Runtime quantization][T8] — оптимизация требует проверки accuracy и CPU/runtime characteristics.
-
-[S1]: https://digital.martin-opitz-bibliothek.de/resolver/0010201-83-1935
-[S2a]: https://digital.martin-opitz-bibliothek.de/resolver/0028679-1884
-[S2]: https://digital.martin-opitz-bibliothek.de/resolver/0028679-29-1912
-[S3]: https://archive.org/details/addressbookskonigsberg
-[S4]: https://www.ahnen-spuren.de/ostpreussen/adressbucher/koenigsberg-in-preussen
-[S4map]: https://www.ahnen-spuren.de/ostpreussen/kirchspiele/koenigsberg-stadt/stadtplaene/1935
-[S4terms]: https://www.ahnen-spuren.de/general/nutzungsbedingungen
-[S5]: https://commons.wikimedia.org/wiki/File:K%C3%B6nigsberg_Karte_1905.jpg
-[S5warp]: https://warper.wmflabs.org/maps/4374
-[S6]: https://www.davidrumsey.com/luna/servlet/detail/RUMSEY~8~1~211552~5004234
-[S7]: https://www.meyersgaz.org/place/20954076
-[S7gov]: https://www.compgen.de/2016/08/newsletter-2016-08/
-[S8]: https://dbs.herder-institut.de/karten/list/id/357936515
-[S8gsta]: https://archivdatenbank.gsta.spk-berlin.de/midosasearch-gsta/MidosaSEARCH/xx_ha_kko/xml/inhalt/titelblatt.htm
-[S9]: https://download.geofabrik.de/russia/kaliningrad.html
-[S9license]: https://www.openstreetmap.org/copyright
-[T1]: https://www.postgresql.org/docs/17/pgtrgm.html
-[T2]: https://postgis.net/docs/ST_DWithin.html
-[T3]: https://github.com/pgvector/pgvector
-[T4]: https://arxiv.org/html/2303.13675v1
-[T5]: https://hipe-eval.github.io/HIPE-2022/tasks
-[T6]: https://aclanthology.org/2024.findings-acl.137/
-[T7]: https://www.postgresql.org/docs/17/rangetypes.html
-[T8]: https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html
+**Evidence status:** точные исходники/договоры и исторические каталоги **прочитаны**; реализация resolver, проверка текущего реального Street Story 503, поиск по современному номеру, Gause live, trained model и качественные метрики — **NOT RUN**. Этот текст — единое решение, не акт приёмки функции.

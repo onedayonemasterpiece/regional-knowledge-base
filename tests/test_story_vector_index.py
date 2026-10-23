@@ -77,6 +77,24 @@ def test_partial_index_never_claims_fully_ready(tmp_path):
     assert [hit["story_id"] for hit in result["results"]] == [target]
 
 
+def test_hybrid_fuses_independent_lexical_and_dense_candidates_with_acl(tmp_path):
+    registry, owner, guest = setup(tmp_path)
+    lexical = seed(registry, owner, "Рыбацкая пристань", "hybrid-lexical")
+    dense = seed(registry, owner, "Деревянные мостки", "hybrid-dense")
+    private = seed(registry, guest, "Рыбацкая пристань", "hybrid-private")
+    assert install(registry.corpus, item(registry, dense), vector(2))
+    assert install(registry.corpus, item(registry, private), vector(2))
+    # Lexical has no installed vector; dense has no lexical term. Both must
+    # survive independent retrieval and fusion, with no guest resource leakage.
+    result = registry.search(owner, "пристань", mode="hybrid", query_vector=vector(2), limit=3)
+    assert {hit["story_id"] for hit in result["results"]} == {lexical, dense}
+    assert result["retrieval_mode"] == "story_bge_lexical_partial"
+    assert result["executed_branches"] == ["lexical", "dense"]
+    assert result["incomplete"] is True
+    dense_only = registry.search(owner, "пристань", mode="semantic", query_vector=vector(2), limit=3)
+    assert [hit["story_id"] for hit in dense_only["results"]] == [dense]
+
+
 def test_revision_guard_reindex_and_old_vectors_never_surface(tmp_path):
     registry, owner, _ = setup(tmp_path)
     target = seed(registry, owner, "Дубовые мосты", "rev")

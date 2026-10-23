@@ -1,0 +1,65 @@
+"""Actual queue/admission reconnect, without Kaggle/model/database effects."""
+import asyncio
+import json
+from dataclasses import replace
+import pytest
+from regional_knowledge.kaggle_recovery_dispatch import RecoveryPhaseDispatch
+from regional_knowledge.kaggle_restore_startup import PreReadyRecoveryBinding
+from test_bge_admission import state,auth,people
+from test_kaggle_recovery_phases import database,response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restart_owner',[False,True])
+async def test_claimed_unsent_maintenance_survives_generation_rebind(state,restart_owner):
+    s=state;db=database()
+    old=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,db.database_generation,db.writer_generation)
+    current=[old]
+    bridge=RecoveryPhaseDispatch(s.q,database=db,identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b==current[0])
+    tasks=[]
+    try:
+        tasks.append(asyncio.create_task(bridge.request(old,'verify',{'reference':'retained'},operation_key='original')))
+        for _ in range(100):
+            original=await s.a.next_channel_work(s.run,s.token,s.generation)
+            if original is not None:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('original maintenance absent')
+        original_id=original.document_payload['id'];original_claim=original.document_payload['claim']
+        if restart_owner:
+            await bridge.aclose()
+            bridge=RecoveryPhaseDispatch(s.q,database=db,identity=(s.run,s.nonce,'incarnation-a'),
+                binding_current=lambda b:b==current[0])
+        # Disconnect after durable claim, before its frame is physically sent.
+        s.generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+        current[0]=replace(old,connection_generation=s.generation)
+        s.q.heartbeat(s.run,s.token,ready=True,connection_generation=s.generation)
+        await s.a.resource_state(s.run,s.token,s.generation,runtime_incarnation='incarnation-a',state='idle')
+        tasks.append(asyncio.create_task(bridge.request(current[0],'verify',{'reference':'next'},operation_key='following')))
+        await asyncio.sleep(0)
+        with s.q.connect(write=False) as conn:
+            retained=dict(conn.execute('select * from jobs where id=?',(original_id,)).fetchone())
+            run=dict(conn.execute('select * from runs where id=?',(s.run,)).fetchone())
+        for field in ('run_id','launch_nonce','runtime_incarnation','database_generation','writer_generation','request_sha256'):
+            identity=json.loads(retained['identity']);identity[field]='different'
+            assert not bridge.eligible(dict(retained,identity=json.dumps(identity)),run,s.generation)
+        for _ in range(100):
+            resumed=await s.a.next_channel_work(s.run,s.token,s.generation)
+            if resumed is not None:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('claimed maintenance became permanently ineligible after reconnect')
+        assert resumed.document_payload['id']==original_id and resumed.document_payload['claim']==original_claim
+        assert resumed.dispatch_generation==s.generation
+        s.a.mark_work_sent(resumed)
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+            **dict(resumed.document_payload),compute_claim=resumed.compute_claim,dispatch_generation=resumed.dispatch_generation)
+        await bridge.receive(response(s,frame,{'verified':True}),run_id=s.run,token=s.token,generation=s.generation)
+        with pytest.raises(PermissionError,match='binding expired'):await tasks[0]
+        with s.q.connect(write=False) as conn:
+            job=conn.execute('select state,attempt,claim from jobs where id=?',(original_id,)).fetchone()
+            assert job['state']=='done' and job['attempt']==1 and job['claim']==original_claim
+    finally:
+        for task in tasks:
+            if not task.done():task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        await bridge.aclose()

@@ -1,7 +1,7 @@
 """Private Kaggle CPU worker template. Controller substitutes only RUN_CONFIG.
 
-This worker cannot execute arbitrary jobs or access the corpus/DB/object store.
-Query/document text is delivered only through authenticated, bounded jobs.
+Legacy execution encodes bounded jobs only. Explicit prepared target factories
+can attach the owned Kaggle PG pool after control; no arbitrary code is accepted.
 """
 import os
 os.environ['CUDA_VISIBLE_DEVICES']=''
@@ -18,14 +18,89 @@ from pathlib import Path
 RUN_CONFIG = {}  # Replaced in the private generated notebook, never committed.
 REVISION = '5617a9f61b028005a4858fdac845db406aefb181'
 SPACE = 'bge-m3:5617a9f:t211-tr5161:cls-l2-512:q1-d1:v1'
+_MODEL_LOAD_COUNT = 0
 
-def main():
+def load_encoder():
+    prepared = RUN_CONFIG.get('prepared_model')
+    artifacts = None
+    if RUN_CONFIG.get('stage0') is not None:
+        from regional_knowledge.kaggle_stage0 import prepare_stage0
+        prepare_stage0(prepared,RUN_CONFIG['stage0'],run_id=RUN_CONFIG['run_id'])
+    if prepared is not None:
+        from regional_knowledge.kaggle_bootstrap import PreparedArtifact, verify_artifacts, ResidentEncoder
+        from regional_knowledge.kaggle_readiness import ArtifactRequirement
+        if not isinstance(prepared, dict) or set(prepared) != {'root', 'entries', 'max_total_bytes'}:
+            raise ValueError('explicit prepared model inventory required')
+        entries = tuple(PreparedArtifact(ArtifactRequirement(e['name'], e['size'], e['sha256']), e['role'])
+                        for e in prepared['entries'])
+        artifacts = verify_artifacts(prepared['root'], entries, max_total_bytes=prepared['max_total_bytes'])
+    if artifacts is not None:
+        from regional_knowledge.kaggle_environment import bootstrap_stage
+        with bootstrap_stage(RUN_CONFIG['run_id'],'model_tokenizer_load'):
+            return _load_model(artifacts)
+    return _load_model(artifacts)
+
+
+def _load_model(artifacts):
+    global _MODEL_LOAD_COUNT
+    import torch
+    import importlib.metadata
+    versions={name:importlib.metadata.version(name) for name in ('torch','transformers','tokenizers','huggingface-hub')}
+    if versions!={'torch':'2.11.0+cpu','transformers':'5.16.1','tokenizers':'0.23.1','huggingface-hub':'1.29.0'}:
+        raise RuntimeError('pinned BGE CPU runtime mismatch')
+    from transformers import AutoModel,AutoTokenizer
+    torch.set_num_threads(4);torch.set_num_interop_threads(1)
+    if artifacts is None:
+        tokenizer=AutoTokenizer.from_pretrained('BAAI/bge-m3',revision=REVISION)
+        model=AutoModel.from_pretrained('BAAI/bge-m3',revision=REVISION,torch_dtype=torch.float32).to('cpu').eval()
+    else:
+        model_path = artifacts.model_directory
+        tokenizer=AutoTokenizer.from_pretrained(str(model_path),use_fast=True,
+            tokenizer_file=str(model_path/'tokenizer.json'),local_files_only=True,trust_remote_code=False)
+        model=AutoModel.from_pretrained(str(model_path),torch_dtype=torch.float32,
+            local_files_only=True,trust_remote_code=False).to('cpu').eval()
+    _MODEL_LOAD_COUNT += 1
+    if model.config.hidden_size!=1024:raise RuntimeError('BGE dimension mismatch')
+    def encode(text):
+        # Same no-prefix CLS/L2 FP32 batch1 contract for query and document.
+        tokens=tokenizer([text],padding=True,truncation=False,return_tensors='pt')
+        if tokens['input_ids'].shape[1]>512:raise ValueError('BGE exact input exceeds 512 tokens')
+        with torch.inference_mode():
+            hidden=model(**tokens).last_hidden_state[:,0,:]
+            result=torch.nn.functional.normalize(hidden,p=2,dim=1).float()[0].tolist()
+        return result
+    encode('readiness')
+    if artifacts is not None:
+        from regional_knowledge.kaggle_bootstrap import ResidentEncoder
+        from regional_knowledge.kaggle_environment import bootstrap_stage
+        with bootstrap_stage(RUN_CONFIG['run_id'],'tokenizer_guard'):
+            return ResidentEncoder(encode,tokenizer,artifacts,artifacts.model_directory,_MODEL_LOAD_COUNT)
+    return encode
+
+def main(*, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
     config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
+    if prepare_runtime is not None and config.get('transport') != 'wss':
+        raise ValueError('resident preparation requires the existing WSS channel')
+    if prepare_runtime is not None and (config.get('shared_reads') is not True
+            or not isinstance(config.get('prepared_model'), dict)
+            or set(config['prepared_model']) != {'root', 'entries', 'max_total_bytes'}):
+        raise ValueError('resident preparation requires explicit shared model inventory')
     def diagnostics():
         status=Path('/proc/self/status').read_text().splitlines()
         values={line.split(':',1)[0]:int(line.split()[1]) for line in status if line.startswith(('VmRSS:','VmHWM:'))}
         pss=sum(int(line.split()[1]) for line in Path('/proc/self/smaps_rollup').read_text().splitlines() if line.startswith('Pss:'))
         cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
+    if config.get('transport')=='wss':
+        try:
+            run_wss_worker(config,load_encoder,diagnostics,prepare_runtime=prepare_runtime,close_runtime=close_runtime,
+                **({'recovery_handler':recovery_handler} if recovery_handler is not None else {}),
+                **({'snapshot_channel':snapshot_channel} if snapshot_channel is not None else {}))
+        finally:
+            Path('/kaggle/working/bge-run-summary.json').write_text(json.dumps({
+                'run_id':config['run_id'],'space':SPACE,'transport':'wss',
+                'worker_wall_seconds':time.monotonic()-started,
+                'cooperative_worker_exit':True,'provider_termination_verified':False}))
+        return
     def call(action,payload):
         data=json.dumps({'run_id':config['run_id'],**payload}).encode()
         request=urllib.request.Request(config['broker']+'/'+action,data=data,headers={'Authorization':'Bearer '+config['token'],'Content-Type':'application/json'},method='POST')
@@ -37,24 +112,7 @@ def main():
                 if error.code in (401,403):stop.set()
             except (TimeoutError,OSError):pass
     thread=threading.Thread(target=heartbeat,daemon=True);thread.start()
-    import torch
-    import importlib.metadata
-    versions={name:importlib.metadata.version(name) for name in ('torch','transformers','tokenizers','huggingface-hub')}
-    if versions!={'torch':'2.11.0+cpu','transformers':'5.16.1','tokenizers':'0.23.1','huggingface-hub':'1.29.0'}:
-        raise RuntimeError('pinned BGE CPU runtime mismatch')
-    from transformers import AutoModel,AutoTokenizer
-    torch.set_num_threads(4);torch.set_num_interop_threads(1)
-    tokenizer=AutoTokenizer.from_pretrained('BAAI/bge-m3',revision=REVISION)
-    model=AutoModel.from_pretrained('BAAI/bge-m3',revision=REVISION,torch_dtype=torch.float32).to('cpu').eval()
-    if model.config.hidden_size!=1024:raise RuntimeError('BGE dimension mismatch')
-    def encode(text):
-        # Same no-prefix CLS/L2 FP32 batch1 contract for query and document.
-        tokens=tokenizer([text],padding=True,truncation=True,max_length=512,return_tensors='pt')
-        with torch.inference_mode():
-            hidden=model(**tokens).last_hidden_state[:,0,:]
-            result=torch.nn.functional.normalize(hidden,p=2,dim=1).float()[0].tolist()
-        return result
-    encode('readiness')
+    encode=load_encoder()
     ready=time.monotonic()-started
     call('heartbeat',{'ready':True,'space':SPACE,'model_revision':REVISION,'diagnostics':{'startup_seconds':ready,**diagnostics()}})
     print(json.dumps({'event':'bge_ready','run_id':config['run_id'],'space':SPACE,'startup_seconds':ready,'cpu_threads':4}),flush=True)
@@ -77,5 +135,7 @@ def main():
     finally:
         stop.set()
         open('/kaggle/working/bge-run-summary.json','w').write(json.dumps({'run_id':config['run_id'],'space':SPACE,'startup_seconds':ready,'worker_wall_seconds':time.monotonic()-started,'cpu_only':True}))
+
+# WSS_TRANSPORT_HELPER
 
 if __name__=='__main__':main()

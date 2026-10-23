@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import asyncio
+from functools import wraps
 import logging
+import re
 import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -16,7 +18,7 @@ from mcp.server.auth.settings import (
     ClientRegistrationOptions,
     RevocationOptions,
 )
-from mcp.types import ImageContent, TextContent, ToolAnnotations
+from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl, Field
 
 from starlette.routing import Route
@@ -30,6 +32,8 @@ from .geo_resolution import GeoProposal
 from .local_e5 import LocalE5Embedder
 from .auth import JwtResourceVerifier
 from .backend import KnowledgeBackend
+from .kaggle_import_contracts import TargetSourceImportInput
+from .contracts import TelegramOriginalInput
 from .contracts import (
     BookFindOutput,
     BookIngestOutput,
@@ -41,6 +45,7 @@ from .contracts import (
     Principal,
     ProfileOutput,
     SearchOutput,
+    StartupStatus,
     StageChunkInput,
     StagePageInput,
     StagePoiFactInput,
@@ -73,6 +78,22 @@ def _principal() -> Principal:
         issuer=issuer,
         access_token=token.token,
     )
+
+
+def _require_hybrid_read(result):
+    """Public search never substitutes lexical evidence for unavailable BGE."""
+    # Cold startup is an MCP response, not a fabricated QUERY_RESULT or hit.
+    if (result.status == 'pending' and result.startup is not None
+            and result.startup.protocol == 'rkb.startup.v1'
+            and result.main_state == 'starting'):
+        return result
+    if (result.mode != "hybrid" or result.main_state != "ready"
+            or result.retrieval_mode not in {"bge_lexical", "e5_bge_lexical"}):
+        raise ToolError(json.dumps({"status": "unavailable", "reason": "hybrid_search_required",
+            "main_state": result.main_state, "main_job_id": result.main_job_id,
+            "read_trace": result.read_trace.model_dump() if result.read_trace else None},
+            separators=(",", ":")))
+    return result
 
 
 async def _attach_story_extraction(
@@ -109,6 +130,130 @@ async def _attach_story_extraction(
         if result.next_action == 'done' and knowledge['state'] != 'pass_completed':
             update['message'] = result.message + '; source ready, semantic extraction still requires model work'
     return result.model_copy(update=update)
+
+
+def _book_page_tool_result(ingestion_id, batch):
+    manifest = {'ingestion_id': ingestion_id, 'next_cursor': batch.next_cursor,
+        'pages': [{'page_id': page.page_id, 'physical_page_index': page.physical_page_index,
+            'printed_page_number': page.printed_page_number, 'mime_type': page.mime_type,
+            'native_text': page.native_text, 'native_blocks': list(page.native_blocks),
+            'native_text_info': page.native_text_info} for page in batch.pages]}
+    content = [TextContent(type='text', text=json.dumps(manifest, ensure_ascii=False))]
+    for page in batch.pages:
+        content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
+    return CallToolResult(content=content)
+
+
+# Only the two book MCP tool boundaries use this normalization. Inner importer
+# decisions, original receipts, permissions and wire schemas remain untouched.
+_BOOK_ERROR_STATUSES = frozenset({
+    "invalid_query", "denied", "unavailable", "pending", "unknown",
+    "failed", "rejected", "error",
+})
+_BOOK_STABLE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
+# These pre-existing server-local ToolErrors have no structured status yet.
+_BOOK_LOCAL_REASONS = {
+    "telegram_original_requires_target_start_without_attachment": "invalid_query",
+    "source_import_must_use_one_input_location": "invalid_query",
+    "invalid_source_import_input": "invalid_query",
+    "catalog_update_requires_metadata_only_stage": "invalid_query",
+    "stage_file_cannot_mix_with_inline_payload": "invalid_query",
+    "stage_file_invalid": "invalid_query",
+    "stage_file_schema": "invalid_query",
+    "stage_file_ingestion_or_revision_mismatch": "invalid_query",
+    "stage_file_must_be_json_not_original_source": "invalid_query",
+    "file_only_supported_for_start_reprocess_or_stage": "invalid_query",
+    "source_import_requires_configured_target_importer": "unavailable",
+    "owned_ingestion_required": "denied",
+}
+
+
+def _book_stage_schema_hints(exc: ToolError) -> list[str]:
+    """Only the real StageFile parser's redacted path/type diagnostics."""
+    from .stage_file import StageFileError, parse_stage_file
+    cause = exc.__cause__
+    if type(cause) is not StageFileError:
+        return []
+    origin = cause.__traceback__
+    while origin is not None and origin.tb_next is not None:
+        origin = origin.tb_next
+    if origin is None or origin.tb_frame.f_code is not parse_stage_file.__code__:
+        return []  # A fabricated ToolError/StageFileError is not source evidence.
+    detail = str(cause)
+    prefix = "stage_file_schema: "
+    if not detail.startswith(prefix) or len(detail) > 1024:
+        return []
+    hints = []
+    path_pattern = r"(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})(?:\.(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})){0,7}"
+    for item in detail[len(prefix):].split("; ")[:2]:
+        path, sep, error_type = item.partition(":")
+        if (sep and len(item) <= 96 and re.fullmatch(path_pattern, path)
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,47}", error_type)):
+            hints.append(item)  # The producer masks unknown field labels as *.
+    return hints
+
+
+def _book_mcp_error(exc: Exception) -> ToolError:
+    """Keep existing domain status/reason; never serialize exception messages."""
+    status, reason, error_class = "unknown", "internal_error", "internal"
+    if isinstance(exc, ToolError):
+        error_class, reason = "domain", "domain_error"
+        raw = str(exc)
+        if len(raw) <= 1024:
+            try:
+                record = json.loads(raw)
+            except (ValueError, TypeError):
+                record = None
+            if type(record) is dict:
+                candidate_status, candidate_reason = record.get("status"), record.get("reason")
+                if type(candidate_status) is str and candidate_status in _BOOK_ERROR_STATUSES:
+                    status = candidate_status  # Not all errors mean a final rejection.
+                    if (type(candidate_reason) is str and
+                            _BOOK_STABLE_REASON.fullmatch(candidate_reason)):
+                        reason = candidate_reason
+            else:
+                # A few existing local errors are plain static labels. Their
+                # trailing Pydantic/user details must not escape the server.
+                label = raw.partition(":")[0]
+                if label in _BOOK_LOCAL_REASONS:
+                    status, reason = _BOOK_LOCAL_REASONS[label], label
+    elif isinstance(exc, PermissionError):
+        status, reason, error_class = "denied", "access_denied", "access"
+    elif (type(exc) is RuntimeError and
+          exc.args == ("authenticated user context is required",)):
+        # Only a raise *inside the existing _principal* proves that backend
+        # execution was never entered. Backend RuntimeErrors with identical
+        # wording must remain UNKNOWN instead of falsely denied.
+        origin = exc.__traceback__
+        while origin is not None and origin.tb_next is not None:
+            origin = origin.tb_next
+        if origin is not None and origin.tb_frame.f_code is _principal.__code__:
+            status, reason, error_class = (
+                "denied", "authenticated_user_context_required", "access")
+    elif isinstance(exc, TimeoutError):
+        status, reason, error_class = "unknown", "transport_timeout", "transport"
+    elif isinstance(exc, (ConnectionError, OSError)):
+        status, reason, error_class = "unknown", "transport_unavailable", "transport"
+    # For every other exception the operation's effect is UNKNOWN, not rejected.
+    response = {"status": status, "reason": reason, "error_class": error_class}
+    if reason == "stage_file_schema" and isinstance(exc, ToolError):
+        hints = _book_stage_schema_hints(exc)
+        if hints:
+            response["hints"] = hints
+    return ToolError(json.dumps(response, separators=(",", ":")))
+
+
+def _book_mcp_error_boundary(handler):
+    """Preserve the registered tool signature while fencing error disclosure."""
+    @wraps(handler)
+    async def call(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise  # A cancelled call proves neither failure nor completion.
+        except Exception as exc:
+            raise _book_mcp_error(exc) from None
+    return call
 
 
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
@@ -150,8 +295,44 @@ def _transport_security(resource_url: str | None = None) -> TransportSecuritySet
 class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
+    async def call_tool(self, name, arguments, context=None):
+        allowed = {'search','fetch','knowledge_search','profile'}
+        if getattr(self,'_target_story_available',False):
+            allowed.update({'story_search','story_get','story_history','story_variants'})
+        if getattr(self,'_target_editorial_available',False):allowed.update({'story_edit','story_access'})
+        if getattr(self,'_target_facts_available',False):
+            allowed.update({'story_calendar','story_observation_search','story_observation_compare'})
+        if getattr(self,'_target_import_available',False):
+            allowed.update({'book_ingest','book_pages'})
+        if getattr(self,'_target_cases_available',False):
+            allowed.update({'disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
+        if getattr(self,'_target_graph_available',False):
+            allowed.update({'graph_fetch','entity_list'})
+        if getattr(self,'_target_geo_available',False):
+            allowed.update({'geo_lookup','graph_fetch','poi_context'})
+        if getattr(self,'_target_catalog_available',False):
+            allowed.add('book_find')
+        if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
+        if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
+        if getattr(self,'_target_source_profile',False) and name not in allowed:
+            raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
+        from .read_issuance import capture_read_output, bind_request_output
+        with capture_read_output() as calls:
+            result = await super().call_tool(name, arguments, context)
+            if calls:
+                bind_request_output(context, calls)
+            return result
+
     def streamable_http_app(self, **kwargs):
+        guarded = getattr(self, '_current_read_output_required', False)
+        if guarded:
+            if kwargs.get('stateless_http', False) is not True or kwargs.get(
+                    'json_response', False) is not True:
+                raise RuntimeError('current evidence requires stateless JSON HTTP')
         app = super().streamable_http_app(**kwargs)
+        if guarded:
+            from .read_issuance import ReadIssuanceMiddleware
+            app.add_middleware(ReadIssuanceMiddleware)
         if isinstance(self._auth_server_provider, RegionalOAuthProvider):
             auth = self.settings.auth
             metadata = build_metadata(
@@ -174,6 +355,9 @@ class KnowledgeMCPServer(MCPServer):
                         endpoint=cors_middleware(self._auth_server_provider.revoke_endpoint, ["POST", "OPTIONS"]),
                         methods=["POST", "OPTIONS"],
                     )
+        channel = getattr(self, '_bge_channel_route', None)
+        if channel is not None:
+            app.routes.append(channel)
         return app
 
 
@@ -185,8 +369,39 @@ def build_server(
     jwks_url: str | None = None,
     oauth_provider: RegionalOAuthProvider | None = None,
     profile: Literal["full", "live", "story_reader", "story_contributor", "story_editor"] = "full",
+    backend_profile: Literal['legacy','kaggle_source'] | None = None,
+    target_startup=None,
+    projects_hub_receiver=None,
+    expert_evidence_receiver=None,
+    expert_slack_ingress=None,
+    expert_claim_receiver=None,
+    expert_result_receiver=None,
+    expert_recovery_receiver=None,
 ) -> MCPServer:
-    backend = backend or backend_from_env()
+    selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
+        'kaggle_source' if target_startup is not None else 'legacy')
+    if selected not in {'legacy','kaggle_source'}:
+        raise RuntimeError('RKB_BACKEND_PROFILE must be legacy or kaggle_source')
+    if selected=='kaggle_source':
+        from .kaggle_service_startup import TargetServiceStartup
+        if type(target_startup) is not TargetServiceStartup:
+            raise RuntimeError('kaggle_source requires explicit typed TargetServiceStartup')
+        if backend is not None or oauth_provider is not None:
+            raise RuntimeError('target startup owns the configured backend and OAuth provider')
+        if profile not in {'full','live'}:
+            raise RuntimeError('target story capability bundle is unavailable')
+        backend=target_startup.backend
+        oauth_provider=target_startup.config.oauth_provider
+        if ((issuer is not None and issuer.rstrip('/')!=oauth_provider.issuer)
+                or (resource_url is not None and resource_url.rstrip('/')!=oauth_provider.resource)):
+            raise RuntimeError('target OAuth issuer/resource must match existing authority')
+        issuer,resource_url=oauth_provider.issuer,oauth_provider.resource
+    elif target_startup is not None:
+        raise RuntimeError('target startup cannot use legacy backend profile')
+    else:
+        backend = backend if backend is not None else backend_from_env()
+    from .read_telemetry import ReadTelemetry
+    read_telemetry = getattr(backend, 'read_telemetry', None) or ReadTelemetry()
     issuer = (
         issuer
         or os.getenv("RKB_AUTH_ISSUER", "").strip()
@@ -208,6 +423,8 @@ def build_server(
         raise RuntimeError("RKB_AUTH_MODE must be 'embedded' or 'external'")
 
     kwargs: dict[str, Any] = {}
+    if selected=='kaggle_source':
+        kwargs['lifespan']=target_startup.lifespan
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
@@ -254,6 +471,23 @@ def build_server(
     mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
+            ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
+             "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
+             "book_pages currently returns one visual page per call, regardless of requested batch_size. "
+             "Ordinary owner-only import is shared-searchable, NOT owner-private: the authorized owner "
+             "attests legality once, without a mandatory per-book public_rights declaration or a new "
+             "legal verification step. Optional legacy source_import.public_rights remains supported. "
+             "Owner authentication never grants private Case or original-document reads to others. "
+             "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
+             "request a new upload unless the verified archived original is unavailable. "
+             "Follow every book_pages continuation before using clipped source text. "
+             "Stage exact observed native blocks or unique source spans with their actual bounding boxes; "
+             "source_import.research must contain the calling model's explicit state and reachable continuation. "
+             "Only when sufficient evidence supports an actual narrative may story candidates supply "
+             "basic_variant.body with a complete evidence map. Otherwise omit basic_variant and explicitly "
+             "report needs_context or facts_only; never invent a body from title or summary. "
+             "Finalized source activation does not establish retrieval acceptance or exhaustive semantic coverage. "
+             if selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None else "") +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
             "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
             "it through book_pages, model review/stage, validate and finalize by following "
@@ -334,10 +568,95 @@ def build_server(
     if embedded_provider is not None:
         embedded_provider.register_routes(mcp)
 
-    if os.getenv('RKB_BGE_QUEUE_PATH'):
+    mcp._target_source_profile=selected=='kaggle_source'
+    # Do not advertise an image result without the trusted, installed native
+    # source gate AND its independent real archive byte-issuer owner.
+    mcp._target_media_available=(selected=='kaggle_source'
+        and getattr(backend,'public_media_gate',None) is not None)
+    mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
+    mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
+    mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
+    mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
+    mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
+    mcp._target_editorial_available = (selected=='kaggle_source' and getattr(target_startup,'editorial',None) is not None)
+    mcp._target_graph_available = (selected=='kaggle_source' and target_startup.gate.graph_supported())
+    mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
+    mcp._target_startup=target_startup
+    mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
+    worker_queue = getattr(backend, 'worker_queue', None)
+    if worker_queue is not None or os.getenv('RKB_BGE_QUEUE_PATH'):
         from .bge_queue import BgeQueue
         from .bge_broker import register_routes
-        register_routes(mcp,BgeQueue(os.environ['RKB_BGE_QUEUE_PATH']))
+        from .bge_channel import channel_route
+        if worker_queue is None:
+            worker_queue = BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
+        elif os.getenv('RKB_BGE_QUEUE_PATH'):
+            from pathlib import Path
+            if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
+                raise RuntimeError('backend and channel must share the same owned queue')
+        register_routes(mcp,worker_queue)
+        # PR301 adds this optional native route argument. Both merge orders
+        # keep one bounded product sink and leave legacy channels unchanged.
+        from inspect import signature
+        channel_options = {'read_telemetry': read_telemetry}
+        if 'product_telemetry' in signature(channel_route).parameters:
+            from .product_telemetry import get_product_telemetry
+            channel_options['product_telemetry'] = get_product_telemetry()
+        mcp._bge_channel_route = channel_route(worker_queue, **channel_options)
+
+    if projects_hub_receiver is not None:
+        from .projects_hub_reader import ProjectsHubReader, PATH
+        if (selected != 'kaggle_source' or type(projects_hub_receiver) is not ProjectsHubReader
+                or projects_hub_receiver.backend is not backend):
+            raise RuntimeError('PH receiver requires the same configured target backend')
+        mcp.custom_route(PATH, methods=['POST'])(projects_hub_receiver.__call__)
+
+    if expert_evidence_receiver is not None:
+        from .expert_evidence_receiver import ExpertEvidenceReceiver, PATH as EXPERT_PATH
+        if (selected != 'kaggle_source' or type(expert_evidence_receiver) is not ExpertEvidenceReceiver
+                or expert_evidence_receiver.backend is not backend
+                or expert_evidence_receiver.authority is not target_startup.authority
+                or expert_evidence_receiver.control.spool is not target_startup.config.spool):
+            raise RuntimeError('expert evidence receiver requires exact existing target owners')
+        mcp.custom_route(EXPERT_PATH, methods=['POST'])(expert_evidence_receiver.__call__)
+
+    if expert_slack_ingress is not None:
+        from .expert_slack_ingress import ExpertSlackIngress, PATH as SLACK_PATH
+        if (selected != 'kaggle_source' or type(expert_slack_ingress) is not ExpertSlackIngress
+                or expert_slack_ingress.control.spool is not target_startup.config.spool
+                or expert_slack_ingress.control.people is not target_startup.config.participants):
+            raise RuntimeError('Slack ingress requires exact existing target control owners')
+        mcp.custom_route(SLACK_PATH, methods=['POST'])(expert_slack_ingress.__call__)
+
+    # Claim and result staging are a single opt-in capability, bound only to
+    # an already provisioned original executor and exact signed ingress.
+    # No context: no route, no implicit credentials, no provider send.
+    if ((expert_claim_receiver is None)!=(expert_result_receiver is None)
+            or (expert_claim_receiver is None)!=(expert_recovery_receiver is None)):
+        raise RuntimeError('expert executor routes require one complete context')
+    if expert_claim_receiver is not None:
+        from .expert_executor_workflow import (
+            BoundExpertClaimReceiver, ExpertExecutorResultReceiver,
+            PATH as RESULT_PATH,
+        )
+        from .expert_executor_claim_receiver import PATH as CLAIM_PATH
+        from .expert_executor_recovery_receiver import (
+            ExpertExecutorRecoveryReceiver, PATH as RECOVERY_PATH,
+        )
+        if (selected!='kaggle_source'
+                or type(expert_claim_receiver) is not BoundExpertClaimReceiver
+                or type(expert_result_receiver) is not ExpertExecutorResultReceiver
+                or type(expert_recovery_receiver) is not ExpertExecutorRecoveryReceiver
+                or expert_slack_ingress is None
+                or expert_claim_receiver.control is not expert_slack_ingress.control
+                or expert_result_receiver.control is not expert_slack_ingress.control
+                or expert_recovery_receiver.control is not expert_slack_ingress.control
+                or expert_result_receiver.context is not expert_recovery_receiver.context
+                or expert_result_receiver.context.credentials is not expert_claim_receiver.credentials):
+            raise RuntimeError('expert executor routes must share signed ingress and context')
+        mcp.custom_route(CLAIM_PATH, methods=['POST'])(expert_claim_receiver.__call__)
+        mcp.custom_route(RESULT_PATH, methods=['POST'])(expert_result_receiver.__call__)
+        mcp.custom_route(RECOVERY_PATH, methods=['POST'])(expert_recovery_receiver.__call__)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
@@ -378,7 +697,123 @@ def build_server(
     # Optional narrow function-call bundles for the client application's own Live agent.
     # The default read-only Live surface above remains unchanged.
     story_profiles = {"full", "story_reader", "story_contributor", "story_editor"}
-    if profile in story_profiles:
+    if profile in story_profiles and mcp._target_cases_available:
+        from .kaggle_case_tools import register_case_tools
+        register_case_tools(mcp,target_startup.cases_backend,_principal)
+
+    if profile in story_profiles and mcp._target_graph_available:
+        from .kaggle_source_graph_tools import register_source_graph_tools
+        register_source_graph_tools(mcp,backend,getattr(target_startup,'geo_backend',None),_principal)
+
+    if profile in story_profiles and mcp._target_geo_available:
+        @mcp.tool(name='geo_lookup',title='Find retained private geographic identities',
+            description='Exact normalized name and optional declared source year. Minimal legacy-unanchored provenance; '
+                'canonical geometry and map layers remain with their owners. Unknown validity remains unknown.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_geo_lookup(name:Annotated[str,Field(min_length=1,max_length=200)],
+                year:Annotated[int,Field(ge=1,le=9999)]|None=None,
+                limit:Annotated[int,Field(ge=1,le=3)]=3,cursor:str|None=None)->dict[str,Any]:
+            return await target_startup.geo_backend.geo_lookup(name,_principal(),year=year,limit=limit,cursor=cursor)
+
+        if not mcp._target_graph_available:
+            @mcp.tool(name='graph_fetch',title='Read a retained geographic identity or metadata page',
+                description='Exact private GEO entity UUID, with separately paginated minimal provenance, aliases, relations '
+                    'and owner references. Old source text and graph discovery are unavailable.',
+                annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+            async def native_geo_graph_fetch(entity_id:str,limit:Annotated[int,Field(ge=1,le=3)]=3,
+                    cursor:str|None=None,category:Literal['owner_reference','provenance','alias','relation','source_geo_observation']|None=None,
+                    discovery_job_id:str|None=None)->dict[str,Any]:
+                return await target_startup.geo_backend.graph_fetch(entity_id,_principal(),limit=limit,cursor=cursor,
+                    category=category,discovery_job_id=discovery_job_id)
+
+        @mcp.tool(name='poi_context',title='Read retained links to a physical POI',
+            description='Private RKB geographic identities linked to the exact existing Street Story POI key. '
+                'Returns source locators and owner references; no migrated old book text or Story content.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_geo_poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=3)]=3,
+                cursor:str|None=None)->dict[str,Any]:
+            return await target_startup.geo_backend.poi_context(poi_ref,_principal(),limit=limit,cursor=cursor)
+
+    if profile in story_profiles and mcp._target_facts_available:
+        @mcp.tool(name='story_calendar',title='Historical events on a calendar day',
+            description='Native indexed source-attributed exact event dates, including facts without a Story. '
+                'Explicit stated calendar; no publication/approximate date substitution or calendar conversion.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_source_calendar(month:Annotated[int,Field(ge=1,le=12)],day:Annotated[int,Field(ge=1,le=31)],
+                calendar:Literal['gregorian','julian','unspecified']='gregorian',
+                limit:Annotated[int,Field(ge=1,le=10)]=3,cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_calendar(_principal(),month=month,day=day,calendar=calendar,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_observation_search',title='Find sourced numeric observations',
+            description='Native exact metric/unit indexed source quantities, including facts without a Story. '
+                'Preserves original wording and exact decimal strings; no aggregation, conversion or identity merge.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_source_observations(metric_key:str,unit_code:str|None=None,
+                limit:Annotated[int,Field(ge=1,le=10)]=3,cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_observation_search(_principal(),metric_key=metric_key,
+                unit_code=unit_code,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_observation_compare',title='Check whether numeric series can be compared',
+            description='Read two exact source observations linked to this Story and explain metric, unit, '
+                'subject, method and period compatibility. No arithmetic, unit conversion or identity inference.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_observation_compare(story_id:str,left_id:str,right_id:str)->dict[str,Any]:
+            return await backend.story_observation_compare(story_id,left_id,right_id,_principal())
+
+    if profile in story_profiles and mcp._target_story_available:
+        @mcp.tool(name='story_get',title='Read saved source-bound narrative',
+            description='Exact saved model-authored basic Variant body and default reference, with current source-access recheck. '
+                        'Only compact/editorial views are supported; evidence/review/editing/private variants remain unavailable.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_get(story_id:str,revision:int|None=None,
+                view:str='compact',cursor:str|None=None,limit:Annotated[int,Field(ge=1,le=10)]=8,
+                assertion_id:str|None=None,relation_id:str|None=None)->dict[str,Any]:
+            return await backend.story_get(story_id,_principal(),revision=revision,view=view,cursor=cursor,
+                limit=limit,assertion_id=assertion_id,relation_id=relation_id)
+
+        @mcp.tool(name='story_search',title='Find saved source-bound narratives',
+            description='Bounded indexed hybrid search over actual saved basic narrative bodies; no summary/body fallback.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_search(query:str,filters:dict[str,str]|None=None,mode:str='hybrid',order:str='updated',
+                limit:Annotated[int,Field(ge=1,le=5)]=3,cursor:str|None=None)->EvidenceSearchOutput:
+            return await backend.story_search(query,_principal(),filters=filters,mode=mode,order=order,limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_history',title='Read accepted narrative authorship',
+            description='Bounded exact accepted source-import author/request/operation history with current source-access recheck.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_history(story_id:str,from_revision:int|None=None,to_revision:int|None=None,
+                limit:Annotated[int,Field(ge=1,le=10)]=10,cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_history(story_id,_principal(),from_revision=from_revision,to_revision=to_revision,
+                limit=limit,cursor=cursor)
+
+        @mcp.tool(name='story_variants',title='Read saved basic narrative variant',
+            description='Exact shared basic Variant body/revision; alternate/private/editorial variants remain unavailable.',
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def native_story_variants(story_id:str,limit:Annotated[int,Field(ge=1,le=10)]=10,
+                cursor:str|None=None)->dict[str,Any]:
+            return await backend.story_variants(story_id,_principal(),limit=limit,cursor=cursor)
+
+    if profile in {'full','story_contributor','story_editor'} and mcp._target_editorial_available:
+        @mcp.tool(name='story_edit',title='Apply atomic editorial changes',
+            description='Revision-guarded native UpsertVariant with exact saved body. Currently one upsert_variant per operation; '
+                'current per-Story editor grant is required, approvals are cleared, and original replay never reruns the model.',
+            annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
+        async def native_story_edit(story_id:str,expected_revision:Annotated[int,Field(ge=1)],
+                operations:Annotated[list[StoryOperation],Field(min_length=1,max_length=12)],
+                idempotency_key:Key,reason:str|None=None)->dict[str,Any]:
+            return await backend.story_edit(story_id,_principal(),expected_revision=expected_revision,operations=operations,
+                idempotency_key=idempotency_key,reason=reason)
+
+        @mcp.tool(name='story_access',title='Grant or revoke story capabilities',
+            description='Only the current native Story owner/manager may change an explicit per-Story grant. Source access stays independent.',
+            annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
+        async def native_story_access(story_id:str,expected_revision:Annotated[int,Field(ge=1)],grantee_user_id:str,
+                capability:Literal['viewer','contributor','researcher','editor','publisher','manager','revoke'],
+                idempotency_key:Key)->dict[str,Any]:
+            return await backend.story_access(story_id,_principal(),expected_revision=expected_revision,grantee_user_id=grantee_user_id,
+                capability=capability,idempotency_key=idempotency_key)
+
+    if profile in story_profiles and not mcp._target_story_available:
         if not hasattr(backend, "corpus"):
             if profile != "full":
                 raise RuntimeError("Story Registry requires the existing SQLite authority")
@@ -396,12 +831,15 @@ def build_server(
                 description="ACL-scoped compact editorial story search; story content and book evidence remain distinct.",
                 annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
             async def story_search(query: str = "", filters: dict[str,str] | None = None,
-                    mode: Literal["lexical","semantic","hybrid"] = "lexical",
+                    mode: Literal["lexical","semantic","hybrid"] = "hybrid",
                     order: Literal["updated","potential"] = "updated",
                     limit: Annotated[int, Field(ge=1,le=20)] = 3,
                     cursor: str | None = None) -> dict[str,Any]:
                 vector = None
                 kaggle_state = None
+                if mode == "lexical" or not query.strip():
+                    raise ToolError("hybrid_search_required: provide a nonempty query and hybrid mode")
+                mode = "hybrid"
                 if mode != "lexical" and query.strip():
                     try:
                         from .bge_queue import BgeQueue
@@ -417,12 +855,16 @@ def build_server(
                             "event": "story_kaggle_query_degraded",
                             "error_type": type(error).__name__,
                         }))
+                if vector is None:
+                    return {"status": "unavailable", "reason": "hybrid_search_required",
+                            "kaggle_query_state": kaggle_state or "kaggle_unavailable"}
                 result = await story_call(
                     registry.search, query, filters, mode, order, limit, cursor, vector)
-                if kaggle_state and isinstance(result, dict) and "error" not in result:
+                if isinstance(result, dict) and "error" not in result:
+                    if result.get("retrieval_mode") not in {"story_bge_lexical", "story_bge_lexical_partial"}:
+                        return {"status": "unavailable", "reason": "hybrid_search_required",
+                                "kaggle_query_state": kaggle_state or "projection_unavailable"}
                     result["kaggle_query_state"] = kaggle_state
-                    if vector is None:
-                        result["indexing_state"] = kaggle_state
                 return result
 
             @mcp.tool(name="story_calendar", title="Historical events on a calendar day",
@@ -734,13 +1176,21 @@ def build_server(
     if profile.startswith("story_"):
         return mcp
 
+    if selected == 'kaggle_source':
+        @mcp.tool(name='startup_status',title='Check Regional Knowledge startup',
+            description='Check a versioned cold-start reference. Does not restart or replay search. Once ready, call knowledge_search/search again with your current access rights.',
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+        async def startup_status(startup_ref: str) -> StartupStatus:
+            return await backend.startup_status(startup_ref,_principal())
+
     if profile == "live":
         @mcp.tool(
             name="knowledge_search",
             title="Search regional knowledge",
             description=(
-                "Return a small ready-to-use evidence pack from accessible regional "
-                "books and journals in one low-latency call. Use for factual Live answers."
+                "Return a bounded evidence pack from accessible regional books and journals. "
+                "When Kaggle is cold, returns MCP pending and a versioned startup ref; "
+                "call startup_status, then issue a NEW search after ready."
             ),
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         )
@@ -750,21 +1200,22 @@ def build_server(
             main_job_id: str | None = None,
             document_ids: list[str] | None = None,
         ) -> EvidenceSearchOutput:
-            return await backend.search_evidence(
+            return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
                 max_evidence=max(1, min(max_evidence, 5)),
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
-            )
+            )))
 
         return mcp
 
     @mcp.tool(
         title="Search regional knowledge",
         description=(
-            "Search the user's accessible regional books and journals. "
-            "Returns citable result IDs and stable URLs. Use fetch for full evidence."
+            "Search accessible regional books and journals. Returns citable IDs and URLs. "
+            "When Kaggle is cold, returns pending with startup ref; check startup_status "
+            "and retry as a NEW read after ready. Use fetch for complete evidence."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
@@ -773,21 +1224,30 @@ def build_server(
         if document_ids is not None:options['document_ids']=document_ids
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
-        return await backend.search(query.strip(), _principal(),**options)
+        return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))
 
     @mcp.tool(
         title="Fetch regional evidence",
         description=(
-            "Fetch the full evidence for an ID returned by search, including page "
-            "provenance, footnotes and illustration descriptors when available."
+            "Fetch evidence for an ID returned by search, including source provenance. "
+            "A bounded source passage includes explicit offsets and next_id when more text "
+            "or bibliography remains; fetch next_id until continuation_complete."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
     async def fetch(id: str) -> FetchOutput:
-        return await backend.fetch(id, _principal())
+        # Whole authorized fetch including principal resolution; no payload
+        # enters telemetry and the DTO/ACL path is unchanged.
+        from .product_telemetry import observe_async
+        return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
+        if selected == 'kaggle_source':
+            # EXISTING tool name, but the installed target may only disclose
+            # pixels after its current native gate and final MCP issuance.
+            # Never fall back to the unrelated legacy Supabase/Vibe reader.
+            return await backend.illustration_fetch(id, _principal())
         import base64
         from .illustrations import fetch_crop
         metadata, data, mime = await fetch_crop(backend, _principal(), id)
@@ -843,7 +1303,19 @@ def build_server(
     @mcp.tool(
         title="Add, reprocess or continue a book",
         description=(
-            "Carry one book/journal ingestion goal. For a new attached PDF/DjVu use start, "
+            "Carry one book/journal ingestion goal. For the configured Kaggle native target, PDF/DjVu originals "
+            "may be up to 128 MiB and 2500 physical pages subject to verified intake; each native stage "
+            "contains at most 8 selected, model-reviewed pages (not an 8-page book limit). "
+            "Ordinary owner-only start needs no per-book public_rights declaration; owner-approved legal "
+            "attestation is retained in the existing source envelope for shared search. Optional "
+            "source_import.public_rights stays a compatibility input, not a second legal approval. "
+            "Owner authentication does not bypass other access grants or make private Case data public. "
+            "Pass the optional top-level source_import or compatible metadata.source_import, not both. "
+            "When sufficient evidence supports an authored narrative, supply "
+            "story_candidates.basic_variant.body and evidence-mapped blocks for the complete body. "
+            "Otherwise OMIT basic_variant, explicitly set narrative_outcome=needs_context or facts_only, "
+            "and preserve the evidence gap instead of inventing prose; title/summary are not body. "
+            "For a new attached PDF/DjVu use start, "
             "then book_pages plus model-authored stage, validate and finalize while following "
             "next_action. For an existing book named by the user, call book_find first and "
             "use reprocess with its document_id; reprocess opens the verified archived source "
@@ -861,7 +1333,10 @@ def build_server(
             "to start one newer archived-source revision instead of resuming the pending job. "
             "For a large model-authored batch, stage may use file=one UTF-8 JSON attachment "
             "instead of inline arrays. That JSON must contain ingestion_id, source_revision and "
-            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB. "
+            "the same stage fields, with at most 8 pages, 100 chunks and 12 stories, <=1 MiB "
+            "(stage-file TRANSPORT bound only). Native admission separately limits the entire canonical "
+            "source-stage envelope to <=700 KiB, INCLUDING issued image receipts, source metadata "
+            "and model payload: a valid 1 MiB stage file is not guaranteed native acceptance. "
             "Never mix a stage file with inline metadata/arrays or put an original PDF in stage. "
             "File transport does not replace model source review or automatically mark pages reviewed. "
             "Finalization alone activates "
@@ -914,6 +1389,7 @@ def build_server(
         ),
         meta={"openai/fileParams": ["file"]},
     )
+    @_book_mcp_error_boundary
     async def book_ingest(
         command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
@@ -926,11 +1402,30 @@ def build_server(
         poi_facts: list[StagePoiFactInput] | None = None,
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
         entity_candidates: GraphBundle | None = None,
-        story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12)] | None = None,
+        story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12,
+            description="Model-authored evidence-grounded candidates: when evidence is sufficient, "
+                "supply basic_variant.body and complete evidence-mapped basic_variant.blocks. "
+                "Otherwise omit basic_variant and explicitly mark narrative_outcome=needs_context "
+                "or facts_only; never fabricate a body from title or summary.")] | None = None,
+        source_import: Annotated[TargetSourceImportInput | None, Field(
+            description="Optional native import options: ordinary owner-only start needs no public_rights "
+                "or research declaration; the owner's legal attestation is retained. Existing "
+                "public_rights and model-authored research remain supported. metadata.source_import "
+                "is a compatibility alternative; do not pass both.")] = None,
+        telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
+        if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
+            raise ToolError('telegram_original_requires_target_start_without_attachment')
         payload: dict[str, Any] | None = None
         if metadata is not None:
-            payload = metadata.model_dump(mode="json", exclude_none=True)
+            if metadata.source_import is not None:
+                if source_import is not None:
+                    raise ToolError('source_import_must_use_one_input_location')
+                try:
+                    source_import=TargetSourceImportInput.model_validate(metadata.source_import)
+                except ValueError:
+                    raise ToolError('invalid_source_import_input') from None
+            payload = metadata.model_dump(mode="json", exclude_none=True,exclude={'source_import'})
             if metadata.catalog_update is not None:
                 if command != 'stage' or file is not None or any(
                     value is not None for value in
@@ -949,7 +1444,6 @@ def build_server(
             or story_candidates is not None
         ):
             payload = {
-                "entity_candidates": entity_candidates.model_dump(mode="json") if entity_candidates else None,
                 "story_candidates": [x.model_dump(mode="json") for x in (story_candidates or [])],
                 "pages": [
                     page.model_dump(mode="json", exclude_none=True)
@@ -968,6 +1462,8 @@ def build_server(
                     for link in (poi_media_links or [])
                 ],
             }
+            if entity_candidates is not None:
+                payload["entity_candidates"] = entity_candidates.model_dump(mode="json")
         principal = _principal()
         stage_file_sha = None
         if file is not None and command == 'stage':
@@ -987,6 +1483,15 @@ def build_server(
             file = None
         elif file is not None and command not in {'start', 'reprocess'}:
             raise ToolError('file_only_supported_for_start_reprocess_or_stage')
+        import_options = {}
+        if source_import is not None:
+            if selected != 'kaggle_source':
+                raise ToolError('source_import_requires_configured_target_importer')
+            import_options['source_import'] = source_import
+        if stage_file_sha and selected == 'kaggle_source':
+            import_options['stage_file_sha256'] = stage_file_sha
+        if telegram_original is not None:
+            file = telegram_original.locator()
         result = await backend.book_ingest(
             command=command,
             principal=principal,
@@ -995,8 +1500,9 @@ def build_server(
             cursor=cursor,
             payload=payload,
             document_id=document_id,
+            **import_options,
         )
-        if stage_file_sha:
+        if stage_file_sha and selected != 'kaggle_source':
             result = result.model_copy(update={'message': result.message + '; stage_file_sha256=' + stage_file_sha})
         return await _attach_story_extraction(backend, principal, result)
 
@@ -1012,23 +1518,25 @@ def build_server(
             if not row or row['active_revision']!=revision:raise ValueError("active document revision required")
         return await service.stage(principal,document_id,revision,candidates)
 
-    @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-    async def graph_fetch(entity_id:str|None=None,limit:int=20,discovery_job_id:str|None=None)->dict[str,Any]:
-        if discovery_job_id is not None:return await GraphService(backend).job_read(_principal(),discovery_job_id,limit)
-        if entity_id is None:raise ValueError("entity or discovery job required")
-        return await GraphService(backend).read(_principal(),entity_id,limit)
+    if not mcp._target_geo_available and not mcp._target_graph_available:
+        @mcp.tool(title="Read one evidence-backed graph entity",description="One entity, authorized aliases/mentions and at most 20 one-hop relations with exact source evidence. No recursive traversal or graph dump.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def graph_fetch(entity_id:str|None=None,limit:int=20,discovery_job_id:str|None=None)->dict[str,Any]:
+            if discovery_job_id is not None:return await GraphService(backend).job_read(_principal(),discovery_job_id,limit)
+            if entity_id is None:raise ValueError("entity or discovery job required")
+            return await GraphService(backend).read(_principal(),entity_id,limit)
 
     @mcp.tool(title="Find related entity evidence",description="One authorized entity context and bounded related evidence through the existing E5/BGE/lexical retrieval. Hits are identity candidates, not facts.",annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
     async def graph_related(entity_id:str,query:str|None=None,limit:int=8)->dict[str,Any]:
         return await GraphService(backend).related(_principal(),entity_id,query,limit)
 
-    @mcp.tool(name="poi_context",title="Historical knowledge linked to a Street Story POI",
-        description="Read actor-authorized source passages, linked people/events and editorial stories "
-                    "for an existing physical POI identity. Missing links are not proof of no history.",
-        annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-    async def poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
-        from .poi_registry_bridge import PoiRegistry
-        return await PoiRegistry(backend).context(_principal(),poi_ref,limit=limit)
+    if not mcp._target_geo_available:
+        @mcp.tool(name="poi_context",title="Historical knowledge linked to a Street Story POI",
+            description="Read actor-authorized source passages, linked people/events and editorial stories "
+                        "for an existing physical POI identity. Missing links are not proof of no history.",
+            annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+        async def poi_context(poi_ref:str,limit:Annotated[int,Field(ge=1,le=10)]=5)->dict[str,Any]:
+            from .poi_registry_bridge import PoiRegistry
+            return await PoiRegistry(backend).context(_principal(),poi_ref,limit=limit)
 
     @mcp.tool(name="poi_registry",title="Find, select or create Street Story POI for a source place",
         description="The calling model searches first, then explicitly selects an existing physical POI "
@@ -1061,48 +1569,28 @@ def build_server(
     @mcp.tool(
         title="Read staged book pages",
         description=(
-            "Return the next small batch of staged source pages as model-visible image "
-            "content plus explicit native preview metadata. Read block continuation cursors "
-            "with the same tool before using clipped text. Native extraction never proves "
-            "visual completeness. Use only while parsing an existing ingestion."
+            "Read one model-visible source page by default, at most four requested per call; "
+            "the current native renderer may return only one page even when four are requested. "
+            "Stage each reviewed page ordinarily with its exact source evidence and follow the "
+            "returned page/block continuation cursors before using clipped text. "
+            "Native extraction never proves visual completeness. Use only for an existing ingestion."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
+    @_book_mcp_error_boundary
     async def book_pages(
         ingestion_id: str,
         cursor: str | None = None,
-        batch_size: int = 4,
+        batch_size: Annotated[int, Field(ge=1, le=4)] = 1,
     ) -> list[TextContent | ImageContent]:
-        batch_size = max(1, min(batch_size, 8))
+        batch_size = max(1, min(batch_size, 4))
         batch = await backend.book_pages(
             ingestion_id=ingestion_id,
             principal=_principal(),
             cursor=cursor,
             batch_size=batch_size,
         )
-        manifest = {
-            "ingestion_id": ingestion_id,
-            "next_cursor": batch.next_cursor,
-            "pages": [
-                {
-                    "page_id": page.page_id,
-                    "physical_page_index": page.physical_page_index,
-                    "printed_page_number": page.printed_page_number,
-                    "mime_type": page.mime_type,
-                    "native_text": page.native_text,
-                    "native_blocks": list(page.native_blocks),
-                    "native_text_info": page.native_text_info,
-                }
-                for page in batch.pages
-            ],
-        }
-        result: list[TextContent | ImageContent] = [
-            TextContent(type="text", text=json.dumps(manifest, ensure_ascii=False))
-        ]
-        for page in batch.pages:
-            image_format = page.mime_type.removeprefix("image/")
-            result.append(Image(data=page.data, format=image_format).to_image_content())
-        return result
+        return _book_page_tool_result(ingestion_id, batch).content
 
     @mcp.tool(
         title="Manage document access",
@@ -1144,17 +1632,62 @@ def build_server(
     return mcp
 
 
-def main() -> None:
+def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=None,
+         expert_executor_context=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
+    logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
-    build_server(profile=profile).run(
+    if target_startup is None and os.getenv('RKB_BACKEND_PROFILE','').strip()=='kaggle_source':
+        from .kaggle_source_owners import configured_source_service
+        target_startup=configured_source_service()
+    reader_config=os.getenv('RKB_PROJECTS_HUB_READER_CONFIG','').strip()
+    if reader_config and projects_hub_receiver is None:
+        if target_startup is None:
+            raise RuntimeError('PH receiver requires explicit target composition')
+        from .projects_hub_reader import ProjectsHubReader
+        projects_hub_receiver=ProjectsHubReader.from_file(reader_config,backend=target_startup.backend)
+    slack_config=os.getenv('RKB_EXPERT_SLACK_INGRESS_CONFIG','').strip()
+    if slack_config:
+        if expert_slack_ingress is not None:
+            raise RuntimeError('Slack ingress has more than one configured owner')
+        if target_startup is None:
+            raise RuntimeError('Slack ingress requires the existing target startup')
+        from .kaggle_source_owners import configured_expert_slack_ingress
+        expert_slack_ingress=configured_expert_slack_ingress(target_startup,slack_config)
+    # Install the delegated read receiver ONLY alongside the signed ingress and
+    # against precisely the same existing target/Participants/spool authority.
+    # This does not register an executor, grant, provider sender or second IAM.
+    expert_evidence_receiver=None
+    if expert_slack_ingress is not None:
+        if target_startup is None:
+            raise RuntimeError('expert read requires existing target startup')
+        from .expert_slack_composition import compose_expert_evidence_receiver
+        expert_evidence_receiver=compose_expert_evidence_receiver(
+            target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
+    expert_claim_receiver=expert_result_receiver=expert_recovery_receiver=None
+    if expert_executor_context is not None:
+        if expert_slack_ingress is None or target_startup is None:
+            raise RuntimeError('expert executor context requires signed ingress and target')
+        from .expert_executor_workflow import compose_bound_expert_executor
+        expert_claim_receiver,expert_result_receiver=compose_bound_expert_executor(
+            target_startup=target_startup,expert_slack_ingress=expert_slack_ingress,
+            context=expert_executor_context)
+        from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
+        expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
+    build_server(profile=profile,target_startup=target_startup,projects_hub_receiver=projects_hub_receiver,
+        expert_slack_ingress=expert_slack_ingress,
+        expert_evidence_receiver=expert_evidence_receiver,
+        expert_claim_receiver=expert_claim_receiver,
+        expert_result_receiver=expert_result_receiver,
+        expert_recovery_receiver=expert_recovery_receiver).run(
         transport="streamable-http",
         stateless_http=True,
         json_response=True,
-        transport_security=_transport_security(),
+        transport_security=_transport_security(
+            target_startup.config.oauth_provider.resource if target_startup is not None else None),
     )
 
 

@@ -173,6 +173,13 @@ class CatalogUpdateInput(BaseModel):
 
 
 class StartMetadataInput(BaseModel):
+    # Compatibility for clients whose existing book_ingest schema exposes an
+    # open metadata object but has not refreshed the optional top-level field.
+    source_import: dict[str, Any] | None = Field(default=None,max_length=2,
+        description="Optional compatibility alternative to top-level book_ingest.source_import, not an "
+            "additional source or rights override. Ordinary owner-only start retains the owner's "
+            "shared-source legal attestation without a per-book public_rights declaration; "
+            "do not send both input locations.")
     catalog_update: CatalogUpdateInput | None = None
     catalog: CatalogMetadata | None = None
     duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'
@@ -227,6 +234,9 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
+    # Echo the trusted image issuance returned by book_pages. This binds the
+    # selected pixels, not a claim that the supplied transcription is native.
+    source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # Same-pass semantic episode review; true with no candidates is an explicit
     # reviewed-empty page, not a claim that all possible stories were found.
     story_candidates_reviewed: bool = False
@@ -431,16 +441,44 @@ class IndexingStatus(BaseModel):
     required_vector_spaces: list[Literal['e5','bge']] = Field(default_factory=list)
 
 
+class ReadTrace(BaseModel):
+    """Backend-only monotonic duration; client transport time is measured separately."""
+    trace_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    backend_elapsed_ms: float = Field(ge=0, allow_inf_nan=False)
+    attempt_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    request_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class StartupStatus(BaseModel):
+    """Versioned MCP-level status; not a Kaggle QUERY_RESULT wire status.
+
+    The ref is a locator, never a grant. Each poll rechecks public_search.
+    """
+    protocol: Literal['rkb.startup.v1'] = 'rkb.startup.v1'
+    startup_ref: str = Field(min_length=51,max_length=51)
+    status: Literal['pending','ready','unavailable']
+    reason: str | None = None
+    # Sanitized operator health (no run/incarnation/provider identifiers).
+    health: dict | None = None
+
+
 class SearchOutput(BaseModel):
     results: list[SearchResult]
+    status: Literal['ok','degraded','pending','unavailable','cancelled','invalid_query','denied'] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    prior_write_pending: bool = False
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
     retrieval_policy: Literal['semantic','exact_identifier'] = 'semantic'
     latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    startup: StartupStatus | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
+    read_trace: ReadTrace | None = None
 
 
 class FetchOutput(BaseModel):
@@ -449,18 +487,30 @@ class FetchOutput(BaseModel):
     text: str
     url: str
     metadata: dict[str, Any] | None = None
+    status: Literal['ok','unavailable','cancelled','invalid_query','denied'] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    read_trace: ReadTrace | None = None
 
 
 class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
+    status: Literal['ok','degraded','pending','unavailable','cancelled','invalid_query','denied'] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    prior_write_pending: bool = False
     mode: Literal["hybrid", "lexical_degraded"] = "hybrid"
     retrieval_mode: Literal["fast_e5", "lexical_only", "bge_lexical", "e5_bge_lexical", "bge", "e5_bge"] = "lexical_only"
     retrieval_policy: Literal['semantic','exact_identifier'] = 'semantic'
     latency_ms: float | None = Field(default=None,ge=0)
     main_state: Literal['disabled','starting','pending','ready','unavailable'] = 'disabled'
     main_job_id: str | None = None
+    startup: StartupStatus | None = None
     indexing: IndexingStatus | None = None
     timings: dict[str, float] = Field(default_factory=dict, exclude=True)
+    read_trace: ReadTrace | None = None
 
 
 class ChatFile(BaseModel):
@@ -468,6 +518,26 @@ class ChatFile(BaseModel):
     file_id: str
     mime_type: str | None = None
     file_name: str | None = None
+
+
+class TelegramOriginalInput(BaseModel):
+    """Exact registered document metadata; never credentials or a download URL."""
+    model_config = {'extra': 'forbid', 'strict': True}
+    chat_id: int
+    topic_id: int
+    message_id: int
+    document_id: int
+    sha256: str
+    size: int
+
+    def locator(self):
+        from .telegram_original import TelegramOriginalLocator
+        return TelegramOriginalLocator.from_wire(self.model_dump())
+
+    @model_validator(mode='after')
+    def validate_locator(self):
+        self.locator()
+        return self
 
 
 class Principal(BaseModel):

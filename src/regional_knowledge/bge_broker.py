@@ -3,6 +3,7 @@ import asyncio
 import json
 from starlette.responses import JSONResponse
 from .bge_contract import SPACE,REVISION
+from .bge_queue import StaleClaim, StaleAttachment, RevokedRun
 
 def register_routes(mcp,queue):
     for action in ('heartbeat','claim','complete'):
@@ -28,6 +29,9 @@ def register_routes(mcp,queue):
                     else:
                         result={'status':await asyncio.to_thread(queue.complete,run_id,token,payload['job_id'],payload['claim'],payload['space'],payload['vectors'],payload.get('timings',{}))}
                     return JSONResponse(result,headers={'Cache-Control':'no-store'})
+                except StaleClaim:return JSONResponse({'error':'stale_claim'},status_code=409)
+                except StaleAttachment:return JSONResponse({'error':'stale_attachment'},status_code=409)
+                except RevokedRun:return JSONResponse({'error':'revoked_run'},status_code=403)
                 except PermissionError:return JSONResponse({'error':'invalid_or_stale_worker'},status_code=403)
                 except (ValueError,KeyError,TypeError):return JSONResponse({'error':'invalid_worker_payload'},status_code=400)
             return handler

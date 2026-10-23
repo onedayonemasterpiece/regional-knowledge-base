@@ -81,7 +81,7 @@ async def test_main_search_uses_kaggle_queue_even_with_legacy_local_encoder(monk
 
     result = await retrieval.main_search(Backend(), "Kulmer Handfeste", actor)
     assert result.main_state == "ready"
-    assert result.retrieval_mode == "bge"
+    assert result.retrieval_mode == "bge_lexical"
     assert result.main_job_id == "kaggle-job"
     assert result.results[0].id == "hit"
     assert result.timings["bge_query_local"] == 0.0

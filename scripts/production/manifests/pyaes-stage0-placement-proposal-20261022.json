@@ -1,0 +1,18 @@
+{
+  "codec": "rkb.stage0_placement_proposal.v1",
+  "package": "pyaes",
+  "version": "1.6.1",
+  "filename": "pyaes-1.6.1-py3-none-any.whl",
+  "size": 26422,
+  "sha256": "18115ebd82125cdf6100accc0bf88620b2e662a48710b1bb8cd7d9d4023964f3",
+  "proposed_object_key": "rkb/kaggle-v4/bootstrap-artifacts/18115ebd82125cdf6100accc0bf88620b2e662a48710b1bb8cd7d9d4023964f3/pyaes-1.6.1-py3-none-any.whl",
+  "approved": false,
+  "url": null,
+  "receipt_ref": null,
+  "upload_status": "NOT_RUN",
+  "source_commit": "9191f6a43d8d37e15319aeac519c3d47203ce88d",
+  "github_actions_run": 39698152544,
+  "github_artifact_id": 12391174848,
+  "artifact_archive_sha256": "914d843e73dd67d53de0b71a68844e20ef7fbd8b80a06f024d1d818ea6f6511d",
+  "acceptance": "Place these exact bytes in the existing permanent Stage0 artifact host, verify public HTTPS size/SHA-256, then supply the approved placement receipt to prepare_import_dependencies.py. This proposal is not a runtime wheel lock."
+}

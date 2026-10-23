@@ -1,0 +1,123 @@
+# Native source-bound Story activation
+
+The new `source.import.v2` contract carries exact resolved source inputs and
+model-authored findings/narratives together. V1 bytes and function semantics
+remain unchanged. New writes require the ordered revision tuple
+`rkb-v4-sql001-007-v1` / `rkb-v4-source-story-import-v2` /
+`rkb-python-apply-v1`; a builder does not authorize or install that transition.
+
+The existing notebook controller pins the selected native migration prefix when
+persisting its empty-generation intent. A schema-007 launch includes exactly
+001–007 there; the legacy schema-006 launch retains exactly 001–006. Source
+assembly and native initialization verify the same hashes. Merely shipping the
+007 file in a bundle does not authorize executing it in a schema-006 generation.
+
+Native ACL reference identities use qualified type, role, namespace and database
+names rather than PostgreSQL allocation OIDs. Recreating a synthetic schema and
+vector extension can change those OIDs without changing effective rights. The
+native regression requires identical ACL bytes after that recreation, while an
+actual additional table privilege must change the observation. The observer
+fingerprint changes with this fixed implementation; old accepted genesis pins
+are never silently replaced or normalized during replay.
+
+Each staged candidate remains an immutable source finding even when it produces
+no Story. `basic_variant` supplies an actual body plus a complete Unicode-offset
+evidence map; title and summary have no body fallback. A missing body is either
+explicit `facts_only` or `needs_context` with the existing reachable research
+frontier. Dates, observations and model-selected entity keys remain attached to
+the finding. Source excerpts are checked against exact persisted region bytes
+and an imported passage. These structural checks do not establish historical
+truth or independently judge narrative quality.
+
+The importer resolves stable source-bound IDs and gets vectors for the exact
+body through the same Kaggle DOCUMENT admission as source passages. The accepted
+command contains those results; recovery never reruns the model or substitutes a
+new summary. Native activation must save source, findings, Story, actual default
+Variant revision/body, evidence/projection, frontier and apply outcome atomically.
+A successful saved Story requires actual ordinary native get/readback of those
+exact bytes and reference.
+
+This document tracks implementation in progress. The resolved contract has
+synthetic validation checks; native SQL/read/search integration, rollback/replay
+fixtures and actual target acceptance are not established by that result. The
+existing target still rejects unsupported Story operations until the explicit
+native handlers/proof/output path is installed through its ordered barrier.
+No current controller, runtime configuration or public profile is changed here.
+Legacy SQLite Story ingestion is not a substitute or fallback for this path.
+
+## Synthetic native evidence, 2026-10-20
+
+Six bounded PG17.10/pgvector0.8.2 tests passed in a network-isolated disposable
+fixture. They verified exact saved body/default reference through the ordinary
+native read function, history/variants, direct lexical+dense candidates/hydrate,
+retry and a new connection, withdrawal, mid-Story failure rollback of the entire
+source/frontier/applied receipt, unchanged accepted body/outcome replay into a
+fresh generation, false-quote rejection, and unique full catalog identifiers.
+They also verified accepted author/request/op/sequence receipts and rejected a
+consistently forged saved body after a synthetic immutable-trigger bypass.
+The fixture consumed 192MiB with 96MiB PGDATA tmpfs; the final six-test run lasted8.063s
+and verified stop/removal/absence. No BGE, provider, real source or deployment was
+involved. PG17.11 remains a candidate artifact pin rather than this observation.
+
+The new long foreign keys exposed a catalog-observer bug: a CASE branch of
+`pg_catalog.name` truncated combined internal trigger identifiers to63bytes.
+Casting that branch to text preserves the actual unique identifiers. The
+reference catalog has488 records/183951bytes, so the512-record/1MiB bounds
+remain unchanged. Its base64 catalog occupies245268bytes; this is not a claimed
+actual BOOTSTRAP_OBSERVATION frame size. Native definitions independently report
+SECURITY INVOKER/bootstrap ownership. Safe role/ACL and catalog reference bytes
+are retained separately from code under the central managed artifact task.
+
+This is fresh-generation7 evidence only. All existing generation6 data and v1
+handlers remain intact. An initialized generation6 must not receive007 through
+adoption or latest-first replay. A future ordered migration barrier is a separate
+unpassed gate. Native WSS routing, Story output/auth fences, full MCP get/readback,
+private drafts, editing/merging/archive/review parity, and qualitative human
+source-fidelity comparison remain incomplete and do not follow from these tests.
+
+
+The schema7 history observer locks Story rows beside the source/applied prefix
+and checks native rows against the exact captured applied v2 command payload.
+Dev still checks the immutable remote journal and contiguous applied receipt
+prefix; no body or SQL RPC is sent to Dev for that proof. Incremental extension
+checks affected accepted import origins, while unchanged renewal retains the
+same verified immutable prefix. The bounded native origin pass currently caps
+history at10000 applied commands; larger histories require the retained-prefix
+checkpoint improvement before claiming scalable recovery acceptance.
+
+Fresh initialization selects artifacts through
+`kaggle_owned_pg.sql_artifacts(schema_revision)`: schema6 remains001..006 and
+schema7 selects001..007. The schema7 reader receives only the fixed four Story
+read functions and their required read tables; the origin verifier uses the
+separate trusted maintenance connection. No existing generation is adopted or
+modified by this selection.
+
+
+The typed `STORY_READ` request uses the existing shared read admission and fixed
+`read_story_v1` function for get/history/variants. It does no tokenizer count or
+model forward. A seventh native test executes these typed reads and the same
+resident hybrid search pipeline against actual PG, returning the exact accepted
+body/default variant. The seven-test fixture passed in7.927s. Existing Query
+Story search uses fixed indexed lexical/dense candidates, the same RRF and
+batched hydration, and explicitly reports bounded retrieval. The output gate
+requires the installed v2 revision7 handler, validates exact Story records,
+checks current source facts, and removes body plus all nested metadata/history
+on source restriction. Explicit StoryB is unaffected by unrelated pendingA.
+
+The trusted `search_adapter` seam accepts an already retained adapter authority,
+exact destination and request/turn/minimum-cursor/absolute deadline. It shares
+the same source pipeline, authority recheck, admission and final issuance guard;
+it creates no fake OAuth principal and transfers release ownership through the
+request-local output boundary. Missing final output capture remains unavailable.
+
+The configured target registers `story_get`, `story_search`, `story_history` and
+`story_variants` only when the same retained spool registry contains the exact
+v2/schema7 handler. Startup binds their actual callables into the native history
+route closure. MCP calls use the existing OAuth authority, read admission and
+request-local final HTTP issuance; gen6/source-only configurations expose no
+native Story tools. Joined tests exercise MCP get/history/variants through real
+synthetic OAuth/queue/spool owners, with only native receipt production mocked.
+Actual PG get/history/variants and hybrid body retrieval are separately verified
+by the synthetic native fixture; a complete real target import-to-MCP readback
+has not been performed here. Unsupported Story views, mutations, private
+variants, calendar/observation/entity/GEO/case operations remain explicit gaps.

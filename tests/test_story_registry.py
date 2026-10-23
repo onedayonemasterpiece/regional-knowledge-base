@@ -431,7 +431,11 @@ async def test_function_call_surface_actual_mutation_receipt_and_readback(setup,
     assert fetched["snapshot"]["seed"]["origin_status"] == "unknown"
     search = unpack(await server._tool_manager.call_tool(
         "story_search", {"query": "фонарь", "limit": 3}, None))
-    assert any(x["story_id"] == story_id for x in search["results"])
+    # This fixture has no Kaggle inference/index. A real saved story remains
+    # readable, but lexical-only discovery cannot masquerade as hybrid search.
+    assert search["status"] == "unavailable"
+    assert search["reason"] == "hybrid_search_required"
+    assert "results" not in search
 
 
 def test_story_interest_scoring_order_and_typed_filters(setup):

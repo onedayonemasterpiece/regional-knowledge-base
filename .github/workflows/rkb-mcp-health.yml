@@ -1,0 +1,31 @@
+name: rkb-mcp-health
+
+on:
+  push:
+    branches: [chatgpt/rkb-mcp-health-20261022, chatgpt/rkb-health-public-receipt-20261022]
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src:tests
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e '.[dev,ingest,kaggle]'
+      - run: python -m pytest tests/test_kaggle_health.py -q --junitxml=health.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rkb-mcp-health
+          path: health.xml
+          retention-days: 14

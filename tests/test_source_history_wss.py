@@ -1,0 +1,503 @@
+"""Actual spool/journal + fixed native observer over synthetic PG; no effects."""
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from regional_knowledge.control_spool import SpoolConflict
+from regional_knowledge.kaggle_source_history_native import NativeSourceHistoryObserver,canonical,digest
+from regional_knowledge.kaggle_source_acl import NativeHistoryError
+from regional_knowledge.source_history_wss import WssSourceHistoryVerifier
+from test_control_spool import env,accept,people,receipt
+from test_source_history_verifier import Pg,Cursor
+from test_source_read_gate import binding
+
+
+class NativeCursor(Cursor):
+    async def execute(self,sql,args=None):
+        self.pg.sql.append(sql)
+        if 'SELECT kind,name' in sql:self.rows=list(self.pg.acl)
+        elif 's.applied_seq FROM rkb_v4.recovery_state' in sql:self.rows=[('db-source','writer-1',self.pg.applied_seq)]
+        elif sql.startswith('SELECT EXISTS'):self.rows=[(self.pg.nonempty,)]
+        elif sql.startswith('SELECT sequence,'):
+            start,earlier,enabled,_=args
+            self.rows=[r for r in self.pg.receipts if enabled and (r[0]>start or r[0] in earlier)]
+        elif sql.startswith('SELECT rkb_v4.verify_source_graph_origins_'):self.rows=[(getattr(self.pg,'graph_valid',True),)]
+        elif sql.startswith('SELECT rkb_v4.verify_source_story_origins_'):self.rows=[(getattr(self.pg,'origin_valid',True),)]
+        elif sql.startswith('SELECT %s'):self.rows=[args]
+        else:self.rows=[]
+        return self
+    async def fetchmany(self,n):result,self.rows=self.rows[:n],self.rows[n:];return result
+    async def close(self):pass
+
+
+class NativePg(Pg):
+    def cursor(self,**kwargs):return NativeCursor(self)
+    async def execute(self,sql,args=None):return await self.cursor().execute(sql,args)
+
+
+def pair(e,*,lease_seconds=10,schema_revision=None,geo_bootstrap_operation_keys=(),extra_routes=()):
+    b=binding();pg=NativePg();database=SimpleNamespace(schema_version=int(schema_revision.split('-')[3]) if schema_revision is not None else 16,database_generation='db-source',writer_generation='writer-1')
+    if schema_revision is not None:database.schema_revision=schema_revision
+    routes=('source.search','source.fetch','source.withdraw')+extra_routes
+    if schema_revision in ('rkb-v4-sql001-008-v1','rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):
+        routes=routes+('source.import','story.get','story.history','story.search','story.variants',
+            'source.fact_read','source.calendar','source.observations')
+    if schema_revision in ('rkb-v4-sql001-009-v1','rkb-v4-sql001-011-v1'):routes=routes+('story.edit','story.access','source.catalog')
+    if schema_revision=='rkb-v4-sql001-011-v1':routes=routes+('source.entity_read','source.entity_list')
+    async def probe(**kwargs):return b'catalog',dict(schema_version=database.schema_version,database_generation='db-source',applied_seq=pg.applied_seq)
+    native=NativeSourceHistoryObserver(acquire=pg.acquire,database=database,identity=('run','nonce','inc'),registry=e.registry,
+        current=lambda key:key==('run','inc',1),probe=probe,lease_seconds=lease_seconds)
+    native.attached(1)
+    verifier=WssSourceHistoryVerifier(e.spool, acquire=None, database=database, observer_sha256=native.code_hash, binding_current=lambda current: current is b, routes={k: lambda: None for k in routes}, expected_schema_version=database.schema_version, writer_generation='writer-1', geo_bootstrap_operation_keys=geo_bootstrap_operation_keys)
+    calls=[]
+    async def phase(binding,args):
+        calls.append(args)
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='native-history',claim='claim',
+            kind='recovery_phase',run_id='run',launch_nonce='nonce',runtime_incarnation='inc',
+            database_generation='db-source',writer_generation='writer-1',phase='source_history',operation_key=digest(canonical(args)),
+            arguments=args,request_sha256=digest(canonical({'phase':'source_history','arguments':args})),
+            compute_claim='actual-shared-slot',dispatch_generation=1)
+        value=(await native(frame))['value']
+        if 'error' in value:raise SpoolConflict(value['error'])
+        return value
+    verifier._phase=phase
+    return SimpleNamespace(v=verifier,n=native,pg=pg,b=b,calls=calls)
+
+
+@pytest.mark.asyncio
+async def test_native_empty_genesis_then_exact_delta_and_cheap_renewal(env):
+    p=pair(env)
+    try:
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current() and proof.applied_sequence==0 and not p.n._sessions
+        seal=await accept(env)
+        # Pending accepted withdrawal is covered as a restriction before apply.
+        proof=await p.v.extend(p.b)
+        assert proof.current() and len(proof.pending)==1 and proof.applied_sequence==0
+        native=receipt(env.cmd);p.pg.applied_seq=1
+        p.pg.receipts=[(1,env.cmd.operation_key,digest(env.cmd.encode()),env.registry.resolve(env.cmd).fingerprint,
+            seal.manifest.sha256,native.status,native.outcome_sha256,digest(native.outcome),len(native.outcome),
+            'db-source',digest(env.cmd.encode()))]
+        await env.journal.record_outcome(seal,command=env.cmd,database_generation='db-source',outcome=native.outcome,writer_generation='writer-1')
+        proof=await p.v.extend(p.b)
+        assert proof.current() and proof.applied_sequence==1 and not proof.pending
+        before=len(env.store.reads)
+        proof=await p.v.renew(p.b)
+        assert proof.current() and not any('/manifests/' in x for x in env.store.reads[before:])
+        assert p.calls[-3]['mode']=='renew'
+        assert not any('pg_authid' in sql for sql in p.pg.sql)
+        assert not p.n._sessions
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_uncovered_native_data_and_forged_native_receipt_fail_closed(env):
+    p=pair(env)
+    try:
+        p.pg.nonempty=True
+        with pytest.raises(SpoolConflict):await p.v.establish_genesis(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+    p=pair(env)
+    try:
+        await p.v.establish_genesis(p.b);seal=await accept(env);native=receipt(env.cmd);p.pg.applied_seq=1
+        p.pg.receipts=[(1,env.cmd.operation_key,digest(env.cmd.encode()),env.registry.resolve(env.cmd).fingerprint,
+            seal.manifest.sha256,'applied',native.outcome_sha256,'f'*64,len(native.outcome),'db-source',digest(env.cmd.encode()))]
+        with pytest.raises(SpoolConflict,match='metadata differs'):await p.v.extend(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_native_lock_lease_expires_and_json_cannot_create_prefix(env):
+    p=pair(env,lease_seconds=.02)
+    try:
+        args=dict(action='open',mode='full',nonce='a'*48,schema_version=p.v.schema_version,
+            registry_sha256=p.v.registry_hash,observer_sha256=p.n.code_hash,routes=sorted(p.v.routes),prefix=None,pending_sequences=[])
+        opened=await p.v._phase(p.b,args)
+        assert opened['session'] in p.n._sessions
+        await asyncio.sleep(.04)
+        assert not p.n._sessions
+        with pytest.raises(SpoolConflict,match='expired'):
+            await p.v._phase(p.b,dict(action='page',session=opened['session'],after=0))
+        with pytest.raises(SpoolConflict,match='retained_prefix'):
+            await p.v._phase(p.b,args|dict(mode='delta',prefix='serialized-complete-is-not-permission'))
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_actual_transport_invokes_prepared_history_handler_on_same_resource():
+    from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+    from test_bge_shared_worker import Peer,result
+    from test_bge_wss_worker import module,CONFIG
+    from test_kaggle_bootstrap import candidate
+    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event();calls=[]
+    class Observer:
+        def attached(self,generation):calls.append(('attached',generation))
+        def detached(self,generation):calls.append(('detached',generation))
+        async def __call__(self,frame):
+            calls.append(('observe',frame['compute_claim']))
+            return dict(phase='source_history',request_sha256=frame['request_sha256'],value={'nonce':'native'})
+    async def read(frame,*,encode):return result(frame)
+    async def prepare(encoder,**identity):return PreparedRuntime(read,candidate(),source_history_handler=Observer())
+    def load():
+        def forbidden(text):raise AssertionError('native history invoked BGE')
+        return forbidden
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),load,lambda:{},prepare_runtime=prepare,
+        connector=peer.connect,stop=stop,heartbeat_seconds=.01,maximum_seconds=3)
+    task=asyncio.create_task(worker.run())
+    try:
+        await peer.wait('READY')
+        await peer.put(dict(type='DISPATCH',id='history',claim='claim',kind='recovery_phase',phase='source_history',
+            operation_key='history',request_sha256='a'*64,arguments={'action':'open'},run_id=CONFIG['run_id'],
+            launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation,database_generation='db',
+            writer_generation='writer',compute_claim='same-native-slot',dispatch_generation=1))
+        result=await peer.wait('RECOVERY_PHASE_RESULT');await peer.wait('RESOURCE_RELEASED')
+        assert result['receipt']['value']=={'nonce':'native'}
+        assert ('attached',1) in calls and ('observe','same-native-slot') in calls
+        await peer.put(dict(type='RESULT_ACK',job_id='history',claim='claim',status='accepted'))
+    finally:stop.set();await task
+
+
+@pytest.mark.asyncio
+async def test_fresh8_history_uses_fixed_v2_origin_proof_and_fact_table_locks(env):
+    p=pair(env,schema_revision='rkb-v4-sql001-008-v1')
+    try:
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current()
+        assert any('LOCK TABLE rkb_v4.source_event_dates,rkb_v4.source_observations' in sql for sql in p.pg.sql)
+        assert 'SELECT rkb_v4.verify_source_story_origins_v2(%s::uuid[])' in p.pg.sql
+        assert not any('verify_source_story_origins_v1(' in sql for sql in p.pg.sql)
+        p.pg.origin_valid=False
+        with pytest.raises(SpoolConflict,match='story_origin_uncovered'):await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+@pytest.mark.asyncio
+async def test_fresh9_history_requires_exact_manifest_editorial_origin_proof_and_locks(env):
+    p=pair(env,schema_revision='rkb-v4-sql001-009-v1')
+    try:
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])' in p.pg.sql
+        assert any('LOCK TABLE rkb_v4.source_manifests,rkb_v4.source_catalog,rkb_v4.source_passage_provenance,rkb_v4.editorial_story_heads' in sql for sql in p.pg.sql)
+        assert not any('verify_source_story_origins_v2(' in sql for sql in p.pg.sql)
+        p.pg.origin_valid=False
+        with pytest.raises(SpoolConflict,match='story_origin_uncovered'):await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+def test_editorial_history_classification_uses_exact_installed_contract_and_route(env):
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.story_editorial import editorial_handler,STORY_EDIT
+    from test_story_editorial import command
+    h=editorial_handler(route=STORY_EDIT,check_sha256='a'*64,apply_sha256='b'*64)
+    env.spool.registry=HandlerRegistry([h]);env.registry=env.spool.registry
+    p=pair(env,schema_revision='rkb-v4-sql001-009-v1')
+    c=command()
+    assert p.v._classify(c.encode(),None)[1]==h
+    p.v.routes.pop('story.edit')
+    with pytest.raises(SpoolConflict):p.v._classify(c.encode(),None)
+
+
+@pytest.mark.asyncio
+async def test_fresh11_requires_both_story_and_graph_origin_proofs(env):
+    from regional_knowledge.kaggle_domain_schema import TABLES_11
+    p=pair(env,schema_revision='rkb-v4-sql001-011-v1')
+    try:
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert 'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])' in p.pg.sql
+        assert 'SELECT rkb_v4.verify_source_graph_origins_v1(%s::uuid[])' in p.pg.sql
+        locks=' '.join(sql for sql in p.pg.sql if sql.startswith('LOCK TABLE'))
+        assert all('rkb_v4.'+name in locks for name in TABLES_11 if name.startswith('source_'))
+        p.pg.graph_valid=False
+        with pytest.raises(SpoolConflict,match='graph_origin_uncovered'):
+            await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+def large_geo_commands(owner):
+    import copy
+    from test_geo_migration import snapshot,uid
+    from regional_knowledge.geo_migration import InventoryCounts,sha
+    from regional_knowledge.geo_whitelist import build_geo_whitelist
+    from regional_knowledge.geo_manifest_commands import plan_geo_manifest
+    data=snapshot();template=copy.deepcopy(data['entities'][0]);mention=data['mentions'][0];intent=data['geo_intents'][0]
+    template['external_ref']=None;template['metadata']={'poi_locator':template['metadata']['poi_locator']}
+    nodes=[dict(template,id=uid(1000+n)) for n in range(409)];mentions=[];intents=[]
+    for n in range(1008):
+        item=dict(mention,id=uid(10000+n),entity_id=nodes[n%409]['id']);mentions.append(item)
+        if n<540:
+            value=copy.deepcopy(intent)
+            value.update(request_id='geor_'+f'{n:032x}',mention_id=item['id'],entity_id=item['entity_id'])
+            value['mention_sha256']=sha(dict(doc=item['document_id'],revision=item['revision'],mention_id=item['id'],
+                evidence=item['evidence'],name=item['exact_source_spelling']))
+            intents.append(value)
+    data.update(entities=nodes,mentions=mentions,aliases=[],relations=[],geo_intents=intents,
+        expected_counts=InventoryCounts(entities=409,geo_places=409,mentions=1008,aliases=0,relations=0,geo_intents=540,accepted_geo_metadata=0))
+    return plan_geo_manifest(build_geo_whitelist(**data)).commands(first_sequence=1,
+        operation_key='geo-bootstrap-synthetic',request_id='geo-bootstrap-synthetic',person_id=owner,
+        logical_time='2026-10-20T20:00:00Z')
+
+
+@pytest.mark.asyncio
+async def test_measured_geo_bootstrap_has_separate_bounded_history_window(env):
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from regional_knowledge.geo_manifest_commands import geo_manifest_handler,GEO_REVISIONS
+    from regional_knowledge.source_history_wss import GEO_BOOTSTRAP_HISTORY_BYTES
+    commands=large_geo_commands(env.p.owner.subject)
+    size=sum(len(c.encode()) for c in commands)
+    assert 4*1024*1024<size<GEO_BOOTSTRAP_HISTORY_BYTES
+    env.registry=HandlerRegistry([geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)])
+    env.spool.registry=env.registry
+    p=pair(env,schema_revision=GEO_REVISIONS.schema,geo_bootstrap_operation_keys=tuple(c.operation_key for c in commands))
+    try:
+        await p.v.establish_genesis(p.b)
+        for c in commands:
+            await env.spool.stage_domain_command(env.p.admin,c,database_generation='db-source')
+            await env.spool.seal(env.p.admin,c.operation_key,writer_generation='writer-1',predecessor=await env.journal.head())
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.accepted_sequence==len(commands) and len(proof.pending)==len(commands)
+        # Byte headroom is limited to explicitly configured GEO keys. Neither
+        # unknown GEO operations nor public source commands inherit it.
+        p.v.geo_bootstrap_operations=frozenset()
+        # A full rebuild after an expired proof must also support the same
+        # accepted chain above the retired 4 MiB pilot default.
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.accepted_sequence==len(commands)
+        # Explicit smaller budgets and their fail-closed behavior still apply.
+        p.v.max_history_bytes=4*1024*1024
+        with pytest.raises(SpoolConflict,match='budget exceeded'):await p.v.restore(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+def test_geo_window_cannot_expand_ordinary_source_or_unlisted_operation_budget(env):
+    from regional_knowledge.source_history_wss import GEO_BOOTSTRAP_HISTORY_BYTES
+    p=pair(env,geo_bootstrap_operation_keys=('geo-open',))
+    geo=SimpleNamespace(route='geo.manifest.install.v1',schema_revision='rkb-v4-sql001-011-v1',operation_key='geo-open')
+    usage=[0,0]
+    p.v._charge_history(usage,geo,GEO_BOOTSTRAP_HISTORY_BYTES)
+    p.v._charge_history(usage,env.cmd,p.v.max_history_bytes)
+    assert usage==[p.v.max_history_bytes,6*1024*1024]
+    for command in (env.cmd,SimpleNamespace(**dict(vars(geo),operation_key='not-configured'))):
+        with pytest.raises(SpoolConflict):p.v._charge_history([p.v.max_history_bytes,0],command,1)
+    with pytest.raises(SpoolConflict):p.v._charge_history([0,GEO_BOOTSTRAP_HISTORY_BYTES],geo,1)
+
+
+@pytest.mark.asyncio
+async def test_seven_command_cloud_preparation_finishes_before_short_native_lease(env):
+    p=pair(env)
+    try:
+        await p.v.establish_genesis(p.b)
+        for sequence in range(1,8):
+            command=replace(env.cmd,sequence=sequence,operation_key='cloud-prefix:'+str(sequence))
+            seal=await accept(env,cmd=command,predecessor=await env.journal.head())
+            outcome=receipt(command)
+            p.pg.receipts.append((sequence,command.operation_key,digest(command.encode()),env.registry.resolve(command).fingerprint,
+                seal.manifest.sha256,outcome.status,outcome.outcome_sha256,digest(outcome.outcome),len(outcome.outcome),
+                'db-source',digest(command.encode())))
+            await env.journal.record_outcome(seal,command=command,database_generation='db-source',
+                outcome=outcome.outcome,writer_generation='writer-1')
+        p.pg.applied_seq=7
+        original=env.journal._read;active=0;peak=0
+        async def slow_cloud(*args,**kwargs):
+            nonlocal active,peak
+            assert not p.n._sessions, 'network I/O must not retain the native history transaction'
+            active+=1;peak=max(peak,active)
+            try:
+                await asyncio.sleep(.006)
+                return await original(*args,**kwargs)
+            finally:active-=1
+        env.journal._read=slow_cloud
+        p.v.timeout_seconds=.03;p.v.cloud_prepare_seconds=.5
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.applied_sequence==7
+        assert peak==4 and not p.n._sessions
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_history_page_timeout_drains_native_abort_before_unlock(env):
+    """A timed-out PAGE cannot release writes while its native SHARE tx lives."""
+    p=pair(env);p.v.timeout_seconds=.03
+    original=p.v._phase;aborting=asyncio.Event();release_abort=asyncio.Event()
+    async def phase(binding,args):
+        if args['action']=='page':await asyncio.Event().wait()
+        if args['action']=='abort':
+            aborting.set();await release_abort.wait()
+        return await original(binding,args)
+    p.v._phase=phase
+    task=asyncio.create_task(p.v.establish_genesis(p.b))
+    try:
+        await asyncio.wait_for(aborting.wait(),.5)
+        assert env.spool._lock.locked() and env.spool._native_history_unsettled
+        assert p.n._sessions and not task.done()
+        release_abort.set()
+        with pytest.raises(TimeoutError):await task
+        assert not env.spool._lock.locked() and not env.spool._native_history_unsettled
+        assert not p.n._sessions and p.v._coverage is None
+        assert p.calls[-1]['action']=='abort'
+    finally:
+        release_abort.set()
+        if not task.done():task.cancel();await asyncio.gather(task,return_exceptions=True)
+        await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_page_cancel_keeps_exclusion_until_actual_abort(env):
+    p=pair(env);original=p.v._phase
+    paging=asyncio.Event();aborting=asyncio.Event();release_abort=asyncio.Event()
+    async def phase(binding,args):
+        if args['action']=='page':paging.set();await asyncio.Event().wait()
+        if args['action']=='abort':aborting.set();await release_abort.wait()
+        return await original(binding,args)
+    p.v._phase=phase;task=asyncio.create_task(p.v.establish_genesis(p.b))
+    try:
+        await asyncio.wait_for(paging.wait(),.5);task.cancel()
+        await asyncio.wait_for(aborting.wait(),.5)
+        for _ in range(3):task.cancel();await asyncio.sleep(0)
+        assert not task.done() and env.spool._lock.locked()
+        assert env.spool._native_history_unsettled and p.n._sessions
+        release_abort.set()
+        with pytest.raises(asyncio.CancelledError):await task
+        assert not p.n._sessions and not env.spool._lock.locked()
+        assert not env.spool._native_history_unsettled and p.v._coverage is None
+    finally:
+        release_abort.set()
+        if not task.done():task.cancel();await asyncio.gather(task,return_exceptions=True)
+        await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_abort_unknown_retains_write_guard_until_fresh_exact_native_close(env):
+    p=pair(env);original=p.v._phase
+    async def broken(binding,args):
+        if args['action']=='page':raise SpoolConflict('synthetic page receipt unavailable')
+        if args['action']=='abort':raise TimeoutError('synthetic unknown abort')
+        return await original(binding,args)
+    p.v._phase=broken
+    try:
+        with pytest.raises(SpoolConflict):await p.v.establish_genesis(p.b)
+        assert not env.spool._lock.locked() and env.spool._native_history_unsettled
+        assert p.n._sessions and p.v._coverage is None
+        p.v._phase=original
+        # An arbitrary new request cannot prove the old native transaction ended.
+        with pytest.raises(SpoolConflict,match='session_busy'):await p.v.establish_genesis(p.b)
+        assert env.spool._native_history_unsettled
+        await p.n.aclose()  # Actual native owner closes the previous transaction.
+        assert env.spool._native_history_unsettled
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current() and not env.spool._native_history_unsettled
+        assert not p.n._sessions
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_lost_open_receipt_never_guesses_native_lock_release(env):
+    p=pair(env);original=p.v._phase
+    async def lost(binding,args):
+        value=await original(binding,args)
+        if args['action']=='open':raise TimeoutError('synthetic lost open receipt')
+        return value
+    p.v._phase=lost
+    try:
+        with pytest.raises(TimeoutError):await p.v.establish_genesis(p.b)
+        assert env.spool._native_history_unsettled and p.n._sessions
+        assert not any(c['action']=='abort' for c in p.calls)  # Session identity was never received.
+        await p.n.aclose()
+        assert env.spool._native_history_unsettled
+        p.v._phase=original
+        assert (await p.v.establish_genesis(p.b)).current()
+        assert not env.spool._native_history_unsettled
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_renewal_without_new_evidence_keeps_unexpired_proof_only(env):
+    """Timeout/unavailable observation defers renewal; it never extends trust."""
+    p=pair(env);original=p.v._phase
+    try:
+        proof=await p.v.establish_genesis(p.b)
+        assert proof.current()
+        async def unavailable(binding,args):
+            if args['action']=='open':raise SpoolConflict('native source history observation unavailable')
+            return await original(binding,args)
+        p.v._phase=unavailable
+        kept=await p.v.renew(p.b)
+        assert kept is proof and kept.current() and env.spool._source_anchor is proof
+        # The retained proof still expires at its own deadline; then it fails closed.
+        clock=p.v.clock;p.v.clock=lambda:clock()+p.v.coverage_seconds+1
+        with pytest.raises(SpoolConflict,match='observation unavailable'):await p.v.renew(p.b)
+        assert p.v._coverage is None and env.spool._source_anchor is None
+        p.v.clock=clock;p.v._phase=original
+        # Contradicting evidence is never deferred.
+        assert (await p.v.establish_genesis(p.b)).current()
+        async def contradicts(binding,args):
+            if args['action']=='open':raise SpoolConflict('native source observation binding differs')
+            return await original(binding,args)
+        p.v._phase=contradicts
+        with pytest.raises(SpoolConflict,match='binding differs'):await p.v.renew(p.b)
+        assert p.v._coverage is None
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
+async def test_valid_reads_remain_available_while_schema_prefix_is_rebuilt(env):
+    p=pair(env)
+    try:
+        previous=await p.v.establish_genesis(p.b)
+        assert previous.current() and env.spool._source_anchor is previous
+        # Compatible migration retires only the native prefix, not the binding,
+        # accepted journal or existing unexpired read proof.
+        p.v._native_prefix=None
+        opened=asyncio.Event();release=asyncio.Event()
+        phase=p.v._phase
+        async def paused(binding,args):
+            if args['action']=='open':
+                opened.set();await release.wait()
+            return await phase(binding,args)
+        p.v._phase=paused
+        task=asyncio.create_task(p.v.restore(p.b))
+        await asyncio.wait_for(opened.wait(),1)
+        try:
+            assert previous.current()
+            assert env.spool._source_anchor is previous
+        finally:
+            release.set()
+            refreshed=await task
+        assert refreshed.current() and refreshed is not previous
+        assert not previous.current()
+    finally:await p.n.aclose()
+
+
+@pytest.mark.parametrize('failure',['deadline','contradiction'])
+@pytest.mark.asyncio
+async def test_retained_refresh_proof_still_expires_and_contradictions_revoke_it(env,monkeypatch,failure):
+    p=pair(env)
+    try:
+        previous=await p.v.establish_genesis(p.b)
+        p.v._native_prefix=None
+        opened=asyncio.Event();release=asyncio.Event();phase=p.v._phase
+        async def paused(binding,args):
+            if args['action']=='open':opened.set();await release.wait()
+            return await phase(binding,args)
+        p.v._phase=paused
+        task=asyncio.create_task(p.v.restore(p.b))
+        await asyncio.wait_for(opened.wait(),1)
+        assert previous.current()
+        if failure=='deadline':
+            monkeypatch.setattr(p.v,'clock',lambda:previous.deadline+1)
+            assert not previous.current()
+        else:p.pg.origin_valid=False
+        release.set()
+        if failure=='contradiction':
+            with pytest.raises(SpoolConflict,match='origin'):await task
+            assert p.v._coverage is None and env.spool._source_anchor is None
+        else:
+            assert (await task).current() and not previous.current()
+    finally:await p.n.aclose()

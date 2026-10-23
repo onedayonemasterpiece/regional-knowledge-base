@@ -1,14 +1,16 @@
 # Импорт: source fidelity, знания и сохранённые рассказы
 
+Уточнения владельца 21.10.2026: [owner alignment](designs/rkb-owner-alignment-20261021.md). Ровно один active owner-only import, включая resume/reprocess; reads продолжаются. Все рабочие stages/graph, проверка complete BGE input и установка document vectors выполняются в Kaggle/PG. Dev не хранит второй рабочий книжный graph. Целевой Telegram archive — direct Telethon, presence-only media verification; Dataset primary и weekly Yandex backup, без ложного Saved до доказанной внешней сохранности.
+
 Контракт20.10.2026 для target PostgreSQL/pgvector+BGE в Kaggle. [Единое задание](prompts/rkb-scalable-kaggle-implementation-20261019.md) содержит полный prompt, recovery и gates. Смена документа не означает выполненный импорт.
 
 ## Обычный пользовательский сценарий
 
-«Добавь эту книгу» + PDF/DjVu запускает `book_ingest(start)`; модель продолжает pages → stage → validate → finalize/status. Пользователь не обязан знать UUID, cursor или duplicate_policy. Для уже принятой **в новой системе** книги: `book_find` (до8 результатов) → `reprocess(document_id)` по проверенному оригиналу. Несколько правдоподобных изданий требуют выбора по названию/автору/году, а не угадывания. Новый cutover всегда fresh MCP import: old non-GEO content не переносится.
+«Добавь эту книгу» + PDF/DjVu запускает `book_ingest(start)`; модель читает реально доступные ей страницы и продолжает stage → validate → finalize/status. Если пиксели уже доступны клиенту, повторный backend render не нужен; `book_pages` используется по запросу для отсутствующих страниц/продолжения. Пользователь не обязан знать UUID, cursor или duplicate_policy. Для уже принятой **в новой системе** книги: `book_find` (до8 результатов) → `reprocess(document_id)` по проверенному оригиналу. Несколько правдоподобных изданий требуют выбора по названию/автору/году, а не угадывания. Новый cutover всегда fresh MCP import: old non-GEO content не переносится.
 
 Идентичность оригинала — SHA-256, издание, формат и physical page count, не имя файла. Повтор того же attachment/reprocess idempotent, concurrent start не создаёт дубли. Один SHA не сливает разные явно выбранные logical documents. Нормальный повтор возобновляет pending revision; explicit new_revision создаёт новую только по осознанному намерению, со своим stable key.
 
-Original archive pending означает wait/resume. Если verified archive действительно недоступен, owner может приложить тот же оригинал к reprocess: сервер проверяет SHA/format/page count до открытия revision, резервирует staging capacity и восстанавливает только private source bytes. Иное издание не принимается как тот же источник. Предыдущая active revision продолжает работать до принятия замены.
+Original archive pending означает wait/resume соответствующей archive-операции; её успех — доступный ожидаемый Telegram media locator, не mandatory download/hash comparison. Если verified archive действительно недоступен, owner может приложить тот же оригинал к reprocess: сервер проверяет SHA/format/page count до открытия revision, резервирует staging capacity и восстанавливает только private source bytes. Иное издание не принимается как тот же источник. Предыдущая active revision продолжает работать до принятия замены.
 
 Ожидание относится к конкретной операции с ещё недоступными bytes. Готовый текстовый поиск по уже принятому корпусу не ждёт Telegram preflight, оригинала или proof. Text/archive/proof readiness различаются; source-fidelity и обязательные archive/recovery gates самого импорта этим не обходятся.
 
@@ -20,7 +22,7 @@ Upload attempts имеют разные immutable keys и один transfer ID; 
 
 ## Чтение и ограниченный stage
 
-`book_pages` возвращает реальные MCP ImageContent и native block previews: default4, maximum8 страниц. Native extraction — помощь чтению, не OCR/semantic authority. Calling model визуально читает source, backend не вводит скрытый OCR/VLM/LLM extraction service.
+`book_pages` возвращает реальные MCP ImageContent и native block previews: default4, maximum8 страниц. Native extraction — необязательная помощь, не OCR/semantic authority и не gate совпадения с транскрипцией модели. Calling model визуально читает source; backend не вводит скрытый OCR/VLM/LLM, полный предварительный обход книги или обязательное архивирование всех page derivatives.
 
 Native block metadata сохраняет original_length/offset/end/truncated/continuation. Block continuation выдаёт до1000 символов и соответствующую страницу; repeated cursor возвращает тот же диапазон. Finish block cursor до перехода к следующему; `blocks_continuation` раскрывает блоки за preview cap80. Page preview до24000 символов не доказывает полноту. Empty native text может сопровождать содержательную scan page. CID/ToUnicode encoding_notice требует сверки с изображением; отсутствие notice не отменяет её.
 
@@ -66,6 +68,6 @@ Accepted source pages/evidence/history остаются immutable. Catalog.updat
 
 ## Приёмка
 
-Свежие A→B, B→A и concurrent imports; retry stage/finalize/extract/body save; отсутствие эпизода при полной сохранности фактов;Cross-page episode; настоящие body после restart через get/search/voice; exact proof и archive continuation; metadata repair без переписывания source; withdrawal/read-after-write; per-book natural/paraphrased/cross-language retrieval на точной revision. Затем protected scale100books/100kchunks, BGE Hit@5/10, latency и80/90% headroom. Одни vectors-ready/успешный finalize не являются массовой готовностью.
+Последовательные fresh A→B/B→A; competing start/resume подтверждают единственный owner import lease и конкурентные чтения, не несколько импортов; retry stage/finalize/extract/body save; отсутствие эпизода при полной сохранности фактов;Cross-page episode; настоящие body после restart через get/search/voice; exact proof и archive continuation; metadata repair без переписывания source; withdrawal/read-after-write; per-book natural/paraphrased/cross-language retrieval на точной revision. Затем protected scale100books/100kchunks, BGE Hit@5/10, latency и80/90% headroom. Одни vectors-ready/успешный finalize не являются массовой готовностью.
 
 Opt-in image continuation дополнительно проверяется в одном live context, после потери image/context, в новом чате и после изменения render. Все native offsets/blocks и source facts совпадают с полным контрактом; новый context снова получает реальные pixels. Проверить, что Telegram/proof outage не блокирует готовый text search во время imports, без увеличения разрешённого числа Kaggle runs.

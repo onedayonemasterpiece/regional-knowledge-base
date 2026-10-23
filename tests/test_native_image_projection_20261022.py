@@ -1,0 +1,321 @@
+"""Native image lowering on the same checked source-image and SQL015 boundary.
+
+These are synthetic image receipts and existing GH PG17 fixtures only, never
+provider bytes, Telegram crop uploads or a live book import.
+"""
+import copy
+import json
+from pathlib import Path
+from uuid import UUID, uuid5
+
+import pytest
+
+from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
+from regional_knowledge.source_stage import canonical, digest
+from test_native_source_materializer import PERSON, exact_batch
+from test_source_stage import SOURCE, original
+from test_source_activation_pg import image_pg_sql18, image_pg, PG
+from test_kaggle_pg_driver import database
+
+
+def illustrated_batch(*, foreign_reference=False, changed_receipt=False, missing_page=False):
+    raw = exact_batch(count=1, receipt=original(page_count=1))
+    page = raw["model_payload"]["pages"][0]
+    page_id = page["page_id"]
+    page["regions"].append(dict(region_key="figure-1", kind="figure",
+        reading_order=1, bbox=dict(left=110, top=115, right=320, bottom=365),
+        source_text=""))
+    page["regions"].append(dict(region_key="caption-1", kind="caption",
+        reading_order=2, bbox=dict(left=120, top=380, right=310, bottom=425),
+        source_text="A picture from this synthetic original."))
+    page["illustrations"] = [dict(illustration_key="picture", source_region_key="figure-1",
+        kind="photo", visual_description="Model-observed picture in the synthetic scan.",
+        visual_description_provenance="model_observation", visual_description_language="en",
+        display_rotation_degrees=90, caption_region_keys=["caption-1"],
+        nearby_region_keys=["body"])]
+    reference = dict(page_id=page_id, illustration_key="picture")
+    # The printed caption is model-reviewed source text, so retain it in the
+    # same exact passage instead of dropping textual coverage during activation.
+    raw["model_payload"]["chunks"][0]["region_refs"].append(
+        dict(page_id=page_id, region_key="caption-1"))
+    raw["model_payload"]["chunks"][0]["illustration_refs"] = [reference]
+    raw["model_payload"]["poi_media_links"] = [dict(link_key="picture-place",
+        poi_locator=dict(names=["Synthetic historic place"]), illustration_ref=reference,
+        relation="depicts")]
+    if foreign_reference:
+        raw["model_payload"]["chunks"][0]["illustration_refs"][0]["page_id"] = str(
+            uuid5(UUID(SOURCE), "foreign-page"))
+    if changed_receipt:
+        raw["model_payload"]["pages"][0]["source_image_receipt_sha256"] = "f" * 64
+    if missing_page:
+        raw["model_payload"]["poi_media_links"][0]["illustration_ref"]["page_id"] = str(
+            uuid5(UUID(SOURCE), "missing-image-page"))
+    return canonical(raw)
+
+
+async def compile_image(raw):
+    counted = []
+    async def count(text):
+        counted.append(text)
+        return len(text.split()) + 2
+    compiler = NativeSourceCompiler(count=count, current=lambda: True)
+    projection, media = await compiler.compile([raw], source_id=SOURCE, person_id=PERSON,
+        last_batch_sha256=digest(raw), include_illustrations=True)
+    return projection, media, counted
+
+
+@pytest.mark.asyncio
+async def test_native_image_projection_retains_crop_source_and_exact_links():
+    raw = illustrated_batch()
+    projection, media, counted = await compile_image(raw)
+    assert media["codec"] == "rkb.source-illustrations.v1"
+    assert media["source_id"] == SOURCE and media["source_revision"] == 1
+    assert len(media["illustrations"]) == len(media["passage_links"]) == len(media["poi_media_links"]) == 1
+    image = media["illustrations"][0]
+    binding = image["crop_binding"]
+    issued = projection["image_manifest"]["pages"][0]
+    assert binding == dict(source_id=SOURCE, source_revision=1,
+        illustration_id=image["illustration_id"], page_id=issued["page_id"],
+        source_region_id=image["source_region_id"], bbox=image["bbox"],
+        display_rotation_degrees=90, source_image_receipt_sha256=issued["source_image_receipt_sha256"],
+        source_raster_sha256=issued["image_sha256"],
+        original_sha256=projection["original"]["sha256"], rendition="preview")
+    assert image["caption_text"] == "A picture from this synthetic original."
+    assert image["illustration_id"] == str(uuid5(UUID(issued["page_id"]), "illustration:picture"))
+    assert media["passage_links"][0]["passage_id"] == projection["passages"][0]["passage_id"]
+    assert media["passage_links"][0]["illustration_ids"] == [image["illustration_id"]]
+    assert media["poi_media_links"][0]["illustration_id"] == image["illustration_id"]
+    assert media["poi_media_links"][0]["page_id"] == issued["page_id"]
+    assert counted == [projection["passages"][0]["body"]]
+    assert "illustrations" not in projection and "source_media" not in projection
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["foreign_reference", "changed_receipt", "missing_page"])
+async def test_native_image_projection_rejects_changed_or_cross_page_source(case):
+    raw = illustrated_batch(**{case: True})
+    with pytest.raises((ValueError, PermissionError)):
+        await compile_image(raw)
+
+
+@pytest.mark.asyncio
+async def test_figure_lowering_does_not_require_media_hash_identifiers(monkeypatch):
+    from regional_knowledge import kaggle_source_materializer as materializer
+    project=materializer.native_illustration_projection
+    def without_hash_ids(graph,resolved,locators):
+        value=copy.deepcopy(resolved)
+        value['original'].pop('sha256')
+        for page in value['image_manifest']['pages']:
+            page.pop('source_image_receipt_sha256')
+            page.pop('image_sha256')
+        return project(graph,value,locators)
+    monkeypatch.setattr(materializer,'native_illustration_projection',without_hash_ids)
+    _,media,_=await compile_image(illustrated_batch())
+    crop=media['illustrations'][0]['crop_binding']
+    assert crop['source_id']==SOURCE and crop['page_id']
+    assert all(crop[key] is None for key in
+        ('original_sha256','source_raster_sha256','source_image_receipt_sha256'))
+
+
+@PG
+@pytest.mark.asyncio
+async def test_pg_sql015_native_prepares_exact_illustration_candidate(image_pg_sql18):
+    """SQL015 checks the actual accepted page+crop and durable preparation.
+
+    Activation's SQL015 revision/handler rollout is owned by Shkiper. This
+    scoped source regression never fabricates a version upgrade or route grant.
+    """
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from psycopg.types.json import Jsonb
+    from regional_knowledge.kaggle_source_materializer import (
+        NativeSourceMaterializer, materializer_fingerprint)
+    from test_source_activation_pg import (
+        stage_all, stage_command, DB, WRITER, SEAL_ROUTE, seal)
+
+    env = image_pg_sql18
+    connection = env["connection"]
+    raw = illustrated_batch()
+    await stage_all(env, [json.loads(raw)])
+    forwarded = []
+
+    async def count(text):
+        return len(text.split()) + 2
+
+    async def encode(text):
+        forwarded.append(text)
+        return [1.0] + [0.0] * 1023
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    native = NativeSourceMaterializer(count=count, encode=encode, current=lambda: True)
+    owned = SimpleNamespace(database_generation=DB, writer_generation=WRITER)
+    command = stage_command(seal(1, digest(raw)), env["sequence"] + 1, SEAL_ROUTE)
+    await env["journal"].seal([command],
+        predecessor=await env["journal"].head(), writer_generation=WRITER)
+    await native(command, acquire=acquire, database=owned)
+
+    async with connection.transaction():
+        row = await (await connection.execute("""
+            SELECT c.knowledge,m.media,m.knowledge_sha256,m.media_sha256
+            FROM rkb_v4.source_activation_candidates c
+            JOIN rkb_v4.source_illustration_candidates m USING(source_id)
+            WHERE c.source_id=%s
+        """, (SOURCE,))).fetchone()
+        assert row is not None
+        knowledge, media, knowledge_hash, media_hash = row
+        assert knowledge_hash == digest(canonical(knowledge))
+        assert media_hash == digest(canonical(media))
+        assert (await (await connection.execute(
+            "SELECT rkb_v4.check_source_illustrations_v1(%s::jsonb,%s::jsonb,%s::uuid)",
+            (Jsonb(knowledge), Jsonb(media), SOURCE))).fetchone()) == (True,)
+
+        # Source/page identity still matters; media hash identifiers may change
+        # when a rendition is re-encoded, without becoming an acceptance gate.
+        for mismatch in ("source_id", "page_id", "original_sha256", "source_raster_sha256"):
+            changed = copy.deepcopy(media)
+            item = changed["illustrations"][0]
+            crop = item["crop_binding"]
+            if mismatch == "source_id":
+                changed["source_id"] = str(uuid5(UUID(SOURCE), "foreign-source"))
+            elif mismatch == "page_id":
+                item["page_id"] = str(uuid5(UUID(SOURCE), "missing-page"))
+            else:
+                crop[mismatch] = "f" * 64
+            assert (await (await connection.execute(
+                "SELECT rkb_v4.check_source_illustrations_v1(%s::jsonb,%s::jsonb,%s::uuid)",
+                (Jsonb(knowledge), Jsonb(changed), SOURCE))).fetchone()) == (
+                    mismatch in ('original_sha256','source_raster_sha256'),)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (0,)
+    assert forwarded == []  # Preparing metadata did not run the encoder/media provider.
+
+
+@PG
+@pytest.mark.asyncio
+@pytest.mark.parametrize('illustrated', [True, False])
+async def test_current_registry_activates_text_and_images_with_exact_receipts(image_pg_sql18, illustrated):
+    """Real accepted operations use the unmodified code registry and SQL ledger.
+
+    One current SQL015 handler covers both images and an empty text sidecar;
+    duplicate application preserves the original canonical receipt.
+    """
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_source_materializer import (
+        NativeSourceMaterializer, materializer_fingerprint,
+    )
+    from test_source_activation import activation_payload
+    from test_source_activation_pg import (
+        stage_all, stage_command, next_command, accepted, DB, WRITER,
+        SEAL_ROUTE, seal,
+    )
+
+    env = image_pg_sql18
+    connection = env["connection"]
+    raw = (illustrated_batch() if illustrated else
+           canonical(exact_batch(count=1, receipt=original(page_count=1))))
+    await stage_all(env, [json.loads(raw)])
+    forwards = []
+
+    async def count(text):
+        return len(text.split()) + 2
+
+    async def encode(text):
+        forwards.append(text)
+        return [1.0] + [0.0] * 1023
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    native = NativeSourceMaterializer(count=count, encode=encode, current=lambda: True)
+    owner = SimpleNamespace(database_generation=DB, writer_generation=WRITER)
+    sealing = stage_command(seal(1, digest(raw)), env["sequence"] + 1, SEAL_ROUTE)
+    await env["journal"].seal([sealing],
+        predecessor=await env["journal"].head(), writer_generation=WRITER)
+    await native(sealing, acquire=acquire, database=owner)
+    assert (await accepted(env, sealing)).status == "applied"
+
+    payload = {**activation_payload([json.loads(raw)], digest(raw)),
+               "materializer_sha256": materializer_fingerprint()}
+    materialize = next_command(payload, env["sequence"] + 1, ordinal=0)
+    await env["journal"].seal([materialize],
+        predecessor=await env["journal"].head(), writer_generation=WRITER)
+    await native(materialize, acquire=acquire, database=owner)
+    assert len(forwards) == 1
+    assert (await accepted(env, materialize)).status == "applied"
+
+    activation = next_command(payload, env["sequence"] + 1)
+    installed = env["registry"].resolve(activation)
+    assert installed.check.name == "check_source_activate_with_illustrations_v1"
+    assert installed.apply.name == "apply_source_activate_with_illustrations_v1"
+    first = await accepted(env, activation)
+    assert first.status == 'applied'
+    duplicate = await accepted(env, activation)
+    assert duplicate.duplicate and duplicate.outcome == first.outcome
+
+    async with connection.transaction():
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.sources WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (1,)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.source_illustrations WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (int(illustrated),)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.source_illustration_candidates WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (1,)
+        assert await (await connection.execute(
+            "SELECT count(*) FROM rkb_v4.source_activation_vectors WHERE source_id=%s",
+            (SOURCE,))).fetchone() == (1,)
+        assert await (await connection.execute(
+            'SELECT rkb_v4.verify_source_illustration_origins_v1(ARRAY[%s]::uuid[])',
+            (SOURCE,))).fetchone() == (True,)
+        origin = await (await connection.execute(
+            'SELECT operation_key,sequence,command_sha256 FROM rkb_v4.source_illustration_origins WHERE source_id=%s',
+            (SOURCE,))).fetchone()
+        assert origin == (activation.operation_key, activation.sequence, digest(activation.encode()))
+        knowledge,media = await (await connection.execute(
+            'SELECT k.knowledge,m.media FROM rkb_v4.source_activation_candidates k '
+            'JOIN rkb_v4.source_illustration_candidates m USING(source_id) WHERE source_id=%s',
+            (SOURCE,))).fetchone()
+        expected, expected_media, _ = await compile_image(raw)
+        assert knowledge == expected and media == expected_media
+        assert len(media['illustrations']) == int(illustrated)
+        assert len(media['passage_links']) == len(media['poi_media_links']) == int(illustrated)
+        readback = await (await connection.execute(
+            'SELECT data,passage_links,poi_media_links,archive_status '
+            'FROM rkb_v4.read_source_illustrations_v1(%s,NULL,4)', (SOURCE,))).fetchall()
+        if illustrated:
+            public_image = {k:v for k,v in media['illustrations'][0].items() if k!='crop_binding'}
+            assert readback == [(public_image, media['passage_links'], media['poi_media_links'], 'pending')]
+        else:
+            assert readback == []
+        if illustrated:
+            updated=copy.deepcopy(media)
+            crop=updated['illustrations'][0]['crop_binding']
+            for key in ('original_sha256','source_raster_sha256','source_image_receipt_sha256'):
+                crop[key]='f'*64
+            # An equivalent JSON serialization and refreshed representation
+            # identifiers update metadata rather than reject an immutable blob.
+            changed_bytes=json.dumps(updated,indent=2).encode()
+            assert await (await connection.execute(
+                'SELECT rkb_v4.prepare_source_activation_with_illustrations_v1('
+                '%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)',
+                (SOURCE,payload['ingestion_id'],payload['batch_count'],payload['last_batch_sha256'],
+                 payload['materializer_sha256'],canonical(knowledge),DB,WRITER,changed_bytes))).fetchone()==(
+                     digest(canonical(knowledge)),)
+            assert await (await connection.execute(
+                'SELECT m.media_sha256<>o.media_sha256, '
+                'rkb_v4.verify_source_illustration_origins_v1(ARRAY[%s]::uuid[]) '
+                'FROM rkb_v4.source_illustration_candidates m '
+                'JOIN rkb_v4.source_illustration_origins o USING(source_id) WHERE m.source_id=%s',
+                (SOURCE,SOURCE))).fetchone()==(True,True)
+            assert await (await connection.execute(
+                'SELECT data FROM rkb_v4.read_source_illustrations_v1(%s,NULL,4)',
+                (SOURCE,))).fetchall()==[(public_image,)]
+    repeated=await accepted(env,activation)
+    assert repeated.duplicate and repeated.outcome==first.outcome
