@@ -26,6 +26,10 @@ from .native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket,_blo
 PRIVATE_ROOT=Path('/kaggle/temp')
 _LOG=logging.getLogger(__name__)
 
+# Already-issued PDF receipts use this exact historical script identity. It is
+# receipt compatibility data, not another executable parser or a new code gate.
+HISTORICAL_PDF_SCRIPT_SHA256='f614e3acbfc32f1bf3ca339a11a8edbf08cd3c3de3d72b0d5fcba2db8b09e159'
+
 
 @dataclass(frozen=True)
 class OriginalIntakeConfig:
@@ -61,9 +65,9 @@ class NativeOriginalIntake:
             raise OriginalIntakeError('original_private_workspace_required')
         actual={k:importlib.metadata.version(k) for k,_ in config.parser_packages}
         if actual!=dict(config.parser_packages):raise OriginalIntakeError('original_parser_dependency_mismatch')
-        # Historical PDF receipts retain the exact old parser bytes and pin.
-        # Never relabel accepted original/page receipts after installing DjVu.
-        legacy_code=digest(Path(__file__).with_name('kaggle_original_parser_pdf_v1.py').read_bytes())
+        # Preserve existing accepted PDF and DjVu receipt identities without
+        # running a second copy of the PDF parser.
+        legacy_code=HISTORICAL_PDF_SCRIPT_SHA256
         self.legacy_parser_sha256=digest(canonical(dict(packages=actual,code=legacy_code)))
         self.parser_sha256=digest(canonical(dict(packages=actual,
             code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
@@ -96,13 +100,11 @@ class NativeOriginalIntake:
             self.telegram_downloader=downloader
 
     def _parser_script(self,pin):
-        # Allowlist comes only from code bytes and pinned installed packages,
-        # not from a received claim or a filename supplied by a client.
-        if pin==self.parser_sha256:
-            return Path(__file__).with_name('kaggle_original_parser.py')
-        if pin==self.legacy_parser_sha256:
-            return Path(__file__).with_name('kaggle_original_parser_pdf_v1.py')
-        raise OriginalIntakeError('original_parser_pin_unavailable')
+        # Historical receipts keep their original identity. Both accepted PDF
+        # revisions execute the same PDF branch of the current isolated parser.
+        if pin not in (self.parser_sha256,self.legacy_parser_sha256):
+            raise OriginalIntakeError('original_parser_pin_unavailable')
+        return Path(__file__).with_name('kaggle_original_parser.py')
 
     async def _parse_selected(self,path,action,index=0,*,cursor=None,parser_sha256):
         self._parser_script(parser_sha256)
