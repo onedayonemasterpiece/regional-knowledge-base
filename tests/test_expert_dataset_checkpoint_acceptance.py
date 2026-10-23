@@ -164,7 +164,7 @@ def composition(owner, env, tmp_path, monkeypatch):
             blob=dict(key=ticket.key,size=ticket.size,sha256=ticket.sha256,
                       native_version='fixture'))
     monkeypatch.setattr(_WorkCycleCapture,'_capture',fake_native_capture)
-    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],quiet_seconds=30)
     assert p.owner.store is store
     local=NS(p=env.p,q=q,spool=spool,journal=journal)
     ctl,credentials,_=_prepare(local)
@@ -292,7 +292,7 @@ async def test_lost_publish_ack_retains_original_version_and_single_signed_event
         assert p.store.latest_checkpoint.dataset_version==1
         assert not p.store.remote_durable(key,original)
         assert (await post(app,raw,headers)).status_code==503
-        p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+        p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],quiet_seconds=30)
         assert await p.owner.refresh(p.binding)
         assert p.store.latest_checkpoint.dataset_version==2
         assert p.store.remote_durable(key,original)
