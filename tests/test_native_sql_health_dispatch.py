@@ -79,9 +79,14 @@ async def test_worker_health_cannot_turn_stale_or_pending_metadata_into_success(
 
 
 @pytest.mark.asyncio
-async def test_actual_transport_supplies_current_read_resource_and_connection_lease():
+@pytest.mark.parametrize('resident_slot',[False,True])
+async def test_actual_transport_supplies_current_read_resource_and_connection_lease(resident_slot):
     transport=module('bge_wss_transport');native=Native()
     handler=KaggleWorkerQuery(acquire=native.acquire,tokenizer=pinned())
+    if resident_slot:
+        from regional_knowledge.kaggle_warm_read import ReadHandlerSlot
+        from test_kaggle_warm_read import context
+        handler=ReadHandlerSlot(handler,loaded_sha256='a'*64,compatibility=context())
     worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:None,lambda:{},query_handler=handler)
     worker.encoder=lambda _:(_ for _ in ()).throw(AssertionError('health inference'))
     worker._connection_generation=1
@@ -96,6 +101,8 @@ async def test_actual_transport_supplies_current_read_resource_and_connection_le
     result=decode_envelope(json.dumps(worker.read_pending).encode())
     assert result.status=='unavailable' and result.health.reason=='pg_binding_changed'
     assert native.acquired==native.released==1
+    if resident_slot:
+        assert handler.receipt()['inflight']==0
 
 
 def test_actual_asgi_channel_routes_health_result_through_verified_shared_admission(shared_channel_run,auth):
