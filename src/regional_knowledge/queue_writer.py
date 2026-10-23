@@ -273,6 +273,34 @@ class QueueWriterAuthority:
                 db.execute("UPDATE rkb_writer_restore_control SET state='active' WHERE id=1")
         _LOG.info('target_writer state=recovered_active run_id=%s writer_generation=%s',self.run_id,self.writer_generation)
 
+    def retired_serving(self,binding):
+        """Retired writer may still serve its original verified read binding.
+
+        This never revives a write or restore lease. The canonical run pointer,
+        authenticated WSS runtime and read admission must be checked separately
+        by current_binding() on every read.
+        """
+        from .kaggle_public_backend import TargetReadBinding
+        if (self.closed or self._store_identity is None or type(binding) is not TargetReadBinding
+                or (binding.run_id,binding.database_generation)!=
+                    (self.run_id,self.database_generation)):
+            return False
+        try:
+            with self.queue.connect(write=False) as db:
+                generation=db.execute('''SELECT database_generation,run_id,stream,retired
+                    FROM rkb_writer_generations WHERE writer_generation=?''',
+                    (self.writer_generation,)).fetchone()
+                control=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()
+                owner=db.execute('SELECT run_id,active,publication_json FROM rkb_writer_control WHERE id=1').fetchone()
+                return bool(generation and generation['retired']==1
+                    and (generation['database_generation'],generation['run_id'],generation['stream'])==
+                        (self.database_generation,self.run_id,self.stream)
+                    and control and control['current_run']==self.run_id
+                    and owner is not None and (owner['run_id']!=self.run_id
+                        or (not owner['active'] and owner['publication_json'] is None)))
+        except Exception:
+            return False
+
     def current(self,*,database_generation,writer_generation):
         if (database_generation,writer_generation)!=(self.database_generation,self.writer_generation):return False
         try:
