@@ -100,7 +100,8 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
             TokenizerProcessSpec('/operator/versioned-venv/bin/python','c'*64,'d'*64))
     startup=compose_source_service(queue=e.q,oauth_provider=e.old.auth.provider,participants=e.old.auth.p.registry,
         object_store=SimpleNamespace(client=e.old.c,bucket=e.s.bucket),stream=e.j.stream,registry=registry,history_adapter=history,
-        run_id=e.run,database_generation='synthetic-db',writer_generation='writer-2',source_restore=plan)
+        run_id=e.run,database_generation='synthetic-db',writer_generation='writer-2',source_restore=plan,
+        source_import=imports)
     if dataset_input:
         imported=imports.compose(queue=e.q,spool=startup.config.spool,participants=e.old.auth.p.registry,
             object_store=SimpleNamespace(client=e.old.c,bucket=e.s.bucket),writer=startup.config.writer_owner)
@@ -166,6 +167,25 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
         assert await restarted.refresh() and restarted.complete
         assert (restarted.dispatch is not None)==dataset_input
         assert phases==['prepare','finish','verify','verify','verify']
+        if dataset_input:
+            # A retained page job may be the first dispatch after API restart.
+            # No client has called originals.pages() to register the owner.
+            bridge=restarted.dispatch
+            page_task=asyncio.create_task(bridge.request(current_binding(e.q),'original_pages',
+                dict(handle='retained-original',original_sha256='a'*64,index=1,
+                    cursor=dict(block=0,offset=0,text=0)),operation_key='retained-page'))
+            try:
+                async with asyncio.timeout(2):
+                    while True:
+                        work=await startup.admission.next_channel_work(e.run,e.token,e.generation)
+                        if work is not None:break
+                        await asyncio.sleep(.001)
+                assert work.document_payload['phase']=='original_pages'
+                assert work.document_payload['original_transfer']=={}
+                assert bridge.original_intake is startup.config.import_originals
+            finally:
+                page_task.cancel()
+                await asyncio.gather(page_task,return_exceptions=True)
         await restarted.aclose()
     finally:
         if not task.done():task.cancel()
