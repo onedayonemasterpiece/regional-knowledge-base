@@ -297,18 +297,15 @@ class SourceReadGate:
                 or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
                 or result.observed_visibility_epoch != q.locator.visibility_epoch):
             raise SourceGateDenied('exact source provenance differs')
-        facts = await self.spool.read_facts(scope, sources)
-        if (not self.spool.facts_current(facts) or facts.database_generation != read.key[3]
-                or result.observed_database_generation != read.key[3]
+        # Native PG resolves active revisions, visibility and source eligibility
+        # in its read snapshot. The controller checks the exact result/binding,
+        # not unrelated pending commands or an expiring global history proof.
+        if (result.observed_database_generation != read.key[3]
                 or result.observed_data_seq is None or result.observed_data_seq < q.min_data_seq
-                or result.observed_projection_seq is None
-                or result.observed_projection_seq < q.min_data_seq
+                or result.observed_projection_seq is None or result.observed_projection_seq < q.min_data_seq
                 or result.observed_visibility_epoch is None):
-            result = self._closed(result, 'prior_write_pending')
+            result = self._closed(result, 'not_ready')
         else:
-            restricted = {c.source_id for c in facts.changes if c.restriction
-                or c.sequence > min(result.observed_data_seq,result.observed_projection_seq)}
-            lag = facts.scope_sequence > min(result.observed_data_seq,result.observed_projection_seq)
             def supported(item):
                 expected_kind=('geo' if q.action=='poi_facts' else 'entity') if graph else 'fact' if fact else 'story' if story or type(q) is Query and q.filters.kinds==('story',) else 'source'
                 if item.kind!=expected_kind or item.dependencies.grant_refs:return False
@@ -324,33 +321,19 @@ class SourceReadGate:
                         and item.source_continuation is None and len(item.dependencies.source_ids)==1)
                 except (ValueError,TypeError,AttributeError):return False
             retained = tuple(item for item in result.evidence
-                if supported(item)
-                and (scope is None or set(item.dependencies.source_ids) <= set(scope))
-                and not restricted.intersection(item.dependencies.source_ids))
-            unsupported = any(not supported(item) for item in result.evidence)
-            if unsupported:
+                if supported(item) and (scope is None or set(item.dependencies.source_ids) <= set(scope)))
+            if any(not supported(item) for item in result.evidence):
                 result = self._closed(result, 'access_denied')
-            elif result.status in ('ok', 'degraded') and (facts.pending or facts.unknown or lag
-                    or len(retained) != len(result.evidence)):
-                reason = (
-                    'prior_write_pending' if facts.pending or facts.unknown else
-                    'projection_lag' if lag else 'evidence_withdrawn')
-                result = (self._closed(result, reason) if exact else result.model_copy(update={
-                    'status': 'degraded', 'reason': reason,
-                    'prior_write_pending': facts.pending or facts.unknown,
-                    'evidence': retained, 'continuation': None}))
+            elif len(retained) != len(result.evidence):
+                result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
+                    'status': 'degraded', 'reason': 'evidence_withdrawn',
+                    'prior_write_pending': False, 'evidence': retained, 'continuation': None})
         # Authority is rechecked again after the local read's await. The final
         # synchronous fence below also rejects mutations during that recheck.
         await self.authority.require(read.authority, 'public_search')
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed during output check')
-        if not self.spool.facts_current(facts):
-            # Missing coverage or an in-flight write is availability, not a
-            # participant denial. An evidence-free response needs only the
-            # current authority/runtime fence through final JSON issuance.
-            result = self._closed(result, 'prior_write_pending')
-            facts = None
-        read.facts, read.result = facts, result
+        read.facts, read.result = None, result
         return result
 
     @staticmethod
@@ -402,7 +385,7 @@ class SourceReadGate:
             if read is not None and type(read.query) is AcceptanceReadRequest:
                 self._require_acceptance(read.authority,read.query,read.binding)
             return bool(read is not None and self._binding(read)
-                and (read.facts is None or self.spool.facts_current(read.facts)))
+                and read.result is not None)
         except Exception:
             return False
 
