@@ -86,6 +86,38 @@ async def test_case_create_does_not_require_unrelated_next_page_history_refresh(
 
 
 @pytest.mark.asyncio
+async def test_case_write_after_accepted_unfinished_other_page_keeps_canonical_predecessor(
+        env,auth,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    value,principal,b=await backend(env,auth,monkeypatch)
+    original=env.spool.scope_state
+    mode={"unknown":False}
+
+    async def accepted_other_page_state(*args,**kwargs):
+        scope=await original(*args,**kwargs)
+        # Existing journal/accepted_sequence remain exact. The unrelated
+        # packet has an outcome not yet durable; no false Saved is inferred.
+        return {**scope,"pending":True,"pending_count":1,
+                "unknown":mode["unknown"],"unknown_count":int(mode["unknown"])}
+
+    monkeypatch.setattr(env.spool,"scope_state",accepted_other_page_state)
+    with capture_read_output() as output:
+        accepted=await value.disagreement_edit('create','case-after-accepted-page',
+            principal,command=create())
+        assert accepted["status"]=="pending" and not accepted["saved"]
+        output[0].release()
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+    mode["unknown"]=True
+    with pytest.raises(ToolError,match='prior_write_pending'):
+        await value.disagreement_edit('create','case-while-unknown-source',
+            principal,command=create())
+    with env.q.connect(write=False) as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
 async def test_read_retains_current_gate_until_actual_public_output_and_checks_revocation(env,auth,monkeypatch):
     value,principal,b=await backend(env,auth,monkeypatch)
     async def native(authority,binding,**selector):
