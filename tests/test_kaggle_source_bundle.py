@@ -40,6 +40,52 @@ assert not {'torch','transformers','tensorflow','flax'} & sys.modules.keys()
     assert completed.returncode == 0, completed.stderr[-4000:]
 
 
+def test_shipped_original_page_executes_and_replays_without_controller_telemetry(tmp_path):
+    _,files,_=source_bundle(Path(__file__).resolve().parents[1])
+    for relative,encoded in files.items():
+        target=tmp_path/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes(base64.b64decode(encoded,validate=True))
+    script="""
+import asyncio,pathlib,socket,sys
+from types import SimpleNamespace
+root=pathlib.Path(sys.argv[1]).resolve()
+def denied(*args,**kwargs):raise AssertionError('page fixture attempted network')
+socket.socket.connect=denied;socket.create_connection=denied
+sys.path.insert(0,str(root))
+from regional_knowledge.kaggle_original_native import NativeOriginalIntake,OriginalIntakeConfig
+from regional_knowledge.original_intake import canonical,digest
+assert pathlib.Path(sys.modules[NativeOriginalIntake.__module__].__file__).is_relative_to(root)
+assert not (root/'regional_knowledge/product_telemetry.py').exists()
+n=object.__new__(NativeOriginalIntake)
+n.config=OriginalIntakeConfig(('https://archive.invalid',),(('pymupdf','fixture'),))
+n.database=SimpleNamespace(database_generation='db',writer_generation='writer')
+n.identity=('run','nonce','inc');n.generation=1;n.closed=False;n.current=lambda b:b==('run','inc',1)
+n._requests={};n._results={};n._records={};n._prebinding_retry=set();n._lock=asyncio.Lock()
+def frame(handle):
+ args=dict(handle=handle,original_sha256='a'*64,index=0)
+ return dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job-'+handle,
+  claim='claim',kind='recovery_phase',run_id='run',launch_nonce='nonce',runtime_incarnation='inc',
+  database_generation='db',writer_generation='writer',phase='original_pages',operation_key=handle,
+  arguments=args,request_sha256=digest(canonical(dict(phase='original_pages',arguments=args))),
+  compute_claim='existing-slot',dispatch_generation=1)
+async def main():
+ missing=await n(frame('missing'))
+ assert missing['value']==dict(error='original_retained_bytes_unavailable')
+ expected=dict(physical_page_index=0,native_text='Synthetic bundled page')
+ cursor=canonical(dict(block=0,offset=0,text=0)).decode()
+ n._records['retained']=dict(sha256='a'*64,page_count=1,verified={},pages={0:dict(chunks={cursor:expected})})
+ result=await n(frame('retained'))
+ assert result['value']==expected
+ assert await n(frame('retained'))==result
+asyncio.run(main())
+assert 'regional_knowledge.product_telemetry' not in sys.modules
+assert not {'torch','transformers','tensorflow','flax'} & sys.modules.keys()
+"""
+    completed=subprocess.run([sys.executable,'-I','-c',script,str(tmp_path)],cwd=tmp_path,
+        env={'PATH':os.defpath},capture_output=True,timeout=20,text=True)
+    assert completed.returncode==0,completed.stderr[-4000:]
+
+
 async def _accepted_graph():
     import hashlib
     from uuid import UUID,uuid5
