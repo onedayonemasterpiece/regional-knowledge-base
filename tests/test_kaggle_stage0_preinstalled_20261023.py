@@ -75,6 +75,8 @@ def test_versioned_dataset_archive_activates_without_pip_or_https(bundle,tmp_pat
     monkeypatch.setattr(stage0.subprocess,'run',denied)
     spec,prepared=plan(working,archive,result)
     assert Stage0Spec.from_wire(spec.wire())==spec
+    with pytest.raises(TypeError):
+        spec.preinstalled['environment']['python_version']='0.0.0'
     previous=list(sys.path)
     try:
         report=prepare_stage0(prepared,spec.wire())

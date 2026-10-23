@@ -169,6 +169,7 @@ class Stage0Spec:
             if self.wheels or any(item.name.endswith('.whl') for item in self.downloads):
                 raise ValueError('preinstalled_archive_replaces_wheels')
             pinned=validate_pin(self.preinstalled,self.downloads,packages,self.install_bytes)
+            pinned['environment']=MappingProxyType(dict(pinned['environment']))
             object.__setattr__(self,'preinstalled',MappingProxyType(pinned))
         object.__setattr__(self,'packages',MappingProxyType(dict(sorted(packages.items()))))
 

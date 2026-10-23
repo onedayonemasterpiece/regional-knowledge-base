@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 import re
 import shutil
 import sys
@@ -73,7 +74,7 @@ def validate_environment(value):
 
 
 def validate_pin(pin,downloads,packages,install_bytes):
-    if type(pin) is not dict or set(pin)!=PIN_FIELDS:
+    if type(pin) not in (dict,MappingProxyType) or set(pin)!=PIN_FIELDS:
         raise ValueError('preinstalled_pin_fields')
     name=safe_name(pin['archive_name'])
     validate_environment(pin['environment'])
