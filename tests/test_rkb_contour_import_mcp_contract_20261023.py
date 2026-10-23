@@ -98,19 +98,26 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
-    # The actual stage wire supports one multi-page chunk via exact page-scoped refs;
-    # 256 is guidance, not a new hard-token cap or an instruction to restage pages.
+    # Existing stage wire supports page-scoped regions/exact source spans.
+    # Model chooses meaning boundaries; 256 tokens is not a new hard cap and a
+    # 1-4-page packet is not a chunk or evidence of deployed tail handling.
     chunk_guidance = native.instructions
     assert chunk_guidance.count("Build semantically coherent source chunks") == 1
     for expected in (
+        "model-chosen boundaries at changes of thought",
         "about 256 BGE tokens", "roughly 800-1000 characters",
-        "a guideline rather than a hard limit", "preserve whole sentences",
-        "an arbitrary chunk or page boundary", "read it with book_pages",
-        "both issued, visually reviewed pages", "one book_ingest(stage) packet",
-        "up to four pages", "one cross-page chunk",
+        "a guideline rather than a hard limit", "existing exact token bound",
+        "not a mandatory chunk boundary", "Preserve whole sentences",
+        "split a long or visually unbroken paragraph at a complete sentence",
+        "exact span_refs and source_text offsets",
+        "combine short adjacent paragraphs about the same idea",
+        "source-backed region_refs or span_refs",
+        "Read continuing text with book_pages",
+        "one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages",
+        "not one oversized chunk", "a completed thought spans pages",
         "ordered region_refs OR exact span_refs", "both real page_ids",
-        "within existing exact token bounds", "original page/region/span provenance",
-        "never invent unseen continuation",
+        "original page/region/span provenance", "never invent unseen continuation",
+        "force a whole packet into one chunk",
     ):
         assert expected in chunk_guidance, expected
     assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
@@ -138,6 +145,16 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "the same saved text is read, voiced and posted",
         "usually 2-6 connected sentences",
         "what was at stake",
+        "For a place, keep source-grounded details",
+        "origin of a name (coat of arms, patron or older language)",
+        "a documented change of use",
+        "one coherent episode with a source-backed development or outcome",
+        "keep them as facts/observations instead of forcing a Story",
+        "'до наших дней' or 'сохранилась до наших дней'",
+        "the author's time, not 2026",
+        "по Гаузе, сохранилась до его времени",
+        "a year only when the source actually gives it",
+        "never invent a calendar year or assert present-day survival",
         "Do not split one episode into a body plus separate facts_only candidates",
         "there is no story quota",
         "fetch that page with book_pages and stage both pages in one packet (up to 4)",
