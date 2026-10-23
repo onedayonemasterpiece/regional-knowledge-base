@@ -403,11 +403,13 @@ class NativeSourceCompiler:
         try:
             return await self._compile([encoded],source_id=source_id,person_id=person_id,
                 last_batch_sha256=digest(encoded),include_illustrations=True,text_only=text_only,
-                trusted_packet=internal)
+                trusted_packet=internal,
+                coverage_page_indexes=frozenset(p['physical_page_index']
+                    for p in original['model_payload']['pages']))
         except SourceMaterializationRejected:raise
         except (ValueError,TypeError,KeyError):raise failure('native_source_packet_input_invalid') from None
 
-    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations,batch_index=None,text_only=False,trusted_packet=None):
+    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations,batch_index=None,text_only=False,trusted_packet=None,coverage_page_indexes=None):
         self._current()
         passage_evidence=batch_index is not None or trusted_packet is not None
         if type(batches) is not list or not 1<=len(batches)<=2500:
@@ -482,7 +484,8 @@ class NativeSourceCompiler:
         if previous!=last_batch_sha256:raise failure('native_source_batch_chain_changed')
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(base64.b64decode(source['original_receipt_b64'],validate=True)))
         validation=validate_graph(graph,expected_page_count=receipt.page_count,selected_page_indexes=selected_indexes,
-            require_figure_review=not text_only,passage_evidence=passage_evidence)
+            require_figure_review=not text_only,passage_evidence=passage_evidence,
+            coverage_page_indexes=coverage_page_indexes)
         if not validation.ready:raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')
