@@ -305,7 +305,7 @@ class KnowledgeMCPServer(MCPServer):
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_cases_available',False):
-            allowed.update({'disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
+            allowed.update({'disagreement_search','disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
         if getattr(self,'_target_graph_available',False):
             allowed.update({'graph_fetch','entity_list'})
         if getattr(self,'_target_geo_available',False):
