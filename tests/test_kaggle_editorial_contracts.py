@@ -55,3 +55,37 @@ def test_editorial_page_cursor_is_bound_to_story_view_generation_and_snapshot():
     assert generation=='db-current' and page==dict(after_variant_id=r['next_variant_id'],revision=3)
     with pytest.raises(ValueError):parse_editorial_cursor(cursor,story_id=r['story_id'],view='history')
     with pytest.raises(ValueError):parse_editorial_cursor(cursor,story_id='00000000-0000-0000-0000-000000000005',view='variants')
+
+
+def test_story_get_accepts_only_bounded_ordered_exact_passage_page_refs():
+    from regional_knowledge.kaggle_public_backend import KaggleSourceBackend,parse_passage_fetch_id
+    from types import SimpleNamespace
+    import time
+    r=record()
+    passage_id='70000000-0000-0000-0000-000000000001'
+    page_id='70000000-0000-0000-0000-000000000002'
+    r['passage_refs']=[dict(passage_id=passage_id,page_id=page_id,physical_page_index=3)]
+    accepted=result(r)
+    output=KaggleSourceBackend._render_story(accepted,
+        attempt=SimpleNamespace(correlation=lambda:dict(trace_id='a'*32),started=time.monotonic()))
+    assert output['body']==r['body']
+    assert output['passage_refs'][0]['page_id']==page_id
+    assert output['passage_refs'][0]['physical_page_index']==3
+    locator=parse_passage_fetch_id(output['passage_refs'][0]['fetch_id'])
+    assert locator.passage_id==passage_id
+    assert locator.source.source_id==r['source']['source_id']
+    assert locator.source.eligibility_revision==r['source']['eligibility_revision']
+    assert locator.database_generation==accepted.observed_database_generation
+    assert locator.visibility_epoch==accepted.observed_visibility_epoch
+    assert locator.text_offset==0 and locator.bibliography_offset==0
+    for changed in [
+        [dict(passage_id='foreign',page_id=page_id,physical_page_index=3)],
+        [dict(passage_id=passage_id,page_id=page_id,physical_page_index=True)],
+        [dict(passage_id=passage_id,page_id=page_id,physical_page_index=-1)],
+        [dict(passage_id=passage_id,page_id=page_id,physical_page_index=3)]*2,
+        [dict(passage_id=passage_id,page_id=page_id,physical_page_index=3)]*49,
+    ]:
+        with pytest.raises((ValueError,TypeError)):
+            result({**r,'passage_refs':changed})
+    with pytest.raises(ValueError):
+        result({**r,'view':'history'})
