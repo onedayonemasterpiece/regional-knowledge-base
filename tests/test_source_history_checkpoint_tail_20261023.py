@@ -9,7 +9,7 @@ import base64
 import pytest
 
 from regional_knowledge.control_spool import SpoolConflict, SpoolDenied
-from regional_knowledge.kaggle_apply import ApplyReceipt
+from regional_knowledge.kaggle_apply import ApplyReceipt, ApplyConflict
 from regional_knowledge.kaggle_source_commands import canonical, digest
 from regional_knowledge.recovery_journal import JournalCorrupt, StoredObject
 from test_control_spool import accept, env, receipt
@@ -122,7 +122,7 @@ async def test_unknown_previously_accepted_route_stays_global_without_public_hea
             len(receipt.outcome),'db-source',digest(unknown.encode()))]
         await env.journal.record_outcome(seal,command=unknown,database_generation='db-source',
             outcome=receipt.outcome,writer_generation='writer-1')
-        with pytest.raises((ValueError,SpoolDenied)):
+        with pytest.raises(ApplyConflict):
             env.spool._validate(unknown,'db-source')  # no permission to execute it
         proof=await p.v.extend(p.b)
         assert proof.applied_sequence==proof.accepted_sequence==1
