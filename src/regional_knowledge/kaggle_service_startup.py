@@ -393,7 +393,8 @@ class TargetServiceStartup:
         if dataset:
             with self.config.queue.connect(write=False) as db:
                 case_applied=db.execute(
-                    "SELECT 1 FROM rkb_control_operations WHERE sequence<=? "
+                    "SELECT 1 FROM rkb_control_operations INDEXED BY rkb_control_pending "
+                    "WHERE outcome_state<>'DURABLE' AND sequence<=? "
                     "AND seal_state='ACCEPTED' AND apply_state='APPLIED' AND outcome_state='NOT_SENT' "
                     "AND json_extract(CAST(command_bytes AS TEXT),'$.route') LIKE 'disagreement.%' LIMIT 1",
                     (self.coverage.applied_sequence,)).fetchone() is not None
