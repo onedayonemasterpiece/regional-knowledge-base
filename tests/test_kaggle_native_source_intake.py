@@ -199,6 +199,16 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.next_action,'wait')
         self.assertEqual(result.warnings,['source_tail_coverage_unavailable'])
 
+    async def test_tail_query_failure_still_rechecks_revoked_actor(self):
+        self.packet_mode();await self.stage();self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        async def revoked(*args):
+            self.revoked=True
+            raise TimeoutError('synthetic native query timeout')
+        self.importer.startup.history.source_tail_refs=revoked
+        with self.assertRaises(PermissionError):await self.helper.status(self.access,self.row)
+
     async def test_packet_status_publishes_without_whole_book_validate(self):
         self.packet_mode();await self.stage();self.finish()
         await self.helper.status(self.access,self.row)

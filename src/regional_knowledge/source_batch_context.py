@@ -6,8 +6,9 @@ from uuid import UUID,uuid5
 from .source_stage import validate_stage_payload,canonical
 
 
-def chunk_pages(chunk):
-    return {r['page_id'] for field in ('region_refs','span_refs','footnote_refs','illustration_refs')
+def chunk_pages(chunk,*,text_only=False):
+    fields=('region_refs','span_refs','footnote_refs')+(() if text_only else ('illustration_refs',))
+    return {r['page_id'] for field in fields
             for r in chunk.get(field,[])}
 
 
@@ -17,6 +18,7 @@ async def load_current(connection,raw,source_id,text_only):
     if text_only:
         # Transcription can depend on an accepted page's trailing region.
         # Optional semantic input still never causes a text-phase lookup.
+        model=copy.deepcopy(model)
         model.update(entity_candidates=None,story_candidates=[],poi_facts=[],poi_media_links=[])
     graph=model.get('entity_candidates') or {}
     nodes={e['key']:e for e in graph.get('entities',[])}
@@ -60,7 +62,7 @@ async def load_current(connection,raw,source_id,text_only):
     required.update(p['page_id'] for p in proofs)
     for item in model.get('poi_facts',[]):required.update(r['page_id'] for r in item['evidence_refs'])
     for item in model.get('poi_media_links',[]):required.add(item['illustration_ref']['page_id'])
-    required.update(p for c in model['chunks'] for p in chunk_pages(c))
+    required.update(p for c in model['chunks'] for p in chunk_pages(c,text_only=text_only))
     missing_pages=required-pages.keys()
     if missing_pages:
         rows=await (await connection.execute('''SELECT p.page_id,p.model_page,p.image_receipt FROM rkb_v4.source_stage_pages p
@@ -86,6 +88,7 @@ async def load_current(connection,raw,source_id,text_only):
     result['issued_images_b64']=[img for _,img in ordered]
     result['model_payload']['pages']=[p for p,_ in ordered]
     result['model_payload']['chunks']=chunks
-    result['model_payload']['entity_candidates']=dict(entities=list(nodes.values()),entity_refs=refs,relations=relations)
+    if not text_only:
+        result['model_payload']['entity_candidates']=dict(entities=list(nodes.values()),entity_refs=refs,relations=relations)
     result['context_chunk_ids']=context_ids
     return result

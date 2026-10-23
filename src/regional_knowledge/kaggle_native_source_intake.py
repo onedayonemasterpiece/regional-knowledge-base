@@ -443,6 +443,7 @@ class NativeSourceIntake:
         except Exception as error:
             _LOG.warning('source_tail_query state=unavailable ingestion_id=%s error_type=%s',
                 row['ingestion_id'],type(error).__name__)
+            await self._check(access,row)
             return self.importer._output(row,'processing','Source tail coverage unavailable; resume status',
                 'wait',source_archive_status='verified',warnings=['source_tail_coverage_unavailable'])
         await self._check(access,row)

@@ -3,6 +3,7 @@ import pytest
 
 from regional_knowledge.source_packet_tails import pending_tail_refs
 from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database
 from test_source_activation_pg import image_pg_sql18,accepted,stage_command
 from test_source_batch_pg import native,packet
 from test_source_packet_tails import tail_packet,continuation_packet

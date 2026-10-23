@@ -11,12 +11,16 @@ from test_source_batch_context import Connection
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('optional', ['story_schema', 'story_evidence', 'graph_schema'])
+@pytest.mark.parametrize('optional', ['story_schema', 'story_evidence', 'graph_schema','illustration_evidence'])
 async def test_current_text_compiles_before_invalid_optional_model_data(optional):
     doc = exact_batch(count=1)
     page = doc['model_payload']['pages'][0]
     if optional == 'graph_schema':
         doc['model_payload']['entity_candidates'] = {'entities': [{'missing_identity': True}]}
+    elif optional == 'illustration_evidence':
+        doc['model_payload']['chunks'][0]['illustration_refs']=[dict(
+            page_id=exact_batch(start=8,count=1)['model_payload']['pages'][0]['page_id'],
+            illustration_key='missing-picture')]
     elif optional == 'story_schema':
         doc['model_payload']['story_candidates'] = [{'candidate_key': 'incomplete-story'}]
     else:
