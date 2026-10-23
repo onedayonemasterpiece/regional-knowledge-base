@@ -5,6 +5,8 @@ The PostgreSQL source/Case SQL coverage remains in its existing PG17 suite.
 No Kaggle/provider calls or new read capabilities.
 """
 import asyncio
+import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +16,7 @@ from regional_knowledge.kaggle_protocol import QueryResult
 from regional_knowledge.read_issuance import capture_read_output
 from test_bge_admission import state
 from test_case_read_gate import header,request,result as case_result,setup as case_setup
-from test_control_spool import env,stage,SOURCE,OTHER
+from test_control_spool import env,handler,SOURCE,OTHER
 from test_kaggle_public_backend import target,work,release
 from test_read_authority import auth
 from test_source_read_gate import item,query,result,setup as source_setup
@@ -22,10 +24,21 @@ from test_participants import people
 
 
 @pytest.mark.asyncio
-async def test_pending_next_source_stage_and_lost_history_keep_pg_published_items(env,auth):
+async def test_pending_next_source_stage_and_lost_history_keep_pg_published_items(env,auth,monkeypatch):
+    from regional_knowledge.kaggle_apply import DependencySpec,HandlerRegistry
     gate,actor,binding=await source_setup(env,auth)
+    dep=DependencySpec('source.import.v1','public_source',frozenset({'source_id'}),'shared',False)
+    imported=replace(handler(),route='source.import.v1',dependency=dep,
+        precondition_keys=frozenset({'absent_source'}))
+    env.spool.registry=HandlerRegistry([handler(),imported])
+    monkeypatch.setitem(sys.modules,'regional_knowledge.source_import',SimpleNamespace(
+        SOURCE_IMPORT='source.import.v1',IMPORT_DEPENDENCY=dep,
+        IMPORT_PRECONDITIONS=frozenset({'absent_source'}),
+        validate_import_command=lambda command:None))
+    next_intent=replace(env.cmd,route='source.import.v1',expected_revisions={'absent_source':'true'},
+        payload=b'{}')
+    await env.spool.stage_source_import(env.p.admin,next_intent,database_generation='db-source')
     env.spool.invalidate_source_history()
-    await stage(env)  # the next write has not modified the native PG snapshot
     permit=await gate.dispatch(actor,query(),binding)
     from_native=result(item(SOURCE,id='published-page'),item(OTHER,id='other-book'))
     gated=await gate.finish(permit,from_native)
