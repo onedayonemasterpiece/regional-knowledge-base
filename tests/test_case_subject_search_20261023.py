@@ -89,7 +89,7 @@ class SearchConnection(Connection):
 async def test_actual_case_read_wire_and_pg_lease_use_actor_scoped_bounded_sql():
     # This is the actual worker native read path, no BGE or service restart.
     db=SearchConnection([
-        (CASE,1,2,3,"open","Who founded the city?","Reported date dispute."),
+        (CASE,1,2,3,"open","Who founded the city?","Reported date dispute.",[]),
     ])
     lease=Lease(db)
 
