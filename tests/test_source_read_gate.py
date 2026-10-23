@@ -100,8 +100,9 @@ async def test_whole_cross_source_item_and_all_metadata_continuations_are_remove
     await stage(env)
     gated=await gate.finish(permit,result(item(SOURCE,OTHER,continuation='private-tail'),item(OTHER,id='safe'),
         continuation='unsafe-whole-result'))
-    assert [i.id for i in gated.result.evidence]==['passage','safe']
-    assert gated.result.status=='ok' and not gated.result.prior_write_pending
+    assert [i.id for i in gated.result.evidence]==['safe']
+    assert gated.result.status=='degraded' and gated.result.reason=='evidence_withdrawn'
+    assert gated.result.continuation is None
 
 
 @pytest.mark.asyncio
@@ -110,10 +111,10 @@ async def test_final_synchronous_fence_and_refresh_recheck_current_control(env,a
     permit=await gate.dispatch(authority,query(),b)
     gated=await gate.finish(permit,result(item(SOURCE)))
     assert gate.issuance_current(gated.ticket)
-    await stage(env)  # local uncommitted command does not revoke PG snapshot
-    assert gate.issuance_current(gated.ticket)
+    await stage(env)  # restriction/withdrawal, NOT a normal page stage
+    assert not gate.issuance_current(gated.ticket)
     refreshed=await gate.refresh(gated)
-    assert len(refreshed.result.evidence)==1 and not refreshed.result.prior_write_pending
+    assert refreshed.result.evidence==() and refreshed.result.reason=='evidence_withdrawn'
     assert not gate.issuance_current(gated.ticket) and gate.issuance_current(refreshed.ticket)
     b.runtime_incarnation='new-incarnation'
     assert not gate.issuance_current(refreshed.ticket)
@@ -253,7 +254,34 @@ async def test_current_editorial_body_revision_is_fenced_and_removed_after_sourc
         observed_database_generation='db-source')
     gated=await gate.finish(permit,result)
     assert gated.result.record['default_variant_ref']['revision']==2 and gate.issuance_current(gated.ticket)
-    await stage(env)  # no PG withdrawal was applied in this transaction
-    assert gate.issuance_current(gated.ticket)
+    await stage(env)  # current withdrawal intent revokes this source promptly
+    assert not gate.issuance_current(gated.ticket)
     refreshed=await gate.refresh(gated)
-    assert refreshed.result.record is not None and refreshed.result.evidence
+    assert refreshed.result.record is None and not refreshed.result.evidence
+    assert refreshed.result.reason=='evidence_withdrawn'
+
+
+@pytest.mark.asyncio
+async def test_nonrestrictive_source_import_intent_does_not_close_native_pg_results(env,auth,monkeypatch):
+    import sys
+    from regional_knowledge.kaggle_apply import DependencySpec,HandlerRegistry
+    from test_control_spool import handler
+    gate,authority,b=await setup(env,auth)
+    dep=DependencySpec('source.import.v1','public_source',frozenset({'source_id'}),'shared',False)
+    imported=replace(handler(),route='source.import.v1',dependency=dep,
+        precondition_keys=frozenset({'absent_source'}))
+    env.spool.registry=HandlerRegistry([handler(),imported])
+    monkeypatch.setitem(sys.modules,'regional_knowledge.source_import',SimpleNamespace(
+        SOURCE_IMPORT='source.import.v1',IMPORT_DEPENDENCY=dep,
+        IMPORT_PRECONDITIONS=frozenset({'absent_source'}),
+        validate_import_command=lambda command:None))
+    from_native=result(item(SOURCE,id='earlier-visible'),item(OTHER,id='different-source'))
+    cmd=replace(env.cmd,route='source.import.v1',expected_revisions={'absent_source':'true'},
+        payload=b'{}')
+    await env.spool.stage_source_import(env.p.admin,cmd,database_generation='db-source')
+    env.spool.invalidate_source_history()
+    permit=await gate.dispatch(authority,query(),b)
+    gated=await gate.finish(permit,from_native)
+    assert gated.result.status=='ok'
+    assert {i.id for i in gated.result.evidence}=={'earlier-visible','different-source'}
+    assert gate.issuance_current(gated.ticket)
