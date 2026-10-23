@@ -109,16 +109,16 @@ async def test_one_of_174_pages_is_searchable_without_seal_and_retry_reuses_vect
 
 @PG
 @pytest.mark.asyncio
-async def test_bad_optional_facts_do_not_block_text_or_other_pages(image_pg_sql18):
+async def test_bad_optional_passage_link_does_not_block_text_or_other_pages(image_pg_sql18):
     env=image_pg_sql18;first=exact_batch(count=1);prepare,calls=native(env)
     await accepted(env,stage_command(first,1));c=packet(env,first);await prepare(c);await accepted(env,c)
     second=exact_batch(1,digest(canonical(first)),start=1,count=1)
     p=second['model_payload']['pages'][0]
     second['model_payload']['story_candidates']=[dict(candidate_key='bad-fact',title='Bad fact evidence',
         summary='Deliberately wrong source proof.',proposition='A synthetic event occurred.',narrative_outcome='facts_only',
-        evidence_refs=[dict(page_id=p['page_id'],region_key='body',original_excerpt=p['regions'][0]['source_text'])],
+        evidence_refs=[dict(page_id=p['page_id'],region_key='body',chunk_key='missing-source-passage')],
         event_dates=[dict(original_date_text='2026',precision='year',calendar='unspecified',date_role='event',year=2026,
-            month=None,day=None,rationale='Deliberately missing year in the source.',evidence_indexes=[0])])]
+            month=None,day=None,rationale='Model-authored date; passage link is deliberately absent.',evidence_indexes=[0])])]
     await accepted(env,stage_command(second,env['sequence']+1));text=packet(env,second)
     await prepare(text)
     async with env['connection'].transaction():
