@@ -50,28 +50,43 @@ class CaseOperationGate:
 
     async def retain(self,result,authority,context,binding,command):
         if len(self._tickets)>=512:raise failure('output_capacity')
-        witness=await self.backend._check(authority,context,binding,command)
-        ticket=object();self._tickets[ticket]=(result,authority,context,binding,command,witness)
-        gated=_OperationOutput(result,ticket)
-        try:retained=retain_read_output(self,gated,lambda value:value)
+        native=None;ticket=None
+        try:
+            # PG is the Case-role authority on a restored Dataset cursor.
+            # Retain its existing actor-scoped ticket through final output.
+            if self.backend._dataset_write_scope(command):
+                native=await self.backend._native_write_scope(authority,binding,command)
+            witness=await self.backend._check(authority,context,binding,command,native=native)
+            ticket=object();self._tickets[ticket]=(result,authority,context,binding,command,witness,native)
+            gated=_OperationOutput(result,ticket)
+            if not retain_read_output(self,gated,lambda value:value):
+                raise failure('public_output_boundary_required')
+            return result
         except BaseException:
-            self.release(ticket)
+            if ticket is not None:self._tickets.pop(ticket,None)
+            if native is not None:self.backend.gate.release(native.ticket)
             raise
-        if not retained:
-            self.release(ticket);raise failure('public_output_boundary_required')
-        return result
 
     async def refresh(self,gated):
         retained=self._tickets.get(gated.ticket)
         if retained is None or retained[0] is not gated.result:raise PermissionError('unknown Case operation output')
-        witness=await self.backend._check(*retained[1:5])
-        self._tickets[gated.ticket]=(*retained[:5],witness)
+        native=retained[6]
+        try:
+            if native is not None:
+                native=await self.backend.gate.refresh(native)
+                if native.result.status!='ok':raise failure(native.result.reason)
+            witness=await self.backend._check(*retained[1:5],native=native)
+        except BaseException:
+            if native is not None:self.backend.gate.release(native.ticket)
+            self._tickets.pop(gated.ticket,None)
+            raise
+        self._tickets[gated.ticket]=(*retained[:5],witness,native)
         return gated
 
     def issuance_current(self,ticket):
         value=self._tickets.get(ticket)
         if value is None:return False
-        _,authority,context,binding,command,witness=value
+        _,authority,context,binding,command,witness,native=value
         resolver=self.backend.read_authority
         try:
             if not self.backend._binding_current(binding) or authority.expires_at<=resolver.clock():return False
@@ -80,8 +95,7 @@ class CaseOperationGate:
             with resolver._read() as db:
                 current=resolver._state(context.principal,context.route,context.link_id,context.link_revision,
                     authority.oauth_family_ref,connection=db)
-                # Same fixed command capability set, with no owner fallback for
-                # Case ACL/draft authorship. No awaits after this final check.
+                # Same fixed command capabilities; PG proves per-Case role.
                 from .disagreement_native import required_capabilities
                 from .kaggle_domain_bindings import _view
                 if command.schema_revision==ACTIVATION_REVISIONS.schema:
@@ -91,7 +105,7 @@ class CaseOperationGate:
                     capabilities=required_capabilities(original)
                 for capability in capabilities:
                     self.backend.participants.require(context,capability,connection=db)
-            self.backend._scope(authority,command)
+            self.backend._scope(authority,command,binding=binding,native=native)
             spool=self.backend.spool
             return (current.revision==authority.auth_revision and not spool._writing
                 and witness[0] is spool._source_anchor and witness[1] is spool._source_version)
@@ -99,7 +113,9 @@ class CaseOperationGate:
 
     def release(self,ticket):
         value=self._tickets.pop(ticket,None)
-        if value is not None:self.backend.read_authority.release(value[1])
+        if value is not None:
+            if value[6] is not None:self.backend.gate.release(value[6].ticket)
+            self.backend.read_authority.release(value[1])
 
 
 class KaggleCasesBackend:
@@ -118,6 +134,17 @@ class KaggleCasesBackend:
         # Case actor rights are checked in PG; unrelated history refresh is
         # not an availability condition for a current PG Case binding.
         return self.startup.binding_current(binding)
+
+    def _dataset_write_scope(self,command):
+        from .control_spool import SourceCursor
+        return (type(self.spool._source_anchor) is SourceCursor
+            and validate_case_payload(command.payload)['action']!='create')
+
+    async def _native_write_scope(self,authority,binding,command):
+        doc=validate_case_payload(command.payload)
+        return await self._native(authority,binding,case_id=command.ids['case_id'],
+            section='edit_context',candidate_source_id=(
+                doc['command']['document_id'] if doc['action']=='add_evidence' else None))
 
     async def _native(self,authority,binding,*,deadline=None,**selector):
         deadline=min(deadline,time.monotonic()+2) if deadline is not None else time.monotonic()+2
