@@ -93,7 +93,7 @@ class ReadHandlerSlot:
         self._activations = 0
         self._closed = False
 
-    async def __call__(self, frame, *, encode):
+    async def __call__(self, frame, *, encode, lease_current=None):
         async with self._condition:
             while self._switching:
                 await self._condition.wait()
@@ -102,6 +102,10 @@ class ReadHandlerSlot:
             current = self._handler
             self._inflight += 1
         try:
+            if lease_current is not None:
+                # SQL_HEALTH owns the transport's live connection/resource
+                # check. Keep that exact callback through the resident slot.
+                return await current(frame, encode=encode, lease_current=lease_current)
             return await current(frame, encode=encode)
         finally:
             async with self._condition:
