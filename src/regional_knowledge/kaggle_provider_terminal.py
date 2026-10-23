@@ -23,7 +23,7 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_OBSERVATION_SECONDS = 12
 MAX_PROOF_AGE_SECONDS = 30
 PIN = ('2.2.4', '0.1.37')
-CONTRACT = 'kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1'
+CONTRACT = 'kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v2'
 _SNAPSHOT = ('id', 'provider_ref', 'provider_version', 'launch_state', 'status',
              'launch_nonce', 'runtime_incarnation', 'connection_generation',
              'channel_active', 'attachment_conflict', 'heartbeat', 'started')
@@ -239,9 +239,10 @@ def observe_version_terminal(api, run, *, clock=time.time, monotonic=time.monoto
                 budget[0] = 16384
                 phase = _phase(native.get_kernel_session_status(
                     _request('ApiGetKernelSessionStatusRequest', ref, number)))
-                # These are actual pinned enum values. Cancellation ACK is not
-                # termination; do not normalize it to cancelled.
-                if phase not in ('ERROR', 'COMPLETE'): return None
+                # Cancellation ACK alone is insufficient. The same exact
+                # session must also expose the SDK's post-termination JSON
+                # log fallback below; live SSE still leaves it UNKNOWN.
+                if phase not in ('ERROR', 'COMPLETE', 'CANCEL_ACKNOWLEDGED'): return None
                 budget[0] = MAX_LOG_BYTES
                 response = native.get_kernel_session_logs_stream(
                     _request('ApiGetKernelSessionLogsStreamRequest', ref, number))
