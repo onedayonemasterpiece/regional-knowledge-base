@@ -132,7 +132,7 @@ async def test_mcp_book_pages_advertises_default_one_max_four(native_intake):
     assert "at most four" in tools["book_pages"].description
     assert "Stage each reviewed page" in tools["book_pages"].description
     assert "no per-book public_rights declaration" in tools["book_ingest"].description
-    assert "no per-book public_rights declaration" in server.instructions
+    assert "without a mandatory per-book public_rights declaration" in server.instructions
 
 
 def test_optional_import_options_do_not_become_another_approval():

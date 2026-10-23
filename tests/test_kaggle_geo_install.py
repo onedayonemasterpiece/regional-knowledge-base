@@ -134,13 +134,15 @@ async def test_fixed_installer_waits_for_drill_then_pending_resume_and_durable_n
     assert (await s.spool.scope_state())['operation_count']==0
     with s.t.queue.connect(write=False) as db:assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==0
     startup.snapshot.verified=True
-    assert not TargetServiceStartup.imports_current(startup)
+    # GEO bootstrapping may remain pending even when ordinary source import
+    # has current independent source-history/binding authority.
+    assert TargetServiceStartup.imports_current(startup) is startup.reads_current()
     assert not await owner.advance(startup.binding)
     first=await s.spool.get(s.keys[0]);exact=first.command_bytes
     assert first.accepted is not None
     assert (await s.spool.scope_state())['operation_count']==len(s.keys)
     assert s.t.queue._source_commands is startup.source_dispatch and startup.source_dispatch.spool is s.spool
-    assert not TargetServiceStartup.imports_current(startup)
+    assert TargetServiceStartup.imports_current(startup) is startup.reads_current()
     # Repeated pending continuation uses exact stored command bytes and one job.
     assert not await owner.advance(startup.binding)
     assert (await s.spool.get(s.keys[0])).command_bytes==exact
@@ -174,7 +176,9 @@ async def test_geo_drift_blocks_new_acceptance_but_preserves_accepted_pending_re
     assert not await s.owner.advance(s.startup.binding)
     assert (await s.spool.get(s.keys[0])).command_bytes==exact
     assert (await s.spool.get(s.keys[1])).accepted is None
-    assert not TargetServiceStartup.imports_current(s.startup)
+    # GEO drift still fences GEO install, but cannot impose a second gate on
+    # unrelated book imports; the independent source-history gate remains.
+    assert TargetServiceStartup.imports_current(s.startup) is s.startup.reads_current()
     with s.t.queue.connect(write=False) as db:assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
 
 
