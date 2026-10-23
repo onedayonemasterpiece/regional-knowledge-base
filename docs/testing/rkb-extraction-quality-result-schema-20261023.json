@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/main/docs/testing/rkb-extraction-quality-result-schema-20261023.json",
+  "title": "RKB extraction PMI — minimal first-run result (NOT RUN)",
+  "description": "Schema for future append-only question-only blind results, NOT a runner or stored result. Frozen batch/source/arm/variant/repeat/attempt identity and original evidence oracle remain in the immutable run manifest and native tool logs; the row carries only first-run essentials. No gold or raw private text in this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "question",
+    "answer",
+    "evidence_refs",
+    "hit_at_k",
+    "latency_ms",
+    "verdict"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The case ID from the immutable source-grounded registry; no gold is sent with the question."
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact natural question variant shown to the blinded runner; source scope/variant are pinned outside the row."
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text_ref"
+      ],
+      "properties": {
+        "text_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Opaque link to actual observed answer, persisted Variant.body, or facts_only. Null if none; no freshly invented narrative."
+        }
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Native authorised accepted source/revision/page/passage references actually returned. Never invent IDs or replace missing imported evidence with public URLs."
+    },
+    "hit_at_k": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "5",
+        "10"
+      ],
+      "properties": {
+        "5": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "10": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "description": "Evidence Hit@5 and Hit@10 against independent original-based gold. Null until adjudicated or unavailable; null never means false."
+    },
+    "latency_ms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_to_evidence",
+        "user_to_answer"
+      ],
+      "properties": {
+        "user_to_evidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "user_to_answer": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "description": "Per attempt end-to-end clocks including client/tool waits and model generation for user_to_answer, null if not observed. Backend/public stage timings remain in native telemetry, not this first-run row."
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution",
+        "adjudication"
+      ],
+      "properties": {
+        "execution": {
+          "enum": [
+            "NOT_RUN",
+            "completed",
+            "timeout",
+            "denied",
+            "error",
+            "pending",
+            "unknown",
+            "terminal_unresolved"
+          ]
+        },
+        "adjudication": {
+          "enum": [
+            "NOT_RUN",
+            "unreviewed",
+            "correct",
+            "partial",
+            "incorrect",
+            "correct_abstention",
+            "disputed",
+            "not_applicable"
+          ]
+        }
+      },
+      "description": "Keep execution and later original-grounded rubric verdict distinct. Individual completed execution != full-batch EXECUTION_COMPLETE; review requires all sources/arms/repeats frozen, two independent adjudicators, then ADJUDICATION_COMPLETE."
+    }
+  }
+}
