@@ -70,7 +70,8 @@ class CaseReadGate(SourceReadGate):
         # the PG read transaction; a global history projection is not admission.
         actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
             auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref)
-        query=query.model_copy(update={'actor':actor,'min_data_seq':max(query.min_data_seq,key[4])})
+        query=query.model_copy(update={'actor':actor,'min_data_seq':(
+            max(query.min_data_seq,key[4]) if query.section=='operation' else 0)})
         permit=DispatchPermit(query)
         self._permits[permit]=_Read(authority,query,binding,key,self.clock()+min(self.ttl_seconds,query.deadline_ms/1000))
         return permit
