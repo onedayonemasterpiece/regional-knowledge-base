@@ -395,6 +395,7 @@ async def test_recovered_native_outcome_waits_for_dataset_without_redispatch(acc
     remote=await e.journal.record_outcome(e.seal,command=e.command,database_generation='synthetic-db',
         outcome=entry.apply_receipt.outcome,writer_generation='writer-1')
     await e.spool._write(e.spool._durable,e.command.operation_key,remote)
+    assert e.bridge.maintenance_blocks_dispatch()  # job settlement follows durable publication
     await e.spool._write(e.spool._settle_recovered_jobs,e.command.operation_key)
     assert not e.bridge.maintenance_blocks_dispatch()
     assert await s.a.next_channel_work(s.run,s.token,s.generation) is None

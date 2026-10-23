@@ -251,7 +251,7 @@ class AcceptedSourceDispatch:
                 ON o.operation_key=json_extract(j.identity,'$.operation_key')
                 WHERE j.kind='source_command' AND j.state IN ('pending','claimed')
                 AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION')
-                AND o.outcome_state<>'DURABLE' LIMIT 1""").fetchone() is not None
+                LIMIT 1""").fetchone() is not None
 
     async def enqueue(self,context,key,*,writer_generation):
         entry=await self.spool.get(key)
