@@ -121,3 +121,42 @@ async def test_same_owner_captures_drills_closes_then_publishes_under_unchanged_
         await startup.snapshot.aclose()
         if startup.snapshot.dispatch is not None:await startup.snapshot.dispatch.aclose()
         await startup.source_dispatch.aclose();startup.config.spool.close();startup.config.writer_owner.close()
+
+
+@pytest.mark.asyncio
+async def test_first_base_admission_reads_shared_startup_coverage(owner):
+    """An empty verifier cache cannot override a newer undrained startup cursor."""
+    e=owner;database=spec(fresh=True).database
+    versions=dict(schema_version=database.schema_version,server_version_num=170011,
+        pgvector_version='0.8.2',catalog_sha256='a'*64,model_sha256='a'*64,
+        tokenizer_sha256='b'*64,schema_revision='s1',function_revision='f1',
+        executor_revision='e1')
+    config=SourceSnapshotConfig('first-base-empty',versions,
+        ('https://existing-s3.fixture.invalid',),
+        max_archive_bytes=128*1024**2,max_unpacked_bytes=256*1024**2,seconds=2)
+    history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256='c'*64)
+    startup=compose_source_service(queue=e.q,oauth_provider=e.auth.provider,
+        participants=e.auth.p.registry,object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),
+        stream=e.j.stream,registry=fixed_registry(),history_adapter=history,
+        run_id=e.run,database_generation='synthetic-db',writer_generation='writer-1',
+        source_snapshot=config)
+    binding=current_binding(e.q);startup.binding=binding;startup.running=True
+    verified=_Coverage('synthetic-db',startup.history,binding,binding_key(binding),
+        startup.history.clock()+30,'native-empty-prefix',None,0,0)
+    startup.history._coverage=verified
+    startup.config.spool._source_anchor=verified
+    startup.config.spool._source_covered_sequence=0
+    # The accepted/applied frontier is not drained even though the verifier
+    # retains its earlier empty proof. This must not create a snapshot.
+    startup.coverage=SimpleNamespace(current=lambda:True,accepted_sequence=1,
+        applied_sequence=0,pending=())
+    try:
+        with pytest.raises(SnapshotError,match='first_snapshot_requires_empty_drained_prefix'):
+            await startup.snapshot.capture_once(binding)
+        assert not startup.snapshot.verified and startup.snapshot.reference is None
+        with e.q.connect(write=False) as db:
+            assert db.execute("SELECT count(*) FROM jobs WHERE kind='recovery_phase'").fetchone()[0]==0
+    finally:
+        await startup.snapshot.aclose()
+        await startup.source_dispatch.aclose()
+        startup.config.spool.close();startup.config.writer_owner.close()

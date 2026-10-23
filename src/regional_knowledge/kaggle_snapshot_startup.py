@@ -162,7 +162,7 @@ class SourceSnapshotCoordinator:
             return reference
         async with self._maintenance(binding):
             async with self.startup.config.spool._lock:
-                coverage=self.startup.history._coverage
+                coverage=self.startup.coverage
                 if (coverage is None or not coverage.current() or coverage.accepted_sequence!=0
                         or coverage.applied_sequence!=0 or coverage.pending or await self.journal.head() is not None):
                     raise SnapshotError('first_snapshot_requires_empty_drained_prefix')

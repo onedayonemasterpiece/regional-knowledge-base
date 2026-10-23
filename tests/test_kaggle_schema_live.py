@@ -177,7 +177,7 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
     proof=NS(current=lambda:True,accepted_sequence=0,applied_sequence=0)
     startup=NS(config=NS(queue=env.q,spool=env.spool,writer_owner=object(),
                         writer_generation='writer',history_adapter=NS(database=NS(database_generation='db'))),
-        history=NS(_coverage=proof),binding_current=lambda _:True,
+        coverage=proof,history=NS(_coverage=None),binding_current=lambda _:True,
         restorer=NS(complete=True,dispatch=NS(request=request)),
         dataset_checkpoints=NS(checkpoint_schema=checkpoint))
     options=dict(target_schema_version=13,bundle_sha256='a'*64,
@@ -187,6 +187,12 @@ async def test_controller_holds_barrier_across_lost_checkpoint_and_restart_befor
     assert request_migration(env.q,**options)==key
     owner=SourceSchemaMigrations(startup)
     assert not owner.intake_allowed() and owner.writes_allowed()
+    # A restored-but-undrained startup cursor cannot issue DDL. The verifier
+    # cache remains empty: the shared startup coverage is the admission source.
+    startup.coverage=NS(current=lambda:True,accepted_sequence=1,applied_sequence=0)
+    assert not await owner.advance(binding)
+    assert not effects and not checkpoints and owner.writes_allowed()
+    startup.coverage=proof
     startup.config.writer_owner=None
     with pytest.raises(SnapshotError,match='current_writer'):
         await owner.advance(binding)
