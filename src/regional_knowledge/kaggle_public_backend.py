@@ -480,7 +480,13 @@ class KaggleSourceBackend:
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     raise ToolError(json.dumps({'status': status, 'reason': reason}))
-                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:BookFindOutput(
+                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:{
+                    **value.records[0], 'status':value.status, 'reason':value.reason,
+                    'observed_data_seq':value.observed_data_seq,
+                    'observed_projection_seq':value.observed_projection_seq,
+                    'read_trace':ReadTrace(**attempt.correlation(),
+                        backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json')
+                }) if catalog_request is not None and catalog_request.get('action')=='get' else (lambda value:BookFindOutput(
                     query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt,comparison=fact_request['action']=='observation_compare')) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = render(gated.result)
@@ -615,6 +621,11 @@ class KaggleSourceBackend:
 
     async def book_find(self,query,principal,*,limit=8):
         return await self._search(None,principal,evidence=True,catalog_request=dict(query=query,limit=limit))
+
+    async def catalog_get(self,document_id,principal):
+        """Read one accepted book's descriptive metadata, not archive pixels."""
+        return await self._search(None,principal,evidence=True,catalog_request=dict(
+            action='get',query='',document_id=document_id,limit=1))
 
     async def search_adapter(self,query,*,authority,request_id,turn_generation,min_data_seq,
                              deadline_monotonic,destination,source_ids=None,limit=3):
