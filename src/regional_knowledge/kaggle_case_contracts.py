@@ -26,7 +26,11 @@ class CaseReadRequest(ReadIdentity):
     operation:Literal['disagreement_read']='disagreement_read'
     operation_version:Literal[1]=1
     case_id:str
-    section:Literal['case','evidence','contributions','conclusions','history','draft_get','draft_list','operation','edit_context']='case'
+    section:Literal['case','evidence','contributions','conclusions','history','draft_get','draft_list','operation','edit_context','search']='case'
+    search_query:str|None=None
+    place:str|None=None
+    source_id:str|None=None
+    after_case_id:str|None=None
     candidate_source_id:str|None=None
     after_seq:Nonnegative=0
     limit:Annotated[int,Field(ge=1,le=20)]=10
@@ -43,8 +47,22 @@ class CaseReadRequest(ReadIdentity):
     @model_validator(mode='after')
     def fixed_scope(self):
         exact_uuid(self.case_id);exact_uuid(self.actor.person_id)
-        for value in (self.draft_id,self.after_draft,self.candidate_source_id):
+        for value in (self.draft_id,self.after_draft,self.candidate_source_id,self.source_id,self.after_case_id):
             if value is not None:exact_uuid(value)
+        if self.section=='search':
+            if (self.case_id!='00000000-0000-0000-0000-000000000000'
+                    or not any((self.search_query,self.place,self.source_id))
+                    or any(value is not None for value in (self.candidate_source_id,self.draft_id,
+                        self.draft_version,self.after_draft,self.revision,self.operation_key))
+                    or self.after_seq or not 1<=self.limit<=8):
+                raise ValueError('bounded Case subject search selector required')
+            for value in (self.search_query,self.place):
+                if value is not None and (type(value) is not str or not value.strip()
+                        or len(value)>120 or len(value.encode())>480):
+                    raise ValueError('bounded Case subject term required')
+            return self
+        if any(value is not None for value in (self.search_query,self.place,self.source_id,self.after_case_id)):
+            raise ValueError('Case search selector restricted to search')
         if ((self.section=='operation')!=(self.operation_key is not None)
                 or (self.section=='draft_get')!=(self.draft_id is not None)
                 or self.draft_version is not None and self.section!='draft_get'
@@ -110,6 +128,28 @@ def validate_case_record(request,record):
         'evidence':{'items','has_more','next_after_seq'},'contributions':{'items','has_more','next_after_seq'},
         'conclusions':{'items','has_more','next_after_seq'},'history':{'items','has_more','next_after_seq'},
     }
+    if request.section=='search':
+        if (type(record) is not dict or set(record)!={'section','items','has_more','next_after_case'}
+                or record['section']!='search' or type(record['has_more']) is not bool
+                or type(record['items']) is not list or len(record['items'])>request.limit
+                or (record['next_after_case'] is not None and
+                    record['next_after_case']!=(record['items'][-1]['case_id'] if record['items'] else None))):
+            raise ValueError('bounded Case subject search record required')
+        previous=request.after_case_id or ''
+        for item in record['items']:
+            if (type(item) is not dict or set(item)!={'case_id','question','context','state','case_revision','acl_revision','event_seq'}
+                    or type(item['case_id']) is not str or item['case_id']<=previous
+                    or type(item['question']) is not str or not 1<=len(item['question'])<=2000
+                    or type(item['context']) is not str or len(item['context'])>1000
+                    or item['state'] not in ('open','paused','archived')
+                    or any(type(item[k]) is not int or item[k]<1 for k in ('case_revision','acl_revision'))
+                    or type(item['event_seq']) is not int or item['event_seq']<0):
+                raise ValueError('invalid Case subject candidate')
+            exact_uuid(item['case_id'])
+            previous=item['case_id']
+        if record['has_more'] and (not record['items'] or record['next_after_case']!=record['items'][-1]['case_id']):
+            raise ValueError('Case search continuation required')
+        return record
     if request.section=='operation':
         allowed={'case_id','source_dependencies','result','operation_key','sequence','command_sha256','request_id','state','outcome_durability'}
     else:allowed=common|additions[request.section]
