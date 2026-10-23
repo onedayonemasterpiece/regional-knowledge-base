@@ -160,7 +160,7 @@ class SourceDatasetCheckpoints:
         self.interval,self.quiet,self.clock=interval_seconds,quiet_seconds,clock
         self.dirty_since=None;self.last_sequence=None;self.last_change=self.clock()
         self.last_control=None;self._refresh_lock=asyncio.Lock()
-        self._task=None;self._force_after=False
+        self._task=None;self._task_binding=None;self._force_after=False
         with startup.config.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_dataset_seed(
                 operation_key TEXT PRIMARY KEY,provider_ref TEXT NOT NULL,
@@ -218,6 +218,7 @@ class SourceDatasetCheckpoints:
             self._force_after = self._force_after or planned_stop
             return False
         self._force_after=False
+        self._task_binding=binding
         self._task=asyncio.create_task(self._background(binding,planned_stop=planned_stop),
             name='rkb-dataset-work-cycle-checkpoint')
         return True
