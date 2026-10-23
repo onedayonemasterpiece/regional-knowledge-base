@@ -314,20 +314,22 @@ async def test_normal_maintenance_reconciles_publication_before_native_history(s
 @pytest.mark.asyncio
 async def test_pending_dataset_checkpoint_keeps_verified_reads_open(service):
     """A checkpoint stopped before promotion is retried; it does not close reads."""
-    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
     s=service;startup=s.startup;s.adapter.available=True
     class Pending:
         calls=0
-        async def refresh(self,binding):
+        def kick(self,binding):
             Pending.calls+=1
-            raise CheckpointPending('JournalConflict','dataset_native_snapshot_readback_changed')
+            return True  # Dataset publication continues outside maintenance
+        async def aclose(self):pass
     async with startup.lifespan(None):
         assert startup.reads_current()
         startup.dataset_checkpoints=Pending()
         assert await startup.refresh() and startup.reads_current() and Pending.calls==1
-        # Any other failure keeps the previous fail-closed behaviour.
+        # An unexpected failure to *schedule* the single-flight checkpoint
+        # still fails closed, rather than reporting healthy stale coverage.
         class Broken:
-            async def refresh(self,binding):raise RuntimeError('post-promotion settle failed')
+            def kick(self,binding):raise RuntimeError('checkpoint scheduler failed')
+            async def aclose(self):pass
         startup.dataset_checkpoints=Broken()
         assert not await startup.refresh() and not startup.reads_current()
 
