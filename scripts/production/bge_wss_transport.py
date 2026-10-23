@@ -704,6 +704,17 @@ class BgeWssTransport:
                     # authenticated control session earns a fresh retry budget.
                     if self._retry_clock()-connected_at>=30:
                         self._reconnect_attempt=0;self._outage_started=None
+                elif kind=='STOP':
+                    # A verified owner-planned idle drain, not a socket close,
+                    # timeout or revoked/unknown execution. Refuse forged
+                    # identity and never discard a started native command.
+                    if (set(frame)!={'type','protocol_version','connection_generation',
+                            'run_id','launch_nonce','runtime_incarnation'}
+                            or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))
+                                !=(self.config['run_id'],self.config['launch_nonce'],self.incarnation)):
+                        raise ValueError('exact authenticated worker STOP required')
+                    if self.job is None and self.pending is None and self.resource is None:
+                        self.stop.set()
                 else:
                     raise ValueError('unexpected channel frame')
 
@@ -812,6 +823,13 @@ class BgeWssTransport:
                 'error_type':type(error).__name__}),flush=True)
             raise
         finally:
+            # A deliberate owner STOP during the pre-ready initializer must
+            # cancel its asynchronous wait rather than wait for its 900s cap.
+            # Active command/forward tasks still drain to an exact outcome.
+            if (self.stop.is_set() and self.loading is not None
+                    and not self.loading.done() and self.job is None
+                    and self.pending is None and self.resource is None):
+                self.loading.cancel()
             # Thread cancellation is not forward completion. Drain any started
             # load/encode before relinquishing this worker's inference ownership.
             cancelled = False
