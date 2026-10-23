@@ -132,7 +132,10 @@ async def scenario(e):
         async def __aexit__(self, *args):
             pass
         async def execute(self, sql, parameters):
-            assert 'FROM rkb_v4.applied_ops ORDER BY sequence' in sql
+            # Lower-bound physical snapshots hash ONLY their pre-backup
+            # committed prefix; later PG rows are not part of saved_seq.
+            assert 'FROM rkb_v4.applied_ops WHERE sequence<=%s ORDER BY sequence LIMIT %s' in sql
+            assert parameters == (20, SnapshotLimits().max_receipts+1)
         async def fetchone(self):
             return next(self.rows, None)
     class PrefixConnection:
