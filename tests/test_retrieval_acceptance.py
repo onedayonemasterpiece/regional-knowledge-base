@@ -188,12 +188,13 @@ async def test_full_rank_union_current_source_gate_withdraws_whole_observation(e
     result=decode_envelope(json.dumps(wire).encode())
     permit=await gate.dispatch(owner,request(f,owner),b);gated=await gate.finish(permit,result)
     assert len(gated.result.evidence)==25 and gate.issuance_current(gated.ticket)
-    await stage(env)  # Restriction on an out-of-result source cannot turn
-    # verified current PG evidence into a global pending response.
-    assert gate.issuance_current(gated.ticket)
+    await stage(env)  # This exact acceptance fixture includes source A in
+    # the entire 25-result rank union. Withdrawal must clear ALL frozen ranks.
+    assert not gate.issuance_current(gated.ticket)
     closed=await gate.refresh(gated)
-    assert len(closed.result.evidence)==25 and closed.result.mode=='hybrid'
-    assert closed.result.ranks==result.ranks
+    assert closed.result.status=='unavailable' and closed.result.reason=='evidence_withdrawn'
+    assert closed.result.evidence==() and closed.result.ranks==BranchRanks()
+    assert closed.result.mode is None
     assert type(decode_envelope(encode_envelope(closed.result))) is AcceptanceReadResult
 
 
@@ -302,15 +303,21 @@ async def test_real_generated_transport_asgi_admission_gate_and_final_private_is
                 return value
             monkeypatch.setattr(gate,'refresh',racing_refresh)
         consumed=[]
-        await observer.observe('synthetic harbour',authority=owner,
-            request_id='actual-acceptance-wire',consume=consumed.append)
-        # A restriction outside this fixed PG result cannot revoke the
-        # accepted ranks or suppress output in the final ASGI gate.
-        assert len(consumed)==1
-        issued=json.loads(consumed[0]);assert len(issued['items'])==25
-        assert len(issued['ranks']['bge'])==len(issued['ranks']['lexical'])==len(issued['ranks']['fusion'])==10
-        assert issued['mode']=='hybrid' and issued['reason']=='bounded_retrieval'
-        assert b'synthetic body' not in consumed[0] and b'query' not in consumed[0]
+        if late_restriction:
+            # The acceptance fixture includes A and B; restricting A while
+            # the response is retained invalidates the frozen rank union.
+            with pytest.raises(RuntimeError,match='unavailable'):
+                await observer.observe('synthetic harbour',authority=owner,
+                    request_id='actual-acceptance-wire',consume=consumed.append)
+            assert consumed==[]
+        else:
+            await observer.observe('synthetic harbour',authority=owner,
+                request_id='actual-acceptance-wire',consume=consumed.append)
+            assert len(consumed)==1
+            issued=json.loads(consumed[0]);assert len(issued['items'])==25
+            assert len(issued['ranks']['bge'])==len(issued['ranks']['lexical'])==len(issued['ranks']['fusion'])==10
+            assert issued['mode']=='hybrid' and issued['reason']=='bounded_retrieval'
+            assert b'synthetic body' not in consumed[0] and b'query' not in consumed[0]
         assert encoded==['synthetic harbour']
         assert len([f for d,f in frames if d=='controller' and f['type']=='ACCEPTANCE_READ'])==1
         response=next(f for d,f in frames if d=='worker' and f['type']=='ACCEPTANCE_READ_RESULT')
