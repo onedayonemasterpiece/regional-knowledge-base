@@ -384,6 +384,24 @@ class TargetServiceStartup:
                 binding.run_id,checkpoint.dataset_version,cursor.accepted_sequence,cursor.applied_sequence,len(cursor.pending))
         return cursor
 
+    def _kick_dataset_checkpoint(self,binding,*,dataset):
+        # An accepted Case APPLIED after the restored Dataset cursor blocks the
+        # next book packet until Saved. Request the existing planned-stop capture
+        # only once the verified cursor covers that exact successful apply.
+        # Failed, UNKNOWN and already durable Case outcomes keep the normal
+        # periodic work-cycle policy; checkpoint readback remains authoritative.
+        if dataset:
+            with self.config.queue.connect(write=False) as db:
+                case_applied=db.execute(
+                    "SELECT 1 FROM rkb_control_operations WHERE sequence<=? "
+                    "AND seal_state='ACCEPTED' AND apply_state='APPLIED' AND outcome_state='NOT_SENT' "
+                    "AND json_extract(CAST(command_bytes AS TEXT),'$.route') LIKE 'disagreement.%' LIMIT 1",
+                    (self.coverage.applied_sequence,)).fetchone() is not None
+            if case_applied:
+                self.dataset_checkpoints.kick(binding,planned_stop=True)
+                return
+        self.dataset_checkpoints.kick(binding)
+
     def _coverage_idle(self):
         """Nothing new to verify and ample time left on the current proof.
 
@@ -463,7 +481,7 @@ class TargetServiceStartup:
                 # Kaggle Dataset can take minutes to become ready. Capture
                 # continues through the existing background owner, never
                 # holding the source-history maintenance tick or import stage.
-                self.dataset_checkpoints.kick(self.binding)
+                self._kick_dataset_checkpoint(self.binding,dataset=dataset)
             if self.dataset_seed is not None:
                 await self.dataset_seed.capture_once(self.binding)
                 # Seed publication does not authorize an S3-backed importer.
