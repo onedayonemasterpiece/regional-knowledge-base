@@ -36,6 +36,15 @@ def _hash(data):
     return hashlib.sha256(data).hexdigest()
 
 
+# Stage, seal and materialization own inactive candidate data. Their accepted
+# receipts participate in the global prefix without asserting a public source.
+INACTIVE_SOURCE_ROUTES=frozenset({'source.stage.v1','source.stage.seal.v1','source.materialize.v1'})
+
+
+def _source_origin_required(command):
+    return 'source_id' in command.ids and command.route not in INACTIVE_SOURCE_ROUTES
+
+
 def _receipt_handler_matches(command,handler,recorded_hash,outcome,status,database_generation):
     if recorded_hash==handler.fingerprint:return True
     from .kaggle_apply import ApplyReceipt
@@ -175,7 +184,8 @@ class NativeSourceHistoryVerifier:
         except (ValueError,TypeError,KeyError):raise SpoolConflict('unclassified accepted source dependency') from None
         if dep is None:raise SpoolConflict('unclassified accepted source dependency')
         if dep.scope_class=='public_source':
-            expected_route=('source.import' if command.route.startswith('source.import.') else
+            expected_route=('source.import' if command.route.startswith('source.import.')
+                or command.route in INACTIVE_SOURCE_ROUTES or command.route=='source.activate.v1' else
                 {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
             if expected_route not in self.routes or dep.scope_owner!='shared' or 'source_id' not in dep.resource_keys:
                 raise SpoolConflict('unclassified accepted source dependency')
@@ -356,7 +366,7 @@ class NativeSourceHistoryVerifier:
                                             raise SpoolConflict('incremental remote outcome differs')
                                         durable=True
                                 if not durable:pending.append((c.encode(),h.fingerprint,m))
-                                if h.dependency is None or h.dependency.scope_class!='public_source':continue
+                                if h.dependency is None or h.dependency.scope_class!='public_source' or not _source_origin_required(c):continue
                                 source=c.ids['source_id'];previous=by_source.get(source)
                                 by_source[source]=SourceChange(source,max(c.sequence,previous.sequence if previous else 0),
                                     _hash(c.encode()) if previous is None or c.sequence>=previous.sequence else previous.command_sha256,
@@ -364,7 +374,7 @@ class NativeSourceHistoryVerifier:
                                     bool(not durable or previous and previous.pending),False)
                             if fields['schema_version'] >= 7:
                                 origins=sorted({c.ids['source_id'] for c,_,_ in known.values()
-                                    if 'source_id' in c.ids and c.sequence in applied})
+                                    if _source_origin_required(c) and c.sequence in applied})
                                 statement=('SELECT rkb_v4.verify_source_story_origins_v4(%s::uuid[])'
                                     if fields['schema_version'] >= 14 else
                                     'SELECT rkb_v4.verify_source_story_origins_v3(%s::uuid[])'

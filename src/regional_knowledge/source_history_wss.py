@@ -8,7 +8,7 @@ import json
 import secrets
 
 from .control_spool import SourceChange,SpoolConflict,_command,_database,_uuid
-from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash
+from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash,_source_origin_required
 from .source_read_gate import binding_key
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 
@@ -260,9 +260,9 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                     'outcome_b64':base64.b64encode(body).decode(),'outcome_sha256':outcome[1],'outcome_length':outcome[2]}
                                 if (remote.data!=_json(expected_outcome) or len(body)!=outcome[2] or _hash(body)!=outcome[1]):raise SpoolConflict('remote outcome differs from native exact prefix')
                                 durable=True
-                            if h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied':origins.append(c.ids['source_id'])
+                            if h.dependency is not None and h.dependency.scope_class=='public_source' and outcome[0]=='applied' and _source_origin_required(c):origins.append(c.ids['source_id'])
                         if not durable:pending.append((c.encode(),h.fingerprint,m))
-                        if h.dependency is None or h.dependency.scope_class!='public_source':continue
+                        if h.dependency is None or h.dependency.scope_class!='public_source' or not _source_origin_required(c):continue
                         source=c.ids['source_id'];old=changes.get(source)
                         changes[source]=SourceChange(source,c.sequence,_hash(c.encode()),bool(h.dependency.restriction or old and old.restriction),
                             bool(not durable or old and old.pending),False)
