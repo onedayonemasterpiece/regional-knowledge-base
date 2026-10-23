@@ -570,7 +570,8 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     )
 
 
-def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False) -> GraphValidation:
+def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False,
+                   selected_page_indexes: frozenset[int] | None = None) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
     for bundle in graph.entity_candidates:
@@ -588,6 +589,11 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
     if len(page_indexes) != len(set(page_indexes)):
         errors.append("duplicate physical_page_index")
     expected = set(range(expected_page_count))
+    if selected_page_indexes is not None:
+        if (type(selected_page_indexes) is not frozenset or not selected_page_indexes
+                or any(type(i) is not int or not 0 <= i < expected_page_count for i in selected_page_indexes)):
+            raise ValueError("exact bounded selected page indexes required")
+        expected = set(selected_page_indexes)
     present = set(page_indexes)
     missing = sorted(expected - present)
     extra = sorted(present - expected)

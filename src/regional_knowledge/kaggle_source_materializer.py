@@ -62,7 +62,7 @@ def _typed(model, raw):
 
 def materializer_fingerprint():
     root=Path(__file__).parent
-    names=('kaggle_source_materializer.py','source_graph_native.py','source_stage.py',
+    names=('kaggle_source_materializer.py','source_batch_selection.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
         'source_activation.py','stage_graph.py','contracts.py','entity_graph.py',
         'story_contracts.py','search_material.py','region_policy.py','continuation_context.py',
         'source_manifest.py','kaggle_import_contracts.py','bge_contract.py')
@@ -372,11 +372,27 @@ class NativeSourceCompiler:
         except (ValueError,TypeError,KeyError):
             raise failure('native_source_model_input_invalid') from None
 
-    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations):
+    async def compile_batch(self,batches,*,batch_index,source_id,person_id,last_batch_sha256):
+        """Compile one packet without requiring the unread remainder of a book."""
+        try:
+            return await self._compile(batches,source_id=source_id,person_id=person_id,
+                last_batch_sha256=last_batch_sha256,include_illustrations=True,batch_index=batch_index)
+        except SourceMaterializationRejected:
+            raise
+        except (ValueError,TypeError,KeyError):
+            raise failure('native_source_batch_input_invalid') from None
+
+    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations,batch_index=None):
         self._current()
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
         documents=[validate_stage_payload(raw,source_id=source_id) for raw in batches]
+        selected_indexes=None
+        if batch_index is not None:
+            # Identity and immutable chain checks below use original bytes;
+            # only semantic compilation uses the selected dependency views.
+            from .source_batch_selection import select_batch
+            documents,selected_indexes=select_batch(documents,batch_index,source_id=source_id)
         # The model can explicitly replace a chunk under its stable key after
         # seal rejects it. Do not compile the superseded invalid selection before
         # its correction is reached; the accepted batch chain stays unchanged.
@@ -426,7 +442,7 @@ class NativeSourceCompiler:
             research=doc['research']
         if previous!=last_batch_sha256:raise failure('native_source_batch_chain_changed')
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(base64.b64decode(source['original_receipt_b64'],validate=True)))
-        validation=validate_graph(graph,expected_page_count=receipt.page_count)
+        validation=validate_graph(graph,expected_page_count=receipt.page_count,selected_page_indexes=selected_indexes)
         if not validation.ready:raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')
@@ -454,7 +470,7 @@ class NativeSourceCompiler:
                 dimension=DIMENSION,max_tokens=MAX_TOKENS),
             passages=passages,semantic=semantic,research=research,
             image_manifest=build_image_manifest(metadata=metadata,receipt=receipt,graph=graph,
-                semantic=semantic,passages=passages,issued_images=list(images.values())))
+                semantic=semantic,passages=passages,issued_images=list(images.values()),selected_page_indexes=selected_indexes))
         if graph.entity_candidates or graph.poi_facts or any(f['entity_keys'] for f in semantic['findings']):
             resolved['source_graph']=resolve_native_source_graph(graph,source_id=source_id,person_id=person_id,
                 semantic=semantic,batch_count=len(batches))
@@ -564,6 +580,10 @@ class NativeSourceMaterializer:
         if not self.current():raise PermissionError('native_source_owner_changed')
 
     async def __call__(self,command,*,acquire,database):
+        from .source_batch import ROUTE as BATCH_ROUTE
+        if command.route==BATCH_ROUTE:
+            from .kaggle_source_batch import materialize_packet
+            return await materialize_packet(self,command,acquire=acquire,database=database)
         from .source_activation import MATERIALIZE_ROUTE,validate_materialize_command
         from .source_stage import load_stage_batch,SEAL_ROUTE
         from .bge_contract import validate_vector

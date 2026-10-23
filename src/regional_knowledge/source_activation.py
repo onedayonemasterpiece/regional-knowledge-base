@@ -99,7 +99,7 @@ def activation_handler(*, check_sha256, apply_sha256):
         dependency=ACTIVATION_DEPENDENCY)
 
 
-def validate_image_manifest(manifest, *, source_id, original, semantic, passages):
+def validate_image_manifest(manifest, *, source_id, original, semantic, passages, selected_page_indexes=None):
     from .original_intake import VerifiedOriginalReceipt
     _keys(manifest, 'codec source_id source_revision original_receipt_b64 metadata pages regions passages')
     if manifest['codec'] != IMAGE_MANIFEST_CODEC or manifest['source_id'] != _uuid(source_id) or manifest['source_revision'] != 1:
@@ -110,10 +110,16 @@ def validate_image_manifest(manifest, *, source_id, original, semantic, passages
         raise ValueError('exact verified original receipt binding required')
     _metadata(manifest['metadata'])
     pages = manifest['pages']
-    if type(pages) is not list or len(pages) != receipt.page_count or not 1 <= len(pages) <= 2500:
+    expected_indexes = list(range(receipt.page_count))
+    if selected_page_indexes is not None:
+        if (type(selected_page_indexes) is not frozenset or not selected_page_indexes
+                or any(type(i) is not int or not 0 <= i < receipt.page_count for i in selected_page_indexes)):
+            raise ValueError('exact selected original page indexes required')
+        expected_indexes = sorted(selected_page_indexes)
+    if type(pages) is not list or len(pages) != len(expected_indexes) or not 1 <= len(pages) <= 2500:
         raise ValueError('explicit complete reviewed page coverage required')
     known_pages = set()
-    for index, page in enumerate(pages):
+    for index, page in zip(expected_indexes, pages, strict=True):
         _keys(page, PAGE_KEYS)
         expected = str(uuid5(UUID(source_id), f'page:1:{index}'))
         if (page['page_id'] != expected or type(page['physical_page_index']) is not int
@@ -188,7 +194,7 @@ def validate_image_manifest(manifest, *, source_id, original, semantic, passages
     return manifest
 
 
-def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued_images):
+def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued_images, selected_page_indexes=None):
     """No renderer, native text extraction, model inference or original fetch."""
     from .contracts import StartMetadataInput
     from .original_intake import VerifiedOriginalReceipt
@@ -219,7 +225,8 @@ def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued
         passages=[dict(passage_id=str(c.chunk_id),region_ids=list(map(str,c.region_ids)),
             footnote_region_ids=list(map(str,c.footnote_region_ids)),page_ids=list(map(str,c.page_ids)),
             source_spans=[s.model_dump(mode='json') for s in c.source_spans]) for c in graph.chunks])
-    return validate_image_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic,passages=passages)
+    return validate_image_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic,passages=passages,
+        selected_page_indexes=selected_page_indexes)
 
 
 def validate_materialize_payload(payload):

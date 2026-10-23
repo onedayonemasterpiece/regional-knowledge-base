@@ -54,6 +54,10 @@ class NativeSourceIntake:
             columns={value[1] for value in db.execute('PRAGMA table_info(rkb_native_source_intake_state)')}
             if 'rejected_seal_head' not in columns:
                 db.execute('ALTER TABLE rkb_native_source_intake_state ADD COLUMN rejected_seal_head TEXT')
+            for name, declaration in (('packet_mode','INTEGER NOT NULL DEFAULT 0'),
+                    ('published_batch_count','INTEGER NOT NULL DEFAULT 0'),('rejected_batch_index','INTEGER')):
+                if name not in columns:
+                    db.execute(f'ALTER TABLE rkb_native_source_intake_state ADD COLUMN {name} {declaration}')
 
     async def _check(self, access, row=None):
         await self.importer._check(access.authority, access.context, access.binding)
@@ -65,7 +69,7 @@ class NativeSourceIntake:
             if create:
                 try:
                     db.execute('''INSERT OR IGNORE INTO rkb_native_source_intake_state
-                        (ingestion_id,person_id,source_id,last_batch_sha256) VALUES(?,?,?,?)''',
+                        (ingestion_id,person_id,source_id,last_batch_sha256,packet_mode) VALUES(?,?,?,?,1)''',
                         (row['ingestion_id'],row['person_id'],row['source_id'],ZERO_HASH))
                 except sqlite3.IntegrityError:
                     raise _failure('another_native_ingestion_active') from None
@@ -83,6 +87,7 @@ class NativeSourceIntake:
         allowed={'batch_count','last_batch_sha256','last_request_sha256','pending_operation_key',
             'pending_kind','phase','seal_sha256','materializer_sha256','next_ordinal','total_inputs','knowledge_sha256'}
         allowed.add('rejected_seal_head')
+        allowed.update({'published_batch_count','rejected_batch_index'})
         if not changes or set(changes)-allowed: raise ValueError('compact native progress fields required')
         with self.queue.connect() as db:
             n=db.execute('UPDATE rkb_native_source_intake_state SET '+','.join(k+'=?' for k in changes)
@@ -94,6 +99,8 @@ class NativeSourceIntake:
     @staticmethod
     def _operation(row, kind, ordinal=None, *, head=None):
         if kind=='stage': return f"source-stage:{row['ingestion_id']}:{ordinal}"
+        if kind=='batch': return f"source-packet:{row['ingestion_id']}:{ordinal}"
+        if kind=='finish': return f"source-finish:{row['ingestion_id']}"
         if kind=='materialize': return f"source-materialize:{row['ingestion_id']}:{ordinal}"
         if kind=='seal':
             if type(head) is not str or len(head)!=64 or set(head)-set('0123456789abcdef'):
@@ -134,7 +141,7 @@ class NativeSourceIntake:
                     or pending['outcome_state']!='NOT_SENT'):
                 return False
             command=_command(pending['command_bytes'])
-            if (command.route not in INACTIVE_SOURCE_ROUTES
+            if (command.route not in INACTIVE_SOURCE_ROUTES|{'source.batch.v1','source.finish.v1'}
                     or json.loads(command.payload).get('ingestion_id')!=row['ingestion_id']):
                 return False
         return proof.current()
@@ -142,7 +149,7 @@ class NativeSourceIntake:
     @staticmethod
     def _can_settle(state,entry):
         if entry.outcome_state=='DURABLE':return True
-        return (state['pending_kind'] in ('stage','seal','materialize')
+        return (state['pending_kind'] in ('stage','seal','materialize','batch')
             and entry.outcome_state=='NOT_SENT' and entry.accepted is not None
             and entry.seal_state=='ACCEPTED' and getattr(entry,'apply_state',None)=='APPLIED'
             and entry.apply_receipt is not None and entry.apply_receipt.status=='applied')
@@ -160,7 +167,7 @@ class NativeSourceIntake:
                 scope=await self.spool.scope_state()
                 if scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
                     raise _failure('prior_write_pending')
-                continuation=(scope['pending'] and kind in ('stage','seal','materialize')
+                continuation=(scope['pending'] and kind in ('stage','seal','materialize','batch','finish')
                     and await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))
                 if scope['pending'] and not continuation:raise _failure('prior_write_pending')
                 head=await self.spool.journal.head()
@@ -212,6 +219,12 @@ class NativeSourceIntake:
         if entry.apply_receipt.status not in ('applied','rejected_precondition'):
             raise _failure('native_durable_outcome_status_unknown')
         if entry.apply_receipt.status!='applied':
+            if state['pending_kind']=='batch':
+                # One invalid packet remains an explicit review result. It
+                # neither revokes prior packets nor closes the whole import.
+                return await asyncio.to_thread(self._update,row,phase='staging',pending_operation_key=None,
+                    pending_kind=None,published_batch_count=state['batch_count'],
+                    rejected_batch_index=state['batch_count']-1)
             if state['pending_kind']=='seal':
                 # Schema14's native preflight rejects before creating the
                 # immutable candidate. Preserve the rejected accepted receipt,
@@ -235,6 +248,16 @@ class NativeSourceIntake:
                 last_request_sha256=self._request_hash(doc),phase='staging',rejected_seal_head=None)
             await asyncio.to_thread(self.importer._save,row,phase='staging',
                 research_json=canonical({k:v for k,v in doc['research'].items() if k!='frontier_id'}).decode())
+        elif kind=='batch':
+            if (result.get('ingestion_id')!=row['ingestion_id'] or result.get('batch_index')!=doc['batch_index']
+                    or result.get('candidate_state')!='published' or result.get('accepted') is not True):
+                raise _failure('native_packet_outcome_differs')
+            changes.update(published_batch_count=doc['batch_index']+1,phase='staging',rejected_batch_index=None)
+        elif kind=='finish':
+            if result.get('read_complete') is not True or result.get('ingestion_id')!=row['ingestion_id']:
+                raise _failure('native_read_completion_outcome_differs')
+            changes['phase']='finalized'
+            await asyncio.to_thread(self.importer._save,row,phase='finalized')
         elif kind=='seal':
             if (result.get('seal_sha256')!=digest(entry.command.payload) or result.get('candidate_state')!='sealed_inactive'
                     or result.get('batch_count')!=state['batch_count'] or result.get('last_batch_sha256')!=state['last_batch_sha256']):
@@ -303,6 +326,12 @@ class NativeSourceIntake:
         if phase=='failed': return self.importer._output(row,'failed','Native command rejected; no successful source activation','blocker')
         if state['pending_operation_key']:
             return self.importer._output(row,'processing','Exact native command pending apply and durable outcome; resume same operation','wait',source_archive_status='verified')
+        if state.get('packet_mode') and phase=='staging':
+            if state.get('rejected_batch_index') is not None:
+                return self.importer._output(row,'staged','native_source_packet_requires_review: correct this packet; earlier packets remain searchable',
+                    'continue_pages',source_archive_status='verified',warnings=['native_source_packet_requires_review'])
+            return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
+                'continue_pages',source_archive_status='verified')
         if phase=='finalized':
             return self.importer._output(row,'finalized','Native source activation outcome remotely durable; retrieval acceptance is separate','done',
                 source_archive_status='verified',warnings=[] if self.startup.reads_current() else ['source_history_refresh_pending'])
@@ -318,7 +347,7 @@ class NativeSourceIntake:
         if state['pending_operation_key']: return await self._drive(access,row,state)
         entry=await self._entry(key)
         if entry is None: return state
-        expected_route={'stage':STAGE_ROUTE,'seal':SEAL_ROUTE,'materialize':'source.materialize.v1','activate':'source.activate.v1'}[kind]
+        expected_route={'stage':STAGE_ROUTE,'seal':SEAL_ROUTE,'materialize':'source.materialize.v1','activate':'source.activate.v1','batch':'source.batch.v1','finish':'source.finish.v1'}[kind]
         if (entry.command.person_id!=row['person_id'] or entry.command.ids!={'source_id':row['source_id']}
                 or entry.command.route!=expected_route):
             raise _failure('native_operation_identity_differs')
@@ -357,7 +386,8 @@ class NativeSourceIntake:
             if (continuation.get('tool')!='book_pages' or type(continuation.get('arguments')) is not dict
                     or continuation['arguments'].get('ingestion_id')!=row['ingestion_id']):
                 raise _failure('research_requires_reachable_owned_page_continuation',status='invalid_query')
-        if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=8:
+        limit=4 if state.get('packet_mode') else 8
+        if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
         selections=tuple((p['physical_page_index'],p['source_image_receipt_sha256']) for p in payload['pages'])
         issued=await self.importer.originals.selected_image_receipts(access.context,row['ingestion_id'],selections)
@@ -373,19 +403,38 @@ class NativeSourceIntake:
             model_payload=payload,research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']),'research')),
                 **research.model_dump(mode='json')))
         validate_stage_payload(canonical(doc),source_id=row['source_id'])
-        if self._request_hash(doc)==state['last_request_sha256']: return self._output(row,state)
+        if self._request_hash(doc)==state['last_request_sha256']:
+            return self._output(row,await self._packet_progress(access,row,state))
         builder=lambda **values: resolved_native_stage_command(route=STAGE_ROUTE,**values)
         await self._stage_exact(access,row,kind='stage',key=self._operation(row,'stage',state['batch_count']),
             route=STAGE_ROUTE,payload=doc,builder=builder)
         await asyncio.to_thread(self.importer._save,row,research_json=canonical(research.model_dump(mode='json')).decode(),phase='staging')
         state=await asyncio.to_thread(self._state,row)
-        return self._output(row,await self._drive(access,row,state))
+        return self._output(row,await self._packet_progress(access,row,await self._drive(access,row,state)))
+
+    async def _packet_progress(self, access, row, state):
+        if (not state.get('packet_mode') or state['pending_operation_key'] or state['phase']!='staging'
+                or state['published_batch_count']>=state['batch_count']):
+            return state
+        from .source_batch import CODEC,ROUTE,resolved_command
+        from .kaggle_source_materializer import materializer_fingerprint
+        idx=state['batch_count']-1
+        state=await self._recover_orphan(access,row,state,'batch',self._operation(row,'batch',idx))
+        if state['pending_operation_key'] or state['published_batch_count']>=state['batch_count']:
+            return state
+        doc=dict(codec=CODEC,ingestion_id=row['ingestion_id'],batch_index=idx,batch_count=state['batch_count'],
+            last_batch_sha256=state['last_batch_sha256'],materializer_sha256=materializer_fingerprint())
+        await self._stage_exact(access,row,kind='batch',key=self._operation(row,'batch',idx),route=ROUTE,
+            payload=doc,builder=resolved_command)
+        return await self._drive(access,row,await asyncio.to_thread(self._state,row))
 
     async def validate(self, access, row):
         from .kaggle_native_source_bindings import resolved_native_stage_command
         await self._check(access,row)
         state=await asyncio.to_thread(self._state,row)
         if state is None: raise _failure('stage_before_validate',status='invalid_query')
+        if state.get('packet_mode'):
+            return self._output(row,await self._packet_progress(access,row,await self._drive(access,row,state)))
         state=await self._recover_orphan(access,row,state,'stage',self._operation(row,'stage',state['batch_count']))
         if state['pending_operation_key'] or state['phase']=='failed': return self._output(row,state)
         if state['phase']!='staging': return self._output(row,state)
@@ -404,6 +453,17 @@ class NativeSourceIntake:
         await self._check(access,row)
         state=await asyncio.to_thread(self._state,row)
         if state is None: raise _failure('validate_before_finalize',status='invalid_query')
+        if state.get('packet_mode'):
+            state=await self._packet_progress(access,row,await self._drive(access,row,state))
+            if state['pending_operation_key'] or state['phase'] in ('failed','finalized'):
+                return self._output(row,state)
+            from .source_batch import FINISH_ROUTE,resolved_command
+            key=self._operation(row,'finish')
+            state=await self._recover_orphan(access,row,state,'finish',key)
+            if state['pending_operation_key'] or state['phase']=='finalized':return self._output(row,state)
+            await self._stage_exact(access,row,kind='finish',key=key,route=FINISH_ROUTE,
+                payload=dict(codec='rkb.source-finish.v1',ingestion_id=row['ingestion_id']),builder=resolved_command)
+            return self._output(row,await self._drive(access,row,await asyncio.to_thread(self._state,row)))
         state=await self._drive(access,row,state)
         if state['pending_operation_key'] or state['phase'] in ('failed','finalized'): return self._output(row,state)
         if state['phase']=='staging':
@@ -455,6 +515,9 @@ class NativeSourceIntake:
             return self.importer._output(row,'staged' if receipt else 'processing',
                 'Review issued pages and stage exact model input' if receipt else 'Verified original pending',
                 'continue_pages' if receipt else 'wait',source_archive_status='verified' if receipt else 'pending')
+        if state.get('packet_mode'):
+            state=await self._drive(access,row,state)
+            return self._output(row,await self._packet_progress(access,row,state))
         if state['pending_kind'] in ('materialize','activate') or state['phase'] in ('materializing','ready_activation'):
             return await self.finalize(access,row)
         if state['phase']=='sealed' and await self._entry(self._operation(row,'materialize',state['next_ordinal'])) is not None:

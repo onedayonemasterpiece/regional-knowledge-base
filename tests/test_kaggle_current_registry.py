@@ -13,7 +13,8 @@ from test_kaggle_target_runtime import spec
 def test_registry_contains_one_handler_per_current_route_and_no_historical_copy():
     registry=current_registry()
     assert set(registry.handlers)==NATIVE_ROUTES
-    assert len(registry.handlers)==len(NATIVE_ROUTES)==13
+    assert len(registry.handlers)==len(NATIVE_ROUTES)
+    assert {'source.batch.v1','source.finish.v1'}<=registry.handlers.keys()
     handler=next(iter(registry.handlers.values()))
     historical=replace(handler,revisions=Revisions('old','old','old'))
     with pytest.raises(ValueError,match='duplicate current route'):

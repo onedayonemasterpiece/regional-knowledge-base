@@ -121,6 +121,8 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
                 resolved_materialize_command=lambda **kw:builder(MATERIALIZE,**kw)),
             'regional_knowledge.kaggle_native_source_bindings':NS(resolved_native_stage_command=lambda route,**kw:builder(route,**kw)),
             'regional_knowledge.kaggle_source_materializer':NS(materializer_fingerprint=lambda:'f'*64),
+            'regional_knowledge.source_batch':NS(ROUTE='source.batch.v1',FINISH_ROUTE='source.finish.v1',CODEC='rkb.source-batch.v1',
+                resolved_command=lambda **kw:builder('source.finish.v1' if kw['payload']['codec']=='rkb.source-finish.v1' else 'source.batch.v1',**kw)),
             'regional_knowledge.kaggle_import_contracts':NS(SourceResearchInput=Research),
             'regional_knowledge.kaggle_importer':NS(failure=lambda reason,**kw:IntakeFailure(reason)),
             'regional_knowledge.control_spool':NS(SpoolError=SpoolError,SpoolUnknown=SpoolUnknown),
@@ -128,6 +130,11 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         }
         self.mock=patch.dict(sys.modules,modules); self.mock.start(); self.addCleanup(self.mock.stop)
         self.helper=NativeSourceIntake(self.importer)
+        # Existing fixtures exercise historical, already-created seal intents.
+        # New intake tests below explicitly select the new packet behavior.
+        self.helper._state(self.row,create=True)
+        with self.queue.connect() as db:
+            db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0')
 
     def state(self): return self.helper._state(self.row)
     def pending(self): return self.spool.entries[self.state()['pending_operation_key']]
@@ -142,6 +149,10 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         elif entry.command.route==MATERIALIZE:
             value=dict(source_id=SOURCE,ordinal=doc['ordinal'],total_inputs=total,knowledge_sha256=knowledge,
                 input_sha256='a'*64,input_id='synthetic-input')
+        elif entry.command.route=='source.batch.v1':
+            value.update(batch_index=doc['batch_index'],candidate_state='published',accepted=True,knowledge_sha256=knowledge)
+        elif entry.command.route=='source.finish.v1':
+            value.update(read_complete=True)
         else: value=dict(source_id=SOURCE,accepted=True,knowledge_sha256=knowledge)
         raw=canonical(value); entry.apply_receipt=NS(status=status,outcome=canonical(dict(
             result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw))))
@@ -151,6 +162,38 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
     async def stage_and_seal(self):
         await self.stage(); self.finish(); await self.helper.validate(self.access,self.row)
         self.finish(); return await self.helper.validate(self.access,self.row)
+
+    def packet_mode(self):
+        with self.queue.connect() as db:db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=1')
+
+    async def test_packet_status_publishes_without_whole_book_validate(self):
+        self.packet_mode();await self.stage();self.finish()
+        await self.helper.status(self.access,self.row)
+        self.assertEqual(self.pending().command.route,'source.batch.v1')
+        self.finish();self.pending().outcome_state='NOT_SENT';self.pending().apply_state='APPLIED'
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.next_action,'continue_pages')
+        self.assertEqual(self.state()['published_batch_count'],1)
+        self.assertNotIn(SEAL_ROUTE,[e.command.route for e in self.spool.entries.values()])
+
+    async def test_bad_packet_does_not_close_import_or_revoke_prior_packets(self):
+        self.packet_mode();await self.stage();self.finish();await self.helper.status(self.access,self.row)
+        self.finish(status='rejected_precondition');result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.warnings,['native_source_packet_requires_review'])
+        self.assertEqual(self.state()['phase'],'staging')
+        changed=json.loads(canonical(self.payload));changed['pages'][0]['source_review_note']='Explicit model correction.'
+        await self.stage(changed)
+        self.assertEqual(json.loads(self.pending().command.payload)['batch_index'],1)
+
+    async def test_packet_finalize_only_marks_reading_complete(self):
+        self.packet_mode();await self.stage();self.finish();await self.helper.status(self.access,self.row)
+        self.finish();await self.helper.status(self.access,self.row)
+        await self.helper.finalize(self.access,self.row)
+        self.assertEqual(self.pending().command.route,'source.finish.v1')
+        self.finish();result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.state,'finalized')
+        self.assertEqual({e.command.route for e in self.spool.entries.values()},
+            {STAGE_ROUTE,'source.batch.v1','source.finish.v1'})
 
     async def test_stage_stores_only_compact_local_progress(self):
         result=await self.stage()
