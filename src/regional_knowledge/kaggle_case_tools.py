@@ -18,7 +18,7 @@ def register_case_tools(mcp,backend,principal):
             'then disagreement_edit(add_evidence) on a matching Case or create and add_evidence. '
             'Preserve original operation_key after unknown result; pending is not Saved.',
         annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
-    async def search_tool(query:Annotated[str,Field(min_length=1,max_length=120)],
+    async def search_tool(query:Annotated[str,Field(max_length=120)]='',
         place:Annotated[str|None,Field(max_length=120)]=None,
         source_id:UUID|None=None,after_case_id:UUID|None=None,
         limit:Annotated[int,Field(ge=1,le=8)]=5)->dict[str,Any]:
