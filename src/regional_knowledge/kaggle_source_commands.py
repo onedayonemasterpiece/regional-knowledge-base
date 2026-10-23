@@ -263,7 +263,18 @@ class AcceptedSourceDispatch:
         self.queue._source_commands=self
 
     def maintenance_blocks_dispatch(self):
-        if self.spool._lock.locked() or getattr(self.spool,'_native_history_unsettled',False):return True
+        if self.spool._lock.locked():return True
+        if getattr(self.spool,'_native_history_unsettled',False):
+            # The native-history adapter installs this fail-closed sentinel at
+            # bind, even when a restored Dataset never opens a history session.
+            # Only a live, verified Dataset cursor can supersede the sentinel;
+            # ordinary history sessions and stale bindings remain fenced.
+            from .control_spool import SourceCursor
+            cursor=self.spool._source_anchor
+            try:
+                if type(cursor) is not SourceCursor or not cursor.current():return True
+            except Exception:
+                return True
         # Restore has already computed these exact outcomes. Dataset capture
         # must finish before old jobs settle; redispatching their old writer
         # identity would disconnect the healthy recovered worker.
