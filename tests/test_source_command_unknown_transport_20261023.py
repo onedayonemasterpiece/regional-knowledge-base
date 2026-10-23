@@ -77,7 +77,12 @@ async def test_source_without_committed_receipt_keeps_warm_run_and_original_job(
         await peer.disconnect()
         await peer.wait('READY',generation=2)
         await peer.put(original,generation=2)
-        await peer.put(query(generation=2,request='read-after-reconnect'),generation=2)
+        # Ephemeral read claims MUST change across attachments. Reusing the
+        # first socket's compute_claim would correctly trip the existing
+        # cross-session replay fence and is not a valid fresh read fixture.
+        second_read=query(generation=2,request='read-after-reconnect')
+        second_read['compute_claim']='fresh-read-slot-session-two'
+        await peer.put(second_read,generation=2)
         final=await peer.wait('QUERY_RESULT',generation=2,predicate=lambda f:
             f['request_id']=='read-after-reconnect')
         assert final['status']=='degraded'
