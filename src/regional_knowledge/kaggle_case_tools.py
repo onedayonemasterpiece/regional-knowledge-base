@@ -8,6 +8,24 @@ from .disagreement_contracts import (CaseCreate,CaseRevise,CaseState,CaseGrant,E
 
 
 def register_case_tools(mcp,backend,principal):
+    @mcp.tool(name='disagreement_search',title='Find existing research cases by subject',
+        description='Find actor-authorized existing research Cases by question, place or source; '
+            'bounded lexical candidates only, not an automatic finding of contradiction. '
+            'Inspect candidate Case with disagreement_get before adding evidence or creating a new case. '
+            'One page of results is not exhaustive; use next_after_case while has_more. '
+            'No matching result or pending read is not proof of absence. '
+            'When an accepted page is visible via ordinary source search, compare assertions yourself, '
+            'then disagreement_edit(add_evidence) on a matching Case or create and add_evidence. '
+            'Preserve original operation_key after unknown result; pending is not Saved.',
+        annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
+    async def search_tool(query:Annotated[str,Field(min_length=1,max_length=120)],
+        place:Annotated[str|None,Field(max_length=120)]=None,
+        source_id:UUID|None=None,after_case_id:UUID|None=None,
+        limit:Annotated[int,Field(ge=1,le=8)]=5)->dict[str,Any]:
+        return await backend.disagreement_search(query,principal(),place=place,
+            source_id=str(source_id) if source_id is not None else None,
+            after_case_id=str(after_case_id) if after_case_id is not None else None,limit=limit)
+
     @mcp.tool(name='disagreement_get',title='Read a research case',
         description='Read a Case or complete paginated evidence, contributions, conclusions and history. '
             'after_seq is per Case; follow next_after_seq while has_more. Current Case/source access applies to history too. '
