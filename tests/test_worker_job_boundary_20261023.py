@@ -124,8 +124,10 @@ async def test_large_native_receipt_is_not_published_before_validation(kind,caps
     transport=module('bge_wss_transport')
     async def oversized(_):
         return {'payload':'private-'+('x'*150000)}
+    async def read(frame,*,encode):
+        return result(frame)
     worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
-        lambda:None,lambda:{},recovery_handler=oversized)
+        lambda:None,lambda:{},query_handler=read,recovery_handler=oversized)
     worker.source_handler=oversized
     frame=dict(kind=kind,id='receipt-job',claim='claim',
         run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],
@@ -156,8 +158,10 @@ async def test_source_authority_and_cancel_still_propagate(error_type,capsys):
     transport=module('bge_wss_transport')
     async def blocked(_):
         raise error_type('secret authority bytes')
+    async def read(frame,*,encode):
+        return result(frame)
     worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
-        lambda:None,lambda:{})
+        lambda:None,lambda:{},query_handler=read)
     worker.source_handler=blocked
     with pytest.raises(error_type):
         await worker._encode(dict(kind='source_command',id='authority-job',claim='claim'))
