@@ -293,9 +293,13 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         await self.helper.finalize(self.access,self.row)
         self.assertEqual(self.state()['total_inputs'],280000); self.assertEqual(self.state()['next_ordinal'],1)
 
-    async def test_one_active_ingestion_per_owner(self):
-        await self.stage(); other={**self.row,'ingestion_id':REQUEST,'source_id':'00000000-0000-0000-0000-000000000008'}
-        with self.assertRaisesRegex(IntakeFailure,'another_native_ingestion_active'): self.helper._state(other,create=True)
+    async def test_independent_sources_keep_independent_owner_progress(self):
+        await self.stage()
+        before=self.state()
+        other={**self.row,'ingestion_id':REQUEST,'source_id':'00000000-0000-0000-0000-000000000008'}
+        created=self.helper._state(other,create=True)
+        self.assertEqual(created['ingestion_id'],REQUEST)
+        self.assertEqual(self.state(),before)
 
     async def test_foreign_owner_row_is_denied(self):
         with self.assertRaisesRegex(IntakeFailure,'owned_ingestion_required'):
