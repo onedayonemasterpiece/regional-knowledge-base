@@ -826,14 +826,15 @@ class BgeWssTransport:
             # A deliberate owner STOP during the pre-ready initializer must
             # cancel its asynchronous wait rather than wait for its 900s cap.
             # Active command/forward tasks still drain to an exact outcome.
-            if (self.stop.is_set() and self.loading is not None
-                    and not self.loading.done() and self.job is None
-                    and self.pending is None and self.resource is None):
+            stop_cancelled_loading = (self.stop.is_set() and self.loading is not None
+                and not self.loading.done() and self.job is None
+                and self.pending is None and self.resource is None)
+            if stop_cancelled_loading:
                 self.loading.cancel()
             # Thread cancellation is not forward completion. Drain any started
             # load/encode before relinquishing this worker's inference ownership.
             cancelled = False
-            async def drain(task):
+            async def drain(task, *, intentional_stop=False):
                 nonlocal cancelled
                 if task is None:
                     return
@@ -841,13 +842,16 @@ class BgeWssTransport:
                     try:
                         await asyncio.shield(task)
                     except asyncio.CancelledError:
-                        cancelled = True
+                        # STOP itself cancelled only the idle async startup
+                        # waiter; external caller cancellation must propagate.
+                        if not intentional_stop or asyncio.current_task().cancelling():
+                            cancelled = True
                     except Exception:
                         break
                 if not task.cancelled():
                     task.exception()
             for task in (self.loading, self.read_task, self.encoding):
-                await drain(task)
+                await drain(task, intentional_stop=stop_cancelled_loading and task is self.loading)
             # A read's cancellation/cleanup can create its final tracked native
             # Task after shutdown began. Enumerate only after consumer cleanup.
             while self.forwards:
