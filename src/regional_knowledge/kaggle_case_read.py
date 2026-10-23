@@ -6,13 +6,30 @@ import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 from .kaggle_case_contracts import CaseReadRequest,CaseReadResult,canonical
-from .kaggle_query import ReadUnavailable,_frontier,_identity
+from .kaggle_query import ReadUnavailable,_identity
 
 CASE_READER_FUNCTIONS=(
     'verify_disagreement_origins_v1(uuid[])',
     'read_disagreement_v1(uuid,uuid,text,bigint,integer,bigint,uuid,bigint,uuid)',
     'read_disagreement_operation_v1(uuid,uuid,text)',
 )
+
+ 
+async def _case_pg_frontier(cursor,execute,request,observed):
+    # A PG MVCC snapshot plus the current native actor/Case role is sufficient
+    # to read existing Case evidence. Unrelated source packet/projection lag
+    # must not hide previously visible cases during the next page stage.
+    await execute("""SELECT s.applied_seq,f.projection_seq,f.visibility_epoch,
+                           s.database_generation
+        FROM rkb_v4.recovery_state s CROSS JOIN rkb_v4.read_frontier f
+        WHERE s.singleton AND f.singleton""")
+    row=await cursor.fetchone()
+    if (row is None or row[0] is None or row[1] is None
+            or row[2] is None or row[3] is None):
+        raise ReadUnavailable('not_ready')
+    observed.update(data=row[0],projection=row[1],visibility=row[2],database=row[3])
+    if min(row[0],row[1])<request.min_data_seq:
+        raise ReadUnavailable('projection_lag')
 
 
 async def execute_case_read(request,*,acquire):
@@ -33,7 +50,7 @@ async def execute_case_read(request,*,acquire):
                         async def execute(statement,params=()):
                             await cursor.execute("SELECT set_config('statement_timeout',%s,true)",(str(max(1,int((deadline-loop.time())*1000))),))
                             await cursor.execute(statement,params)
-                        await _frontier(cursor,execute,request,observed,require_dense=False)
+                        await _case_pg_frontier(cursor,execute,request,observed)
                         await execute('SELECT max(version) FROM rkb_v4.schema_migrations')
                         installed=await cursor.fetchone()
                         if not installed or type(installed[0]) is not int or installed[0]<10:
