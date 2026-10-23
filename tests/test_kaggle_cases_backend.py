@@ -66,6 +66,63 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('native_status',['applied','rejected_precondition'])
+async def test_verified_case_apply_requests_early_dataset_saved_only_for_success(
+        env,auth,monkeypatch,native_status):
+    import base64
+    import hashlib
+    from regional_knowledge.kaggle_apply import ApplyReceipt
+    from regional_knowledge.kaggle_case_contracts import canonical
+    from regional_knowledge.kaggle_service_startup import TargetServiceStartup
+
+    value,principal,binding=await backend(env,auth,monkeypatch)
+    with capture_read_output() as outputs:
+        accepted=await value.disagreement_edit('create','case-checkpoint-regression',
+            principal,command=create())
+        assert accepted['status']=='pending' and not accepted['saved']
+        outputs[0].release()
+    entry=await env.spool.get(accepted['operation_key'])
+    assert entry.accepted is not None and entry.apply_state=='NOT_SENT'
+    calls=[]
+    startup=SimpleNamespace(config=SimpleNamespace(queue=env.q),
+        dataset_checkpoints=SimpleNamespace(kick=lambda binding,*,planned_stop=False:
+            calls.append((binding,planned_stop))))
+    control={'sequence':0,'heads':[]}
+    async def cursor():
+        startup.coverage=await env.spool.dataset_cursor(binding,control=control,
+            current=lambda candidate:candidate is binding)
+        return startup.coverage
+    await cursor()
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
+    assert calls==[(binding,False)]  # accepted is not native APPLIED
+
+    await env.spool.mark_apply_sent(entry.command.operation_key)
+    assert (await cursor()).pending  # UNKNOWN is not permission to force Saved
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
+    assert calls[-1]==(binding,False)
+    command=entry.command
+    outcome=canonical(dict(command_sha256=entry.command_sha256,person_id=command.person_id,
+        status=native_status,result_b64=base64.b64encode(
+            canonical(dict(case_id=command.ids['case_id'],object_id=command.ids['object_id']))).decode()))
+    receipt=ApplyReceipt(entry.database_generation,command.operation_key,command.sequence,
+        entry.command_sha256,native_status,outcome,hashlib.sha256(outcome).hexdigest(),False)
+    await env.spool.record_apply(command.operation_key,receipt)
+    applied=await env.spool.get(command.operation_key)
+    assert applied.outcome_state=='NOT_SENT' and applied.remote_outcome is None
+    assert (await cursor()).applied_sequence==command.sequence
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
+    assert calls[-1]==(binding,native_status=='applied')
+    # Even with an APPLIED Case, the history-only path keeps its old cadence.
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=False)
+    assert calls[-1]==(binding,False)
+    await env.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
+    assert (await env.spool.get(command.operation_key)).outcome_state=='DURABLE'
+    await cursor()
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
+    assert calls[-1]==(binding,False)  # no repeat after exact durable outcome
+
+
+@pytest.mark.asyncio
 async def test_case_create_does_not_require_unrelated_next_page_history_refresh(env,auth,monkeypatch):
     value,principal,b=await backend(env,auth,monkeypatch)
     # Fresh PG binding and authenticated Case actor, but unrelated source
