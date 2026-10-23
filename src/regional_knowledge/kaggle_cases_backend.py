@@ -125,7 +125,8 @@ class KaggleCasesBackend:
         try:
             async with asyncio.timeout_at(deadline):
                 query=CaseReadRequest(request_id='case-'+secrets.token_hex(16),connection_generation=binding.connection_generation,
-                    turn_generation=0,min_data_seq=binding.min_data_seq,deadline_ms=max(1,int((deadline-time.monotonic())*1000)),
+                    turn_generation=0,min_data_seq=(binding.min_data_seq if selector.get('section')=='operation' else 0),
+                    deadline_ms=max(1,int((deadline-time.monotonic())*1000)),
                     actor=TrustedActorContext(person_id=authority.person_id,audience=self.destination.key,
                         auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref),**selector)
                 permit=await self.gate.dispatch(authority,query,binding)
