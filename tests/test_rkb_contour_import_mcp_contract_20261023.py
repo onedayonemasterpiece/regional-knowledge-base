@@ -1,7 +1,8 @@
-"""Owner-intake public MCP contract against real target API classes, no provider effects.
+"""Owner-intake MCP schema and authorization against synthetic originals.
 
-The current native activation is shared/public. Private-without-public-rights
-must NOT be enabled by weakening the start gate until read eligibility exists.
+Ordinary owner-only imports are shared-searchable with an owner attestation,
+not a per-book legal questionnaire. Private Case and original grants remain
+separate from the import capability.
 """
 from dataclasses import replace
 from pydantic import ValidationError
@@ -69,26 +70,28 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     assert "2500 physical pages" in server.instructions
     assert "128 MiB" in ingest.description
     assert "2500 physical pages" in ingest.description
-    assert "verified public-distribution basis" in ingest.description
+    assert "no per-book public_rights declaration" in ingest.description
     assert "narrative_outcome=needs_context or facts_only" in ingest.description
     assert "Otherwise omit basic_variant" in server.instructions
     assert "2 MiB and 32 pages" not in server.instructions
 
 
 @pytest.mark.asyncio
-async def test_owner_public_activation_still_rejects_missing_rights_before_original(native_intake):
+async def test_owner_start_without_rights_uses_existing_owner_attestation(native_intake):
+    from regional_knowledge.kaggle_importer import OWNER_IMPORT_ATTESTATION
     s = native_intake
-    with pytest.raises(ToolError, match="attached_source_and_explicit_public_rights_required"):
-        await s.importer.book_ingest(
-            command="start",
-            principal=s.principal,
-            file=ChatFile(file_id="fixture-private-no-license",
-                download_url="https://files.example.test/synthetic.pdf",
-                mime_type="application/pdf"),
-            payload={"title": "Synthetic rights-unknown private book"},
-            source_import=None,
-        )
-    assert s.originals.calls == []
+    result = await s.importer.book_ingest(
+        command="start",
+        principal=s.principal,
+        file=ChatFile(file_id="fixture-owner-attested-original",
+            download_url="https://files.example.test/synthetic.pdf",
+            mime_type="application/pdf"),
+        payload={"title": "Synthetic owner-attested original"},
+        source_import=None,
+    )
+    assert result.state == "staged"
+    assert s.importer._row(s.principal.subject, result.ingestion_id)["rights_json"] == OWNER_IMPORT_ATTESTATION
+    assert len(s.originals.calls) == 1
 
 
 @pytest.mark.asyncio

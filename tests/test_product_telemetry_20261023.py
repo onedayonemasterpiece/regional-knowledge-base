@@ -234,3 +234,12 @@ def test_server_binds_product_sink_to_resource_channel_when_supported(monkeypatc
     assert captured["product_telemetry"] is sink
     assert captured["read_telemetry"] is not None
     assert getattr(server, "_bge_channel_route", None) is not None
+
+
+def test_held_product_telemetry_does_not_construct_a_sink(monkeypatch):
+    import regional_knowledge.product_telemetry as telemetry
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE','off')
+    def forbidden():
+        raise AssertionError('HOLD must not start a logger thread or create files')
+    monkeypatch.setattr(telemetry,'get_product_telemetry',forbidden)
+    assert not telemetry.emit_product_event({'event':'import.phase','phase':'stage','status':'applied'})

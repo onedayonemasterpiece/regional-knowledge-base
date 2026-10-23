@@ -7,7 +7,9 @@ from .source_stage import STAGE_REVISIONS, STAGE_ROUTE, SEAL_ROUTE, stage_handle
 from .source_activation import (ACTIVATION_REVISIONS, ACTIVATE_ROUTE, MATERIALIZE_ROUTE,
     activation_handler, materialize_handler, validate_activation_command, validate_materialize_command)
 
-NATIVE_ROUTES=CURRENT_ROUTES|frozenset({STAGE_ROUTE,SEAL_ROUTE,ACTIVATE_ROUTE,MATERIALIZE_ROUTE})
+from .source_batch import ROUTE as BATCH_ROUTE,FINISH_ROUTE
+
+NATIVE_ROUTES=CURRENT_ROUTES|frozenset({STAGE_ROUTE,SEAL_ROUTE,ACTIVATE_ROUTE,MATERIALIZE_ROUTE,BATCH_ROUTE,FINISH_ROUTE})
 
 
 def _view(command,revisions):
@@ -24,6 +26,9 @@ def validate_native_source_command(command):
         return validate_stage_command(_view(command,Revisions(*STAGE_REVISIONS)))
     if command.route==ACTIVATE_ROUTE:return validate_activation_command(command)
     if command.route==MATERIALIZE_ROUTE:return validate_materialize_command(command)
+    if command.route in (BATCH_ROUTE,FINISH_ROUTE):
+        from .source_batch import validate_command
+        return validate_command(command)
     if command.route=='geo.manifest.install.v1':
         from .geo_manifest_commands import GEO_V2_REVISIONS,validate_geo_manifest_command
         return validate_geo_manifest_command(_view(command,GEO_V2_REVISIONS))
@@ -41,6 +46,9 @@ def native_source_handler(route,*,check_sha256,apply_sha256):
         return activation_handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route==MATERIALIZE_ROUTE:
         return materialize_handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
+    elif route in (BATCH_ROUTE,FINISH_ROUTE):
+        from .source_batch import handler
+        return handler(route=route,check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route=='geo.manifest.install.v1':
         from .geo_manifest_commands import GEO_V2_REVISIONS,geo_manifest_handler
         result=geo_manifest_handler(revisions=GEO_V2_REVISIONS,

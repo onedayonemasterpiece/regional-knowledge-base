@@ -351,15 +351,10 @@ class TargetServiceStartup:
         except Exception:return False
 
     def imports_current(self):
-        # Exact fresh11 source imports require reviewed GEO identities first.
-        # Ordinary reads and GEO command installation must remain available
-        # while those same accepted operations are being reconciled.
-        if not self.reads_current():return False
-        if not self.gate.graph_supported():return True
-        installer=getattr(self,'geo_installer',None)
-        if installer is not None and not installer.current():return False
-        keys=installer.effective_keys if installer is not None else self.config.geo_manifest_operation_keys
-        return bool(self.geo_gate is not None and self.geo_gate.installation_current(self.binding,keys))
+        # Ordinary owner imports require current source-history/binding authority,
+        # not completion of an unrelated GEO bootstrap. Native source-stage
+        # admission still enforces exact receipts, UNKNOWN and writer fencing.
+        return self.reads_current()
 
     def _coverage_idle(self):
         """Nothing new to verify and ample time left on the current proof.

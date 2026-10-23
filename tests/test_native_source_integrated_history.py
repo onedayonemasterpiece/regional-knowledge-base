@@ -26,4 +26,5 @@ async def test_mixed_retained_registry_selects_exact_current_import_profile(nati
     importer=KaggleSourceImporter(startup,originals=s.originals,tokenizer=s.importer.tokenizer)
     assert importer.import_revisions==ACTIVATION_REVISIONS
     assert importer.native_intake is not None
-    assert len(s.spool.registry.handlers)==13
+    from regional_knowledge.kaggle_native_source_bindings import NATIVE_ROUTES
+    assert set(s.spool.registry.handlers)==NATIVE_ROUTES
