@@ -146,6 +146,15 @@ def validate_case_record(request,record):
                     or type(item['event_seq']) is not int or item['event_seq']<0):
                 raise ValueError('invalid Case subject candidate')
             exact_uuid(item['case_id'])
+            deps=item['source_dependencies']
+            if type(deps) is not list or len(deps)>32:raise ValueError('bounded Case source refs required')
+            seen=set()
+            for dep in deps:
+                if (type(dep) is not dict or set(dep)!={'source_id','content_revision','eligibility_revision'}
+                        or type(dep['source_id']) is not str or dep['source_id'] in seen
+                        or any(type(dep[k]) is not int or dep[k]<1 for k in ('content_revision','eligibility_revision'))):
+                    raise ValueError('invalid Case source refs')
+                exact_uuid(dep['source_id']);seen.add(dep['source_id'])
             previous=item['case_id']
         if record['has_more'] and (not record['items'] or record['next_after_case']!=record['items'][-1]['case_id']):
             raise ValueError('Case search continuation required')
