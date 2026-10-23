@@ -29,8 +29,9 @@ def dispatch(worker, *, phase, job_id='native-job', generation=1):
 
 
 class AttachedHandler:
-    def __init__(self, calls):
+    def __init__(self, calls, error_type):
         self.calls=calls
+        self.error_type=error_type
         self.generations=[]
 
     def attached(self,generation):
@@ -41,7 +42,7 @@ class AttachedHandler:
 
     async def __call__(self,frame):
         self.calls.append((frame['id'],frame['phase']))
-        raise ModuleNotFoundError('private import path token=secret-native-value')
+        raise self.error_type('private import path token=secret-native-value')
 
 
 @pytest.mark.asyncio
@@ -51,13 +52,14 @@ class AttachedHandler:
     ('source_history',False),
     ('original_pages',False),
 ])
+@pytest.mark.parametrize('error_type',[ModuleNotFoundError,SnapshotError])
 async def test_unexpected_native_handler_error_preserves_warm_worker_and_read(
-        capsys,monkeypatch,phase,has_ticket):
+        capsys,monkeypatch,phase,has_ticket,error_type):
     transport=module('bge_wss_transport')
     monkeypatch.setattr(transport.random,'uniform',lambda *_:.0001)
     peer=Peer();stop=asyncio.Event();calls=[];loads=[];closes=[]
-    history=AttachedHandler(calls)
-    original=AttachedHandler(calls)
+    history=AttachedHandler(calls,error_type)
+    original=AttachedHandler(calls,error_type)
 
     async def read(frame,*,encode):
         assert await encode(frame['query'])==[1.]+[0.]*1023
@@ -65,7 +67,7 @@ async def test_unexpected_native_handler_error_preserves_warm_worker_and_read(
 
     async def recovery(frame):
         calls.append((frame['id'],frame['phase']))
-        raise ModuleNotFoundError('private module file token=secret-native-value')
+        raise error_type('private module file token=secret-native-value')
 
     async def prepare(encoder,**identity):
         return PreparedRuntime(read,candidate(),source_history_handler=history,
@@ -120,7 +122,7 @@ async def test_unexpected_native_handler_error_preserves_warm_worker_and_read(
                 events.append(item)
         assert events==[dict(event='native_job_outcome_unresolved',
             job_id='native-job',kind='recovery_phase',phase=phase,
-            error_class='ModuleNotFoundError')]
+            error_class=error_type.__name__)]
         assert 'secret-native-value' not in captured.out+captured.err
         assert 'secret-query-from-authenticated-model' not in captured.out+captured.err
         assert 'private import path' not in captured.out+captured.err
@@ -133,7 +135,7 @@ async def test_unexpected_native_handler_error_preserves_warm_worker_and_read(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('error_type',[PermissionError,StaleWriter,SnapshotError])
+@pytest.mark.parametrize('error_type',[PermissionError,StaleWriter])
 async def test_native_authority_fences_are_not_downgraded_to_unknown(capsys,error_type):
     transport=module('bge_wss_transport')
     async def read(frame,*,encode):return result(frame)

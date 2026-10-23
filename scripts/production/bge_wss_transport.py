@@ -404,10 +404,9 @@ class BgeWssTransport:
                         receipt=await handler(job)
                 except Exception as error:
                     from regional_knowledge.recovery_journal import StaleWriter
-                    from regional_knowledge.kaggle_pg_snapshot_native import SnapshotError
-                    # Invalid actor/authority, stale writer and snapshot
-                    # binding are fences, not ordinary command failures.
-                    if isinstance(error,(PermissionError,StaleWriter,SnapshotError)):
+                    # Actor/permission and stale writer are authority fences,
+                    # not ordinary job failures. Keep their old fail-closed path.
+                    if isinstance(error,(PermissionError,StaleWriter)):
                         raise
                     print(json.dumps({'event':'native_job_outcome_unresolved',
                         'job_id':job['id'],'kind':job['kind'],'phase':job.get('phase'),
