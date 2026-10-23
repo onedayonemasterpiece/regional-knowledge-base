@@ -276,9 +276,8 @@ async def test_pending_withdrawal_between_native_result_and_http_issuance(vertic
     if scenario == 'cross-source':
         assert payload['status']=='degraded' and payload['reason']=='evidence_withdrawn'
     else:
-        # The native bounded retrieval may already be degraded; a source-A
-        # withdrawal must not overwrite B's honest native reason.
-        assert payload['status']=='degraded' and payload['reason']=='bounded_retrieval'
+        # A withdrawal outside B's result cannot degrade its completed query.
+        assert payload['status']=='ok' and payload['reason'] is None
     await asyncio.to_thread(s.telemetry._queue.join)
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] == payload['status']
