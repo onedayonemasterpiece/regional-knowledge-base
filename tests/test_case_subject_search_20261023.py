@@ -17,6 +17,9 @@ from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
 from test_kaggle_case_read import Connection
 from test_kaggle_worker_query import Lease, pinned, forbidden_encode
 from test_disagreement_native import CASE, ACTOR
+from test_control_spool import env
+from test_read_authority import auth
+from test_participants import people
 
 EMPTY_CASE = "00000000-0000-0000-0000-000000000000"
 OTHER_CASE = "00000000-0000-0000-0000-000000000009"
@@ -27,6 +30,7 @@ def search_request(**changes):
         request_id="case-search-1", connection_generation=4, turn_generation=9,
         case_id=EMPTY_CASE, section="search", search_query="city foundation",
         min_data_seq=12, deadline_ms=2000, compute_claim="controller-claim",
+        limit=5,
         actor=dict(person_id=ACTOR, audience="personal", auth_epoch=2,
                    visibility_epoch=100), **changes)
 
