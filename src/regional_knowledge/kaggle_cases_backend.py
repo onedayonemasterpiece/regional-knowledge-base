@@ -250,12 +250,13 @@ class KaggleCasesBackend:
             # Existing Case ACL is actor-scoped. Only restrictions on this
             # Case or its accepted source dependencies may stop the write;
             # an unrelated incoming page does not make the Case stale.
+            facts=await self.gate._facts(query,authority,anchor,case)
+            # Even if a grant/revoke is staged WHILE reading source facts,
+            # its exact Case restriction must close this writer request.
             if self.gate._case_restriction_after(command.ids['case_id'],getattr(anchor,'applied_sequence',0)):
                 raise failure('prior_write_pending')
-            if case['sources'] and self.spool._barriers_for(tuple(sorted(case['sources']))).barriers:
-                barriers=self.spool._barriers_for(tuple(sorted(case['sources']))).barriers
-                if any(item.restriction_active for item in barriers):
-                    raise failure('evidence_withdrawn')
+            if any(change.restriction for change in facts.sources.changes):
+                raise failure('evidence_withdrawn')
         if (self.spool._writing or self.spool._source_anchor is not anchor
                 or self.spool._source_version is not version):raise failure('prior_write_pending')
         return anchor,version
