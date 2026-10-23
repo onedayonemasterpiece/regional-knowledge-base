@@ -455,9 +455,18 @@ class BgeWssTransport:
                     continue
                 await send(frame)
                 if frame.get('type') == 'QUERY_RESULT':
-                    # Export after the wire send, on a separate background task;
-                    # never await optional diagnostics or alter the wire payload.
-                    asyncio.create_task(self._export_read_events(frame))
+                    # Only one optional off-loop native drain may be in flight.
+                    # A blocked collector must not accumulate tasks/threads on
+                    # successive reads; the bounded native collector accounts
+                    # for discarded older observations.
+                    previous = getattr(self, '_read_telemetry_export', None)
+                    if previous is None or previous.done():
+                        self._read_telemetry_export = asyncio.create_task(
+                            self._export_read_events(frame))
+                    else:
+                        from regional_knowledge.product_telemetry import emit_product_event
+                        emit_product_event({'event':'read.terminal','phase':'adapter',
+                            'status':'dropped','run_id':self.config['run_id']})
 
         async def queue_read_result():
             nonlocal read_sent
