@@ -51,7 +51,7 @@ async def native_intake(target, tmp_path):
                    (*values,t.run))
     store = ConditionalMemoryStore()
     registry = HandlerRegistry([native_source_handler(route,check_sha256='a'*64,apply_sha256='b'*64)
-                                for route in (STAGE_ROUTE,SEAL_ROUTE,MATERIALIZE_ROUTE,ACTIVATE_ROUTE)])
+                                for route in (STAGE_ROUTE,SEAL_ROUTE,MATERIALIZE_ROUTE,ACTIVATE_ROUTE,'source.batch.v1','source.finish.v1')])
     spool = ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(store,stream='native-intake-14'),registry)
     originals = object.__new__(OriginalIntakeController)
     originals.queue, originals.spool, originals.participants = t.queue, spool, t.auth.p.registry
@@ -122,7 +122,7 @@ async def start(s, *, file_id='synthetic-174-djvu'):
         source_import=options())
 
 
-def batch(s, result, *, first=0, count=8):
+def batch(s, result, *, first=0, count=4):
     """Model-authored typed selected pages, not text certified by native OCR."""
     receipt = s.originals.receipts[result.ingestion_id]
     pages, chunks = [], []
@@ -183,6 +183,10 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
     elif command.route == MATERIALIZE_ROUTE:
         output = dict(source_id=result.document_id,ordinal=doc['ordinal'],total_inputs=total_inputs,
             knowledge_sha256='e'*64,input_sha256='f'*64,input_id='synthetic-native-input')
+    elif command.route == 'source.batch.v1':
+        output.update(batch_index=doc['batch_index'],candidate_state='published',accepted=True,knowledge_sha256='e'*64)
+    elif command.route == 'source.finish.v1':
+        output.update(read_complete=True)
     else:
         assert command.route == ACTIVATE_ROUTE
         output = dict(source_id=result.document_id,accepted=True,knowledge_sha256='e'*64)
@@ -201,14 +205,14 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
 
 
 @pytest.mark.asyncio
-async def test_174_page_original_resumes_22_typed_batches_without_dev_graph_or_vectors(native_intake):
+async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_vectors(native_intake):
     s = native_intake
     result = await start(s)
     assert s.originals.receipts[result.ingestion_id].page_count == 174
     previous, seen = ZERO_HASH, []
-    for ordinal, first in enumerate(range(0,174,8)):
+    for ordinal, first in enumerate(range(0,174,4)):
         payload = batch(s,result,first=first)
-        assert 1 <= len(payload['pages']) <= 8
+        assert 1 <= len(payload['pages']) <= 4
         assert (await stage(s,result,payload)).state == 'processing'
         entry = await pending(s,result)
         doc = json.loads(entry.command.payload)
@@ -221,13 +225,16 @@ async def test_174_page_original_resumes_22_typed_batches_without_dev_graph_or_v
         previous = digest(entry.command.payload)
         seen.extend(p['physical_page_index'] for p in doc['model_payload']['pages'])
         await finish(s,result)
+        assert (await call(s,result,'status')).state == 'processing'
+        assert (await pending(s,result)).command.route=='source.batch.v1'
+        await finish(s,result)
         assert (await call(s,result,'status')).state == 'staged'
         # An exact post-durability retry must not allocate batch ordinal+1.
         assert (await stage(s,result,payload)).state == 'staged'
-        assert operation_count(s) == ordinal+1
+        assert operation_count(s) == (ordinal+1)*2
         row = s.importer._row(s.principal.subject,result.ingestion_id)
         assert row['stage_json'] is None and row['semantic_json'] is None and row['native_proof_sha256'] is None
-    assert seen == list(range(174)) and state(s,result)['batch_count'] == 22
+    assert seen == list(range(174)) and state(s,result)['batch_count'] == 44
     assert state(s,result)['last_batch_sha256'] == previous and not s.token_calls
     with s.t.queue.connect(write=False) as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind<>'source_command'").fetchone()[0] == 0
@@ -250,9 +257,11 @@ async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(na
         await stage(s,result,changed)
     assert operation_count(s) == 1 and (await pending(s,result)).command.request_id == request
     await finish(s,result); await call(s,result,'status')
+    assert (await pending(s,result)).command.route=='source.batch.v1'
+    await finish(s,result);await call(s,result,'status')
     await stage(s,result,changed)
     second = await pending(s,result)
-    assert second.command.sequence == entry.command.sequence+1
+    assert second.command.sequence == entry.command.sequence+2
     assert json.loads(second.command.payload)['previous_batch_sha256'] == digest(entry.command.payload)
     assert (await s.spool.get(entry.command.operation_key)).command_bytes == exact
 
@@ -279,42 +288,29 @@ async def test_real_lost_acceptance_ack_keeps_unknown_key_then_read_only_reconci
 
 
 @pytest.mark.asyncio
-async def test_inactive_apply_progress_and_final_activation_require_exact_receipts(native_intake):
+async def test_packet_progress_and_reading_completion_keep_exact_durability_receipts(native_intake):
     s = native_intake; result = await start(s)
     await stage(s,result,batch(s,result,count=1))
     staged = await finish(s,result,publish=False)
-    assert (await call(s,result,'status')).state == 'staged'
+    assert (await call(s,result,'status')).state == 'processing'
     assert state(s,result)['batch_count'] == 1 and operation_count(s) == 1
     assert (await s.spool.get(staged.command.operation_key)).outcome_state == 'NOT_SENT'
     await s.spool.publish_outcome(staged.command.operation_key,writer_generation='writer-1')
-    assert (await call(s,result,'status')).state == 'staged'
-    assert operation_count(s) == 1  # Status does not silently seal a staged candidate.
-    assert (await call(s,result,'validate')).state == 'processing'
-    assert (await pending(s,result)).command.route == SEAL_ROUTE
-    await finish(s,result)
-    assert (await call(s,result,'status')).state == 'ready'
-    assert state(s,result)['phase'] == 'sealed' and operation_count(s) == 2
-    assert (await call(s,result,'status')).state == 'ready'  # No implicit finalize.
-    assert (await call(s,result,'finalize')).state == 'processing'
-    for ordinal in range(2):
-        assert (await call(s,result,'status')).state == 'processing'
-        entry = await pending(s,result)
-        assert entry.command.route == MATERIALIZE_ROUTE and json.loads(entry.command.payload)['ordinal'] == ordinal
-        assert operation_count(s) == ordinal+3
-        assert (await call(s,result,'status')).state == 'processing'
-        assert (await pending(s,result)).command_bytes == entry.command_bytes
-        assert operation_count(s) == ordinal+3  # Poll is not whole-book inference or a new ordinal.
-        await finish(s,result)
     assert (await call(s,result,'status')).state == 'processing'
-    activation = await pending(s,result)
-    assert activation.command.route == ACTIVATE_ROUTE and operation_count(s) == 5
+    packet=await pending(s,result)
+    assert packet.command.route=='source.batch.v1' and operation_count(s)==2
+    await finish(s,result)
+    assert (await call(s,result,'status')).state=='staged'
+    assert state(s,result)['published_batch_count']==1
+    assert (await call(s,result,'finalize')).state=='processing'
+    completion=await pending(s,result)
+    assert completion.command.route=='source.finish.v1'
     await finish(s,result,publish=False)
     assert (await call(s,result,'status')).state == 'processing'
-    assert state(s,result)['phase'] == 'ready_activation'
-    await s.spool.publish_outcome(activation.command.operation_key,writer_generation='writer-1')
+    await s.spool.publish_outcome(completion.command.operation_key,writer_generation='writer-1')
     assert (await call(s,result,'status')).state == 'finalized'
     assert (await call(s,result,'finalize')).state == 'finalized'
-    assert operation_count(s) == 5 and not s.token_calls
+    assert operation_count(s) == 3 and not s.token_calls
 
 
 @pytest.mark.asyncio
@@ -325,6 +321,41 @@ async def test_start_allows_same_file_retry_but_blocks_second_original_before_ac
     with pytest.raises(ToolError,match='another_native_ingestion_active'):
         await start(s,file_id='second-unrelated-original')
     assert len(s.originals.calls) == calls
+
+
+@pytest.mark.asyncio
+async def test_normal_start_retires_only_a_known_inactive_legacy_intake(native_intake):
+    s=native_intake;old=await start(s)
+    row=s.importer._row(s.principal.subject,old.ingestion_id)
+    s.importer.native_intake._state(row,create=True)
+    with s.t.queue.connect() as db:
+        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(old.ingestion_id,))
+    await stage(s,old,batch(s,old,count=1))
+    entry=await finish(s,old) # Known durable receipt, not yet settled in compact progress.
+    frozen=entry.command_bytes
+    new=await start(s)
+    assert new.ingestion_id!=old.ingestion_id and new.document_id!=old.document_id
+    assert s.importer._row(s.principal.subject,old.ingestion_id)['phase']=='failed'
+    assert state(s,old)['phase']=='failed'
+    assert (await s.spool.get(entry.command.operation_key)).command_bytes==frozen
+    assert (await s.spool.get(entry.command.operation_key)).outcome_state=='DURABLE'
+    assert len(s.originals.calls)==2
+
+
+@pytest.mark.asyncio
+async def test_normal_start_does_not_retire_an_uncertain_legacy_operation(native_intake):
+    s=native_intake;old=await start(s)
+    row=s.importer._row(s.principal.subject,old.ingestion_id)
+    s.importer.native_intake._state(row,create=True)
+    with s.t.queue.connect() as db:
+        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(old.ingestion_id,))
+    await stage(s,old,batch(s,old,count=1))
+    entry=await pending(s,old)
+    await s.spool.mark_apply_sent(entry.command.operation_key)
+    again=await start(s)
+    assert again.ingestion_id==old.ingestion_id and state(s,old)['phase']=='staging'
+    assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
+    assert len(s.originals.calls)==2 # Same begin intent is reconciled, no new source ID.
     with s.t.queue.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 1
 

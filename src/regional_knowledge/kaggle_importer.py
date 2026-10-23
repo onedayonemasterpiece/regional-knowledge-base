@@ -260,8 +260,10 @@ class KaggleSourceImporter:
         rights = canonical(source_import.public_rights.model_dump(mode='json')).decode()
         if len(metadata_bytes) > 16384:
             raise failure('small_import_metadata_bound')
+        if self.native_intake is not None:
+            await self.native_intake.retire_inactive_legacy(access)
         with self.queue.connect() as db:
-            prior = db.execute('SELECT * FROM rkb_source_intake_control WHERE person_id=? AND file_id=?',
+            prior = db.execute("SELECT * FROM rkb_source_intake_control WHERE person_id=? AND file_id=? AND phase<>'failed' ORDER BY updated DESC LIMIT 1",
                 (actor, file.file_id)).fetchone()
             if prior is not None:
                 if prior['metadata_json'] != metadata_bytes.decode() or prior['rights_json'] != rights:
