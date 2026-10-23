@@ -141,21 +141,24 @@ class CaseReadGate(SourceReadGate):
                         or result.observed_visibility_epoch is None):
                     raise ValueError('native Case search binding differs')
                 cases=tuple(item['case_id'] for item in record['items'])
-                # Only affected Case grant/revoke intents may invalidate a
-                # candidate. An unrelated next-page stage never closes search.
-                if any(self._case_restriction_after(case_id,result.observed_data_seq)
-                       for case_id in cases):
+                sources=tuple(sorted({dep['source_id'] for item in record['items']
+                    for dep in item['source_dependencies']}))
+                # Only affected Case grants or source withdrawals invalidate
+                # candidate disclosure, not unrelated next-page writes.
+                if (any(self._case_restriction_after(case_id,result.observed_data_seq)
+                        for case_id in cases) or self._restricted_sources(sources)):
                     result=self._closed(result,'access_denied')
             except (ValueError,TypeError,KeyError,AttributeError):
                 result=self._closed(result,'internal_error')
                 cases=()
+                sources=()
             await self._authority(read.authority,q)
             if not self._binding(read):raise SourceGateDenied('runtime binding changed')
-            if result.status=='ok' and any(
+            if result.status=='ok' and (any(
                     self._case_restriction_after(case_id,result.observed_data_seq)
-                    for case_id in cases):
+                    for case_id in cases) or self._restricted_sources(sources)):
                 result=self._closed(result,'access_denied')
-            read.facts=(cases,result.observed_data_seq) if result.status=='ok' else None
+            read.facts=(cases,sources,result.observed_data_seq) if result.status=='ok' else None
             read.result=result
             return result
         try:
@@ -209,8 +212,9 @@ class CaseReadGate(SourceReadGate):
         read=self._tickets.get(ticket)
         try:
             if read is not None and read.query.section=='search' and read.facts is not None:
-                cases,sequence=read.facts
+                cases,sources,sequence=read.facts
                 return bool(self._binding(read) and read.result is not None
+                    and not self._restricted_sources(sources)
                     and not any(self._case_restriction_after(case_id,sequence)
                                 for case_id in cases))
             return bool(read is not None and self._binding(read) and read.result is not None
