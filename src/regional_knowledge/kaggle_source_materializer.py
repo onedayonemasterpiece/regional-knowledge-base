@@ -452,7 +452,8 @@ class NativeSourceCompiler:
             if not include_illustrations and (media or any(page.illustrations for page in pages)):
                 raise failure('native_illustration_activation_unavailable')
             partial=compile_model_stage(graph,document_id=source_id,revision=1,pages=pages,chunks=chunks,
-                poi_facts=facts,poi_media_links=media,allow_footnote_spans=passage_evidence)
+                poi_facts=facts,poi_media_links=media,allow_footnote_spans=passage_evidence,
+                derive_span_hashes=trusted_packet is not None)
             # Existing passage selections come from ordinary PG provenance.
             # Their internal lookup keys are not new model chunk identities.
             if trusted_packet is not None:
