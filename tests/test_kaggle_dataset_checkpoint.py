@@ -127,8 +127,8 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
     p.q.clock=lambda:0.
     p.binding=NS(run_id='run',runtime_incarnation='inc',writer_generation='writer')
     with p.q.connect() as db:
-        db.execute('CREATE TABLE runs(id TEXT,started REAL)')
-        db.execute("INSERT INTO runs VALUES('run',0)")
+        db.execute("CREATE TABLE runs(id TEXT,started REAL,status TEXT NOT NULL DEFAULT 'ready')")
+        db.execute("INSERT INTO runs(id,started,status) VALUES('run',0,'ready')")
         db.execute('CREATE TABLE rkb_control_spool_meta(id INTEGER PRIMARY KEY,sequence INTEGER)')
         db.execute('INSERT INTO rkb_control_spool_meta VALUES(1,7)')
         db.execute('CREATE TABLE rkb_control_operations(operation_key TEXT,sequence INTEGER,seal_state TEXT,'
@@ -393,3 +393,17 @@ async def test_failed_dataset_verify_does_not_promote_saved_seq_or_discard_tail(
     assert p.store.remote_durable(key,b'pending')
     assert p.owner.saved_seq==7
     assert p.calls.count('capture')==1
+
+
+@pytest.mark.asyncio
+async def test_existing_planned_idle_drain_forces_checkpoint_before_quiet_timeout(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    key=await put_control(p)
+    assert not await p.owner.refresh(p.binding)
+    p.clock[0]=11
+    with p.q.connect() as db:
+        db.execute("UPDATE runs SET status='draining' WHERE id='run'")
+    assert await p.owner.refresh(p.binding)
+    assert p.owner.saved_seq==7
+    assert p.store.remote_durable(key,b'pending')
+    assert p.calls==['capture','finalize','verify']
