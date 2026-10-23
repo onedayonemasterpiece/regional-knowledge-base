@@ -498,7 +498,8 @@ def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
                 finally:os.close(parent)
             if shutil.disk_usage(root).free<needed:
                 raise Stage0Error('stage0_insufficient_disk')
-            opener=urllib.request.build_opener(_HTTPSRedirect(deadline),urllib.request.ProxyHandler({}))
+            opener=(urllib.request.build_opener(_HTTPSRedirect(deadline),urllib.request.ProxyHandler({}))
+                    if any(_dataset_locator(item.url) is None for item in spec.downloads) else None)
             downloaded=0;downloaded_files=0;dataset_bytes=0;dataset_files=0
             from contextlib import nullcontext
             from .kaggle_environment import bootstrap_stage
