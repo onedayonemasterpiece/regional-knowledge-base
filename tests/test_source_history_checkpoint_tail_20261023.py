@@ -15,6 +15,7 @@ from regional_knowledge.recovery_journal import JournalCorrupt, StoredObject
 from test_control_spool import accept, env, receipt
 from test_source_history_wss import pair
 from test_source_read_gate import binding
+from test_participants import people
 
 
 async def applied_first(e, p):
