@@ -165,7 +165,10 @@ class NativeSourceIntake:
                 if scope['pending'] and not continuation:raise _failure('prior_write_pending')
                 head=await self.spool.journal.head()
                 sequence=head.reference.last_sequence if head else 0
-                if sequence!=scope['accepted_sequence']: raise _failure('source_history_unavailable')
+                if sequence!=scope['accepted_sequence']:
+                    _LOG.warning('native_intake_admission reason=journal_prefix kind=%s journal_sequence=%s accepted_sequence=%s',
+                        kind,sequence,scope['accepted_sequence'])
+                    raise _failure('source_history_unavailable')
                 command=builder(sequence=sequence+1,operation_key=key,request_id=row['request_id'],
                     person_id=row['person_id'],logical_time=datetime.now(timezone.utc).isoformat(),
                     revisions=self.importer._revisions(access.binding),source_id=row['source_id'],payload=payload)
@@ -177,6 +180,13 @@ class NativeSourceIntake:
                         or facts.database_generation!=access.binding.database_generation
                         or facts.scope_sequence>facts.covered_sequence or (facts.pending and not continuation) or facts.unknown
                         or not self.spool.facts_current(facts)):
+                    _LOG.warning('native_intake_admission reason=history_proof kind=%s reads_current=%s imports_current=%s '
+                        'anchor_current=%s binding_current=%s database_current=%s scope_sequence=%s covered_sequence=%s '
+                        'pending=%s continuation=%s unknown=%s facts_current=%s',kind,self.startup.reads_current(),
+                        self.startup.imports_current(),self.startup.coverage is self.spool._source_anchor,
+                        self.startup.binding==access.binding,facts.database_generation==access.binding.database_generation,
+                        facts.scope_sequence,facts.covered_sequence,facts.pending,continuation,facts.unknown,
+                        self.spool.facts_current(facts))
                     raise _failure('source_history_unavailable')
                 entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
             # If the process exits between the spool commit and this compact
