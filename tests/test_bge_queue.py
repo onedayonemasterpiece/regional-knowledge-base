@@ -69,6 +69,8 @@ def test_queries_precede_documents_and_lost_worker_result_is_fenced(tmp_path):
 def test_rotation_allows_one_serving_one_warming_then_drains(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
     queue.enqueue('actor','q',['query']);run,token=run_details(queue);queue.heartbeat(run,token,ready=True)
+    # Owner policy starts warming by 8:30, leaving at least 30 minutes before nine hours.
+    assert 8 * 3600 <= ROTATE_SECONDS <= 8 * 3600 + 30 * 60
     # Model continuous useful demand without skipping liveness or idle expiry.
     for step in range(1,ROTATE_SECONDS//60+1):
         now[0]=1000.+step*60

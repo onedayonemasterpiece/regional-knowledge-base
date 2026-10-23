@@ -19,7 +19,7 @@ import uuid
 from .bge_contract import SPACE, validate_vector
 
 IDLE_SECONDS = 1800
-ROTATE_SECONDS = 10 * 3600 + 45 * 60
+ROTATE_SECONDS = 8 * 3600 + 15 * 60  # Warm the successor before the owner's nine-hour limit.
 MAX_LIFETIME = 11 * 3600
 HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
