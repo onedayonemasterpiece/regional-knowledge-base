@@ -8,7 +8,7 @@ import json
 import secrets
 
 from .control_spool import SourceChange,SpoolConflict,_command,_database,_uuid
-from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash,_source_origin_required
+from .source_history_verifier import NativeSourceHistoryVerifier,_Coverage,_json,_hash,_source_origin_required,DEFAULT_HISTORY_BYTES
 from .source_read_gate import binding_key
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
 
@@ -20,7 +20,7 @@ _LOG=logging.getLogger(__name__)
 class WssNativeHistoryProofAdapter:
     """Concrete startup adapter; existing queue and private native observations."""
     def __init__(self,*,database,expected_observer_sha256,
-                 coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=4*1024*1024,
+                 coverage_seconds=30,timeout_seconds=10,max_commands=2048,max_history_bytes=DEFAULT_HISTORY_BYTES,
                  geo_bootstrap_operation_keys=()):
         self.database=database
         self.observer=expected_observer_sha256;self.coverage_seconds=coverage_seconds

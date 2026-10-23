@@ -265,6 +265,12 @@ async def test_measured_geo_bootstrap_has_separate_bounded_history_window(env):
         # Byte headroom is limited to explicitly configured GEO keys. Neither
         # unknown GEO operations nor public source commands inherit it.
         p.v.geo_bootstrap_operations=frozenset()
+        # A full rebuild after an expired proof must also support the same
+        # accepted chain above the retired 4 MiB pilot default.
+        proof=await p.v.restore(p.b)
+        assert proof.current() and proof.accepted_sequence==len(commands)
+        # Explicit smaller budgets and their fail-closed behavior still apply.
+        p.v.max_history_bytes=4*1024*1024
         with pytest.raises(SpoolConflict,match='budget exceeded'):await p.v.restore(p.b)
         assert p.v._coverage is None
     finally:await p.n.aclose()
@@ -277,7 +283,7 @@ def test_geo_window_cannot_expand_ordinary_source_or_unlisted_operation_budget(e
     usage=[0,0]
     p.v._charge_history(usage,geo,GEO_BOOTSTRAP_HISTORY_BYTES)
     p.v._charge_history(usage,env.cmd,p.v.max_history_bytes)
-    assert usage==[4*1024*1024,6*1024*1024]
+    assert usage==[p.v.max_history_bytes,6*1024*1024]
     for command in (env.cmd,SimpleNamespace(**dict(vars(geo),operation_key='not-configured'))):
         with pytest.raises(SpoolConflict):p.v._charge_history([p.v.max_history_bytes,0],command,1)
     with pytest.raises(SpoolConflict):p.v._charge_history([0,GEO_BOOTSTRAP_HISTORY_BYTES],geo,1)
