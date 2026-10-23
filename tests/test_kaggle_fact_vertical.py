@@ -48,7 +48,7 @@ async def test_gate_clears_all_fact_records_cursor_and_source_metadata_after_pen
     await stage(env)
     assert not gate.issuance_current(gated.ticket)
     closed=await gate.refresh(gated)
-    assert closed.result.reason=='prior_write_pending'
+    assert closed.result.reason=='evidence_withdrawn'
     assert closed.result.records==closed.result.evidence==() and closed.result.next_cursor is None
     assert decode_envelope(encode_envelope(closed.result)).status=='unavailable'
 
