@@ -6,7 +6,6 @@ import sys
 import pytest
 
 from regional_knowledge.bge_contract import SPACE
-from regional_knowledge.kaggle_apply import ApplyUnknown
 from regional_knowledge.kaggle_bootstrap import PreparedRuntime
 from regional_knowledge.kaggle_target_launch import MODULES
 from regional_knowledge.recovery_journal import StaleWriter
@@ -15,9 +14,15 @@ from test_bge_wss_worker import CONFIG, module
 from test_kaggle_bootstrap import candidate
 
 
+# A real >512-word input under the accepted 40k-character dispatch cap;
+# no tokenizer or model is loaded in this synthetic fixture.
+OVERLONG_TEXT = ' '.join(['fixturetoken'] * 513)
+
+
 def document(worker, kind='document'):
+    assert len(OVERLONG_TEXT) < 40000
     return dict(type='DISPATCH', id='unresolved-job', claim='same-claim',
-        kind=kind, space=SPACE, texts=['over-512-token-document'],
+        kind=kind, space=SPACE, texts=[OVERLONG_TEXT],
         compute_claim='original-compute', dispatch_generation=1)
 
 
@@ -41,7 +46,7 @@ async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
     secret='private page text bearer-token=not-for-logs'
 
     def native(text):
-        if text == 'over-512-token-document':
+        if len(text.split()) > 512:
             calls.append(('encode',text))
             raise ValueError('more than 512 tokens: '+secret)
         return [1.]+[0.]*1023
@@ -131,6 +136,18 @@ async def test_large_native_receipt_is_not_published_before_validation(kind,caps
     assert json.loads(capsys.readouterr().out)==dict(event='native_job_outcome_unresolved',
         job_id='receipt-job',kind=kind,
         phase='verify',error_class='ValueError')
+
+
+@pytest.mark.asyncio
+async def test_oversized_vector_is_not_published_as_success(capsys):
+    transport=module('bge_wss_transport')
+    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{})
+    worker.encoder=lambda _: [1.]*100000  # Far beyond channel RESULT bound.
+    await worker._encode(dict(kind='document',id='oversize-vector',claim='claim',
+        texts=['fixture document']))
+    assert worker.pending is None
+    assert json.loads(capsys.readouterr().out)==dict(event='native_job_outcome_unresolved',
+        job_id='oversize-vector',kind='document',phase=None,error_class='ValueError')
 
 
 @pytest.mark.asyncio
