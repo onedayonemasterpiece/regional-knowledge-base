@@ -26,6 +26,10 @@ from .source_read_gate import binding_key
 
 _LOG=logging.getLogger(__name__)
 
+# Full rebuilds include accepted book batches and GEO repairs. Use the existing
+# supported verification ceiling rather than the old 4 MiB pilot default.
+DEFAULT_HISTORY_BYTES=16*1024*1024
+
 
 def _json(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False,
@@ -96,7 +100,7 @@ class NativeSourceHistoryVerifier:
     def __init__(self, spool, *, acquire, binding_current, routes,
                  writer_generation, expected_schema_version=None,
                  timeout_seconds=5, coverage_seconds=30, max_commands=2048,
-                 max_history_bytes=4*1024*1024, clock=time.monotonic):
+                 max_history_bytes=DEFAULT_HISTORY_BYTES, clock=time.monotonic):
         if (acquire is None and type(self) is NativeSourceHistoryVerifier
                 or acquire is not None and not callable(acquire) or not callable(binding_current) or not isinstance(routes, dict)
                 or not {'source.search', 'source.fetch', 'source.withdraw'} <= routes.keys()
