@@ -283,7 +283,12 @@ class SourceReadGate:
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
                 or q.entity_id is not None and record['entity_id']!=q.entity_id for record in result.records)):
             raise SourceGateDenied('exact source graph selector differs')
-        if catalog and (not self.catalog_supported() or len(result.records)>q.limit):
+        if catalog and (not self.catalog_supported() or len(result.records)>q.limit
+                or q.action=='get' and (len(result.records)!=1
+                    or result.records[0].get('document_id')!=q.document_id
+                    or result.records[0].get('kind')!='book'
+                    or tuple(sources)!=(q.document_id,))
+                or q.action=='find' and any('catalog' in record for record in result.records)):
             raise SourceGateDenied('exact bounded source catalogue required')
         if fact and (not self.facts_supported() or len(result.records)>q.limit or
                 any(record.get('kind')!=('observations' if q.action=='observation_compare' else q.action) for record in result.records) or
