@@ -100,6 +100,14 @@ class SourceReadGate:
         except Exception:
             return False
 
+    def _restricted_sources(self,source_ids):
+        # Only exact local withdrawal/restriction intents for these returned
+        # sources, never all source history or unrelated page stages. A future
+        # uncommitted stage cannot hide older PG-visible passages.
+        if not source_ids:return frozenset()
+        barriers=self.spool._barriers_for(tuple(sorted(set(source_ids))))
+        return frozenset(b.source_id for b in barriers.barriers if b.restriction_active)
+
     def story_supported(self):
         # Semantics come from the deployment-owned immutable registry, never a
         # serialized permission flag or a caller-selected variant.
@@ -263,6 +271,14 @@ class SourceReadGate:
             raise SourceGateDenied('dependency bound exceeded')
         scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
+        guard_sources=set(sources)
+        if scope is not None:guard_sources.update(scope)
+        for record in getattr(result,'records',()):
+            if type(record) is dict and type(record.get('source_id')) is str:
+                guard_sources.add(record['source_id'])
+        # A withdrawn source can be denied promptly before the PG writer
+        # completes, without treating unrelated accepted stages as a gate.
+        restricted=self._restricted_sources(guard_sources)
         if graph and (not self.graph_supported() or len(result.records)>q.limit or any(
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
                 or q.entity_id is not None and record['entity_id']!=q.entity_id for record in result.records)):
@@ -321,9 +337,14 @@ class SourceReadGate:
                         and item.source_continuation is None and len(item.dependencies.source_ids)==1)
                 except (ValueError,TypeError,AttributeError):return False
             retained = tuple(item for item in result.evidence
-                if supported(item) and (scope is None or set(item.dependencies.source_ids) <= set(scope)))
+                if supported(item) and (scope is None or set(item.dependencies.source_ids) <= set(scope))
+                and not restricted.intersection(item.dependencies.source_ids))
             if any(not supported(item) for item in result.evidence):
                 result = self._closed(result, 'access_denied')
+            elif restricted and (exact or catalog or graph or fact):
+                # These DTOs contain records as well as evidence. Never return
+                # stale source rows under an exact withdrawal.
+                result = self._closed(result, 'evidence_withdrawn')
             elif len(retained) != len(result.evidence):
                 result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
                     'status': 'degraded', 'reason': 'evidence_withdrawn',
@@ -333,7 +354,15 @@ class SourceReadGate:
         await self.authority.require(read.authority, 'public_search')
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed during output check')
-        read.facts, read.result = None, result
+        selected=tuple(sorted({source for item in result.evidence
+            for source in item.dependencies.source_ids}))
+        if result.status in ('ok','degraded') and (
+                self._restricted_sources(selected) or (not selected and restricted
+                    and (exact or graph or catalog or fact))):
+            result=self._closed(result,'evidence_withdrawn')
+            selected=()
+        read.facts=selected
+        read.result=result
         return result
 
     @staticmethod
@@ -385,7 +414,8 @@ class SourceReadGate:
             if read is not None and type(read.query) is AcceptanceReadRequest:
                 self._require_acceptance(read.authority,read.query,read.binding)
             return bool(read is not None and self._binding(read)
-                and read.result is not None)
+                and read.result is not None
+                and not self._restricted_sources(read.facts or ()))
         except Exception:
             return False
 
