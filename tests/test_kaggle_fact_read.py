@@ -53,6 +53,15 @@ def row(ordinal=0, *, assertion=ASSERTION, action='calendar'):
             original_excerpt='29 February 1900: population 12.50 persons in 1900.')], 'Exact source citation', 1900 if action == 'calendar' else 0)
 
 
+@pytest.mark.asyncio
+async def test_calendar_reads_passage_links_without_quotation_storage():
+    values=list(row());values[10]=[{key:proof[key] for key in ('region_id','passage_id')} for proof in values[10]]
+    result=await execute_fact_read(request(),acquire=Native([tuple(values)]).acquire)
+    assert result.status=='ok'
+    assert result.records[0]['proofs']==values[10]
+    assert 'original_excerpt' not in canonical(result.model_dump(mode='json')).decode()
+
+
 class Native:
     def __init__(self, rows=(), *, revision=(FACT_SCHEMA, FACT_FUNCTION), frontier=FRONTIER):
         self.rows, self.revision, self.frontier = rows, revision, frontier

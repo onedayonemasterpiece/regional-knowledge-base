@@ -223,7 +223,13 @@ async def test_accepted_graph_original_spelling_distinct_from_canonical_and_alia
     result = await execute_source_graph_read(request, acquire=native.acquire)
     assert result.status == 'ok', result.reason
     assert len(result.records) == 1
-    assert result.records[0]['data'] == node
+    projected = deepcopy(node)
+    for proof in [projected['mention']['evidence'],
+            *(alias['evidence'] for alias in projected['aliases'])]:
+        for field in ('exact_quote', 'start', 'end', 'source_region_sha256'):
+            proof.pop(field, None)
+    assert result.records[0]['data'] == projected
+    assert 'exact_quote' in node['mention']['evidence']
     assert result.records[0]['data']['mention']['exact_source_spelling'] == original
 
 

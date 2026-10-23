@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
 Key = Annotated[str, Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]+$")]
 SmallText = Annotated[str, Field(min_length=1, max_length=4000)]
@@ -418,16 +418,32 @@ ExtractRequest = Annotated[
 
 
 # New books are processed by the SAME importing model that reviews their pages.
-# Each candidate represents one episode, not one chunk; region quotes must exist.
+# Each candidate represents one episode, linked to its reviewed source passages.
 class StageStoryEvidenceInput(Strict):
     page_id: Annotated[str, Field(min_length=36, max_length=36)]
     region_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")]
-    original_excerpt: Annotated[str, Field(min_length=1, max_length=500)]
+    chunk_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")] | None = None
+    chunk_id: Annotated[str, Field(min_length=36, max_length=36)] | None = None
+    # Retained for reading accepted model packets; new evidence uses a passage.
+    original_excerpt: Annotated[str, Field(min_length=1, max_length=500)] | None = None
     start: int | None = Field(default=None, ge=0)
     end: int | None = Field(default=None, ge=1)
 
+    @model_serializer(mode='wrap')
+    def evidence_wire(self, handler):
+        value=handler(self)
+        for key in ('chunk_key','chunk_id'):
+            if value.get(key) is None:value.pop(key,None)
+        if self.original_excerpt is None:
+            for key in ('original_excerpt','start','end'):value.pop(key,None)
+        return value
+
     @model_validator(mode="after")
     def span(self):
+        if self.chunk_key is not None and self.chunk_id is not None:
+            raise ValueError('Use a current chunk_key or an existing chunk_id')
+        if self.chunk_key is None and self.chunk_id is None and self.original_excerpt is None:
+            raise ValueError('A source passage reference is required')
         if (self.start is None) != (self.end is None):
             raise ValueError("Both exact source offsets are required together")
         if self.start is not None and self.start >= self.end:

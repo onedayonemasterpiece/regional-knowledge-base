@@ -96,6 +96,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "On first stage supply source_import.research" in native.instructions
     assert "When disagreement_search is registered" in native_text
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
+    assert "current chunk_key or an already accepted chunk_id" in native.instructions
+    assert "exact page/region/quote evidence" not in native.instructions
     assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
     assert "Finalization alone activates" not in native.instructions
     # Conditional Case discovery and existing write workflow must agree in

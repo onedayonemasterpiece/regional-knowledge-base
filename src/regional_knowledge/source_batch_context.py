@@ -35,8 +35,9 @@ async def load_current(connection,raw,source_id,text_only):
     current_chunks={str(uuid5(UUID(source_id),'chunk:1:'+c['chunk_key'])) for c in model['chunks']}
     missing_chunks={p['chunk_id'] for p in proofs}-current_chunks
     evidence=[r for s in stories for r in s['evidence_refs']]
+    missing_chunks.update(r['chunk_id'] for r in evidence if r.get('chunk_id') and r['chunk_id'] not in current_chunks)
     pages={p['page_id']:(p,img) for p,img in zip(model['pages'],doc['issued_images_b64'],strict=True)}
-    old_pages={r['page_id'] for r in evidence}-pages.keys()
+    old_pages={r['page_id'] for r in evidence if not r.get('chunk_id')}-pages.keys()
     selections={}
     # Each predicate addresses an explicit passage UUID or one physical page;
     # provenance has its existing PK plus a GIN index, not a book-history scan.
