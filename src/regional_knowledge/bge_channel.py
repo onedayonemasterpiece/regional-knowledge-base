@@ -282,6 +282,19 @@ def channel_route(queue, *, read_telemetry=None):
                     if not promoted or shared is None or probe_nonce is not None:
                         observed = await status()
                         await promote(observed)
+                    else:
+                        observed = await status()
+                    if (observed.get('state')=='draining'
+                            and (shared is None or shared.status()['resource'] is None)):
+                        # Controller maintenance may expire an idle drain in 5s,
+                        # before the worker's next 20s HEARTBEAT. Deliver STOP
+                        # on the already authenticated dispatch channel now.
+                        # The socket sender owns serialization; wait for the
+                        # worker to close without claiming provider terminal.
+                        await send('STOP',run_id=run_id,
+                            launch_nonce=hello['launch_nonce'],
+                            runtime_incarnation=hello['runtime_incarnation'])
+                        await asyncio.Event().wait()
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
