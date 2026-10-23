@@ -352,10 +352,38 @@ class TargetServiceStartup:
         except Exception:return False
 
     def imports_current(self):
-        # Ordinary owner imports require current source-history/binding authority,
-        # not completion of an unrelated GEO bootstrap. Native source-stage
-        # admission still enforces exact receipts, UNKNOWN and writer fencing.
+        # Current restored cursor/binding authorizes ordinary imports. Native
+        # admission retains exact receipts, UNKNOWN and writer fencing.
         return self.reads_current()
+
+    async def _dataset_coverage(self,binding):
+        """READY restored Dataset + retained apply receipts is the cursor.
+
+        The physical restore already checked the archive and replayed its
+        suffix. API reconnect uses the same saved control and local receipts;
+        neither path opens a lifetime source-history verification session.
+        """
+        from .recovery_journal import ObjectRef
+        spool=self.config.spool
+        checkpoint=spool.journal.store.latest_checkpoint
+        restored=self.restorer.proof
+        if restored is not None and restored.applied_sequence>=checkpoint.base_sequence:
+            control=json.loads(restored.control)
+        else:
+            ref=ObjectRef(spool.journal.prefix+'/source-base-control/'+checkpoint.control.sha256,
+                checkpoint.control.sha256,checkpoint.control.size,checkpoint.base_sequence)
+            control=json.loads(await spool.journal._verified(ref,self.restorer.physical.limits.max_control_bytes))
+        if binding!=self.binding:
+            self.gate.invalidate()
+            if self.geo_gate is not None:self.geo_gate.invalidate()
+            self.case_gate.invalidate()
+        self.binding=binding
+        cursor=await spool.dataset_cursor(binding,control=control,
+            head=await spool.journal.head(),current=self.binding_current)
+        if cursor is not self.coverage:
+            _LOG.info('target_dataset_cursor run_id=%s dataset_version=%s accepted_seq=%s applied_seq=%s pending_count=%s',
+                binding.run_id,checkpoint.dataset_version,cursor.accepted_sequence,cursor.applied_sequence,len(cursor.pending))
+        return cursor
 
     def _coverage_idle(self):
         """Nothing new to verify and ample time left on the current proof.
@@ -402,7 +430,10 @@ class TargetServiceStartup:
             if self.config.writer_owner is not None:
                 await self.config.writer_owner.ensure_current(self.config.spool.journal)
             if not self.binding_current(binding):raise PermissionError('current writer binding unavailable')
-            if binding==self.binding and self.coverage is not None and self.coverage.current():
+            dataset=self.restorer is not None and self.dataset_checkpoints is not None
+            if dataset:
+                coverage=await self._dataset_coverage(binding)
+            elif binding==self.binding and self.coverage is not None and self.coverage.current():
                 if getattr(self.history,'_native_prefix',False) is None:
                     # A schema promotion deliberately retires the native prefix.
                     # Delta verification cannot use it; rebuild in this tick.
@@ -433,7 +464,7 @@ class TargetServiceStartup:
                 from .kaggle_dataset_checkpoint import CheckpointPending
                 try:
                     if await self.dataset_checkpoints.refresh(self.binding):
-                        self.coverage=await self.history.extend(self.binding)
+                        self.coverage=await self._dataset_coverage(self.binding)
                 except CheckpointPending as exc:
                     # The pointer did not move and the verified prefix is
                     # unchanged: keep reads on the current base, retry later.

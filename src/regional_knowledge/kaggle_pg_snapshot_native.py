@@ -500,8 +500,9 @@ class NativeSnapshotFactory:
                     await connection.execute("SET LOCAL statement_timeout='2000ms'")
                     cursor=await connection.execute('SELECT system_identifier::text FROM pg_control_system()')
                     if await cursor.fetchone()!=(m['system_identifier'],):raise SnapshotError('native_restore_system_identity')
-                    if await applied_prefix(connection,m['applied_sequence'],self.limits)!=m['applied_prefix_sha256']:
-                        raise SnapshotError('native_restore_applied_prefix')
+                    # The exact archive/inventory and pg_verifybackup already
+                    # verify this ready Dataset. Its internal cursor is checked
+                    # below; do not rescan lifetime applied_ops on every boot.
                     cursor=await connection.execute('SELECT writer_generation FROM rkb_v4.recovery_state WHERE singleton')
                     if await cursor.fetchone()!=(m['writer_generation'],):raise SnapshotError('native_restore_original_writer')
                     cursor=await connection.execute('SELECT database_generation,applied_seq '
