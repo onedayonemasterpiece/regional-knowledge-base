@@ -137,7 +137,7 @@ def validate_case_record(request,record):
             raise ValueError('bounded Case subject search record required')
         previous=request.after_case_id or ''
         for item in record['items']:
-            if (type(item) is not dict or set(item)!={'case_id','question','context','state','case_revision','acl_revision','event_seq'}
+            if (type(item) is not dict or set(item)!={'case_id','question','context','state','case_revision','acl_revision','event_seq','source_dependencies'}
                     or type(item['case_id']) is not str or item['case_id']<=previous
                     or type(item['question']) is not str or not 1<=len(item['question'])<=2000
                     or type(item['context']) is not str or len(item['context'])>1000
