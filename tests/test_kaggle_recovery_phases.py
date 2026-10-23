@@ -254,8 +254,13 @@ async def test_maintenance_before_ready_uses_actual_slot_and_durable_claim(state
         with pytest.raises(PermissionError):await bridge.receive(wrong,run_id=s.run,token=s.token,generation=s.generation)
         receipt=response(s,frame,{'native':'readback'})
         settled=await bridge.receive(receipt,run_id=s.run,token=s.token,generation=s.generation)
+        assert not bridge._bindings  # terminal authority lives in durable jobs
         assert settled['status']=='accepted' and await task=={'native':'readback'}
         assert (await bridge.receive(receipt,run_id=s.run,token=s.token,generation=s.generation))['status']=='duplicate'
+        assert not bridge._bindings  # duplicate delivery restores then releases
+        assert await bridge.request(s,frame['phase'],frame['arguments'],
+            operation_key=frame['operation_key'])=={'native':'readback'}
+        assert not bridge._bindings  # cached request replay never retains work
         assert await s.a.next_channel_work(s.run,s.token,s.generation) is None  # result != actual compute release
         r=work.resource
         await s.a.resource_released(s.run,s.token,s.generation,runtime_incarnation=r.runtime_incarnation,
@@ -363,6 +368,7 @@ async def test_readback_dispatch_uses_real_durable_owner_and_new_operation_per_p
         assert settled['status']=='accepted'
         out=await task
         assert out==observed
+        assert not bridge._bindings  # repeated status polling has no lifetime cap
         res=work.resource
         await s.a.resource_released(s.run,s.token,s.generation,
             runtime_incarnation=res.runtime_incarnation,resource_kind='document',
