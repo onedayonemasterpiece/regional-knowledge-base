@@ -301,7 +301,8 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         import base64
         from regional_knowledge.kaggle_case_contracts import canonical
         case_record=dict(section='search',items=[dict(case_id=CASE,question='Who founded the harbour?',
-            context='Exact attributed dispute',state='open',case_revision=1,acl_revision=1,event_seq=1)],
+            context='Exact attributed dispute',state='open',case_revision=1,acl_revision=1,event_seq=1,
+            source_dependencies=[])],
             has_more=False,next_after_case=CASE)
         native=CaseReadResult(request_id=dispatched.query.request_id,
             connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
