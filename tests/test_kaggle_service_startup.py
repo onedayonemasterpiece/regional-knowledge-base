@@ -400,3 +400,26 @@ async def test_existing_planned_stop_waits_for_checkpoint_outcome_before_nine_ho
     with pytest.raises(TimeoutError,match='nine_hour_limit'):
         await TargetServiceStartup.before_planned_stop(fake,run_id,1)
     assert events==[('checkpoint',run_id)]
+
+
+@pytest.mark.asyncio
+async def test_successor_stop_waits_previous_run_existing_checkpoint_not_new_writer(tmp_path):
+    from regional_knowledge.bge_queue import BgeQueue
+    queue=BgeQueue(tmp_path/'successor-stop.sqlite',clock=lambda:100.)
+    with queue.connect() as db:
+        previous=queue._new_run(db,100.)
+    old=SimpleNamespace(run_id=previous,connection_generation=4)
+    newer=SimpleNamespace(run_id='next-writer',connection_generation=5)
+    observed=[]
+    class OldPending:
+        _task_binding=old
+        _task=object()
+        async def before_stop(self,binding):
+            observed.append(binding)
+            return True
+    fake=SimpleNamespace(dataset_checkpoints=OldPending(),binding=newer,
+        config=SimpleNamespace(queue=queue))
+    assert await TargetServiceStartup.before_planned_stop(fake,previous,4)
+    assert observed==[old]
+    with pytest.raises(RuntimeError,match='stop_binding_changed'):
+        await TargetServiceStartup.before_planned_stop(fake,previous,999)
