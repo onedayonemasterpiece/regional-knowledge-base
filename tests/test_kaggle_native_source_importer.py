@@ -184,7 +184,7 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
         output = dict(source_id=result.document_id,ordinal=doc['ordinal'],total_inputs=total_inputs,
             knowledge_sha256='e'*64,input_sha256='f'*64,input_id='synthetic-native-input')
     elif command.route == 'source.batch.v1':
-        output.update(batch_index=doc['batch_index'],candidate_state='published',accepted=True,knowledge_sha256='e'*64)
+        output.update(batch_index=doc['batch_index'],component=doc['component'],candidate_state='published',accepted=True,knowledge_sha256='e'*64)
     elif command.route == 'source.finish.v1':
         output.update(read_complete=True)
     else:
@@ -228,10 +228,13 @@ async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_v
         assert (await call(s,result,'status')).state == 'processing'
         assert (await pending(s,result)).command.route=='source.batch.v1'
         await finish(s,result)
+        assert (await call(s,result,'status')).state=='processing'
+        assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
+        await finish(s,result)
         assert (await call(s,result,'status')).state == 'staged'
         # An exact post-durability retry must not allocate batch ordinal+1.
         assert (await stage(s,result,payload)).state == 'staged'
-        assert operation_count(s) == (ordinal+1)*2
+        assert operation_count(s) == (ordinal+1)*3
         row = s.importer._row(s.principal.subject,result.ingestion_id)
         assert row['stage_json'] is None and row['semantic_json'] is None and row['native_proof_sha256'] is None
     assert seen == list(range(174)) and state(s,result)['batch_count'] == 44
@@ -259,9 +262,10 @@ async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(na
     await finish(s,result); await call(s,result,'status')
     assert (await pending(s,result)).command.route=='source.batch.v1'
     await finish(s,result);await call(s,result,'status')
+    await finish(s,result);await call(s,result,'status')
     await stage(s,result,changed)
     second = await pending(s,result)
-    assert second.command.sequence == entry.command.sequence+2
+    assert second.command.sequence == entry.command.sequence+3
     assert json.loads(second.command.payload)['previous_batch_sha256'] == digest(entry.command.payload)
     assert (await s.spool.get(entry.command.operation_key)).command_bytes == exact
 
@@ -300,6 +304,9 @@ async def test_packet_progress_and_reading_completion_keep_exact_durability_rece
     packet=await pending(s,result)
     assert packet.command.route=='source.batch.v1' and operation_count(s)==2
     await finish(s,result)
+    assert (await call(s,result,'status')).state=='processing'
+    assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
+    await finish(s,result)
     assert (await call(s,result,'status')).state=='staged'
     assert state(s,result)['published_batch_count']==1
     assert (await call(s,result,'finalize')).state=='processing'
@@ -310,7 +317,7 @@ async def test_packet_progress_and_reading_completion_keep_exact_durability_rece
     await s.spool.publish_outcome(completion.command.operation_key,writer_generation='writer-1')
     assert (await call(s,result,'status')).state == 'finalized'
     assert (await call(s,result,'finalize')).state == 'finalized'
-    assert operation_count(s) == 3 and not s.token_calls
+    assert operation_count(s) == 4 and not s.token_calls
 
 
 @pytest.mark.asyncio

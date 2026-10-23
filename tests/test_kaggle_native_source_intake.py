@@ -150,7 +150,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             value=dict(source_id=SOURCE,ordinal=doc['ordinal'],total_inputs=total,knowledge_sha256=knowledge,
                 input_sha256='a'*64,input_id='synthetic-input')
         elif entry.command.route=='source.batch.v1':
-            value.update(batch_index=doc['batch_index'],candidate_state='published',accepted=True,knowledge_sha256=knowledge)
+            value.update(batch_index=doc['batch_index'],component=doc['component'],candidate_state='published',accepted=True,knowledge_sha256=knowledge)
         elif entry.command.route=='source.finish.v1':
             value.update(read_complete=True)
         else: value=dict(source_id=SOURCE,accepted=True,knowledge_sha256=knowledge)
@@ -172,8 +172,11 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pending().command.route,'source.batch.v1')
         self.finish();self.pending().outcome_state='NOT_SENT';self.pending().apply_state='APPLIED'
         result=await self.helper.status(self.access,self.row)
-        self.assertEqual(result.next_action,'continue_pages')
+        self.assertEqual(result.next_action,'wait')
         self.assertEqual(self.state()['published_batch_count'],1)
+        self.assertEqual(json.loads(self.pending().command.payload)['component'],'semantic')
+        self.finish();result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.next_action,'continue_pages')
         self.assertNotIn(SEAL_ROUTE,[e.command.route for e in self.spool.entries.values()])
 
     async def test_bad_packet_does_not_close_import_or_revoke_prior_packets(self):
@@ -187,6 +190,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_packet_finalize_only_marks_reading_complete(self):
         self.packet_mode();await self.stage();self.finish();await self.helper.status(self.access,self.row)
+        self.finish();await self.helper.status(self.access,self.row)
         self.finish();await self.helper.status(self.access,self.row)
         await self.helper.finalize(self.access,self.row)
         self.assertEqual(self.pending().command.route,'source.finish.v1')

@@ -90,7 +90,7 @@ class NativeSourceIntake:
                 db.execute('ALTER TABLE rkb_native_source_intake_state ADD COLUMN rejected_seal_head TEXT')
             for name, declaration in (('packet_mode','INTEGER NOT NULL DEFAULT 0'),
                     ('published_batch_count','INTEGER NOT NULL DEFAULT 0'),('rejected_batch_index','INTEGER'),
-                    ('read_completion_requested','INTEGER NOT NULL DEFAULT 0')):
+                    ('read_completion_requested','INTEGER NOT NULL DEFAULT 0'),('enriched_batch_count','INTEGER NOT NULL DEFAULT 0')):
                 if name not in columns:
                     db.execute(f'ALTER TABLE rkb_native_source_intake_state ADD COLUMN {name} {declaration}')
 
@@ -158,7 +158,7 @@ class NativeSourceIntake:
         allowed={'batch_count','last_batch_sha256','last_request_sha256','pending_operation_key',
             'pending_kind','phase','seal_sha256','materializer_sha256','next_ordinal','total_inputs','knowledge_sha256'}
         allowed.add('rejected_seal_head')
-        allowed.update({'published_batch_count','rejected_batch_index','read_completion_requested'})
+        allowed.update({'published_batch_count','enriched_batch_count','rejected_batch_index','read_completion_requested'})
         if not changes or set(changes)-allowed: raise ValueError('compact native progress fields required')
         with self.queue.connect() as db:
             n=db.execute('UPDATE rkb_native_source_intake_state SET '+','.join(k+'=?' for k in changes)
@@ -206,12 +206,14 @@ class NativeSourceIntake:
                 "FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
         if not rows:return False
         for pending in rows:
+            command=_command(pending['command_bytes'])
+            applied=(pending['apply_state']=='APPLIED' or
+                command.route=='source.batch.v1' and pending['apply_state']=='REJECTED_PRECONDITION')
             if (pending['source_id']!=row['source_id'] or pending['person_id']!=row['person_id']
                     or pending['database_generation']!=access.binding.database_generation
-                    or pending['seal_state']!='ACCEPTED' or pending['apply_state']!='APPLIED'
+                    or pending['seal_state']!='ACCEPTED' or not applied
                     or pending['outcome_state']!='NOT_SENT'):
                 return False
-            command=_command(pending['command_bytes'])
             if (command.route not in INACTIVE_SOURCE_ROUTES|{'source.batch.v1','source.finish.v1'}
                     or json.loads(command.payload).get('ingestion_id')!=row['ingestion_id']):
                 return False
@@ -220,6 +222,11 @@ class NativeSourceIntake:
     @staticmethod
     def _can_settle(state,entry):
         if entry.outcome_state=='DURABLE':return True
+        if state['pending_kind']=='batch':
+            return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
+                and entry.apply_receipt is not None and
+                (getattr(entry,'apply_state',None),entry.apply_receipt.status) in
+                    (('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition')))
         return (state['pending_kind'] in ('stage','seal','materialize','batch')
             and entry.outcome_state=='NOT_SENT' and entry.accepted is not None
             and entry.seal_state=='ACCEPTED' and getattr(entry,'apply_state',None)=='APPLIED'
@@ -294,7 +301,7 @@ class NativeSourceIntake:
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
                 return await asyncio.to_thread(self._update,row,phase='staging',pending_operation_key=None,
-                    pending_kind=None,published_batch_count=state['batch_count'],
+                    pending_kind=None,published_batch_count=state['batch_count'],enriched_batch_count=state['batch_count'],
                     rejected_batch_index=state['batch_count']-1)
             if state['pending_kind']=='seal':
                 # Schema14's native preflight rejects before creating the
@@ -321,9 +328,11 @@ class NativeSourceIntake:
                 research_json=canonical({k:v for k,v in doc['research'].items() if k!='frontier_id'}).decode())
         elif kind=='batch':
             if (result.get('ingestion_id')!=row['ingestion_id'] or result.get('batch_index')!=doc['batch_index']
+                    or result.get('component')!=doc['component']
                     or result.get('candidate_state')!='published' or result.get('accepted') is not True):
                 raise _failure('native_packet_outcome_differs')
-            changes.update(published_batch_count=doc['batch_index']+1,phase='staging',rejected_batch_index=None)
+            counter='published_batch_count' if doc['component']=='text' else 'enriched_batch_count'
+            changes.update({counter:doc['batch_index']+1},phase='staging',rejected_batch_index=None)
         elif kind=='finish':
             if result.get('read_complete') is not True or result.get('ingestion_id')!=row['ingestion_id']:
                 raise _failure('native_read_completion_outcome_differs')
@@ -358,7 +367,7 @@ class NativeSourceIntake:
         from .product_telemetry import emit_product_event
         emit_product_event({'event':'import.phase','phase':{
             'stage':'stage','seal':'seal','materialize':'materialize',
-            'activate':'activation'}[kind], 'status':'applied',
+            'activate':'activation','batch':'stage','finish':'saved'}[kind], 'status':'applied',
             'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
         return updated
 
@@ -404,7 +413,7 @@ class NativeSourceIntake:
         if state['pending_operation_key']:
             return self.importer._output(row,'processing','Exact native command pending apply and durable outcome; resume same operation','wait',source_archive_status='verified')
         if state.get('packet_mode') and phase=='staging':
-            if state['published_batch_count']<state['batch_count'] or state.get('read_completion_requested'):
+            if state['enriched_batch_count']<state['batch_count'] or state.get('read_completion_requested'):
                 return self.importer._output(row,'processing','Current packet or reading-completion intent pending; resume status',
                     'wait',source_archive_status='verified')
             if state.get('rejected_batch_index') is not None:
@@ -495,7 +504,7 @@ class NativeSourceIntake:
 
     async def _packet_progress(self, access, row, state):
         if (not state.get('packet_mode') or state['pending_operation_key'] or state['phase']!='staging'
-                or state['published_batch_count']>=state['batch_count']):
+                or state['enriched_batch_count']>=state['batch_count']):
             return state
         from .source_batch import CODEC,ROUTE,resolved_command
         from .kaggle_source_materializer import materializer_fingerprint
@@ -504,12 +513,16 @@ class NativeSourceIntake:
                 or scope['pending'] and not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope)):
             return state
         idx=state['batch_count']-1
-        state=await self._recover_orphan(access,row,state,'batch',self._operation(row,'batch',idx))
-        if state['pending_operation_key'] or state['published_batch_count']>=state['batch_count']:
+        component='text' if state['published_batch_count']<state['batch_count'] else 'semantic'
+        key=self._operation(row,'batch',f'{idx}:{component}')
+        state=await self._recover_orphan(access,row,state,'batch',key)
+        if state['pending_operation_key'] or state['enriched_batch_count']>=state['batch_count']:
             return state
+        if component=='text' and state['published_batch_count']>=state['batch_count']:
+            return await self._packet_progress(access,row,state)
         doc=dict(codec=CODEC,ingestion_id=row['ingestion_id'],batch_index=idx,batch_count=state['batch_count'],
-            last_batch_sha256=state['last_batch_sha256'],materializer_sha256=materializer_fingerprint())
-        await self._stage_exact(access,row,kind='batch',key=self._operation(row,'batch',idx),route=ROUTE,
+            last_batch_sha256=state['last_batch_sha256'],materializer_sha256=materializer_fingerprint(),component=component)
+        await self._stage_exact(access,row,kind='batch',key=key,route=ROUTE,
             payload=doc,builder=resolved_command)
         return await self._drive(access,row,await asyncio.to_thread(self._state,row))
 
@@ -545,6 +558,8 @@ class NativeSourceIntake:
                 state=await asyncio.to_thread(self._update,row,read_completion_requested=1)
             state=await self._packet_progress(access,row,await self._drive(access,row,state))
             if state['pending_operation_key'] or state['phase'] in ('failed','finalized'):
+                return self._output(row,state)
+            if state['enriched_batch_count']<state['batch_count']:
                 return self._output(row,state)
             from .source_batch import FINISH_ROUTE,resolved_command
             key=self._operation(row,'finish')

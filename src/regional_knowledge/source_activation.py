@@ -194,7 +194,7 @@ def validate_image_manifest(manifest, *, source_id, original, semantic, passages
     return manifest
 
 
-def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued_images, selected_page_indexes=None):
+def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued_images, selected_page_indexes=None,validate=True):
     """No renderer, native text extraction, model inference or original fetch."""
     from .contracts import StartMetadataInput
     from .original_intake import VerifiedOriginalReceipt
@@ -225,6 +225,7 @@ def build_image_manifest(*, metadata, receipt, graph, semantic, passages, issued
         passages=[dict(passage_id=str(c.chunk_id),region_ids=list(map(str,c.region_ids)),
             footnote_region_ids=list(map(str,c.footnote_region_ids)),page_ids=list(map(str,c.page_ids)),
             source_spans=[s.model_dump(mode='json') for s in c.source_spans]) for c in graph.chunks])
+    if not validate:return manifest
     return validate_image_manifest(manifest,source_id=receipt.source_id,original=receipt.original,semantic=semantic,passages=passages,
         selected_page_indexes=selected_page_indexes)
 

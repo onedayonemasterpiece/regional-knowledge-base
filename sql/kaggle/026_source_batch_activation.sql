@@ -1,35 +1,55 @@
 -- Packet-scoped publication. Historical SQL001-025/accepted bytes stay unchanged.
 -- Knowledge and provider outcomes remain immutable; public projections are
 -- derived per packet. No whole-book seal or activation candidate is required.
+-- Preserve immutable accepted stages while advancing their existing page projection.
+CREATE FUNCTION rkb_v4.update_source_stage_page_v1() RETURNS trigger
+ LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ IF TG_OP<>'UPDATE' OR (to_jsonb(NEW)-'model_page') IS DISTINCT FROM (to_jsonb(OLD)-'model_page')
+  OR NEW.model_page->>'page_id' IS DISTINCT FROM NEW.page_id::text
+  OR NEW.model_page->>'physical_page_index' IS DISTINCT FROM NEW.physical_page_index::text THEN
+  RAISE EXCEPTION 'original issued page identity is immutable';END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER immutable_source_stage_page ON rkb_v4.source_stage_pages;
+CREATE TRIGGER immutable_source_stage_page BEFORE UPDATE OR DELETE ON rkb_v4.source_stage_pages
+ FOR EACH ROW EXECUTE FUNCTION rkb_v4.update_source_stage_page_v1();
+CREATE FUNCTION rkb_v4.source_batch_page_v1(source uuid,page uuid) RETURNS jsonb
+ LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
+ SELECT model_page FROM rkb_v4.source_stage_pages WHERE source_id=source AND page_id=page
+$$;
+CREATE INDEX source_regions_page ON rkb_v4.source_regions(source_id,page_id);
+
 CREATE TABLE rkb_v4.source_batch_prepared (
  source_id uuid NOT NULL REFERENCES rkb_v4.source_stage_sessions,
  batch_index integer NOT NULL CHECK(batch_index BETWEEN 0 AND 2499),
+ component text NOT NULL CHECK(component IN ('text','semantic')),
  command_sha256 text NOT NULL CHECK(command_sha256 ~ '^[0-9a-f]{64}$'),
  command_bytes bytea NOT NULL CHECK(command_sha256=encode(sha256(command_bytes),'hex')),
  knowledge_bytes bytea NOT NULL, knowledge_sha256 text NOT NULL,
  knowledge jsonb NOT NULL, media jsonb NOT NULL,
- PRIMARY KEY(source_id,batch_index),
+ PRIMARY KEY(source_id,batch_index,component),
  CHECK(knowledge_sha256=encode(sha256(knowledge_bytes),'hex')),
  CHECK(knowledge=convert_from(knowledge_bytes,'UTF8')::jsonb)
 );
 CREATE TABLE rkb_v4.source_batch_vectors (
- source_id uuid NOT NULL, batch_index integer NOT NULL, input_id uuid NOT NULL,
+ source_id uuid NOT NULL, batch_index integer NOT NULL, component text NOT NULL, input_id uuid NOT NULL,
  input_sha256 text NOT NULL, embedding public.vector(1024) NOT NULL,
- PRIMARY KEY(source_id,batch_index,input_id),
- FOREIGN KEY(source_id,batch_index) REFERENCES rkb_v4.source_batch_prepared,
+ PRIMARY KEY(source_id,batch_index,component,input_id),
+ FOREIGN KEY(source_id,batch_index,component) REFERENCES rkb_v4.source_batch_prepared,
  CHECK(abs(public.vector_norm(embedding)-1.0)<=0.002)
 );
 CREATE TABLE rkb_v4.source_batch_receipts (
- source_id uuid NOT NULL, batch_index integer NOT NULL,
+ source_id uuid NOT NULL, batch_index integer NOT NULL, component text NOT NULL,
  operation_key text NOT NULL UNIQUE REFERENCES rkb_v4.applied_ops DEFERRABLE INITIALLY DEFERRED,
  sequence bigint NOT NULL, command_sha256 text NOT NULL, knowledge_sha256 text NOT NULL,
- PRIMARY KEY(source_id,batch_index),
- FOREIGN KEY(source_id,batch_index) REFERENCES rkb_v4.source_batch_prepared
+ PRIMARY KEY(source_id,batch_index,component),
+ FOREIGN KEY(source_id,batch_index,component) REFERENCES rkb_v4.source_batch_prepared
 );
 CREATE TABLE rkb_v4.source_batch_publications (
- source_id uuid NOT NULL, batch_index integer NOT NULL,manifest jsonb NOT NULL,media jsonb NOT NULL,
- figure_ids uuid[] NOT NULL,PRIMARY KEY(source_id,batch_index),
- FOREIGN KEY(source_id,batch_index) REFERENCES rkb_v4.source_batch_receipts
+ source_id uuid NOT NULL, batch_index integer NOT NULL,component text NOT NULL,manifest jsonb NOT NULL,media jsonb NOT NULL,
+ figure_ids uuid[] NOT NULL,PRIMARY KEY(source_id,batch_index,component),
+ FOREIGN KEY(source_id,batch_index,component) REFERENCES rkb_v4.source_batch_receipts
 );
 CREATE INDEX source_batch_public_figures ON rkb_v4.source_batch_publications USING gin(figure_ids);
 CREATE TRIGGER immutable_source_batch_publications BEFORE UPDATE OR DELETE ON rkb_v4.source_batch_publications
@@ -82,7 +102,7 @@ CREATE FUNCTION rkb_v4.prepare_source_batch_v1(command_bytes bytea,knowledge_byt
  expected_database text,expected_writer text) RETURNS text
  LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE c jsonb;d jsonb;doc jsonb;source uuid;session rkb_v4.source_stage_sessions;
- state rkb_v4.recovery_state;prior rkb_v4.source_batch_prepared;last_stage jsonb;f jsonb;h text;idx integer;
+ state rkb_v4.recovery_state;prior rkb_v4.source_batch_prepared;last_stage jsonb;f jsonb;h text;idx integer;part text;
 BEGIN
  SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton FOR SHARE;
  IF state.database_generation IS DISTINCT FROM expected_database OR state.writer_generation IS DISTINCT FROM expected_writer
@@ -91,22 +111,36 @@ BEGIN
  IF octet_length(command_bytes) NOT BETWEEN 1 AND 8192 OR octet_length(knowledge_bytes) NOT BETWEEN 1 AND 33554432
   THEN RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='source packet envelope invalid';END IF;
  c:=convert_from(command_bytes,'UTF8')::jsonb;d:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;
- source:=(c->'ids'->>'source_id')::uuid;idx:=(d->>'batch_index')::integer;
+ source:=(c->'ids'->>'source_id')::uuid;idx:=(d->>'batch_index')::integer;part:=d->>'component';
  IF c->>'route' IS DISTINCT FROM 'source.batch.v1' OR d->>'codec' IS DISTINCT FROM 'rkb.source-batch.v1'
+  OR part IS NULL OR part NOT IN ('text','semantic')
   OR d->>'materializer_sha256' !~ '^[0-9a-f]{64}$' OR idx IS DISTINCT FROM (d->>'batch_count')::integer-1
   OR c->'expected_revisions' IS DISTINCT FROM jsonb_build_object('batch_head',d->>'last_batch_sha256')
-  OR NOT rkb_v4.verify_source_open_stage_chain_v1(source,(d->>'ingestion_id')::uuid,
-   (d->>'batch_count')::integer,d->>'last_batch_sha256') THEN
+  THEN
   RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='exact current accepted packet required';END IF;
  SELECT * INTO STRICT session FROM rkb_v4.source_stage_sessions WHERE source_id=source;
+ IF session.ingestion_id IS DISTINCT FROM (d->>'ingestion_id')::uuid THEN
+  RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='source packet ingestion differs';END IF;
  SELECT convert_from(a.command_bytes,'UTF8')::jsonb INTO STRICT last_stage
   FROM rkb_v4.source_stage_batches b JOIN rkb_v4.applied_ops a ON a.sequence=b.accepted_sequence
-  WHERE b.source_id=source AND b.batch_index=idx AND a.status='applied';
+  WHERE b.source_id=source AND b.batch_index=idx AND b.payload_sha256=d->>'last_batch_sha256' AND a.status='applied';
  IF last_stage->>'person_id' IS DISTINCT FROM c->>'person_id' OR EXISTS(
   SELECT 1 FROM rkb_v4.sources WHERE source_id=source AND (NOT accepted OR withdrawn)) THEN
   RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='owned current source required';END IF;
+ IF part='semantic' AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts r
+     WHERE r.source_id=source AND r.batch_index=idx AND r.component='text') THEN
+  RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='publish source text before optional enrichment';END IF;
  h:=encode(sha256(knowledge_bytes),'hex');doc:=convert_from(knowledge_bytes,'UTF8')::jsonb;
- SELECT * INTO prior FROM rkb_v4.source_batch_prepared WHERE source_id=source AND batch_index=idx;
+ IF part='text' AND (doc?'source_graph'
+  OR doc->'semantic'->'findings' IS DISTINCT FROM '[]'::jsonb
+  OR doc->'semantic'->'stories' IS DISTINCT FROM '[]'::jsonb
+  OR doc->'semantic'->'pending' IS DISTINCT FROM '[]'::jsonb
+  OR media->'illustrations' IS DISTINCT FROM '[]'::jsonb
+  OR media->'passage_links' IS DISTINCT FROM '[]'::jsonb
+  OR media->'poi_media_links' IS DISTINCT FROM '[]'::jsonb) THEN
+  RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='text publication contains optional enrichment';END IF;
+
+ SELECT * INTO prior FROM rkb_v4.source_batch_prepared b WHERE b.source_id=source AND b.batch_index=idx AND b.component=part;
  IF FOUND THEN
   IF prior.command_sha256<>encode(sha256(command_bytes),'hex') OR prior.knowledge_bytes<>knowledge_bytes
    OR prior.media<>media THEN RAISE EXCEPTION 'source packet preparation changed';END IF;
@@ -116,9 +150,9 @@ BEGIN
   OR NOT rkb_v4.check_source_batch_semantic_v1(convert_to(((doc-ARRAY['image_manifest','source_graph','public_rights'])||
    '{"codec":"rkb.source-activation-semantic.v1"}'::jsonb)::text,'UTF8'),jsonb_build_object('source_id',source),
    '{"absent_source":"true"}'::jsonb,c->>'logical_time')
-  OR NOT rkb_v4.check_source_batch_manifest_v1(doc,source)
+  OR (part='semantic' AND NOT rkb_v4.check_source_batch_manifest_v1(doc,source))
   OR NOT rkb_v4.check_source_batch_graph_v1(doc,source,(d->>'batch_count')::integer)
-  OR NOT rkb_v4.check_source_batch_media_v1(doc,media,source)
+  OR (part='semantic' AND NOT rkb_v4.check_source_batch_media_v1(doc,media,source))
   OR rkb_v4.source_batch_conflicts_v1(source,doc)
   OR doc->'research' IS DISTINCT FROM convert_from(decode(last_stage->>'payload_b64','base64'),'UTF8')::jsonb->'research'
   THEN RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='source packet validation failed';END IF;
@@ -126,11 +160,11 @@ BEGIN
   IF NOT rkb_v4.check_source_facts_v1(f) THEN
    RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='source packet fact evidence invalid';END IF;
  END LOOP;
- INSERT INTO rkb_v4.source_batch_prepared VALUES(source,idx,encode(sha256(command_bytes),'hex'),command_bytes,knowledge_bytes,h,doc,media);
+ INSERT INTO rkb_v4.source_batch_prepared VALUES(source,idx,part,encode(sha256(command_bytes),'hex'),command_bytes,knowledge_bytes,h,doc,media);
  RETURN h;
 END $$;
 
-CREATE FUNCTION rkb_v4.install_source_batch_vector_v1(source uuid,idx integer,ident uuid,input_hash text,
+CREATE FUNCTION rkb_v4.install_source_batch_vector_v1(source uuid,idx integer,part text,ident uuid,input_hash text,
  embedding public.vector,expected_database text,expected_writer text) RETURNS text
  LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE state rkb_v4.recovery_state;input record;prior rkb_v4.source_batch_vectors;
@@ -141,15 +175,15 @@ BEGIN
   THEN RAISE EXCEPTION 'source packet vector writer changed';END IF;
  SELECT i.* INTO STRICT input FROM rkb_v4.source_batch_prepared p
   CROSS JOIN LATERAL rkb_v4.source_batch_inputs_v1(p.knowledge) i
-  WHERE p.source_id=source AND p.batch_index=idx AND i.input_id=ident;
+  WHERE p.source_id=source AND p.batch_index=idx AND p.component=part AND i.input_id=ident;
  IF input_hash IS DISTINCT FROM encode(sha256(convert_to(input.body,'UTF8')),'hex')
   OR input.input_tokens NOT BETWEEN 1 AND 512 THEN RAISE EXCEPTION 'source packet exact vector input required';END IF;
- SELECT * INTO prior FROM rkb_v4.source_batch_vectors WHERE source_id=source AND batch_index=idx AND input_id=ident;
+ SELECT * INTO prior FROM rkb_v4.source_batch_vectors v WHERE v.source_id=source AND v.batch_index=idx AND v.component=part AND v.input_id=ident;
  IF FOUND THEN
   IF prior.input_sha256<>input_hash THEN RAISE EXCEPTION 'source packet vector input changed';END IF;
   RETURN input_hash;
  END IF;
- INSERT INTO rkb_v4.source_batch_vectors VALUES(source,idx,ident,input_hash,embedding);
+ INSERT INTO rkb_v4.source_batch_vectors VALUES(source,idx,part,ident,input_hash,embedding);
  RETURN input_hash;
 END $$;
 CREATE FUNCTION rkb_v4.check_source_batch_base_v1(p bytea, ids jsonb, expected jsonb, logical_time text)
@@ -249,7 +283,7 @@ BEGIN
  sem:=doc->'semantic';
  IF jsonb_typeof(sem) IS DISTINCT FROM 'object' OR NOT sem ?& ARRAY['regions','findings','stories','pending']
     OR sem-ARRAY['regions','findings','stories','pending']<>'{}'::jsonb
-    OR jsonb_typeof(sem->'regions') IS DISTINCT FROM 'array' OR jsonb_array_length(sem->'regions') NOT BETWEEN 1 AND 1250000
+    OR jsonb_typeof(sem->'regions') IS DISTINCT FROM 'array' OR jsonb_array_length(sem->'regions') NOT BETWEEN 0 AND 1250000
     OR jsonb_typeof(sem->'findings') IS DISTINCT FROM 'array' OR jsonb_array_length(sem->'findings')>30000
     OR jsonb_typeof(sem->'stories') IS DISTINCT FROM 'array' OR jsonb_array_length(sem->'stories')>30000
     OR jsonb_typeof(sem->'pending') IS DISTINCT FROM 'array' OR jsonb_array_length(sem->'pending')>30000 THEN RETURN false;END IF;
@@ -386,13 +420,10 @@ DECLARE m jsonb:=doc->'image_manifest'; session rkb_v4.source_stage_sessions;
 BEGIN
  SELECT * INTO STRICT session FROM rkb_v4.source_stage_sessions WHERE source_id=source;
  original:=convert_from(session.original_receipt,'UTF8')::jsonb;
- -- Decode each accepted batch once, preserving the latest explicit page correction.
- SELECT coalesce(jsonb_object_agg(selected.page_id,selected.model_page),'{}'::jsonb) INTO latest_pages
- FROM (SELECT DISTINCT ON (model.value->>'page_id') model.value->>'page_id' AS page_id,model.value AS model_page
-       FROM rkb_v4.source_stage_batches batch_row CROSS JOIN LATERAL
-        jsonb_array_elements(convert_from(batch_row.payload_bytes,'UTF8')::jsonb->'model_payload'->'pages') model(value)
-       WHERE batch_row.source_id=source
-       ORDER BY model.value->>'page_id',batch_row.batch_index DESC) selected;
+ -- Current page metadata is already indexed by source/page in the working intake.
+ SELECT coalesce(jsonb_object_agg(p.page_id::text,p.model_page),'{}'::jsonb) INTO latest_pages
+ FROM rkb_v4.source_stage_pages p WHERE p.source_id=source
+  AND p.page_id::text IN (SELECT value->>'page_id' FROM jsonb_array_elements(m->'pages'));
  SELECT jsonb_object_agg(value->>'region_id',value),count(*),count(DISTINCT value->>'region_id')
  INTO semantic_regions,total,unique_ids FROM jsonb_array_elements(doc->'semantic'->'regions');
  IF total<>unique_ids THEN RETURN false;END IF;
@@ -606,7 +637,7 @@ BEGIN
   SELECT value INTO STRICT region FROM jsonb_array_elements(doc->'image_manifest'->'regions') WHERE value->>'region_id'=item->>'source_region_id';
   IF region->>'page_id' IS DISTINCT FROM item->>'page_id' OR region->>'kind' IS DISTINCT FROM 'figure'
    OR region->'bbox' IS DISTINCT FROM item->'bbox' THEN RETURN false;END IF;
-  raw_page:=rkb_v4.source_stage_latest_page_v1(source,(item->>'page_id')::uuid);
+  raw_page:=rkb_v4.source_batch_page_v1(source,(item->>'page_id')::uuid);
   SELECT value INTO STRICT raw_figure FROM jsonb_array_elements(raw_page->'illustrations') WHERE value->>'illustration_key'=item->>'illustration_key';
   IF raw_figure->>'source_region_key' IS DISTINCT FROM region->>'region_key'
    OR raw_figure->>'kind' IS DISTINCT FROM item->>'kind'
@@ -639,7 +670,7 @@ BEGIN
  END LOOP;
  -- Every latest-page illustration remains present even when no native archive exists.
  FOR page IN SELECT value FROM jsonb_array_elements(doc->'image_manifest'->'pages') LOOP
-  raw_page:=rkb_v4.source_stage_latest_page_v1(source,(page->>'page_id')::uuid);
+  raw_page:=rkb_v4.source_batch_page_v1(source,(page->>'page_id')::uuid);
   illustration_count:=illustration_count+jsonb_array_length(coalesce(raw_page->'illustrations','[]'));
   FOR raw_figure IN SELECT value FROM jsonb_array_elements(coalesce(raw_page->'illustrations','[]')) LOOP
    IF (SELECT count(*) FROM jsonb_array_elements(media->'illustrations') i WHERE i->'page_id'=page->'page_id' AND i->'illustration_key'=raw_figure->'illustration_key')<>1 THEN RETURN false;END IF;
@@ -731,15 +762,15 @@ END $$;
 CREATE FUNCTION rkb_v4.apply_source_batch_v1(p bytea, ids jsonb, expected jsonb, logical_time text)
 RETURNS bytea LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE state rkb_v4.recovery_state; prior rkb_v4.read_frontier; frontier rkb_v4.read_frontier;
-        source uuid; doc jsonb; item jsonb; research jsonb; original jsonb; eligibility bigint; story jsonb; variant jsonb; packet jsonb; idx integer; ordinal_base integer;
+        source uuid; doc jsonb; item jsonb; research jsonb; original jsonb; eligibility bigint; story jsonb; variant jsonb; packet jsonb; idx integer; part text; ordinal_base integer;
 BEGIN
     SELECT * INTO STRICT state FROM rkb_v4.recovery_state WHERE singleton FOR UPDATE;
     SELECT * INTO STRICT prior FROM rkb_v4.read_frontier WHERE singleton FOR UPDATE;
     IF NOT rkb_v4.check_source_batch_v1(p,ids,expected,logical_time) THEN
         RAISE EXCEPTION 'source import requires exact resolved new-source precondition';
     END IF;
-    source:=(ids->>'source_id')::uuid;packet:=convert_from(p,'UTF8')::jsonb;idx:=(packet->>'batch_index')::integer;
-    doc:=rkb_v4.source_batch_doc_v1(source,idx);
+    source:=(ids->>'source_id')::uuid;packet:=convert_from(p,'UTF8')::jsonb;idx:=(packet->>'batch_index')::integer;part:=packet->>'component';
+    doc:=rkb_v4.source_batch_doc_v1(source,idx,part);
     SELECT coalesce(max(ordinal)+1,0) INTO ordinal_base FROM rkb_v4.passage_search WHERE source_id=source AND revision=1;
     research:=doc->'research'; original:=doc->'original';
     INSERT INTO rkb_v4.sources VALUES (source,doc->>'bibliography',true,false) ON CONFLICT DO NOTHING;
@@ -789,7 +820,7 @@ BEGIN
         INSERT INTO rkb_v4.source_passage_provenance VALUES((item->>'passage_id')::uuid,source,1,item) ON CONFLICT DO NOTHING;
     END LOOP;
     FOR item IN SELECT value FROM rkb_v4.source_batch_prepared b CROSS JOIN LATERAL jsonb_array_elements(b.media->'illustrations')
-        WHERE b.source_id=source AND b.batch_index=idx LOOP
+        WHERE b.source_id=source AND b.batch_index=idx AND b.component=part LOOP
         INSERT INTO rkb_v4.source_illustrations VALUES(source,(item->>'illustration_id')::uuid,item) ON CONFLICT DO NOTHING;
     END LOOP;
     -- Activation happens after every exact passage and its research continuation
@@ -806,26 +837,26 @@ BEGIN
     RETURN convert_to(jsonb_build_object('source_id',source,'content_revision',1,'accepted',true,
         'withdrawn',false,'eligibility_revision',eligibility,'visibility_epoch',frontier.visibility_epoch,
         'passage_count',jsonb_array_length(doc->'passages'),'story_count',jsonb_array_length(doc->'semantic'->'stories'),
-        'finding_count',jsonb_array_length(doc->'semantic'->'findings'),'batch_index',idx,'ingestion_id',packet->>'ingestion_id','candidate_state','published','knowledge_sha256',(SELECT knowledge_sha256 FROM rkb_v4.source_batch_prepared WHERE source_id=source AND batch_index=idx),
+        'finding_count',jsonb_array_length(doc->'semantic'->'findings'),'batch_index',idx,'component',part,'ingestion_id',packet->>'ingestion_id','candidate_state','published','knowledge_sha256',(SELECT b.knowledge_sha256 FROM rkb_v4.source_batch_prepared b WHERE b.source_id=source AND b.batch_index=idx AND b.component=part),
         'payload_sha256',encode(sha256(p),'hex'),
         'research_frontier_id',research->>'frontier_id','research_state',research->>'state',
         'logical_time',logical_time)::text,'UTF8');
 END $$;
 
-CREATE FUNCTION rkb_v4.source_batch_doc_v1(source uuid,idx integer) RETURNS jsonb
+CREATE FUNCTION rkb_v4.source_batch_doc_v1(source uuid,idx integer,part text) RETURNS jsonb
  LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
  SELECT jsonb_set(jsonb_set(p.knowledge,'{passages}',
   (SELECT coalesce(jsonb_agg(x.value||jsonb_build_object('embedding',to_jsonb(v.embedding::real[])) ORDER BY x.n),'[]')
    FROM jsonb_array_elements(p.knowledge->'passages') WITH ORDINALITY x(value,n)
-   JOIN rkb_v4.source_batch_vectors v ON v.source_id=p.source_id AND v.batch_index=p.batch_index
+   JOIN rkb_v4.source_batch_vectors v ON v.source_id=p.source_id AND v.batch_index=p.batch_index AND v.component=p.component
     AND v.input_id=(x.value->>'passage_id')::uuid)),
   '{semantic,stories}',(SELECT coalesce(jsonb_agg(jsonb_set(s.value,'{default_variant}',s.value->'default_variant'||
    jsonb_build_object('embedding',to_jsonb(v.embedding::real[]))) ORDER BY s.n),'[]')
    FROM jsonb_array_elements(p.knowledge->'semantic'->'stories') WITH ORDINALITY s(value,n)
-   JOIN rkb_v4.source_batch_vectors v ON v.source_id=p.source_id AND v.batch_index=p.batch_index
+   JOIN rkb_v4.source_batch_vectors v ON v.source_id=p.source_id AND v.batch_index=p.batch_index AND v.component=p.component
     AND v.input_id=coalesce((s.value->'default_variant'->'fragments'->0->>'fragment_id')::uuid,
       (s.value->'default_variant'->>'variant_id')::uuid)))
- FROM rkb_v4.source_batch_prepared p WHERE p.source_id=source AND p.batch_index=idx
+ FROM rkb_v4.source_batch_prepared p WHERE p.source_id=source AND p.batch_index=idx AND p.component=part
 $$;
 
 CREATE FUNCTION rkb_v4.check_source_batch_v1(p bytea,ids jsonb,expected jsonb,logical_time text)
@@ -838,14 +869,14 @@ BEGIN
   OR ids IS DISTINCT FROM jsonb_build_object('source_id',ids->>'source_id')
   OR expected IS DISTINCT FROM jsonb_build_object('batch_head',d->>'last_batch_sha256') THEN RETURN false;END IF;
  SELECT * INTO STRICT prepared FROM rkb_v4.source_batch_prepared
-  WHERE source_id=(ids->>'source_id')::uuid AND batch_index=(d->>'batch_index')::integer;
+  WHERE source_id=(ids->>'source_id')::uuid AND batch_index=(d->>'batch_index')::integer AND component=d->>'component';
  c:=convert_from(prepared.command_bytes,'UTF8')::jsonb;
  IF decode(c->>'payload_b64','base64') IS DISTINCT FROM p OR c->'ids' IS DISTINCT FROM ids
   OR c->>'logical_time' IS DISTINCT FROM logical_time OR c->'expected_revisions' IS DISTINCT FROM expected
   OR EXISTS(SELECT 1 FROM rkb_v4.sources s WHERE s.source_id=prepared.source_id AND (NOT s.accepted OR s.withdrawn))
   OR rkb_v4.source_batch_conflicts_v1(prepared.source_id,prepared.knowledge)
   OR EXISTS(SELECT 1 FROM rkb_v4.source_batch_inputs_v1(prepared.knowledge) i
-   LEFT JOIN rkb_v4.source_batch_vectors v ON v.source_id=prepared.source_id AND v.batch_index=prepared.batch_index AND v.input_id=i.input_id
+   LEFT JOIN rkb_v4.source_batch_vectors v ON v.source_id=prepared.source_id AND v.batch_index=prepared.batch_index AND v.component=prepared.component AND v.input_id=i.input_id
    WHERE v.input_id IS NULL OR v.input_sha256<>encode(sha256(convert_to(i.body,'UTF8')),'hex')) THEN RETURN false;END IF;
  RETURN true;
 EXCEPTION WHEN data_exception OR no_data_found OR too_many_rows THEN RETURN false;
@@ -853,18 +884,18 @@ END $$;
 
 CREATE FUNCTION rkb_v4.capture_source_batch_receipt_v1() RETURNS trigger
  LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $$
-DECLARE c jsonb;d jsonb;source uuid;idx integer;prepared rkb_v4.source_batch_prepared;
+DECLARE c jsonb;d jsonb;source uuid;idx integer;part text;prepared rkb_v4.source_batch_prepared;
  story record;v jsonb;refs jsonb;
 BEGIN
  IF NEW.status<>'applied' THEN RETURN NULL;END IF;
  c:=convert_from(NEW.command_bytes,'UTF8')::jsonb;
  IF c->>'route'<>'source.batch.v1' THEN RETURN NULL;END IF;
  d:=convert_from(decode(c->>'payload_b64','base64'),'UTF8')::jsonb;
- source:=(c->'ids'->>'source_id')::uuid;idx:=(d->>'batch_index')::integer;
- SELECT * INTO STRICT prepared FROM rkb_v4.source_batch_prepared WHERE source_id=source AND batch_index=idx;
+ source:=(c->'ids'->>'source_id')::uuid;idx:=(d->>'batch_index')::integer;part:=d->>'component';
+ SELECT * INTO STRICT prepared FROM rkb_v4.source_batch_prepared b WHERE b.source_id=source AND b.batch_index=idx AND b.component=part;
  IF prepared.command_bytes<>NEW.command_bytes THEN RAISE EXCEPTION 'source packet receipt identity differs';END IF;
- INSERT INTO rkb_v4.source_batch_receipts VALUES(source,idx,NEW.operation_key,NEW.sequence,NEW.command_sha256,prepared.knowledge_sha256);
- INSERT INTO rkb_v4.source_batch_publications VALUES(source,idx,prepared.knowledge->'image_manifest',prepared.media,
+ INSERT INTO rkb_v4.source_batch_receipts VALUES(source,idx,part,NEW.operation_key,NEW.sequence,NEW.command_sha256,prepared.knowledge_sha256);
+ INSERT INTO rkb_v4.source_batch_publications VALUES(source,idx,part,prepared.knowledge->'image_manifest',prepared.media,
   ARRAY(SELECT (value->>'illustration_id')::uuid FROM jsonb_array_elements(prepared.media->'illustrations')));
  IF prepared.knowledge?'source_graph' THEN
   INSERT INTO rkb_v4.source_graph_receipts VALUES(source,NEW.operation_key,NEW.sequence,NEW.command_sha256,
@@ -1120,7 +1151,7 @@ BEGIN
             image_bytes:=decode(d->'issued_images_b64'->>n,'base64'); image:=convert_from(image_bytes,'UTF8')::jsonb;
             INSERT INTO rkb_v4.source_stage_pages VALUES(source,(image->>'physical_page_index')::integer,
                 (image->>'page_id')::uuid,image_bytes,encode(sha256(image_bytes),'hex'),idx,d->'model_payload'->'pages'->n)
-                ON CONFLICT(source_id,physical_page_index) DO NOTHING;
+                ON CONFLICT(source_id,physical_page_index) DO UPDATE SET model_page=EXCLUDED.model_page;
         END LOOP;
     END IF;
     RETURN convert_to(jsonb_build_object('source_id',source,'ingestion_id',d->>'ingestion_id',
@@ -1164,7 +1195,7 @@ CREATE FUNCTION rkb_v4.verify_source_batch_origins_v1(scope uuid[]) RETURNS bool
  SELECT scope IS NOT NULL AND cardinality(scope)<=10000
  AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts r
   LEFT JOIN rkb_v4.applied_ops a ON a.operation_key=r.operation_key AND a.sequence=r.sequence
-  LEFT JOIN rkb_v4.source_batch_prepared p USING(source_id,batch_index)
+  LEFT JOIN rkb_v4.source_batch_prepared p USING(source_id,batch_index,component)
   WHERE r.source_id=ANY(scope) AND (a.status IS DISTINCT FROM 'applied'
    OR a.command_sha256 IS DISTINCT FROM r.command_sha256
    OR a.command_bytes IS DISTINCT FROM p.command_bytes
@@ -1194,3 +1225,55 @@ CREATE FUNCTION rkb_v4.verify_source_illustration_origins_v1(scope uuid[]) RETUR
   WHERE NOT EXISTS(SELECT 1 FROM rkb_v4.source_batch_receipts WHERE source_id=x)))
 $$;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA rkb_v4 FROM PUBLIC;
+
+-- Existing passage selections support indexed references to earlier pages.
+CREATE INDEX source_passage_provenance_pages ON rkb_v4.source_passage_provenance USING gin(data jsonb_path_ops);
+
+-- The existing gallery also sees accepted packet metadata before book finish.
+ALTER FUNCTION rkb_v4.read_source_illustrations_v1(uuid,uuid,integer)
+ RENAME TO read_source_illustrations_before_batches_v1;
+CREATE FUNCTION rkb_v4.read_source_illustrations_v1(wanted_source uuid,after_id uuid,take integer)
+ RETURNS TABLE(source_id uuid,source_revision bigint,eligibility_revision bigint,illustration_id uuid,
+ data jsonb,passage_links jsonb,poi_media_links jsonb,archive_status text)
+ LANGUAGE sql STABLE SECURITY INVOKER SET search_path=pg_catalog AS $$
+ SELECT * FROM (
+ SELECT * FROM rkb_v4.read_source_illustrations_before_batches_v1(wanted_source,after_id,take)
+ UNION ALL
+ SELECT i.source_id,1::bigint,v.eligibility_revision,i.illustration_id,i.data-'crop_binding',
+  (SELECT coalesce(jsonb_agg(l),'[]') FROM jsonb_array_elements(m.media->'passage_links') l
+   WHERE l->'illustration_ids' @> jsonb_build_array(i.illustration_id::text)),
+  (SELECT coalesce(jsonb_agg(l),'[]') FROM jsonb_array_elements(m.media->'poi_media_links') l
+   WHERE l->>'illustration_id'=i.illustration_id::text),coalesce(a.status,'pending')
+ FROM rkb_v4.source_illustrations i JOIN rkb_v4.sources s USING(source_id)
+ JOIN rkb_v4.active_revision r USING(source_id) JOIN rkb_v4.source_visibility v USING(source_id)
+ JOIN LATERAL (SELECT b.media FROM rkb_v4.source_batch_publications b
+  WHERE b.source_id=i.source_id AND b.figure_ids @> ARRAY[i.illustration_id]
+   AND b.component='semantic' ORDER BY b.batch_index DESC LIMIT 1) m ON true
+ LEFT JOIN rkb_v4.source_illustration_availability a USING(source_id,illustration_id)
+ WHERE i.source_id=wanted_source AND s.accepted AND NOT s.withdrawn AND r.revision=1
+  AND (after_id IS NULL OR i.illustration_id>after_id)
+ ) gallery ORDER BY illustration_id LIMIT least(greatest(take,1),4)
+$$;
+REVOKE ALL ON FUNCTION rkb_v4.read_source_illustrations_v1(uuid,uuid,integer) FROM PUBLIC;
+DO $$ BEGIN IF EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='rkb_reader') THEN
+ GRANT EXECUTE ON FUNCTION rkb_v4.read_source_illustrations_v1(uuid,uuid,integer) TO rkb_reader;
+END IF;END $$;
+
+ALTER VIEW rkb_v4.story_embedding_fragments RENAME TO story_embedding_fragments_before_batches;
+CREATE VIEW rkb_v4.story_embedding_fragments WITH (security_invoker=true) AS
+ SELECT * FROM rkb_v4.story_embedding_fragments_before_batches
+ UNION ALL
+ SELECT b.variant_id,b.revision,b.story_id,s.source_id,(f.n-1)::integer,
+  (f.x->>'fragment_id')::uuid,(f.x->>'start')::integer,(f.x->>'end')::integer,
+  (f.x->>'input_tokens')::integer,v.input_sha256,v.embedding
+ FROM rkb_v4.story_variant_versions b JOIN rkb_v4.stories s ON s.story_id=b.story_id
+ CROSS JOIN LATERAL jsonb_array_elements(b.data->'fragments') WITH ORDINALITY f(x,n)
+ JOIN LATERAL (SELECT slots.input_sha256,slots.embedding FROM rkb_v4.source_batch_vectors slots
+  JOIN rkb_v4.source_batch_receipts receipt USING(source_id,batch_index,component)
+  WHERE slots.source_id=s.source_id AND slots.component='semantic'
+   AND slots.input_id=(f.x->>'fragment_id')::uuid
+   AND slots.input_sha256=encode(sha256(convert_to(substring(b.body
+    FROM (f.x->>'start')::integer+1 FOR (f.x->>'end')::integer-(f.x->>'start')::integer),'UTF8')),'hex')
+  ORDER BY slots.batch_index DESC LIMIT 1) v ON true
+ WHERE b.data?'fragments';
+REVOKE ALL ON rkb_v4.story_embedding_fragments FROM PUBLIC;

@@ -26,10 +26,12 @@ def validate_command(command):
             raise ValueError('exact source reading completion required')
         _uuid(doc['ingestion_id'])
         return doc
-    _keys(doc, 'codec ingestion_id batch_index batch_count last_batch_sha256 materializer_sha256')
+    _keys(doc, 'codec ingestion_id batch_index batch_count last_batch_sha256 materializer_sha256 component')
     if canonical(doc) != command.payload or doc['codec'] != CODEC:
         raise ValueError('canonical source packet payload required')
     _uuid(doc['ingestion_id']); _integer(doc['batch_count'], 1, 2500)
+    if doc['component'] not in ('text','semantic'):
+        raise ValueError('source packet component required')
     _integer(doc['batch_index'], 0, doc['batch_count']-1)
     # There is no backfill/repair mode: publication follows the current stage.
     if doc['batch_index'] != doc['batch_count']-1:
@@ -44,6 +46,8 @@ def resolved_command(*, source_id, payload, revisions=ACTIVATION_REVISIONS, **id
     if revisions != ACTIVATION_REVISIONS:
         raise ValueError('installed source packet ABI required')
     finishing=payload.get('codec')=='rkb.source-finish.v1'
+    if not finishing:
+        payload=dict(payload);payload.setdefault('component','text')
     c = ExactCommand(**identity, route=FINISH_ROUTE if finishing else ROUTE, schema_revision=revisions.schema,
         function_revision=revisions.function, executor_revision=revisions.executor,
         ids={'source_id': source_id}, expected_revisions={'source_revision':'1'} if finishing else {'batch_head': payload['last_batch_sha256']},

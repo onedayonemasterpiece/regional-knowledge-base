@@ -15,12 +15,12 @@ from test_kaggle_pg_driver import database
 from test_kaggle_apply import PG
 
 
-def packet(env,doc):
+def packet(env,doc,component='text'):
     return resolved_command(source_id=SOURCE,sequence=env['sequence']+1,
-        operation_key='packet:'+str(doc['batch_index']),request_id=REQUEST,person_id=PERSON,logical_time=TIME,
+        operation_key='packet:'+str(doc['batch_index'])+':'+component,request_id=REQUEST,person_id=PERSON,logical_time=TIME,
         payload=dict(codec=CODEC,ingestion_id=INGESTION,batch_index=doc['batch_index'],
             batch_count=doc['batch_index']+1,last_batch_sha256=digest(canonical(doc)),
-            materializer_sha256=materializer_fingerprint()))
+            materializer_sha256=materializer_fingerprint(),component=component))
 
 
 def native(env):
@@ -58,7 +58,7 @@ async def test_one_of_174_pages_is_searchable_without_seal_and_retry_reuses_vect
 
 @PG
 @pytest.mark.asyncio
-async def test_bad_packet_keeps_first_searchable_and_next_packet_can_publish(image_pg_sql18):
+async def test_bad_optional_facts_do_not_block_text_or_other_pages(image_pg_sql18):
     env=image_pg_sql18;first=exact_batch(count=1);prepare,calls=native(env)
     await accepted(env,stage_command(first,1));c=packet(env,first);await prepare(c);await accepted(env,c)
     second=exact_batch(1,digest(canonical(first)),start=1,count=1)
@@ -68,12 +68,61 @@ async def test_bad_packet_keeps_first_searchable_and_next_packet_can_publish(ima
         evidence_refs=[dict(page_id=p['page_id'],region_key='body',original_excerpt=p['regions'][0]['source_text'])],
         event_dates=[dict(original_date_text='2026',precision='year',calendar='unspecified',date_role='event',year=2026,
             month=None,day=None,rationale='Deliberately missing year in the source.',evidence_indexes=[0])])]
-    await accepted(env,stage_command(second,env['sequence']+1));bad=packet(env,second)
+    await accepted(env,stage_command(second,env['sequence']+1));text=packet(env,second)
+    await prepare(text)
+    async with env['connection'].transaction():
+        # Preparing the next packet does not hide the first public page.
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.lexical_candidates(%s,20)',('synthetic',))).fetchone()==(1,)
+    assert (await accepted(env,text)).status=='applied'
+    bad=packet(env,second,'semantic')
     with pytest.raises(SourceMaterializationRejected):await prepare(bad)
     assert (await accepted(env,bad)).status=='rejected_precondition'
     third=exact_batch(2,digest(canonical(second)),start=2,count=1)
     await accepted(env,stage_command(third,env['sequence']+1));c=packet(env,third)
     await prepare(c);assert (await accepted(env,c)).status=='applied'
     async with env['connection'].transaction():
-        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.passage_search WHERE source_id=%s',(SOURCE,))).fetchone()==(2,)
-        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(2,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.passage_search WHERE source_id=%s',(SOURCE,))).fetchone()==(3,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(3,)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_optional_story_body_and_illustration_apply_after_searchable_text(image_pg_sql18):
+    import json
+    from test_native_image_projection_20261022 import illustrated_batch
+    env=image_pg_sql18;doc=json.loads(illustrated_batch())
+    page=doc['model_payload']['pages'][0]
+    body='The synthetic source records a specific event. Its printed account supplies the evidence.'
+    doc['model_payload']['story_candidates']=[dict(candidate_key='episode',title='Synthetic source episode',
+        summary='An authored episode with exact evidence.',proposition='The source records a synthetic event.',
+        evidence_refs=[dict(page_id=page['page_id'],region_key='body',original_excerpt=page['regions'][0]['source_text'])],
+        basic_variant=dict(body=body,language='en',blocks=[dict(start=0,end=len(body),evidence_indexes=[0])]))]
+    prepare,_=native(env)
+    assert (await accepted(env,stage_command(doc,1))).status=='applied'
+    c=packet(env,doc);await prepare(c);assert (await accepted(env,c)).status=='applied'
+    async with env['connection'].transaction():
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.passage_search')).fetchone()==(1,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.stories')).fetchone()==(0,)
+    c=packet(env,doc,'semantic');await prepare(c)
+    assert (await accepted(env,c)).status=='applied'
+    async with env['connection'].transaction():
+        assert await (await env['connection'].execute('SELECT body FROM rkb_v4.story_search')).fetchone()==(body,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_illustrations')).fetchone()==(1,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.read_source_illustrations_v1(%s,NULL,4)',(SOURCE,))).fetchone()==(1,)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_later_finding_uses_ordinary_prior_passage_without_history_scan(image_pg_sql18):
+    env=image_pg_sql18;first=exact_batch(count=1);prepare,_=native(env)
+    await accepted(env,stage_command(first,1));c=packet(env,first);await prepare(c);await accepted(env,c)
+    second=exact_batch(1,digest(canonical(first)),start=8,count=1);page=first['model_payload']['pages'][0]
+    second['model_payload']['story_candidates']=[dict(candidate_key='later-finding',title='Prior page context',
+        summary='The model explicitly cites the previous page.',proposition='The prior source supplies this finding.',
+        narrative_outcome='facts_only',evidence_refs=[dict(page_id=page['page_id'],region_key='body',original_excerpt=page['regions'][0]['source_text'])])]
+    await accepted(env,stage_command(second,env['sequence']+1));c=packet(env,second)
+    await prepare(c);await accepted(env,c);c=packet(env,second,'semantic');await prepare(c)
+    assert (await accepted(env,c)).status=='applied'
+    async with env['connection'].transaction():
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.passage_search')).fetchone()==(2,)
+        assert await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.story_assertion_versions')).fetchone()==(1,)
