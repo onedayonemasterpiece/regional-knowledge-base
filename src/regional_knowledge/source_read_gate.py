@@ -354,11 +354,14 @@ class SourceReadGate:
         await self.authority.require(read.authority, 'public_search')
         if not self._binding(read):
             raise SourceGateDenied('runtime binding changed during output check')
-        selected=tuple(sorted({source for item in result.evidence
-            for source in item.dependencies.source_ids}))
-        if result.status in ('ok','degraded') and (
-                self._restricted_sources(selected) or (not selected and restricted
-                    and (exact or graph or catalog or fact))):
+        selected_sources={source for item in result.evidence
+            for source in item.dependencies.source_ids}
+        selected_sources.update(record['source_id'] for record in getattr(result,'records',())
+            if type(record) is dict and type(record.get('source_id')) is str)
+        if not selected_sources and result.status in ('ok','degraded') and scope is not None:
+            selected_sources.update(scope)
+        selected=tuple(sorted(selected_sources))
+        if result.status in ('ok','degraded') and self._restricted_sources(selected):
             result=self._closed(result,'evidence_withdrawn')
             selected=()
         read.facts=selected
