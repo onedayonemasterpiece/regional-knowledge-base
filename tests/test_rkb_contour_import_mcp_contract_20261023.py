@@ -77,6 +77,51 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
 
 
 @pytest.mark.asyncio
+async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_unchanged(native_intake, monkeypatch):
+    native = build_server(target_startup=native_intake.startup)
+    native_tools = {tool.name: tool for tool in await native.list_tools()}
+    imported = native_tools["book_ingest"]
+    native_text = imported.description
+    assert imported.title == "Import and continue an attached scanned book"
+    assert "book_ingest(command=start)" in native_text
+    assert "book_pages (default 1, maximum 4" in native_text
+    assert "book_ingest(command=stage)" in native_text
+    assert "after actual accepted text-packet apply" in native_text
+    assert "book_ingest(command=finalize) means only reading ended" in native_text
+    assert "correct and retry that page under the SAME ingestion" in native_text
+    assert "optional semantic, story and illustration enrichment does not undo accepted text" in native_text
+    assert "Return processing/wait/UNKNOWN/pending truthfully" in native_text
+    assert "General Case discovery/search is not presently registered" in native_text
+    assert "book_pages (default 1 page, maximum requested 4" in native.instructions
+    assert "Otherwise omit basic_variant" in native.instructions
+    assert "Finalization alone activates" not in native.instructions
+    # Old whole-book/unsupported command advice is not surfaced to the target.
+    for obsolete in ("at most 8", "8 selected", "validate and finalize", "Finalization alone activates",
+                     "reprocess", "rechunk", "story_reconcile", "disagreement_search"):
+        assert obsolete not in native_text, obsolete
+        assert obsolete not in native.instructions, obsolete
+
+    # Same wire tool, same accepted arguments and actual MCP schema; only the
+    # descriptions and native-specific display title differ.
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    legacy = build_server(backend_profile="legacy")
+    legacy_tools = {tool.name: tool for tool in await legacy.list_tools()}
+    legacy_ingest = legacy_tools["book_ingest"]
+    assert imported.name == legacy_ingest.name == "book_ingest"
+    assert imported.input_schema == legacy_ingest.input_schema
+    assert imported.output_schema == legacy_ingest.output_schema
+    assert imported.meta == legacy_ingest.meta == {"openai/fileParams": ["file"]}
+    assert legacy_ingest.title == "Add, reprocess or continue a book"
+    assert "Finalization alone activates" in legacy_ingest.description
+    assert "book_find first" in legacy_ingest.description
+    assert "book_ingest(reprocess)" in legacy.instructions
+    assert "validate and finalize" in legacy.instructions
+    assert "disagreement_search" not in native_tools
+    pages = native_tools["book_pages"].input_schema["properties"]["batch_size"]
+    assert pages["default"] == 1 and pages["minimum"] == 1 and pages["maximum"] == 4
+
+
+@pytest.mark.asyncio
 async def test_owner_start_without_rights_uses_existing_owner_attestation(native_intake):
     from regional_knowledge.kaggle_importer import OWNER_IMPORT_ATTESTATION
     s = native_intake
