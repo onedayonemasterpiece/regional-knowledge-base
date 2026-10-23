@@ -167,13 +167,13 @@ class CaseReadGate(SourceReadGate):
                         and record['candidate_dependency'].get('source_id')!=q.candidate_source_id)):
                     raise ValueError('Case candidate scope differs')
             if self._case_restriction_after(q.case_id,result.observed_data_seq):
-                result=self._closed(result,'prior_write_pending')
+                result=self._closed(result,'access_denied')
         except (ValueError,TypeError,KeyError,AttributeError):
             result=self._closed(result,'internal_error')
         await self._authority(read.authority,q)
         if not self._binding(read):raise SourceGateDenied('runtime binding changed')
         if result.status=='ok' and self._case_restriction_after(q.case_id,result.observed_data_seq):
-            result=self._closed(result,'prior_write_pending')
+            result=self._closed(result,'access_denied')
         read.facts=(q.case_id,result.observed_data_seq) if result.status=='ok' else None
         read.result=result
         return result
