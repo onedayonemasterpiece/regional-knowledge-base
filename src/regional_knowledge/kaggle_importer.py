@@ -415,25 +415,25 @@ class KaggleSourceImporter:
 
     @staticmethod
     def _uses_issued_images(pages):
-        return any(page.source_image_receipt_sha256 is not None for page in pages)
+        return any(page.source_material=='visual_reviewed'
+            or page.source_image_receipt_sha256 is not None for page in pages)
 
     async def _issued_images(self,access,row,receipt,pages):
         # These receipts bind actual issued pixels to this exact original.
         # The model's source_text/bbox remain explicitly model-authored. They
         # are not compared with (or labelled as) a native-text extraction.
-        if any(page.source_image_receipt_sha256 is None
-                or page.source_material!='visual_reviewed' or not page.source_review_note
+        if any(page.source_material!='visual_reviewed' or not page.source_review_note
                 for page in pages):
             raise failure('stage_requires_reviewed_issued_image',status='invalid_query')
         for offset in range(0,len(pages),8):
             selected=pages[offset:offset+8]
             issued=await self.originals.selected_image_receipts(access.context,row['ingestion_id'],
-                tuple((page.physical_page_index,page.source_image_receipt_sha256) for page in selected))
+                tuple((page.physical_page_index,None) for page in selected))
             await self._check(access.authority,access.context,access.binding)
             if len(issued)!=len(selected) or any(
                     value['original_receipt_sha256']!=receipt.receipt_sha256
                     or value['page_id']!=str(page.page_id)
-                    or value['source_image_receipt_sha256']!=page.source_image_receipt_sha256
+                    or value['physical_page_index']!=page.physical_page_index
                     for page,value in zip(selected,issued,strict=True)):
                 raise failure('source_image_provenance_changed')
 
@@ -476,7 +476,7 @@ class KaggleSourceImporter:
         graph = StagedGraph.model_validate_json(row['stage_json']) if row['stage_json'] else StagedGraph(revision=1)
         image_mode=self._uses_issued_images(pages) or self._uses_issued_images(graph.pages)
         if image_mode:
-            if any(page.source_image_receipt_sha256 is None for page in graph.pages):
+            if any(page.source_material!='visual_reviewed' for page in graph.pages):
                 raise failure('source_provenance_mode_changed',status='invalid_query')
             await self._issued_images(access,row,receipt,pages)
         partial = compile_model_stage(graph, document_id=row['source_id'], revision=1, pages=pages, chunks=chunks,poi_facts=poi_facts)
