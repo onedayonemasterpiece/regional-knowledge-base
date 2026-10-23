@@ -285,8 +285,7 @@ class BgeWssTransport:
             except Exception:
                 reason = 'deadline_exceeded' if asyncio.get_running_loop().time() >= deadline else 'internal_error'
                 result = self._unavailable(frame, reason)
-            # Optional diagnostics are consumed only after QUERY_RESULT is sent.
-            # The result path performs no telemetry drain or extra JSON encoding.
+            # Read completion only publishes the bounded protocol result.
             if not self.read_discard:
                 self.read_pending = result
                 self.changed.set()
@@ -294,47 +293,27 @@ class BgeWssTransport:
         self.read_task.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
     async def _export_read_events(self, frame):
-        """Best-effort old native observations -> single local telemetry sink.
+        """Consume optional native observations after the wire result, never in writer.
 
-        The read has already been delivered. Drain runs off-loop to tolerate
-        a blocked diagnostic producer; identity and stage whitelists still apply.
-        A sink fault cannot affect WSS framing, status or read permits.
+        The notebook does not bundle product_telemetry. The native collector's
+        own bounded buffer accounts for dropped observations; this off-loop
+        best-effort drain cannot change QUERY_RESULT or resource permits.
         """
         drain = getattr(self.prepared_runtime, 'read_event_drain', None)
         if drain is None:
             return
-        from regional_knowledge.product_telemetry import emit_product_event
         try:
-            events = await asyncio.to_thread(drain, frame)
-            from regional_knowledge.query_telemetry import clean_native_read_events
-            cleaned = clean_native_read_events(events, request_id=frame['request_id'],
-                run_id=self.config['run_id'], runtime_incarnation=self.incarnation,
-                connection_generation=frame['connection_generation'],
-                turn_generation=frame['turn_generation'])
-            phases = {'tokenize_ms':'encode','acquire_ms':'acquire','encode_ms':'encode',
-                      'lexical_ms':'lexical','dense_ms':'dense','hydrate_ms':'hydrate',
-                      'search_ms':'search','serialize_ms':'serialize','total_ms':'total',
-                      'adapter_ms':'adapter','admission_ms':'admission',
-                      'transport_ms':'transport','output_gate_ms':'adapter'}
-            for event in cleaned:
-                common = {'run_id':event['run_id'],'request_ref':event['request_ref'],
-                    'connection_generation':event['connection_generation'],
-                    'turn_generation':event['turn_generation']}
-                for name, duration in event['stages_ms'].items():
-                    emit_product_event({'event':'read.stage','phase':phases[name],
-                        'status':'ok', 'duration_ms':duration, **common},level='debug')
-                if event['terminal']:
-                    outcome=event['status']
-                    if outcome not in ('ok','degraded','pending','cancelled','unavailable','error'):
-                        outcome='error'
-                    emit_product_event({'event':'read.terminal','phase':'adapter',
-                        'status':outcome, **common})
+            await asyncio.to_thread(drain, frame)
         except asyncio.CancelledError:
             raise
         except Exception:
-            # A malformed/blocked native collector is not a QUERY_RESULT failure.
-            emit_product_event({'event':'read.terminal','phase':'adapter',
-                'status':'dropped','run_id':self.config['run_id']})
+            pass  # Optional diagnostics are not a worker failure.
+
+    @staticmethod
+    def _observe_diagnostic(task):
+        # A finished diagnostic Task must never leave an unhandled exception.
+        if not task.cancelled():
+            task.exception()
 
     async def _load(self):
         self.encoder = await asyncio.to_thread(self.load_encoder)
@@ -364,72 +343,72 @@ class BgeWssTransport:
         return self.recovery_handler
 
     async def _encode(self, job):
-        if job['kind'] in ('source_command','recovery_phase'):
-            handler=self._native_handler(job)
-            if handler is None:raise ValueError('fixed native executor unavailable')
-            if job['kind']=='source_command':
+        """One exception boundary for every durable native or vector job.
+
+        A post-dispatch failure has an unknown effect. Retain the exact job and
+        claim without a fabricated result; only its finished compute permit
+        may be released for independent reads.
+        """
+        try:
+            if job['kind'] in ('source_command', 'recovery_phase'):
+                handler = self._native_handler(job)
+                if handler is None:
+                    raise ValueError('fixed native executor unavailable')
+                if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
+                    with self.snapshot_channel.assignment(job):
+                        receipt = await handler(job)
+                else:
+                    receipt = await handler(job)
+                pending = dict(job_id=job['id'], claim=job['claim'], receipt=receipt,
+                    **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
+                        'compute_claim', 'dispatch_generation')})
+                if len(json.dumps(pending, allow_nan=False).encode()) > (
+                        130000 if job['kind'] == 'recovery_phase' else 15500):
+                    raise ValueError('source command receipt bound')
+            else:
+                before = time.monotonic()
+                vector = await self._forward(job['texts'][0],
+                    self.resource if self.shared_reads else None)
+                pending = {'job_id':job['id'], 'claim':job['claim'], 'space':SPACE,
+                    'vectors':[vector], 'timings':{'encoder_seconds':time.monotonic()-before}}
+                if len(json.dumps(pending, allow_nan=False).encode()) > 262000:
+                    raise ValueError('channel result bound')
+            # Validate completely before publishing anything to states()/writer.
+            self.pending = pending
+            self.changed.set()
+        except (asyncio.CancelledError, PermissionError, BgeChannelStopped):
+            raise  # Cancellation, authority loss and actual STOP are not UNKNOWN.
+        except Exception as error:
+            from regional_knowledge.recovery_journal import StaleWriter
+            if isinstance(error, StaleWriter):
+                raise
+            if job['kind'] == 'source_command':
                 from regional_knowledge.kaggle_apply import ApplyUnknown, ApplyExecutionError
-                try:
-                    receipt=await handler(job)
-                except (ApplyUnknown, ApplyExecutionError) as error:
-                    # The command's exact operation key is inside its bounded
-                    # accepted bytes, not a standalone WSS frame field.
-                    # Never print source payloads, exception text or query data.
+                if isinstance(error, (ApplyUnknown, ApplyExecutionError)):
+                    # Preserve the existing domain-specific unresolved receipt
+                    # and safe validated operation key; never emit two events.
                     import base64
-                    operation_key=None
+                    operation_key = None
                     try:
-                        command=json.loads(base64.b64decode(job['command_b64'],validate=True))
-                        candidate=command.get('operation_key') if type(command) is dict else None
-                        if (type(candidate) is str and 1<=len(candidate)<=256
+                        command = json.loads(base64.b64decode(job['command_b64'], validate=True))
+                        candidate = command.get('operation_key') if type(command) is dict else None
+                        if (type(candidate) is str and 1 <= len(candidate) <= 256
                                 and all(c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:'
                                         for c in candidate)):
-                            operation_key=candidate
-                    except (KeyError,ValueError,TypeError,UnicodeError,RecursionError):
-                        pass  # Diagnostics must never change the UNKNOWN result.
+                            operation_key = candidate
+                    except (KeyError, ValueError, TypeError, UnicodeError, RecursionError):
+                        pass
                     print(json.dumps({'event':'source_command_outcome_unresolved',
-                        'job_id':job['id'],'operation_key':operation_key,
-                        'error_class':'ApplyUnknown' if isinstance(error,ApplyUnknown) else 'ApplyExecutionError'},
-                        separators=(',',':')),flush=True)
-                    # Compute has ended, but there is no COMMITTED canonical
-                    # source receipt: commit may be unknown, or the rejected
-                    # ledger insert itself failed. Never invent an ACK.
-                    # Keep the original job/claim fenced against re-execute;
-                    # release only its completed compute permit for reads.
+                        'job_id':job['id'], 'operation_key':operation_key,
+                        'error_class':type(error).__name__},
+                        separators=(',', ':')), flush=True)
                     return
-            else:
-                try:
-                    if job['kind']=='recovery_phase' and self.snapshot_channel is not None:
-                        with self.snapshot_channel.assignment(job):receipt=await handler(job)
-                    else:
-                        receipt=await handler(job)
-                except Exception as error:
-                    from regional_knowledge.recovery_journal import StaleWriter
-                    # Actor/permission and stale writer are authority fences,
-                    # not ordinary job failures. Keep their old fail-closed path.
-                    if isinstance(error,(PermissionError,StaleWriter)):
-                        raise
-                    print(json.dumps({'event':'native_job_outcome_unresolved',
-                        'job_id':job['id'],'kind':job['kind'],'phase':job.get('phase'),
-                        'error_class':type(error).__name__},separators=(',',':')),flush=True)
-                    # Unknown effects retain the original assignment; no
-                    # fake receipt/ACK. The completed task releases compute
-                    # capacity for independent reads in this warm process.
-                    return
-            self.pending=dict(job_id=job['id'],claim=job['claim'],receipt=receipt,
-                **{key:job[key] for key in ('run_id','launch_nonce','runtime_incarnation',
-                    'compute_claim','dispatch_generation')})
-            if len(json.dumps(self.pending,allow_nan=False).encode())>(130000 if job['kind']=='recovery_phase' else 15500):
-                raise ValueError('source command receipt bound')
-            self.changed.set()
-            return
-        before = time.monotonic()
-        vector = await self._forward(job['texts'][0], self.resource if self.shared_reads else None)
-        self.pending = {'job_id': job['id'], 'claim': job['claim'], 'space': SPACE,
-                        'vectors': [vector], 'timings': {'encoder_seconds': time.monotonic() - before}}
-        # Reject non-finite/oversized model output before queueing any bytes.
-        if len(json.dumps(self.pending, allow_nan=False).encode()) > 262000:
-            raise ValueError('channel result bound')
-        self.changed.set()
+            # Unexpected effects are not proof of failure or permission to
+            # reexecute. This one bounded safe event excludes payload and text.
+            print(json.dumps({'event':'native_job_outcome_unresolved',
+                'job_id':job['id'], 'kind':job['kind'], 'phase':job.get('phase'),
+                'error_class':type(error).__name__},
+                separators=(',', ':')), flush=True)
 
     def _start(self, job):
         if self.shared_reads:
@@ -500,18 +479,18 @@ class BgeWssTransport:
                     continue
                 await send(frame)
                 if frame.get('type') == 'QUERY_RESULT':
-                    # Only one optional off-loop native drain may be in flight.
-                    # A blocked collector must not accumulate tasks/threads on
-                    # successive reads; the bounded native collector accounts
-                    # for discarded older observations.
-                    previous = getattr(self, '_read_telemetry_export', None)
-                    if previous is None or previous.done():
-                        self._read_telemetry_export = asyncio.create_task(
-                            self._export_read_events(frame))
-                    else:
-                        from regional_knowledge.product_telemetry import emit_product_event
-                        emit_product_event({'event':'read.terminal','phase':'adapter',
-                            'status':'dropped','run_id':self.config['run_id']})
+                    # Maintain one bounded off-loop native drain. No optional
+                    # product_telemetry import/emit belongs in this writer Task.
+                    drain = getattr(self.prepared_runtime, 'read_event_drain', None)
+                    if drain is not None:
+                        previous = getattr(self, '_read_telemetry_export', None)
+                        if previous is None or previous.done():
+                            if previous is not None and not previous.cancelled():
+                                previous.exception()
+                            self._read_telemetry_export = asyncio.create_task(
+                                self._export_read_events(frame))
+                            self._read_telemetry_export.add_done_callback(
+                                self._observe_diagnostic)
 
         async def queue_read_result():
             nonlocal read_sent
