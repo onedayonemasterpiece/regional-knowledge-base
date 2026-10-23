@@ -114,5 +114,5 @@ async def test_exact_fetch_final_json_rechecks_withdrawal_and_oauth(vertical,cha
     assert 'private withdrawn bibliography A' not in json.dumps(result)
     if change=='withdrawal':
         payload=result['structuredContent']
-        assert payload['status']=='unavailable' and payload['reason']=='prior_write_pending'
+        assert payload['status']=='unavailable' and payload['reason']=='evidence_withdrawn'
         assert payload['text']=='' and payload['metadata'] is None
