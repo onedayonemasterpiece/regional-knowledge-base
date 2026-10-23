@@ -270,13 +270,13 @@ async def test_pending_withdrawal_between_native_result_and_http_issuance(vertic
     assert 'withdrawn-source-a' not in json.dumps(result)
     assert 'private withdrawn bibliography A' not in json.dumps(result)
     assert 'private cross-source A and B' not in json.dumps(result)
-    if scenario == 'explicit-B':
-        assert not payload['prior_write_pending']
-        assert payload['reason'] != 'prior_write_pending'
+    # The native PG snapshot is authoritative. A's subsequent withdrawal
+    # removes its own evidence, never puts unrelated B behind a global gate.
+    assert not payload['prior_write_pending']
+    if scenario == 'cross-source':
+        assert payload['status']=='degraded' and payload['reason']=='evidence_withdrawn'
     else:
-        assert payload['status'] == 'degraded'
-        assert payload['prior_write_pending'] is (phase != 'durable')
-        assert payload['reason'] == ('projection_lag' if phase == 'durable' else 'prior_write_pending')
+        assert payload['status']=='ok' and payload['reason'] is None
     await asyncio.to_thread(s.telemetry._queue.join)
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] == payload['status']
