@@ -29,6 +29,12 @@ from .kaggle_editorial_contracts import EditorialReadRequest, EditorialReadResul
 from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
 from .kaggle_acceptance_contracts import AcceptanceReadResult
 
+
+def _failure_site(error):
+    trace=error.__traceback__
+    while trace is not None and trace.tb_next is not None:trace=trace.tb_next
+    return (trace.tb_frame.f_code.co_filename.rsplit('/',1)[-1]+':'+str(trace.tb_lineno)) if trace else 'unknown'
+
 MAX_FRAME_BYTES = 65536
 MAX_DISPATCH_BYTES = 256 * 1024
 MAX_SOURCE_DISPATCH_BYTES = 2 * 1024 * 1024
@@ -567,12 +573,13 @@ def channel_route(queue, *, read_telemetry=None):
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
                                     'connection_generation': generation,
                                     'reason': 'stale_attachment' if isinstance(error, CurrentStaleAttachment) else 'revoked_run',
-                                    'error_type': type(error).__name__}))
-            await socket.close(code=4409 if isinstance(error, CurrentStaleAttachment) else 4403)
-        except (ValueError, KeyError, TypeError, UnicodeError, TimeoutError):
+                                    'error_type': type(error).__name__,'error_site':_failure_site(error)}))
+            await socket.close(code=1012 if isinstance(error, CurrentStaleAttachment) else 4403)
+        except (ValueError, KeyError, TypeError, UnicodeError, TimeoutError) as error:
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
-                                    'connection_generation': generation, 'reason': 'invalid_frame'}))
-            await socket.close(code=4400)
+                                    'connection_generation': generation, 'reason': 'invalid_frame',
+                                    'error_type':type(error).__name__,'error_site':_failure_site(error)}))
+            await socket.close(code=1012)
         except Exception as error:
             logger.warning(json.dumps({'event': 'bge_channel_failed', 'run_id': run_id,
                                        'connection_generation': generation,

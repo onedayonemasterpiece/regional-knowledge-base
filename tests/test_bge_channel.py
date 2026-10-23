@@ -131,7 +131,7 @@ def test_socket_run_auth_and_no_public_query(queue):
             send(socket, generation, 'QUERY', query='private read')
             with pytest.raises(WebSocketDisconnect) as invalid:
                 socket.receive_json()
-            assert invalid.value.code == 4400
+            assert invalid.value.code == 1012
 
 
 def test_early_attach_and_ready_wait_for_native_receipt_without_reconnect(queue):
@@ -183,7 +183,7 @@ def test_reconnect_fences_old_socket_and_detach_does_not_touch_new(queue):
                 assert new > old
                 with pytest.raises(WebSocketDisconnect) as stale:
                     first.receive_json()
-                assert stale.value.code == 4409
+                assert stale.value.code == 1012
                 send(second, new, 'HEARTBEAT')
                 assert second.receive_json()['type'] == 'HEARTBEAT_ACK'
 
@@ -195,10 +195,10 @@ def test_competing_incarnation_blocks_original_attachment(queue):
             with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer secret'}) as second:
                 with pytest.raises(WebSocketDisconnect) as conflict:
                     attach(second, 'competing')
-                assert conflict.value.code == 4409
+                assert conflict.value.code == 1012
             with pytest.raises(WebSocketDisconnect) as blocked:
                 first.receive_json()
-            assert blocked.value.code == 4409
+            assert blocked.value.code == 1012
 
 
 def test_committed_result_replay_after_reconnect_is_duplicate(queue):
@@ -239,7 +239,7 @@ def test_malformed_or_oversize_frame_closes_without_claim(queue, payload):
         socket.send_bytes(payload)
         with pytest.raises(WebSocketDisconnect) as invalid:
             socket.receive_json()
-        assert invalid.value.code == 4400
+        assert invalid.value.code == 1012
         assert queue.claim_calls == 0
 
 
