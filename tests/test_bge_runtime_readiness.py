@@ -246,7 +246,7 @@ def test_promoted_target_rejects_changed_or_missing_runtime_proof(shared_channel
             socket.send_json(frame if changed is None else frame | {'runtime_readiness': changed})
             with pytest.raises(WebSocketDisconnect) as closed:
                 socket.receive_json()
-            assert closed.value.code == 4409
+            assert closed.value.code == 1012
 
 
 def test_exact_target_ready_stays_closed_without_canonical_shared_admission(run):
