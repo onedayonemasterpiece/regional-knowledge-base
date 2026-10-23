@@ -78,8 +78,8 @@ BEGIN
    IF NOT rkb_v4.check_source_passage_evidence_v1(doc,proof) THEN RETURN false;END IF;
   END LOOP;
  END LOOP;
- IF g IS NULL THEN RETURN NOT EXISTS(SELECT 1 FROM jsonb_array_elements(doc->'semantic'->'findings') f
-  WHERE f->'entity_keys'<>'[]'::jsonb);END IF;
+ IF g IS NULL THEN RETURN NOT EXISTS(SELECT 1 FROM jsonb_array_elements(doc->'semantic'->'findings') AS finding_rows(value)
+  WHERE finding_rows.value->'entity_keys'<>'[]'::jsonb);END IF;
  IF g->>'source_id' IS DISTINCT FROM source::text THEN RETURN false;END IF;
  owner:=(g->>'owner_person_id')::uuid;
  FOR e IN SELECT value FROM jsonb_array_elements(g->'entities') LOOP

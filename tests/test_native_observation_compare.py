@@ -111,7 +111,10 @@ async def test_comparison_preserves_legacy_no_arithmetic_policy(change,verdict):
     assert output['comparable'] is False and output['difference'] is None and output['ratio'] is None
     assert output['left']['value_decimal']=='12.50' and output['right']['fact']==right[9]
     assert output['left']['source_dependencies'][0]['source_id']==SOURCE
-    assert output['left']['proofs'][0]['original_excerpt'].endswith('1900.')
+    assert output['left']['proofs'] == [{
+        'region_id': '20000000-0000-0000-0000-000000000001',
+        'passage_id': '30000000-0000-0000-0000-000000000001'}]
+    assert native.rows[1][10][0]['original_excerpt'].endswith('1900.')
     assert output['left']['bibliography']=='Exact source citation'
 
 
