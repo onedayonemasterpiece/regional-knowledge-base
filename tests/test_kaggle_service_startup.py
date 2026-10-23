@@ -74,18 +74,18 @@ def test_env_target_requires_typed_configuration_before_legacy_selection(monkeyp
         build_server()
 
 
-def test_fresh11_import_requires_configured_geo_proof_without_closing_reads():
+def test_ordinary_import_requires_current_source_history_not_geo_proof():
     binding=object();keys=('geo-install:0','geo-install:1','geo-install:2');current=[False]
     seen=[]
     def installation(actual,operations):
         seen.append((actual,operations));return current[0]
     startup=SimpleNamespace(reads_current=lambda:True,gate=SimpleNamespace(graph_supported=lambda:True),
         binding=binding,config=SimpleNamespace(geo_manifest_operation_keys=keys),geo_gate=None)
-    assert not TargetServiceStartup.imports_current(startup) and startup.reads_current()
+    assert TargetServiceStartup.imports_current(startup) and startup.reads_current()
     startup.geo_gate=SimpleNamespace(installation_current=installation)
-    assert not TargetServiceStartup.imports_current(startup)
+    assert TargetServiceStartup.imports_current(startup) and not seen
     current[0]=True
-    assert TargetServiceStartup.imports_current(startup) and seen[-1]==(binding,keys)
+    assert TargetServiceStartup.imports_current(startup) and not seen
     startup.reads_current=lambda:False
     assert not TargetServiceStartup.imports_current(startup)
 

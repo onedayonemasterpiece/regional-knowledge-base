@@ -474,9 +474,10 @@ def build_server(
             ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
              "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
              "book_pages currently returns one visual page per call, regardless of requested batch_size. "
-             "The current activation is shared-searchable, NOT owner-private: even an authenticated owner-personal "
-             "start requires source_import.public_rights with a verified public-distribution basis. "
-             "Do not infer rights or call an import private merely from owner authentication. "
+             "Ordinary owner-only import is shared-searchable, NOT owner-private: the authorized owner "
+             "attests legality once, without a mandatory per-book public_rights declaration or a new "
+             "legal verification step. Optional legacy source_import.public_rights remains supported. "
+             "Owner authentication never grants private Case or original-document reads to others. "
              "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
              "request a new upload unless the verified archived original is unavailable. "
              "Follow every book_pages continuation before using clipped source text. "
@@ -1305,9 +1306,10 @@ def build_server(
             "Carry one book/journal ingestion goal. For the configured Kaggle native target, PDF/DjVu originals "
             "may be up to 128 MiB and 2500 physical pages subject to verified intake; each native stage "
             "contains at most 8 selected, model-reviewed pages (not an 8-page book limit). "
-            "Start currently requires source_import.public_rights with a verified public-distribution basis, "
-            "including on the owner-personal route, because accepted text enters shared search. "
-            "Neither missing rights nor owner OAuth implies permission to publish a private original. "
+            "Ordinary owner-only start needs no per-book public_rights declaration; owner-approved legal "
+            "attestation is retained in the existing source envelope for shared search. Optional "
+            "source_import.public_rights stays a compatibility input, not a second legal approval. "
+            "Owner authentication does not bypass other access grants or make private Case data public. "
             "Pass the optional top-level source_import or compatible metadata.source_import, not both. "
             "When sufficient evidence supports an authored narrative, supply "
             "story_candidates.basic_variant.body and evidence-mapped blocks for the complete body. "
@@ -1406,10 +1408,10 @@ def build_server(
                 "Otherwise omit basic_variant and explicitly mark narrative_outcome=needs_context "
                 "or facts_only; never fabricate a body from title or summary.")] | None = None,
         source_import: Annotated[TargetSourceImportInput | None, Field(
-            description="Native import options: start currently requires public_rights with verified "
-                "public-distribution basis, even for owner-personal calls. Stage may carry model-authored "
-                "research continuation. metadata.source_import is a compatibility alternative; do not "
-                "pass both.")] = None,
+            description="Optional native import options: ordinary owner-only start needs no public_rights "
+                "or research declaration; the owner's legal attestation is retained. Existing "
+                "public_rights and model-authored research remain supported. metadata.source_import "
+                "is a compatibility alternative; do not pass both.")] = None,
         telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
         if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
@@ -1567,10 +1569,11 @@ def build_server(
     @mcp.tool(
         title="Read staged book pages",
         description=(
-            "Return the next small batch of staged source pages as model-visible image "
-            "content plus explicit native preview metadata. Read block continuation cursors "
-            "with the same tool before using clipped text. Native extraction never proves "
-            "visual completeness. Use only while parsing an existing ingestion."
+            "Read one model-visible source page by default, at most four requested per call; "
+            "the current native renderer may return only one page even when four are requested. "
+            "Stage each reviewed page ordinarily with its exact source evidence and follow the "
+            "returned page/block continuation cursors before using clipped text. "
+            "Native extraction never proves visual completeness. Use only for an existing ingestion."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
@@ -1578,9 +1581,9 @@ def build_server(
     async def book_pages(
         ingestion_id: str,
         cursor: str | None = None,
-        batch_size: int = 4,
+        batch_size: Annotated[int, Field(ge=1, le=4)] = 1,
     ) -> list[TextContent | ImageContent]:
-        batch_size = max(1, min(batch_size, 8))
+        batch_size = max(1, min(batch_size, 4))
         batch = await backend.book_pages(
             ingestion_id=ingestion_id,
             principal=_principal(),
