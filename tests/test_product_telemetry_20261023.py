@@ -112,7 +112,7 @@ def test_bounded_sealed_segments_preserve_older_records_without_archive(tmp_path
     folder = tmp_path / "logs" / "sealed"
     sealed = sorted(folder.glob("segment-*.jsonl"))
     assert sealed and sum(path.stat().st_size for path in sealed) <= 2048
-    assert all(path.read_bytes().endswith(b"\\n") for path in sealed)
+    assert all(path.read_bytes().endswith(b"\n") for path in sealed)
     assert all(b"query" not in path.read_bytes() and b"token" not in path.read_bytes()
                for path in sealed)
     assert not list((tmp_path / "logs").glob("*.open"))
