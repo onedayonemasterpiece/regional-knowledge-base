@@ -4,6 +4,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 
 class Visibility(StrEnum):
@@ -302,11 +303,12 @@ class StageRegionSpanRef(StageRegionRef):
     """Exact source-codepoint excerpt within a visually reviewed region.
 
     Boundaries refer to the original source_text, never normalized search text.
-    A SHA-256 anchor prevents silently reusing stale offsets after page edits.
+    The server derives provenance hashes. The optional hidden hash is retained
+    only to read historical inputs without changing their accepted bytes.
     """
     start: int = Field(ge=0)
     end: int = Field(gt=0)
-    source_text_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_text_sha256: SkipJsonSchema[str | None] = Field(default=None,pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
     def ordered_source_bounds(self) -> "StageRegionSpanRef":
