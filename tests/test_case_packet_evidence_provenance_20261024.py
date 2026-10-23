@@ -12,6 +12,7 @@ from regional_knowledge.kaggle_native_source_bindings import new_native_command
 from regional_knowledge.source_stage import canonical, digest
 from test_disagreement_native import CASE, OBJECT, create
 from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database
 from test_native_source_materializer import exact_batch
 from test_source_activation_pg import image_pg_sql18, accepted, stage_command, TIME
 from test_source_batch_pg import native, packet
