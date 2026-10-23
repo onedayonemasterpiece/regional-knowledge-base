@@ -451,18 +451,19 @@ async def test_invalid_cancel_and_changed_active_identity_fail_closed_without_re
 
     # A malformed control frame or changed payload terminates this attachment;
     # the currently blocked read must be cancelled/cleaned, never rerun.
-    with pytest.raises((ValueError, RuntimeError)):
-        async with running(handler) as (peer, task, _):
-            original = query()
-            await peer.put(original)
-            await asyncio.wait_for(entered.wait(), 1)
-            invalid = query(text='changed fixture query') if violation == 'changed-active-payload' else cancel(original)
-            if violation == 'cancel-bool-turn':
-                invalid['turn_generation'] = True
-            elif violation == 'cancel-bool-generation':
-                invalid['connection_generation'] = True
-            await peer.put(invalid)
-            await asyncio.wait_for(asyncio.shield(task), 1)
+    async with running(handler) as (peer, task, loads):
+        original = query()
+        await peer.put(original)
+        await asyncio.wait_for(entered.wait(), 1)
+        invalid = query(text='changed fixture query') if violation == 'changed-active-payload' else cancel(original)
+        if violation == 'cancel-bool-turn':
+            invalid['turn_generation'] = True
+        elif violation == 'cancel-bool-generation':
+            invalid['connection_generation'] = True
+        await peer.put(invalid)
+        await peer.wait('READY',generation=2)
+        assert not task.done() and loads==['loaded']
+        assert not peer.frames('QUERY_RESULT') and peer.sessions==2
     assert calls == ['fixture query']
 
 
@@ -599,9 +600,8 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
             await peer.inputs[1].put(transport.BgeChannelStopped('channel authority or contract ended'))
         else:
             await peer.put(conflicting)
-        if fault not in ('new_dispatch','stale_generation'):
-            error = transport.BgeChannelStopped if fault == 'authority_closed' else ValueError
-            with pytest.raises(error):
+        if fault == 'authority_closed':
+            with pytest.raises(transport.BgeChannelStopped):
                 await asyncio.wait_for(task, 2)
             assert peer.sessions == 1 and closes == ['close']
             assert worker.job is original_job and worker.pending is original_pending

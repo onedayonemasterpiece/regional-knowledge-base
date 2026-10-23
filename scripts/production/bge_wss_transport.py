@@ -734,7 +734,10 @@ class BgeWssTransport:
                     self._failure(self.encoding)
                     try:
                         async with (self.connector() if self.connector else native_connect()) as socket:
-                            await self._session(socket)
+                            try:
+                                await self._session(socket)
+                            except (ValueError,KeyError,TypeError,UnicodeError):
+                                raise ConnectionError('channel protocol validation failed') from None
                         if self.stop.is_set():
                             break
                     except BgeChannelStopped:
