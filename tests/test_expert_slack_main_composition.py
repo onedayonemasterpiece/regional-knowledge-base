@@ -1,17 +1,21 @@
 """Actual server.main expert ingress→evidence composition on one target.
 
 No installed endpoint, external Slack transport, provider send, new credential,
-native Dataset proof or second identity authority is created. Only MCP.run is
-intercepted to keep the real server/ASGI app in process for tests; no runtime
-authorization, writer-fencing or read gates are monkeypatched.
+native Dataset proof or second identity authority is created. Only Uvicorn's network launch is intercepted; the MCP server and ASGI app
+are actually composed. No authorization, writer-fencing or read gates are
+monkeypatched. A separate synthetic WSS test runs real Uvicorn locally.
 """
 import asyncio
 import json
+import socket
 import time
 from types import SimpleNamespace
 
 import httpx
 import pytest
+import uvicorn
+import websockets
+from starlette.routing import WebSocketRoute
 
 import regional_knowledge.server as server
 from regional_knowledge.expert_slack_ingress import ExpertSlackIngress, PATH as INGRESS
@@ -29,17 +33,24 @@ from test_participants import people
 
 def _capture_main(monkeypatch):
     captured=[]
+    composed={}
     monkeypatch.setenv('RKB_BACKEND_PROFILE','kaggle_source')
     monkeypatch.setenv('RKB_MCP_PROFILE','live')
-    # Intercept only the network server start. All factory, route, control,
-    # reader and startup classes remain their real implementations.
-    monkeypatch.setattr(server.KnowledgeMCPServer,'run',
-        lambda instance,**options:captured.append((instance,options)))
+    real_app=server.KnowledgeMCPServer.streamable_http_app
+
+    def capture_app(instance,**options):
+        app=real_app(instance,**options)
+        composed[id(app)]=(instance,options)
+        return app
+
+    def capture_run(app,**options):
+        instance,app_options=composed[id(app)]
+        captured.append((instance,dict(app_options,**options,app=app)))
+
+    # Compose the real MCP/ASGI stack, intercept ONLY its network launch.
+    monkeypatch.setattr(server.KnowledgeMCPServer,'streamable_http_app',capture_app)
+    monkeypatch.setattr(server.uvicorn,'run',capture_run)
     return captured
-
-
-def _app(instance):
-    return instance.streamable_http_app(stateless_http=True,json_response=True)
 
 
 @pytest.mark.asyncio
@@ -54,8 +65,13 @@ async def test_main_explicit_signed_ingress_mounts_same_owner_receiver_and_asgi_
     mcp,options=captured[0]
     assert mcp._target_startup is s.startup
     assert options['stateless_http'] and options['json_response']
+    assert options['host']=='127.0.0.1' and options['port']==8000
+    assert options['log_level']==mcp.settings.log_level.lower()
+    assert options['timeout_graceful_shutdown']==10
+    assert options['transport_security']==server._transport_security(
+        s.startup.config.oauth_provider.resource)
     assert mcp._target_source_profile
-    app=_app(mcp)
+    app=options['app']
     routes={r.path for r in app.routes}
     assert {INGRESS,EVIDENCE}<=routes
 
@@ -150,7 +166,7 @@ def test_main_without_ingress_does_not_expose_expert_routes(service,monkeypatch)
     captured=_capture_main(monkeypatch)
     server.main(target_startup=service.startup)
     assert len(captured)==1
-    routes={r.path for r in _app(captured[0][0]).routes}
+    routes={r.path for r in captured[0][1]['app'].routes}
     assert INGRESS not in routes and EVIDENCE not in routes
 
 
@@ -168,10 +184,78 @@ def test_main_installed_private_config_mounts_both_on_single_target(service,monk
     monkeypatch.setenv('RKB_EXPERT_SLACK_INGRESS_CONFIG',str(private))
     server.main(target_startup=service.startup)
     assert len(captured)==1
-    routes={r.path for r in _app(captured[0][0]).routes}
+    routes={r.path for r in captured[0][1]['app'].routes}
     assert {INGRESS,EVIDENCE}<=routes
     # Two competing ingress owners must never consume the same Slack event.
     control,_,_,ingress=_owned_ingress(service)
     with pytest.raises(RuntimeError,match='more than one configured owner'):
         server.main(target_startup=service.startup,expert_slack_ingress=ingress)
     assert len(captured)==1
+
+
+@pytest.mark.asyncio
+async def test_main_graceful_timeout_reaches_real_lifespan_after_stalled_websocket(
+    service,monkeypatch
+):
+    captured=_capture_main(monkeypatch)
+    server.main(target_startup=service.startup)
+    assert len(captured)==1
+    mcp,options=captured[0]
+    assert mcp._target_startup is service.startup
+    assert options['timeout_graceful_shutdown']==10
+
+    opened=asyncio.Event()
+    cancelled=asyncio.Event()
+
+    async def hung_websocket(websocket):
+        await websocket.accept()
+        opened.set()
+        try:
+            await asyncio.Event().wait()  # A genuine unfinished connection.
+        finally:
+            cancelled.set()
+
+    # The actual ASGI app/lifespan from main, not a stub application. The
+    # special route exists only in this synthetic network test.
+    app=options['app']
+    app.routes.append(WebSocketRoute('/synthetic-hanging-websocket',hung_websocket))
+    sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock.bind((options['host'],0))
+    sock.listen(16)
+    sock.setblocking(False)
+    # Substitute a short budget for CI; the production setting remains 10 s.
+    uvicorn_server=uvicorn.Server(uvicorn.Config(
+        app,host=options['host'],port=0,log_level='critical',
+        timeout_graceful_shutdown=.15))
+    task=asyncio.create_task(uvicorn_server.serve(sockets=[sock]))
+    websocket=None
+    try:
+        for _ in range(300):
+            if uvicorn_server.started:
+                break
+            if task.done():
+                await task
+            await asyncio.sleep(.01)
+        assert uvicorn_server.started
+        websocket=await websockets.connect(
+            f"ws://127.0.0.1:{sock.getsockname()[1]}/synthetic-hanging-websocket",
+            open_timeout=2,close_timeout=.2)
+        await asyncio.wait_for(opened.wait(),2)
+        stop_at=time.monotonic()
+        uvicorn_server.should_exit=True
+        await asyncio.wait_for(task,3)
+        assert time.monotonic()-stop_at<3
+        assert cancelled.is_set()
+        assert service.startup.closed
+        assert service.startup._maintenance is not None
+        assert service.startup._maintenance.done()
+        assert service.config.spool._fd is None
+    finally:
+        uvicorn_server.should_exit=True
+        if not task.done():
+            uvicorn_server.force_exit=True
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
+        if websocket is not None:
+            await websocket.close()
+        sock.close()

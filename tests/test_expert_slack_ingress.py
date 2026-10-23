@@ -169,12 +169,12 @@ async def test_server_main_optional_slack_signed_ingress_stays_received_without_
     monkeypatch.setenv('RKB_MCP_PROFILE','live')
     monkeypatch.delenv('RKB_PROJECTS_HUB_READER_CONFIG',raising=False)
     monkeypatch.delenv('RKB_EXPERT_SLACK_INGRESS_CONFIG',raising=False)
-    servers=[]
-    monkeypatch.setattr(server.KnowledgeMCPServer,'run',
-                        lambda self,**kwargs:servers.append(self))
+    apps=[]
+    monkeypatch.setattr(server.uvicorn,'run',
+                        lambda app,**kwargs:apps.append(app))
 
     server.main(target_startup=startup)
-    absent=servers.pop().streamable_http_app(stateless_http=True,json_response=True)
+    absent=apps.pop()
     assert not any(route.path==PATH for route in absent.routes)
 
     secret=tmp_path/'fake-signing-secret'
@@ -192,7 +192,7 @@ async def test_server_main_optional_slack_signed_ingress_stays_received_without_
         pytest.fail('Slack ingress must not remotely accept a control command')
     monkeypatch.setattr(startup.config.spool.journal,'seal',forbidden_seal)
     server.main(target_startup=startup)
-    configured=servers.pop().streamable_http_app(stateless_http=True,json_response=True)
+    configured=apps.pop()
     assert sum(route.path==PATH for route in configured.routes)==1
 
     def forbid_network(*args,**kwargs):

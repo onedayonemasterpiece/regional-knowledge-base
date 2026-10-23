@@ -158,6 +158,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
     instruction = native.instructions
     assert instruction.count("Story body:") == 1
+    assert instruction.count("Say where and when the episode happened whenever the source does") == 1
+    assert instruction.count("Review the whole page for episodes") == 1
     for required in (
         "basic_variant.body for an ordinary reader or visitor",
         "the same saved text is read, voiced and posted",
@@ -173,6 +175,14 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "по Гаузе, сохранилась до его времени",
         "a year only when the source actually gives it",
         "never invent a calendar year or assert present-day survival",
+        "Say where and when the episode happened whenever the source does",
+        "(city, district, street, school, building, decade)",
+        "memoirs and biographies most easily lose this setting",
+        "When the source does not say where or when, do not invent it",
+        "treat a legend or burial tradition as attributed tradition",
+        "never as established historical fact",
+        "a famous visitor, a demolished landmark, a first performance, an invention,",
+        "a legend or burial tradition, an everyday custom such as where a traveller slept or what a trade was nicknamed",
         "Do not split one episode into a body plus separate facts_only candidates",
         "there is no story quota",
         "fetch that page with book_pages and stage both pages in one packet (up to 4)",

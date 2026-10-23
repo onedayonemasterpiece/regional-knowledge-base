@@ -239,11 +239,20 @@ async def test_explicit_main_selects_target_without_env_loader(service,monkeypat
     monkeypatch.setenv('RKB_BACKEND_PROFILE','kaggle_source')
     monkeypatch.setenv('RKB_MCP_PROFILE','live')
     monkeypatch.setattr(module,'backend_from_env',lambda:pytest.fail('legacy fallback'))
-    monkeypatch.setattr(module.KnowledgeMCPServer,'run',lambda self,**kwargs:seen.append((self,kwargs)))
+    real_app=module.KnowledgeMCPServer.streamable_http_app
+    def capture_app(instance,**options):
+        app=real_app(instance,**options)
+        seen.append((instance,options,app))
+        return app
+    launched=[]
+    monkeypatch.setattr(module.KnowledgeMCPServer,'streamable_http_app',capture_app)
+    monkeypatch.setattr(module.uvicorn,'run',lambda app,**options:launched.append((app,options)))
     module.main(target_startup=service.startup)
-    assert len(seen)==1 and seen[0][0]._target_startup is service.startup
+    assert len(seen)==len(launched)==1 and seen[0][0]._target_startup is service.startup
+    assert launched[0][0] is seen[0][2]
     assert seen[0][1]['stateless_http'] and seen[0][1]['json_response']
     assert 'knowledge.example.test' in seen[0][1]['transport_security'].allowed_hosts
+    assert launched[0][1]['timeout_graceful_shutdown']==10
     with pytest.raises(RuntimeError,match='legacy backend profile'):
         build_server(target_startup=service.startup,backend_profile='legacy')
     with pytest.raises(RuntimeError,match='issuer/resource'):
