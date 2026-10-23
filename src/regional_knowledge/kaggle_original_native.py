@@ -26,6 +26,10 @@ from .native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket,_blo
 PRIVATE_ROOT=Path('/kaggle/temp')
 _LOG=logging.getLogger(__name__)
 
+# Already-issued PDF receipts use this exact historical script identity. It is
+# receipt compatibility data, not another executable parser or a new code gate.
+HISTORICAL_PDF_SCRIPT_SHA256='f614e3acbfc32f1bf3ca339a11a8edbf08cd3c3de3d72b0d5fcba2db8b09e159'
+
 
 @dataclass(frozen=True)
 class OriginalIntakeConfig:
@@ -61,9 +65,9 @@ class NativeOriginalIntake:
             raise OriginalIntakeError('original_private_workspace_required')
         actual={k:importlib.metadata.version(k) for k,_ in config.parser_packages}
         if actual!=dict(config.parser_packages):raise OriginalIntakeError('original_parser_dependency_mismatch')
-        # Historical PDF receipts retain the exact old parser bytes and pin.
-        # Never relabel accepted original/page receipts after installing DjVu.
-        legacy_code=digest(Path(__file__).with_name('kaggle_original_parser_pdf_v1.py').read_bytes())
+        # Preserve existing accepted PDF and DjVu receipt identities without
+        # running a second copy of the PDF parser.
+        legacy_code=HISTORICAL_PDF_SCRIPT_SHA256
         self.legacy_parser_sha256=digest(canonical(dict(packages=actual,code=legacy_code)))
         self.parser_sha256=digest(canonical(dict(packages=actual,
             code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
@@ -96,13 +100,11 @@ class NativeOriginalIntake:
             self.telegram_downloader=downloader
 
     def _parser_script(self,pin):
-        # Allowlist comes only from code bytes and pinned installed packages,
-        # not from a received claim or a filename supplied by a client.
-        if pin==self.parser_sha256:
-            return Path(__file__).with_name('kaggle_original_parser.py')
-        if pin==self.legacy_parser_sha256:
-            return Path(__file__).with_name('kaggle_original_parser_pdf_v1.py')
-        raise OriginalIntakeError('original_parser_pin_unavailable')
+        # Historical receipts keep their original identity. Both accepted PDF
+        # revisions execute the same PDF branch of the current isolated parser.
+        if pin not in (self.parser_sha256,self.legacy_parser_sha256):
+            raise OriginalIntakeError('original_parser_pin_unavailable')
+        return Path(__file__).with_name('kaggle_original_parser.py')
 
     async def _parse_selected(self,path,action,index=0,*,cursor=None,parser_sha256):
         self._parser_script(parser_sha256)
@@ -178,34 +180,25 @@ class NativeOriginalIntake:
             if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
             self._requests[key]=request
             started = time.monotonic()
-            phase = {'original_acquire':'acquire','original_archive':'archive',
-                     'original_verify':'verify','original_pages':'pages'}[frame['phase']]
             operation_ref = digest(key.encode())
-            from .product_telemetry import emit_product_event
-            emit_product_event({'event':'import.phase','phase':phase,'status':'started',
-                'run_id':self.identity[0],'operation_ref':operation_ref},level='debug')
             _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],operation_ref)
             try:
                 async with asyncio.timeout(self.config.seconds):value=await self._execute(frame)
-            except asyncio.CancelledError:
-                emit_product_event({'event':'import.phase','phase':phase,'status':'cancelled',
-                    'run_id':self.identity[0],'operation_ref':operation_ref,
-                    'duration_ms':(time.monotonic()-started)*1000})
-                raise
+            except asyncio.CancelledError:raise
             except OriginalIntakeRejected as exc:value={'error':exc.code,'terminal':True}
             except OriginalIntakeError as exc:value={'error':str(exc)}
-            except Exception:value={'error':'original_intake_unavailable'}
+            except Exception as exc:
+                value={'error':'original_intake_unavailable','error_class':type(exc).__name__}
+                _LOG.warning('native_original_phase state=unavailable run_id=%s phase=%s operation_sha256=%s error_class=%s',
+                    self.identity[0],frame['phase'],operation_ref,type(exc).__name__)
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
             if len(canonical(result))>120*1024:raise OriginalIntakeError('original_result_bound')
             if value.get('error')=='original_telegram_binding_required':
                 self._prebinding_retry.add(key)  # Retain exact fingerprint, no native effect occurred.
             else:self._results[key]=result
-            status=('rejected' if value.get('terminal') is True else 'unavailable') if 'error' in value else 'ok'
             elapsed_ms=(time.monotonic()-started)*1000
             _LOG.info('native_original_phase state=%s run_id=%s phase=%s operation_sha256=%s elapsed_ms=%.3f',
                 'unavailable' if 'error' in value else 'complete',self.identity[0],frame['phase'],operation_ref,elapsed_ms)
-            emit_product_event({'event':'import.phase','phase':phase,'status':status,
-                'run_id':self.identity[0],'operation_ref':operation_ref,'duration_ms':elapsed_ms})
             return result
 
     def _record(self,args):

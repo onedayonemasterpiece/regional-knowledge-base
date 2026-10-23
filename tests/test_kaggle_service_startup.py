@@ -74,18 +74,18 @@ def test_env_target_requires_typed_configuration_before_legacy_selection(monkeyp
         build_server()
 
 
-def test_fresh11_import_requires_configured_geo_proof_without_closing_reads():
+def test_ordinary_import_requires_current_source_history_not_geo_proof():
     binding=object();keys=('geo-install:0','geo-install:1','geo-install:2');current=[False]
     seen=[]
     def installation(actual,operations):
         seen.append((actual,operations));return current[0]
     startup=SimpleNamespace(reads_current=lambda:True,gate=SimpleNamespace(graph_supported=lambda:True),
         binding=binding,config=SimpleNamespace(geo_manifest_operation_keys=keys),geo_gate=None)
-    assert not TargetServiceStartup.imports_current(startup) and startup.reads_current()
+    assert TargetServiceStartup.imports_current(startup) and startup.reads_current()
     startup.geo_gate=SimpleNamespace(installation_current=installation)
-    assert not TargetServiceStartup.imports_current(startup)
+    assert TargetServiceStartup.imports_current(startup) and not seen
     current[0]=True
-    assert TargetServiceStartup.imports_current(startup) and seen[-1]==(binding,keys)
+    assert TargetServiceStartup.imports_current(startup) and not seen
     startup.reads_current=lambda:False
     assert not TargetServiceStartup.imports_current(startup)
 
@@ -103,11 +103,10 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     app=server.streamable_http_app(stateless_http=True,json_response=True)
     assert any(getattr(route,'path',None)=='/bge-worker/channel' for route in app.routes)
     async with startup.lifespan(server):
-        assert not startup.reads_current()
-        pending=await startup.backend.search('synthetic',s.target.principal)
-        assert pending.status=='pending' and pending.startup.protocol=='rkb.startup.v1'
-        assert pending.results==[] and pending.main_state=='starting'
-        assert not startup.admission._reads
+        assert not startup.reads_current()  # writer history remains closed
+        from regional_knowledge.kaggle_public_backend import current_binding
+        assert startup.binding_current(current_binding(s.target.queue))
+        assert not startup.admission._reads  # ordinary read admission is lazy
     assert startup.closed and not startup.reads_current()
     assert startup.admission._fd is None and startup.config.spool._fd is None
 
@@ -179,45 +178,30 @@ async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_f
 
 
 @pytest.mark.asyncio
-async def test_mcp_cold_pending_status_and_new_live_read_after_ready(service,monkeypatch):
-    """MCP client gets a normal typed pending response, then polls and retries."""
-    import json
+async def test_mcp_ready_pg_and_native_page_read_survive_unavailable_history(service,monkeypatch):
+    # Real server.call_tool -> OAuth -> shared queue -> native envelope -> ASGI
+    # output capture. No history adapter proof is installed.
     s=service;startup=s.startup
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.target.principal)
     live=build_server(target_startup=startup,profile='live')
     request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
         'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
-    context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='pending-mcp-fixture'))
+    context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='pg-without-history'))
     async with startup.lifespan(live):
-        cold=await live.call_tool('knowledge_search',{'query':'harbour'},context)
-        assert not cold.is_error
-        assert cold.structured_content['status']=='pending'
-        assert cold.structured_content['evidence']==[]
-        operation=cold.structured_content['startup']
-        assert operation['protocol']=='rkb.startup.v1'
-        ref=operation['startup_ref']
-        first=await live.call_tool('startup_status',{'startup_ref':ref},context)
-        assert not first.is_error and first.structured_content['status']=='pending'
-        s.adapter.available=True
-        assert await startup.refresh() and startup.reads_current()
-        second=await live.call_tool('startup_status',{'startup_ref':ref},context)
-        assert not second.is_error and second.structured_content['status']=='ready'
-
-        async def search_again():
-            return await live.call_tool('knowledge_search',{'query':'harbour'},context)
-        task=asyncio.create_task(search_again())
+        assert not startup.reads_current()
+        task=asyncio.create_task(live.call_tool('knowledge_search',{'query':'harbour'},context))
         dispatched=await work(s.target)
-        result=QueryResult(request_id=dispatched.query.request_id,
+        response=QueryResult(request_id=dispatched.query.request_id,
             connection_generation=s.target.generation,
             turn_generation=dispatched.query.turn_generation,status='ok',mode='hybrid',
             observed_data_seq=5,observed_projection_seq=5,
             observed_database_generation='synthetic-db',
             observed_visibility_epoch=0,evidence=(item(SOURCE),))
         assert await startup.admission.finish_read(
-            s.target.run,s.target.token,s.target.generation,result)
-        fresh=await task
-        assert not fresh.is_error and fresh.structured_content['status']=='ok'
-        assert fresh.structured_content['evidence']
+            s.target.run,s.target.token,s.target.generation,response)
+        found=await task
+        assert not found.is_error and found.structured_content['status']=='ok'
+        assert found.structured_content['evidence']
         from regional_knowledge.read_issuance import _SCOPE_KEY
         request.scope[_SCOPE_KEY][1].release()
         request.scope.pop(_SCOPE_KEY,None)

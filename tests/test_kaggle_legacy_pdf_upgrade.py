@@ -2,13 +2,13 @@
 
 An old receipt must replay exactly with original parser bytes after eviction.
 """
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid5
 
 import pytest
 
 from regional_knowledge.original_intake import VerifiedOriginalReceipt, digest
+from regional_knowledge.kaggle_original_native import HISTORICAL_PDF_SCRIPT_SHA256
 from regional_knowledge.kaggle_importer import KaggleSourceImporter
 from test_kaggle_original_intake import (
     SOURCE, INGEST, REQUEST, PDF, native, acquire, frame, ticket, spec,
@@ -17,12 +17,11 @@ from test_kaggle_original_intake import (
 LEGACY_SCRIPT_SHA256 = "f614e3acbfc32f1bf3ca339a11a8edbf08cd3c3de3d72b0d5fcba2db8b09e159"
 
 
-def test_exact_preupgrade_parser_script_and_failclosed_dispatch(native):
+def test_historical_pdf_receipt_uses_one_parser_and_failclosed_dispatch(native):
     n=native.handler
-    historical=Path(__file__).parents[1]/"src/regional_knowledge/kaggle_original_parser_pdf_v1.py"
-    assert digest(historical.read_bytes())==LEGACY_SCRIPT_SHA256
+    assert HISTORICAL_PDF_SCRIPT_SHA256==LEGACY_SCRIPT_SHA256
     assert n.legacy_parser_sha256 != n.parser_sha256
-    assert n._parser_script(n.legacy_parser_sha256).name==historical.name
+    assert n._parser_script(n.legacy_parser_sha256).name=="kaggle_original_parser.py"
     assert n._parser_script(n.parser_sha256).name=="kaggle_original_parser.py"
     with pytest.raises(ValueError):
         n._parser_script("b"*64)

@@ -14,7 +14,9 @@ import logging
 import time
 from uuid import UUID
 
-from .kaggle_apply import ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
+import psycopg
+
+from .kaggle_apply import ApplyExecutionError, ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef
 from .source_import import SOURCE_IMPORT, IMPORT_DEPENDENCY, validate_import_command, source_import_handler
 
@@ -205,7 +207,8 @@ class WorkerSourceExecutor:
         handler=self.registry.resolve(command)
         if frame.get('handler_sha256')!=handler.fingerprint:
             raise PermissionError('source registry binding mismatch')
-        if command.schema_revision=='rkb-v4-sql001-014-v1' and command.route in ('source.materialize.v1','source.stage.seal.v1'):
+        reject_reason=None
+        if command.schema_revision=='rkb-v4-sql001-014-v1' and command.route in ('source.materialize.v1','source.stage.seal.v1','source.batch.v1'):
             if self.materializer is None:raise ValueError('native source materializer unavailable')
             # Verify this captured authenticated accepted intent BEFORE private
             # candidate effects, then apply canonical outcome in its own tx.
@@ -221,10 +224,28 @@ class WorkerSourceExecutor:
                     reason='invalid_model_input'
                 _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
                     command.route,command.sequence,reason)
+            except psycopg.OperationalError:
+                # Connection/commit uncertainty cannot become a refusal.
+                raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
+            except psycopg.Error as error:
+                reject_reason='native_source_sql_rolled_back'
+                _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s',
+                    command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None))
         async with self.acquire() as connection:
-            receipt=await apply_accepted(connection,journal=proof,seal=seal,command=command,
+            options=dict(journal=proof,seal=seal,command=command,
                 database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
                 registry=self.registry,max_outcome_bytes=8192)
+            try:
+                receipt=await apply_accepted(connection,**options,
+                    **({'reject_reason':reject_reason} if reject_reason is not None else {}))
+            except ApplyExecutionError:
+                # apply_accepted has exited its failed PG transaction. A new
+                # transaction records an actual no-effect receipt, never a
+                # Python-fabricated result. An uncertain commit is ApplyUnknown
+                # and cannot enter this branch. Duplicate lookup wins a race.
+                receipt=await apply_accepted(connection,**options,reject_reason='native_source_sql_rolled_back')
+                _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
+                    command.route,command.sequence)
         return receipt_wire(receipt)
 
 

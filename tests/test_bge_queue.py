@@ -69,6 +69,8 @@ def test_queries_precede_documents_and_lost_worker_result_is_fenced(tmp_path):
 def test_rotation_allows_one_serving_one_warming_then_drains(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
     queue.enqueue('actor','q',['query']);run,token=run_details(queue);queue.heartbeat(run,token,ready=True)
+    # Owner policy starts warming by 8:30, leaving at least 30 minutes before nine hours.
+    assert 8 * 3600 <= ROTATE_SECONDS <= 8 * 3600 + 30 * 60
     # Model continuous useful demand without skipping liveness or idle expiry.
     for step in range(1,ROTATE_SECONDS//60+1):
         now[0]=1000.+step*60
@@ -308,3 +310,53 @@ def test_live_heartbeat_keeps_native_durable_ack_claims_until_settled(tmp_path):
     now[0]=1190.;q.maintenance()
     with q.connect(write=False) as db:
         assert {r[0] for r in db.execute('select state from jobs')}=={'pending'}
+
+
+def test_exact_authenticated_stop_eligibility_old_new_and_nine_hours(tmp_path):
+    """Read-only queue predicate, with actual old/new run and claim rows."""
+    now = [1000.]
+    q = BgeQueue(tmp_path/'stop.sqlite', clock=lambda:now[0])
+    with q.connect() as db:
+        old = q._new_run(db, now[0])
+        db.execute('UPDATE control SET current_run=? WHERE id=1', (old,))
+    token = (q.path.parent/'bge-worker-credentials'/old).read_text()
+    nonce = q.prepare_channel(old)
+    generation = q.attach_channel(old, token, nonce, 'old-incarnation')['connection_generation']
+    q.heartbeat(old, token, ready=True, connection_generation=generation)
+    assert not q.stop_eligible(old, token, generation)
+    with pytest.raises(PermissionError):
+        q.stop_eligible(old, 'not-original-token', generation)
+    with pytest.raises(PermissionError):
+        q.stop_eligible(old, token, generation+1)
+
+    # A queued new version becomes current through the same heartbeat transition.
+    with q.connect() as db:
+        new = q._new_run(db, now[0])
+        db.execute('UPDATE control SET successor=? WHERE id=1', (new,))
+    new_token = (q.path.parent/'bge-worker-credentials'/new).read_text()
+    new_nonce = q.prepare_channel(new)
+    new_generation = q.attach_channel(new,new_token,new_nonce,'new-incarnation')['connection_generation']
+    q.heartbeat(new,new_token,ready=True,connection_generation=new_generation)
+    assert q.stop_eligible(old, token, generation)
+    assert not q.stop_eligible(new,new_token,new_generation)
+
+    # A retained claimed or pending job, including an outcome whose receipt
+    # is still unacknowledged, keeps the old worker from receiving STOP.
+    with q.connect() as db:
+        db.execute("INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,run_id) "
+            "VALUES('stop-job','actor','stop-key','document','[]','{}','claimed',?,?,?)",
+            (now[0],now[0],old))
+    assert not q.stop_eligible(old,token,generation)
+    with q.connect() as db:
+        db.execute("UPDATE jobs SET state='pending' WHERE id='stop-job'")
+    assert not q.stop_eligible(old,token,generation)
+    with q.connect() as db:
+        db.execute("DELETE FROM jobs WHERE id='stop-job'")
+    assert q.stop_eligible(old,token,generation)
+
+    # The current run is allowed to stop at nine hours, without a successor.
+    now[0] = 1000. + 9*3600
+    with q.connect() as db:
+        db.execute('UPDATE runs SET useful=?,heartbeat=? WHERE id=?',
+            (now[0],now[0],new))
+    assert q.stop_eligible(new,new_token,new_generation)

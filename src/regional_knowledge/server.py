@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import asyncio
+from functools import wraps
 import logging
+import re
 import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -142,6 +144,118 @@ def _book_page_tool_result(ingestion_id, batch):
     return CallToolResult(content=content)
 
 
+# Only the two book MCP tool boundaries use this normalization. Inner importer
+# decisions, original receipts, permissions and wire schemas remain untouched.
+_BOOK_ERROR_STATUSES = frozenset({
+    "invalid_query", "denied", "unavailable", "pending", "unknown",
+    "failed", "rejected", "error",
+})
+_BOOK_STABLE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
+# These pre-existing server-local ToolErrors have no structured status yet.
+_BOOK_LOCAL_REASONS = {
+    "telegram_original_requires_target_start_without_attachment": "invalid_query",
+    "source_import_must_use_one_input_location": "invalid_query",
+    "invalid_source_import_input": "invalid_query",
+    "catalog_update_requires_metadata_only_stage": "invalid_query",
+    "stage_file_cannot_mix_with_inline_payload": "invalid_query",
+    "stage_file_invalid": "invalid_query",
+    "stage_file_schema": "invalid_query",
+    "stage_file_ingestion_or_revision_mismatch": "invalid_query",
+    "stage_file_must_be_json_not_original_source": "invalid_query",
+    "file_only_supported_for_start_reprocess_or_stage": "invalid_query",
+    "source_import_requires_configured_target_importer": "unavailable",
+    "owned_ingestion_required": "denied",
+}
+
+
+def _book_stage_schema_hints(exc: ToolError) -> list[str]:
+    """Only the real StageFile parser's redacted path/type diagnostics."""
+    from .stage_file import StageFileError, parse_stage_file
+    cause = exc.__cause__
+    if type(cause) is not StageFileError:
+        return []
+    origin = cause.__traceback__
+    while origin is not None and origin.tb_next is not None:
+        origin = origin.tb_next
+    if origin is None or origin.tb_frame.f_code is not parse_stage_file.__code__:
+        return []  # A fabricated ToolError/StageFileError is not source evidence.
+    detail = str(cause)
+    prefix = "stage_file_schema: "
+    if not detail.startswith(prefix) or len(detail) > 1024:
+        return []
+    hints = []
+    path_pattern = r"(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})(?:\.(?:[a-z][a-z0-9_]{0,47}|\*|[0-9]{1,4})){0,7}"
+    for item in detail[len(prefix):].split("; ")[:2]:
+        path, sep, error_type = item.partition(":")
+        if (sep and len(item) <= 96 and re.fullmatch(path_pattern, path)
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,47}", error_type)):
+            hints.append(item)  # The producer masks unknown field labels as *.
+    return hints
+
+
+def _book_mcp_error(exc: Exception) -> ToolError:
+    """Keep existing domain status/reason; never serialize exception messages."""
+    status, reason, error_class = "unknown", "internal_error", "internal"
+    if isinstance(exc, ToolError):
+        error_class, reason = "domain", "domain_error"
+        raw = str(exc)
+        if len(raw) <= 1024:
+            try:
+                record = json.loads(raw)
+            except (ValueError, TypeError):
+                record = None
+            if type(record) is dict:
+                candidate_status, candidate_reason = record.get("status"), record.get("reason")
+                if type(candidate_status) is str and candidate_status in _BOOK_ERROR_STATUSES:
+                    status = candidate_status  # Not all errors mean a final rejection.
+                    if (type(candidate_reason) is str and
+                            _BOOK_STABLE_REASON.fullmatch(candidate_reason)):
+                        reason = candidate_reason
+            else:
+                # A few existing local errors are plain static labels. Their
+                # trailing Pydantic/user details must not escape the server.
+                label = raw.partition(":")[0]
+                if label in _BOOK_LOCAL_REASONS:
+                    status, reason = _BOOK_LOCAL_REASONS[label], label
+    elif isinstance(exc, PermissionError):
+        status, reason, error_class = "denied", "access_denied", "access"
+    elif (type(exc) is RuntimeError and
+          exc.args == ("authenticated user context is required",)):
+        # Only a raise *inside the existing _principal* proves that backend
+        # execution was never entered. Backend RuntimeErrors with identical
+        # wording must remain UNKNOWN instead of falsely denied.
+        origin = exc.__traceback__
+        while origin is not None and origin.tb_next is not None:
+            origin = origin.tb_next
+        if origin is not None and origin.tb_frame.f_code is _principal.__code__:
+            status, reason, error_class = (
+                "denied", "authenticated_user_context_required", "access")
+    elif isinstance(exc, TimeoutError):
+        status, reason, error_class = "unknown", "transport_timeout", "transport"
+    elif isinstance(exc, (ConnectionError, OSError)):
+        status, reason, error_class = "unknown", "transport_unavailable", "transport"
+    # For every other exception the operation's effect is UNKNOWN, not rejected.
+    response = {"status": status, "reason": reason, "error_class": error_class}
+    if reason == "stage_file_schema" and isinstance(exc, ToolError):
+        hints = _book_stage_schema_hints(exc)
+        if hints:
+            response["hints"] = hints
+    return ToolError(json.dumps(response, separators=(",", ":")))
+
+
+def _book_mcp_error_boundary(handler):
+    """Preserve the registered tool signature while fencing error disclosure."""
+    @wraps(handler)
+    async def call(*args, **kwargs):
+        try:
+            return await handler(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise  # A cancelled call proves neither failure nor completion.
+        except Exception as exc:
+            raise _book_mcp_error(exc) from None
+    return call
+
+
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
     resource = (
         resource_url
@@ -191,7 +305,9 @@ class KnowledgeMCPServer(MCPServer):
         if getattr(self,'_target_import_available',False):
             allowed.update({'book_ingest','book_pages'})
         if getattr(self,'_target_cases_available',False):
-            allowed.update({'disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
+            allowed.update({'disagreement_search','disagreement_get','disagreement_edit','disagreement_contribute','disagreement_conclusion'})
+        if getattr(self,'_target_participants_available',False):
+            allowed.add('participants_manage')
         if getattr(self,'_target_graph_available',False):
             allowed.update({'graph_fetch','entity_list'})
         if getattr(self,'_target_geo_available',False):
@@ -360,9 +476,10 @@ def build_server(
             ("The configured native importer supports PDF and DjVu originals up to 128 MiB and 2500 physical pages, "
              "subject to the verified original intake. Stage at most 8 selected, model-reviewed pages per native batch; "
              "book_pages currently returns one visual page per call, regardless of requested batch_size. "
-             "The current activation is shared-searchable, NOT owner-private: even an authenticated owner-personal "
-             "start requires source_import.public_rights with a verified public-distribution basis. "
-             "Do not infer rights or call an import private merely from owner authentication. "
+             "Ordinary owner-only import is shared-searchable, NOT owner-private: the authorized owner "
+             "attests legality once, without a mandatory per-book public_rights declaration or a new "
+             "legal verification step. Optional legacy source_import.public_rights remains supported. "
+             "Owner authentication never grants private Case or original-document reads to others. "
              "For an existing accepted source, use book_find and the supported reprocess/rechunk path; do not "
              "request a new upload unless the verified archived original is unavailable. "
              "Follow every book_pages continuation before using clipped source text. "
@@ -446,6 +563,17 @@ def build_server(
             "candidates. For already accepted material, graph_stage adds mentions and relations "
             "without reimporting, re-chunking or re-embedding the source. " +
             "Never infer that a source is public."
+        ) if selected!='kaggle_source' else (
+            "The Kaggle native importer accepts an owner-authorized PDF/DjVu original up to 128 MiB and 2500 physical pages, subject to verified original intake. Ordinary owner-only start is shared-searchable without a mandatory per-book public_rights declaration; the owner's legal attestation is retained. Authentication does not grant another actor access to private Case, original or scan proof. Use exactly the ordinary workflow: book_ingest(start) with the attached original, then book_pages (default 1 page, maximum requested 4; the renderer may return just one actual ImageContent), model visual/source review, book_ingest(stage) with up to four reviewed pages and source passage evidence (page_id and region_key with a current chunk_key or an already accepted chunk_id), repeat with returned cursor/next_action, then book_ingest(finalize) only to record that reading ended. One accepted native text packet becomes searchable by registered search, knowledge_search or fetch after its actual apply, not merely after a pending stage request. There is no whole-book activation or extra validation step before the first page can be found. A rejected page can be corrected and retried in the same ingestion; an independently accepted earlier page remains searchable. Optional story, fact, illustration, map and POI enrichment may remain pending or reject without rolling back accepted source text. "
+            "Build semantically coherent source chunks of about 256 BGE tokens (roughly 800-1000 characters when appropriate, a guideline rather than a hard limit); preserve whole sentences instead of splitting at an arbitrary chunk or page boundary; if a paragraph continues on the next page, read it with book_pages and stage both issued, visually reviewed pages together in one book_ingest(stage) packet (up to four pages), selecting one cross-page chunk with ordered region_refs OR exact span_refs from both real page_ids and source regions when within existing exact token bounds; retain original page/region/span provenance and never invent unseen continuation. "
+            "Mark knowledge_reviewed and story_candidates_reviewed only after actually considering the page. "
+            "Story body: write basic_variant.body for an ordinary reader or visitor; the same saved text is read, voiced and posted. One body tells one thing about a concrete person, place or event, usually 2-6 connected sentences. Open with the subject and what happened, not with the book: no 'the author writes', 'Gause reports', 'according to the book', 'in footnote N', 'the source/fragment does not name'; page, footnote and author belong in evidence_refs. Inside the body attribute only an opinion, estimate, legend, recollection or disputed account ('по мнению Гаузе', 'как вспоминал Наунин'); state plain dated facts directly. Keep the concrete source detail that makes the episode worth telling: who acted and how, what was at stake, a first or only, a named leader, a printed turn of phrase; it outranks secondary figures. Copy every date, name, number, unit and historical place name you use exactly as printed. Each sentence advances the same thought; end with the known outcome, or the honest limit in the story's own terms ('Why they withdrew is unknown; Gause suggests ...'). Do not split one episode into a body plus separate facts_only candidates: the outcome, name, consequence or open question that closes it belongs in the same body. Add no motive, cause, emotion, dialogue or present-day site absent from the evidence; 'after' is not 'because'. A title beginning How/Why must be answered by the body. A list of figures, names or institutions is not a story: keep it as facts and observations without a body; there is no story quota. Review the whole page for episodes, including ones inside long paragraphs about something else (a famous visitor, a demolished landmark, a first performance, an invention). If an episode continues onto the next page, fetch that page with book_pages and stage both pages in one packet (up to 4) so the body is written once with its ending; use needs_context only when the missing part is still out of reach, and name it. "
+            "Write every basic_variant.body in Russian, including stories drawn from German or English originals; retain evidence_refs, exact quotations and source proof in the original language. "
+            "When an episode finishes on the current page after its earlier pages were already accepted, write the single complete body on this ending page with evidence_refs to the accepted earlier pages; do not restage them, create a second phase or invent new pending state. "
+            "On the first cover, title, title-verso and imprint pages, populate the existing book metadata from the actual printing: metadata.title, metadata.authors, metadata.publication_year and metadata.language; metadata.catalog.kind (book/journal_issue/article), editors, translators, publisher, date, edition, identifiers and topics (themes). Set metadata.catalog.cover_page to the observed zero-based physical page index together with metadata.catalog.cover_kind (cover, title_page or issue_cover). Do not invent unknown authors, editors, dates, identifiers, book type, topics or cover details; leave unsupported fields unset. "
+            "When the evidence does not support such a body, omit basic_variant and explicitly mark narrative_outcome=needs_context or facts_only. Do not invent source text, geometry, identity or story body. "
+            "On first stage supply source_import.research with state=pending and an exact owned book_pages continuation (tool=book_pages; arguments.ingestion_id, cursor, batch_size=1), or state=complete with empty continuation only when actually finished. Reuse the exact research state on retries. processing, wait, UNKNOWN and pending are not proof of apply, Saved, or search visibility; follow status/next_action rather than tight polling or minting another source. Completion of reading is not completion of research or editorial acceptance. Use only tools actually registered for the current client profile: ordinary search, knowledge_search and fetch for relevant source evidence. When disagreement_search is registered, search existing actor-authorized Case candidates by subject, place or source in the SAME page review; follow next_after_case when has_more, and use disagreement_get on a selected, authorized Case before disagreement_edit(add_evidence). If no suitable Case exists, use disagreement_edit(create) followed by add_evidence only when those tools and permissions are available. Bounded lexical candidates are not automatic contradiction matching or proof that no Case exists; a text match never grants Case/source access. Preserve the original operation_key after UNKNOWN and never call pending Saved. Keep all actor/source/Case permissions and exact receipts. Never infer a source is public merely from a related place or accepted text."
+            "If search or knowledge_search returns pending with startup_ref, pass startup.message_ru to the user immediately. If startup.eta_seconds is absent, give no numeric ETA. Check startup_status with the same startup_ref no more often than every 30 seconds while pending; after ready issue a NEW search. The prior pending read was not queued: do not mint a second launch or retry UNKNOWN effects. "
         ),
         **kwargs,
     )
@@ -463,6 +591,8 @@ def build_server(
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
     mcp._target_catalog_available = (selected=='kaggle_source' and target_startup.gate.catalog_supported())
     mcp._target_cases_available = (selected=='kaggle_source' and getattr(target_startup,'cases_backend',None) is not None)
+    mcp._target_participants_available = (selected=='kaggle_source' and profile=='full'
+        and target_startup.authority.participants is target_startup.config.participants)
     mcp._target_editorial_available = (selected=='kaggle_source' and getattr(target_startup,'editorial',None) is not None)
     mcp._target_graph_available = (selected=='kaggle_source' and target_startup.gate.graph_supported())
     mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
@@ -585,6 +715,10 @@ def build_server(
     if profile in story_profiles and mcp._target_cases_available:
         from .kaggle_case_tools import register_case_tools
         register_case_tools(mcp,target_startup.cases_backend,_principal)
+
+    if mcp._target_participants_available:
+        from .kaggle_participant_tools import register_participant_tools
+        register_participant_tools(mcp,target_startup,_principal)
 
     if profile in story_profiles and mcp._target_graph_available:
         from .kaggle_source_graph_tools import register_source_graph_tools
@@ -1186,14 +1320,16 @@ def build_server(
         )
 
     @mcp.tool(
-        title="Add, reprocess or continue a book",
+        title=("Import and continue an attached scanned book" if selected=='kaggle_source'
+            else "Add, reprocess or continue a book"),
         description=(
             "Carry one book/journal ingestion goal. For the configured Kaggle native target, PDF/DjVu originals "
             "may be up to 128 MiB and 2500 physical pages subject to verified intake; each native stage "
             "contains at most 8 selected, model-reviewed pages (not an 8-page book limit). "
-            "Start currently requires source_import.public_rights with a verified public-distribution basis, "
-            "including on the owner-personal route, because accepted text enters shared search. "
-            "Neither missing rights nor owner OAuth implies permission to publish a private original. "
+            "Ordinary owner-only start needs no per-book public_rights declaration; owner-approved legal "
+            "attestation is retained in the existing source envelope for shared search. Optional "
+            "source_import.public_rights stays a compatibility input, not a second legal approval. "
+            "Owner authentication does not bypass other access grants or make private Case data public. "
             "Pass the optional top-level source_import or compatible metadata.source_import, not both. "
             "When sufficient evidence supports an authored narrative, supply "
             "story_candidates.basic_variant.body and evidence-mapped blocks for the complete body. "
@@ -1264,6 +1400,8 @@ def build_server(
             "its same-transaction geo outbox is claimable without a separate extraction " +
             "prompt or map availability. Private excerpts stay under RKB ACL; " +
             "a POI candidate is not a verified historical geometry."
+        ) if selected!='kaggle_source' else (
+            "Use one owner-authorized native PDF/DjVu book intake (128 MiB, 2500 physical pages maximum, subject to verified original receipt). Ordinary start requires an attached original and no per-book public_rights declaration; an honest owner attestation is retained, and current actor/source/Case ACL still applies. Workflow: book_ingest(command=start) -> book_pages (default 1, maximum 4 requested pages; actual renderer may deliver only one visual page) -> model-reviewed book_ingest(command=stage) in bounded packets of 1-4 pages -> after actual accepted text-packet apply, that page's text is searchable by registered search/knowledge_search/fetch -> book_ingest(command=finalize) means only reading ended. Do not wait for an entire book, a separate validation/activation step, GEO bootstrap, semantic comparison, media or Story completeness before searching an accepted page. Later optional semantic, story and illustration enrichment does not undo accepted text; if a packet is rejected, correct and retry that page under the SAME ingestion and preserve earlier published pages. On the first stage set source_import.research: pending with the exact owned book_pages continuation (ingestion_id, cursor, batch_size=1), or complete with empty continuation if actually finished. Return processing/wait/UNKNOWN/pending truthfully, retain current model-authored research continuation and check status after progress; do not claim the page applied or Saved until confirmed, and do not tight-poll. Use exact source image, page, region, passage and evidence refs, and stage coherent semantic passages rather than arbitrary page-sized chunks. Review stories, dates, quantities, people, events, places and figures in that SAME page pass; set knowledge_reviewed/story_candidates_reviewed honestly. For a supported narrative supply story_candidates.basic_variant.body with evidence-mapped blocks. When evidence is insufficient, omit basic_variant and explicitly mark narrative_outcome=needs_context or facts_only; title/summary is not a body. Optional stage JSON-file TRANSPORT bound is <=1 MiB; the separate <=700 KiB canonical native envelope includes source metadata, model data and INCLUDING issued image receipts. Keep exact accepted source IDs, no fabricated map geometry/POI. Use registered search/knowledge_search/fetch for accepted source assertions. When disagreement_search is registered, find bounded actor-authorized Case candidates by subject/place/source in the SAME page review, follow next_after_case while has_more, and inspect a selected Case through disagreement_get before using disagreement_edit(add_evidence). Create a new Case with disagreement_edit(create) then add_evidence only if no suitable existing Case is identified and the tools and actor permissions allow it. This is model-led candidate evaluation, not backend automatic matching, a second required scan or a proof of absence; pending/UNKNOWN is not Saved, and retries reuse the same operation_key. Do not invent tools or bypass source/Case authorization."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False,
@@ -1273,6 +1411,7 @@ def build_server(
         ),
         meta={"openai/fileParams": ["file"]},
     )
+    @_book_mcp_error_boundary
     async def book_ingest(
         command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
@@ -1291,10 +1430,10 @@ def build_server(
                 "Otherwise omit basic_variant and explicitly mark narrative_outcome=needs_context "
                 "or facts_only; never fabricate a body from title or summary.")] | None = None,
         source_import: Annotated[TargetSourceImportInput | None, Field(
-            description="Native import options: start currently requires public_rights with verified "
-                "public-distribution basis, even for owner-personal calls. Stage may carry model-authored "
-                "research continuation. metadata.source_import is a compatibility alternative; do not "
-                "pass both.")] = None,
+            description="Optional native import options: ordinary owner-only start needs no public_rights "
+                "or research declaration; the owner's legal attestation is retained. Existing "
+                "public_rights and model-authored research remain supported. metadata.source_import "
+                "is a compatibility alternative; do not pass both.")] = None,
         telegram_original: TelegramOriginalInput | None = None,
     ) -> BookIngestOutput:
         if telegram_original is not None and (selected != 'kaggle_source' or command != 'start' or file is not None):
@@ -1452,19 +1591,21 @@ def build_server(
     @mcp.tool(
         title="Read staged book pages",
         description=(
-            "Return the next small batch of staged source pages as model-visible image "
-            "content plus explicit native preview metadata. Read block continuation cursors "
-            "with the same tool before using clipped text. Native extraction never proves "
-            "visual completeness. Use only while parsing an existing ingestion."
+            "Read one model-visible source page by default, at most four requested per call; "
+            "the current native renderer may return only one page even when four are requested. "
+            "Stage each reviewed page ordinarily with its exact source evidence and follow the "
+            "returned page/block continuation cursors before using clipped text. "
+            "Native extraction never proves visual completeness. Use only for an existing ingestion."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
+    @_book_mcp_error_boundary
     async def book_pages(
         ingestion_id: str,
         cursor: str | None = None,
-        batch_size: int = 4,
+        batch_size: Annotated[int, Field(ge=1, le=4)] = 1,
     ) -> list[TextContent | ImageContent]:
-        batch_size = max(1, min(batch_size, 8))
+        batch_size = max(1, min(batch_size, 4))
         batch = await backend.book_pages(
             ingestion_id=ingestion_id,
             principal=_principal(),

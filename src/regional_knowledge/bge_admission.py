@@ -363,6 +363,14 @@ class SharedReadAdmission:
                     if r.resource_kind=='read':self._cancel((r.dispatch_generation,r.resource_id))
                     self._work=None;self._sent=False
                 elif descriptor!=self._work.resource:
+                    if (not probed and self._last_release is not None
+                            and self._last_release.dispatch_generation==connection_generation
+                            and (descriptor is None or descriptor==self._last_release)):
+                        # states() may have queued the old idle/busy notice
+                        # behind RELEASED while admission reserved new work.
+                        # This weak notice cannot retire or contradict that
+                        # newer claim. Only a fresh ordered probe can do so.
+                        return self.status()
                     raise StaleAttachment('actual compute claim still held')
             elif descriptor is not None:
                 self._work=ChannelWork(descriptor);self._sent=True
@@ -484,13 +492,13 @@ class SharedReadAdmission:
                     if authorized[doc['actor']]:eligible.append(doc)
             recovery=[d for d in eligible if d['kind']=='recovery_phase']
             if recovery:eligible=recovery
-            reads=[r for r in self._reads.values() if r.dispatched is None] if ready and not recovery else []
+            reads=[r for r in self._reads.values() if r.dispatched is None] if ready else []
             if not reads and not eligible:return None
             # Person first, then dialog. Many dialogs cannot multiply a
             # person's share. Forced document turn bounds continuous read runs.
             people={r.authority.person_id for r in reads}|{d['actor'] for d in eligible}
             self._person_turn={p:n for p,n in self._person_turn.items() if p in people}
-            if eligible and (resumed or self._read_streak>=self.max_read_streak):
+            if eligible and self._read_streak>=self.max_read_streak:
                 selected_doc=eligible[0];read=None
             else:
                 person=min(people,key=lambda p:(self._person_turn.get(p,0),p))

@@ -351,15 +351,10 @@ class TargetServiceStartup:
         except Exception:return False
 
     def imports_current(self):
-        # Exact fresh11 source imports require reviewed GEO identities first.
-        # Ordinary reads and GEO command installation must remain available
-        # while those same accepted operations are being reconciled.
-        if not self.reads_current():return False
-        if not self.gate.graph_supported():return True
-        installer=getattr(self,'geo_installer',None)
-        if installer is not None and not installer.current():return False
-        keys=installer.effective_keys if installer is not None else self.config.geo_manifest_operation_keys
-        return bool(self.geo_gate is not None and self.geo_gate.installation_current(self.binding,keys))
+        # Ordinary owner imports require current source-history/binding authority,
+        # not completion of an unrelated GEO bootstrap. Native source-stage
+        # admission still enforces exact receipts, UNKNOWN and writer fencing.
+        return self.reads_current()
 
     def _coverage_idle(self):
         """Nothing new to verify and ample time left on the current proof.
@@ -382,7 +377,7 @@ class TargetServiceStartup:
             # journal while the controller prepares the Dataset restore.
             self.coverage=None;self.gate.invalidate()
             return False
-        """Maintenance only; ready reads never wait for native/journal writes."""
+        """Maintenance only; public reads use the PG binding independently."""
         if not self.running or self.closed:return False
         try:
             owner=self.config.writer_owner
@@ -414,9 +409,16 @@ class TargetServiceStartup:
                 else:
                     coverage=self.coverage if self._coverage_idle() else await self.history.extend(self.binding)
             else:
-                self.coverage=None;self.gate.invalidate();self.binding=binding
-                if self.geo_gate is not None:self.geo_gate.invalidate()
-                self.case_gate.invalidate()
+                # Only a different runtime/binding revokes an in-flight PG read.
+                # A failed history renewal must not invalidate a healthy read
+                # ticket every maintenance tick on the same native database.
+                changed=binding!=self.binding
+                self.coverage=None
+                if changed:
+                    self.gate.invalidate()
+                    if self.geo_gate is not None:self.geo_gate.invalidate()
+                    self.case_gate.invalidate()
+                self.binding=binding
                 coverage=await self.history.restore(binding)
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
@@ -467,9 +469,14 @@ class TargetServiceStartup:
             _LOG.info('target_source_routing state=ready connection_generation=%s',binding.connection_generation)
             return True
         except asyncio.CancelledError:
-            self.coverage=None;self.gate.invalidate();raise
+            self.coverage=None
+            # A cancelled maintenance/history attempt does not invalidate a
+            # concurrent read of the same live PG generation.
+            raise
         except Exception as exc:
-            self.coverage=None;self.gate.invalidate()
+            self.coverage=None
+            # Verification failure closes writes only. Existing read tickets
+            # retain their independent current-binding/actor fences.
             code=exc.args[0] if len(exc.args)==1 and type(exc.args[0]) is str else ''
             if not 1<=len(code)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in code):
                 code='unavailable'

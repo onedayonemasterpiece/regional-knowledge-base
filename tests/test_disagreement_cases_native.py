@@ -168,3 +168,51 @@ async def test_author_private_draft_version2_selected_publish_is_atomic_and_keep
     own=await read(n,section='draft_get',draft_id=DRAFT,version=2)
     assert own['payload']['text']==text+' Revision two.' and len(own['publication_ids'])==1
     assert (await apply(n,c)).duplicate and len((await read(n,section='contributions'))['items'])==1
+
+
+@pytest.mark.asyncio
+async def test_actual_pg_case_subject_search_follows_current_grants_and_source_evidence(native):
+    """Real disposable PG17 Case state, same native CASE_READ without BGE."""
+    from contextlib import asynccontextmanager
+    from regional_knowledge.kaggle_case_contracts import CaseReadRequest
+    from regional_knowledge.kaggle_case_read import execute_case_read
+    from regional_knowledge.kaggle_protocol import TrustedActorContext
+
+    n=native
+    await create_case(n)
+    await grant(n,actor=OTHER,role='viewer')
+    keyword=create().question.strip().split()[0][:60]
+
+    @asynccontextmanager
+    async def acquire():
+        yield n['connection']
+
+    def request(actor,source=None):
+        return CaseReadRequest(
+            request_id='native-case-subject-1',connection_generation=1,turn_generation=0,
+            case_id='00000000-0000-0000-0000-000000000000',section='search',
+            search_query=keyword,source_id=source,limit=5,min_data_seq=0,
+            deadline_ms=1800,actor=TrustedActorContext(person_id=actor,
+                audience='personal',auth_epoch=1,visibility_epoch=0))
+
+    owner=await execute_case_read(request(ACTOR),acquire=acquire)
+    viewer=await execute_case_read(request(OTHER),acquire=acquire)
+    assert owner.status==viewer.status=='ok'
+    assert [x['case_id'] for x in viewer.record['items']]==[CASE]
+    assert viewer.record['items'][0]['question']==create().question
+
+    # A third actor never sees a private Case without an explicit grant.
+    blocked=await execute_case_read(request('00000000-0000-0000-0000-000000000099'),acquire=acquire)
+    assert blocked.status=='ok' and blocked.record['items']==[]
+    await grant(n,actor=OTHER,role=None)
+    revoked=await execute_case_read(request(OTHER),acquire=acquire)
+    assert revoked.status=='ok' and revoked.record['items']==[]
+
+    c=await evidence(n)
+    assert (await apply(n,c)).status=='applied'
+    source_match=await execute_case_read(request(ACTOR,SOURCE),acquire=acquire)
+    assert [x['case_id'] for x in source_match.record['items']]==[CASE]
+    async with n['connection'].transaction():
+        await n['connection'].execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SOURCE,))
+    withdrawn=await execute_case_read(request(ACTOR,SOURCE),acquire=acquire)
+    assert withdrawn.status=='ok' and withdrawn.record['items']==[]

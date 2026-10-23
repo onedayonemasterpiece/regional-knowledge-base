@@ -1,7 +1,8 @@
-"""Owner-intake public MCP contract against real target API classes, no provider effects.
+"""Owner-intake MCP schema and authorization against synthetic originals.
 
-The current native activation is shared/public. Private-without-public-rights
-must NOT be enabled by weakening the start gate until read eligibility exists.
+Ordinary owner-only imports are shared-searchable with an owner attestation,
+not a per-book legal questionnaire. Private Case and original grants remain
+separate from the import capability.
 """
 from dataclasses import replace
 from pydantic import ValidationError
@@ -69,26 +70,133 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     assert "2500 physical pages" in server.instructions
     assert "128 MiB" in ingest.description
     assert "2500 physical pages" in ingest.description
-    assert "verified public-distribution basis" in ingest.description
+    assert "no per-book public_rights declaration" in ingest.description
     assert "narrative_outcome=needs_context or facts_only" in ingest.description
-    assert "Otherwise omit basic_variant" in server.instructions
+    assert "When the evidence does not support such a body, omit basic_variant" in server.instructions
     assert "2 MiB and 32 pages" not in server.instructions
 
 
 @pytest.mark.asyncio
-async def test_owner_public_activation_still_rejects_missing_rights_before_original(native_intake):
+async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_unchanged(native_intake, monkeypatch):
+    native = build_server(target_startup=native_intake.startup)
+    native_tools = {tool.name: tool for tool in await native.list_tools()}
+    imported = native_tools["book_ingest"]
+    native_text = imported.description
+    assert imported.title == "Import and continue an attached scanned book"
+    assert "book_ingest(command=start)" in native_text
+    assert "book_pages (default 1, maximum 4" in native_text
+    assert "book_ingest(command=stage)" in native_text
+    assert "after actual accepted text-packet apply" in native_text
+    assert "book_ingest(command=finalize) means only reading ended" in native_text
+    assert "correct and retry that page under the SAME ingestion" in native_text
+    assert "optional semantic, story and illustration enrichment does not undo accepted text" in native_text
+    assert "Return processing/wait/UNKNOWN/pending truthfully" in native_text
+    assert "On the first stage set source_import.research" in native_text
+    assert "pending with the exact owned book_pages continuation" in native_text
+    assert "On first stage supply source_import.research" in native.instructions
+    assert "When disagreement_search is registered" in native_text
+    assert "book_pages (default 1 page, maximum requested 4" in native.instructions
+    assert "current chunk_key or an already accepted chunk_id" in native.instructions
+    assert "exact page/region/quote evidence" not in native.instructions
+    # The actual stage wire supports one multi-page chunk via exact page-scoped refs;
+    # 256 is guidance, not a new hard-token cap or an instruction to restage pages.
+    chunk_guidance = native.instructions
+    assert chunk_guidance.count("Build semantically coherent source chunks") == 1
+    for expected in (
+        "about 256 BGE tokens", "roughly 800-1000 characters",
+        "a guideline rather than a hard limit", "preserve whole sentences",
+        "an arbitrary chunk or page boundary", "read it with book_pages",
+        "both issued, visually reviewed pages", "one book_ingest(stage) packet",
+        "up to four pages", "one cross-page chunk",
+        "ordered region_refs OR exact span_refs", "both real page_ids",
+        "within existing exact token bounds", "original page/region/span provenance",
+        "never invent unseen continuation",
+    ):
+        assert expected in chunk_guidance, expected
+    assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
+    assert "Finalization alone activates" not in native.instructions
+    # Cold search continuation is one native instruction, not a new method.
+    for instruction in ("startup.message_ru", "startup.eta_seconds",
+                        "same startup_ref", "every 30 seconds",
+                        "after ready issue a NEW search"):
+        assert instruction in native.instructions
+    # Conditional Case discovery and existing write workflow must agree in
+    # both native instructions and the displayed book_ingest description.
+    for guidance in (native.instructions, native_text):
+        for action in ("disagreement_search", "disagreement_get",
+                       "disagreement_edit(add_evidence)", "disagreement_edit(create)",
+                       "UNKNOWN", "Saved"):
+            assert action in guidance, action
+    assert "General Case discovery/search is not presently registered" not in native_text
+    assert "General Case discovery/search is a separately unresolved capability gap" not in native.instructions
+
+    # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
+    instruction = native.instructions
+    assert instruction.count("Story body:") == 1
+    for required in (
+        "basic_variant.body for an ordinary reader or visitor",
+        "the same saved text is read, voiced and posted",
+        "usually 2-6 connected sentences",
+        "what was at stake",
+        "Do not split one episode into a body plus separate facts_only candidates",
+        "there is no story quota",
+        "fetch that page with book_pages and stage both pages in one packet (up to 4)",
+        "on this ending page with evidence_refs to the accepted earlier pages",
+        "Write every basic_variant.body in Russian",
+        "German or English originals",
+        "source proof in the original language",
+        "metadata.title", "metadata.authors", "metadata.publication_year",
+        "metadata.language", "metadata.catalog.kind",
+        "editors, translators, publisher, date, edition, identifiers and topics",
+        "metadata.catalog.cover_page", "metadata.catalog.cover_kind",
+        "zero-based physical page index", "leave unsupported fields unset",
+    ):
+        assert required in instruction, required
+    assert "retain attributed people/events/places and a real body only with sufficient evidence" not in instruction
+    # Old whole-book/unsupported command advice is not surfaced to the target.
+    for obsolete in ("at most 8", "8 selected", "validate and finalize", "Finalization alone activates",
+                     "reprocess", "rechunk", "story_reconcile"):
+        assert obsolete not in native_text, obsolete
+        assert obsolete not in native.instructions, obsolete
+
+    # Same wire tool, same accepted arguments and actual MCP schema; only the
+    # descriptions and native-specific display title differ.
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    legacy = build_server(backend_profile="legacy")
+    legacy_tools = {tool.name: tool for tool in await legacy.list_tools()}
+    legacy_ingest = legacy_tools["book_ingest"]
+    assert imported.name == legacy_ingest.name == "book_ingest"
+    assert imported.input_schema == legacy_ingest.input_schema
+    assert imported.output_schema == legacy_ingest.output_schema
+    assert imported.meta == legacy_ingest.meta == {"openai/fileParams": ["file"]}
+    assert legacy_ingest.title == "Add, reprocess or continue a book"
+    assert "Finalization alone activates" in legacy_ingest.description
+    assert "book_find first" in legacy_ingest.description
+    assert "book_ingest(reprocess)" in legacy.instructions
+    assert "validate and finalize" in legacy.instructions
+    # This fixture has only original intake, not a configured Case backend;
+    # the PR330 Case-enabled MCP test separately checks search registration.
+    assert "disagreement_search" not in native_tools
+    pages = native_tools["book_pages"].input_schema["properties"]["batch_size"]
+    assert pages["default"] == 1 and pages["minimum"] == 1 and pages["maximum"] == 4
+
+
+@pytest.mark.asyncio
+async def test_owner_start_without_rights_uses_existing_owner_attestation(native_intake):
+    from regional_knowledge.kaggle_importer import OWNER_IMPORT_ATTESTATION
     s = native_intake
-    with pytest.raises(ToolError, match="attached_source_and_explicit_public_rights_required"):
-        await s.importer.book_ingest(
-            command="start",
-            principal=s.principal,
-            file=ChatFile(file_id="fixture-private-no-license",
-                download_url="https://files.example.test/synthetic.pdf",
-                mime_type="application/pdf"),
-            payload={"title": "Synthetic rights-unknown private book"},
-            source_import=None,
-        )
-    assert s.originals.calls == []
+    result = await s.importer.book_ingest(
+        command="start",
+        principal=s.principal,
+        file=ChatFile(file_id="fixture-owner-attested-original",
+            download_url="https://files.example.test/synthetic.pdf",
+            mime_type="application/pdf"),
+        payload={"title": "Synthetic owner-attested original"},
+        source_import=None,
+    )
+    assert result.state == "staged"
+    assert s.importer._row(s.principal.subject, result.ingestion_id)["rights_json"] == OWNER_IMPORT_ATTESTATION
+    assert len(s.originals.calls) == 1
 
 
 @pytest.mark.asyncio

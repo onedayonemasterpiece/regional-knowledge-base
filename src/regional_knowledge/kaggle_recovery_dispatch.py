@@ -114,7 +114,6 @@ class RecoveryPhaseDispatch:
                     if value.get('status')!='rejected' or not value.get('retryable'):break
                     operation_key=root+':retry:'+str(attempt+1)
                 else:raise SnapshotError('migration_retry_budget')
-        if len(self._bindings)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
         arguments=json.loads(encode(arguments));request_hash=sha(encode({'phase':phase,'arguments':arguments}))
         identity=bounded(dict(phase=phase,arguments=arguments,operation_key=operation_key,
             request_sha256=request_hash,database_generation=self.database.database_generation,
@@ -126,6 +125,9 @@ class RecoveryPhaseDispatch:
         if result is None:
             _LOG.warning('recovery_phase_unknown run_id=%s phase=%s operation_hash=%s',self.identity[0],phase,sha(operation_key.encode()))
             raise SnapshotError('recovery_phase_unknown_reconcile_same_operation')
+        # The durable result owns replay after completion. Only outstanding
+        # work needs its attachment retained for transfer/dispatch authority.
+        self._bindings.pop(job,None)
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
         value=result['result']['value']
         if phase in ('capture','dataset_verify') and isinstance(value,dict) and value.get('status')=='pending':
@@ -236,6 +238,7 @@ class RecoveryPhaseDispatch:
                 if self.schema_context is None:raise SnapshotError('migration_context_promotion_unavailable')
                 self.schema_context(receipt['value']['schema_version'])
             if status=='accepted':db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
+        self._bindings.pop(frame['job_id'],None)
         self.queue._notify_result(frame['job_id'])
         _LOG.info('recovery_phase_settled run_id=%s phase=%s status=%s',run_id,receipt['phase'],status)
         return dict(job_id=frame['job_id'],claim=frame['claim'],status=status)

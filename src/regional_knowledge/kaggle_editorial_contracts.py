@@ -94,6 +94,7 @@ class EditorialReadResult(PassageReadResult):
         if type(r) is not dict or r.get('view') not in ('get','history','variants','edit_context'):
             raise ValueError('exact shared Story record required')
         if r['view']=='edit_context':keys|={'role','variant_refs'}
+        if r['view']=='get' and 'passage_refs' in r:keys.add('passage_refs')
         if set(r)!=keys or len(json.dumps(r,ensure_ascii=False,allow_nan=False).encode())>MAX_EDITORIAL_RECORD_BYTES:
             raise ValueError('bounded exact editorial record required')
         _uuid(r['story_id']);_revision(r['revision']);_revision(r['current_revision'])
@@ -111,6 +112,22 @@ class EditorialReadResult(PassageReadResult):
                 or type(r['bibliography']) is not str or len(r['bibliography'])>16000
                 or type(r['entries']) is not list or len(r['entries'])>10):raise ValueError('complete exact editorial narrative required')
         for value in r['finding_ids']:_uuid(value)
+        if 'passage_refs' in r:
+            refs=r['passage_refs']
+            if type(refs) is not list or len(refs)>48:
+                raise ValueError('bounded accepted Story passage refs required')
+            seen=set();prior=None
+            for ref_item in refs:
+                if (type(ref_item) is not dict
+                        or set(ref_item)!={'passage_id','page_id','physical_page_index'}
+                        or type(ref_item['physical_page_index']) is not int
+                        or not 0<=ref_item['physical_page_index']<=2499):
+                    raise ValueError('exact accepted passage/page ref required')
+                _uuid(ref_item['passage_id']);_uuid(ref_item['page_id'])
+                key=(ref_item['passage_id'],ref_item['page_id'],ref_item['physical_page_index'])
+                if key in seen or (prior is not None and key<=prior):
+                    raise ValueError('unique ordered accepted passage refs required')
+                seen.add(key);prior=key
         item=self.evidence[0]
         if (item.id!=r['story_id'] or item.kind!='story' or item.text!=r['body'] or item.text_form!='complete'
                 or item.continuation is not None or item.exact_variant_ref!=f"variant:{ref['variant_id']}:r{ref['revision']}"

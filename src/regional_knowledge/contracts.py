@@ -176,9 +176,10 @@ class StartMetadataInput(BaseModel):
     # Compatibility for clients whose existing book_ingest schema exposes an
     # open metadata object but has not refreshed the optional top-level field.
     source_import: dict[str, Any] | None = Field(default=None,max_length=2,
-        description="Compatibility alternative to top-level book_ingest.source_import, not an additional "
-            "source or rights override. Native start currently requires a verified public-distribution "
-            "basis even for owner-personal imports; do not send both input locations.")
+        description="Optional compatibility alternative to top-level book_ingest.source_import, not an "
+            "additional source or rights override. Ordinary owner-only start retains the owner's "
+            "shared-source legal attestation without a per-book public_rights declaration; "
+            "do not send both input locations.")
     catalog_update: CatalogUpdateInput | None = None
     catalog: CatalogMetadata | None = None
     duplicate_policy: Literal['reuse', 'new_revision'] = 'reuse'
@@ -233,8 +234,8 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
-    # Echo the trusted image issuance returned by book_pages. This binds the
-    # selected pixels, not a claim that the supplied transcription is native.
+    # Optional legacy image receipt echo. Native stage resolves issued pixels
+    # by owned ingestion/page index; this never certifies model-authored text.
     source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # Same-pass semantic episode review; true with no candidates is an explicit
     # reviewed-empty page, not a claim that all possible stories were found.
@@ -457,6 +458,10 @@ class StartupStatus(BaseModel):
     startup_ref: str = Field(min_length=51,max_length=51)
     status: Literal['pending','ready','unavailable']
     reason: str | None = None
+    # No measured end-to-end cold-search profile exists yet: worker startup
+    # diagnostics and run ready_at are not substitutes for a user-facing ETA.
+    eta_seconds: int | None = Field(default=None,ge=1,strict=True)
+    message_ru: str | None = None
     # Sanitized operator health (no run/incarnation/provider identifiers).
     health: dict | None = None
 

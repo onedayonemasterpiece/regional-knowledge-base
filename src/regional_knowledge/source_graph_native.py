@@ -57,24 +57,34 @@ def _merge_entities(records):
     return sorted(result.values(),key=lambda item:item['key'])
 
 
-def _resolve(*,source_id,person_id,bundles,poi_facts,regions,passages,findings,batch_count):
+def _resolve(*,source_id,person_id,bundles,poi_facts,regions,passages,findings,batch_count,passage_evidence=False):
     if type(batch_count) is not int or not 1<=batch_count<=2500:
         raise ValueError('exact accepted native batch count required')
     exact_uuid(source_id);exact_uuid(person_id)
     if type(bundles) is not list or len(bundles)>batch_count:raise ValueError('bounded source graph bundles required')
     parsed=[GraphBundle.model_validate(raw) for raw in bundles]
     raw_bundles=[bundle.model_dump(mode='json') for bundle in parsed]
-    if len({digest(raw) for raw in raw_bundles})!=len(raw_bundles):raise ValueError('duplicate source graph bundle')
+    if passage_evidence:
+        for bundle in raw_bundles:
+            proofs=[node['evidence'] for node in bundle['entities']]
+            proofs.extend(alias['evidence'] for node in bundle['entities'] for alias in node['aliases'])
+            proofs.extend(proof for relation in bundle['relations'] for proof in relation['evidence'])
+            for proof in proofs:proof.pop('exact_quote',None)
+        raw_bundles=list({digest(raw):raw for raw in raw_bundles}.values())
+    elif len({digest(raw) for raw in raw_bundles})!=len(raw_bundles):raise ValueError('duplicate source graph bundle')
     raw_bundles.sort(key=digest)
     def evidence(e):
-        raw=e.model_dump(mode='json');region=regions.get(raw['region_id']);passage=passages.get(raw['chunk_id'])
+        raw=e.model_dump(mode='json',exclude={'exact_quote'} if passage_evidence else set());region=regions.get(raw['region_id']);passage=passages.get(raw['chunk_id'])
         if (region is None or passage is None or region['page_id']!=raw['page_id']
-                or raw['page_id'] not in passage['page_ids'] or raw['region_id'] not in passage['region_ids']
-                or raw['exact_quote'] not in passage['body']):raise ValueError('source graph evidence outside exact staged source')
-        text=region['text'];begin=text.find(raw['exact_quote'])
-        if begin<0 or text.find(raw['exact_quote'],begin+1)>=0:raise ValueError('source graph quote requires unambiguous exact region span')
+                or raw['page_id'] not in passage['page_ids'] or raw['region_id'] not in passage['region_ids']):
+            raise ValueError('source graph evidence outside staged source passage')
         locator=dict(raw,evidence_ref='knowledge://chunks/'+raw['chunk_id'])
-        return dict(locator,start=begin,end=begin+len(raw['exact_quote']),source_region_sha256=hashlib.sha256(text.encode()).hexdigest()),locator
+        if passage_evidence:return locator,locator
+        quote=raw['exact_quote'];text=region['text']
+        if quote is None or quote not in passage['body']:raise ValueError('source graph evidence outside exact staged source')
+        begin=text.find(quote)
+        if begin<0 or text.find(quote,begin+1)>=0:raise ValueError('source graph quote requires unambiguous exact region span')
+        return dict(locator,start=begin,end=begin+len(quote),source_region_sha256=hashlib.sha256(text.encode()).hexdigest()),locator
     entities=[];refs=[];relations=[];bindings={};kinds={}
     for bundle in parsed:
         for n in bundle.entities:
@@ -87,7 +97,7 @@ def _resolve(*,source_id,person_id,bundles,poi_facts,regions,passages,findings,b
     for bundle in parsed:
         for n in bundle.entities:
             ident=bindings[n.key];proof,locator=evidence(n.evidence)
-            if n.exact_source_spelling not in n.evidence.exact_quote:raise ValueError('source graph spelling absent from exact quote')
+            if not passage_evidence and n.exact_source_spelling not in n.evidence.exact_quote:raise ValueError('source graph spelling absent from exact quote')
             aliases=[]
             for alias in n.aliases:
                 normal=normalize_alias(alias.value)
@@ -150,8 +160,8 @@ def _resolve(*,source_id,person_id,bundles,poi_facts,regions,passages,findings,b
     return value
 
 
-def resolve_native_source_graph(graph,*,source_id,person_id,semantic,batch_count):
+def resolve_native_source_graph(graph,*,source_id,person_id,semantic,batch_count,passage_evidence=False):
     regions={str(r.region_id):dict(page_id=str(r.page_id),text=r.source_text) for page in graph.pages for r in page.regions}
-    passages={str(c.chunk_id):dict(body=c.text,region_ids=[str(r) for r in c.region_ids],page_ids=[str(p) for p in c.page_ids]) for c in graph.chunks}
+    passages={str(c.chunk_id):dict(body=c.text,region_ids=[str(r) for r in ([*c.region_ids,*c.footnote_region_ids] if passage_evidence else c.region_ids)],page_ids=[str(p) for p in c.page_ids]) for c in graph.chunks}
     return _resolve(source_id=source_id,person_id=person_id,bundles=[b.model_dump(mode='json') for b in graph.entity_candidates],
-        poi_facts=[f.model_dump(mode='json') for f in graph.poi_facts],regions=regions,passages=passages,findings=semantic['findings'],batch_count=batch_count)
+        poi_facts=[f.model_dump(mode='json') for f in graph.poi_facts],regions=regions,passages=passages,findings=semantic['findings'],batch_count=batch_count,passage_evidence=passage_evidence)

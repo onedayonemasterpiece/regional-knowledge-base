@@ -20,7 +20,7 @@ from regional_knowledge.kaggle_import_tokenizer import HfImportTokenCounter
 from regional_knowledge.kaggle_native_source_bindings import native_source_handler
 from regional_knowledge.kaggle_public_backend import current_binding
 from regional_knowledge.kaggle_service_startup import TargetServiceConfig, TargetServiceStartup
-from regional_knowledge.original_intake import OriginalIntakeStatus, VerifiedOriginalReceipt, issued_image_receipt
+from regional_knowledge.original_intake import OriginalIntakeError, OriginalIntakeStatus, VerifiedOriginalReceipt, issued_image_receipt
 from regional_knowledge.original_intake_controller import OriginalIntakeController
 from regional_knowledge.read_issuance import capture_read_output
 from regional_knowledge.recovery_journal import RecoveryJournal
@@ -51,7 +51,7 @@ async def native_intake(target, tmp_path):
                    (*values,t.run))
     store = ConditionalMemoryStore()
     registry = HandlerRegistry([native_source_handler(route,check_sha256='a'*64,apply_sha256='b'*64)
-                                for route in (STAGE_ROUTE,SEAL_ROUTE,MATERIALIZE_ROUTE,ACTIVATE_ROUTE)])
+                                for route in (STAGE_ROUTE,SEAL_ROUTE,MATERIALIZE_ROUTE,ACTIVATE_ROUTE,'source.batch.v1','source.finish.v1')])
     spool = ControlSpool(t.queue,t.auth.p.registry,RecoveryJournal(store,stream='native-intake-14'),registry)
     originals = object.__new__(OriginalIntakeController)
     originals.queue, originals.spool, originals.participants = t.queue, spool, t.auth.p.registry
@@ -76,7 +76,13 @@ async def native_intake(target, tmp_path):
         assert context.route == 'owner' and context.principal.subject == t.auth.p.owner.subject
         assert 1 <= len(selections) <= 8
         self.selections.append((ingestion_id,selections))
-        return tuple(self.issued[(ingestion_id,index,hash_)] for index,hash_ in selections)
+        values=[]
+        for index,expected in selections:
+            matches=[value for (owner,position,hash_),value in self.issued.items()
+                     if owner==ingestion_id and position==index and (expected is None or hash_==expected)]
+            if len(matches)!=1: raise OriginalIntakeError('original_source_image_not_issued')
+            values.append(matches[0])
+        return tuple(values)
 
     async def native_pages(self, *args, **kwargs):
         pytest.fail('native14 must not auto-fetch the whole original/native-text proof')
@@ -122,7 +128,7 @@ async def start(s, *, file_id='synthetic-174-djvu'):
         source_import=options())
 
 
-def batch(s, result, *, first=0, count=8):
+def batch(s, result, *, first=0, count=4):
     """Model-authored typed selected pages, not text certified by native OCR."""
     receipt = s.originals.receipts[result.ingestion_id]
     pages, chunks = [], []
@@ -183,6 +189,10 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
     elif command.route == MATERIALIZE_ROUTE:
         output = dict(source_id=result.document_id,ordinal=doc['ordinal'],total_inputs=total_inputs,
             knowledge_sha256='e'*64,input_sha256='f'*64,input_id='synthetic-native-input')
+    elif command.route == 'source.batch.v1':
+        output.update(batch_index=doc['batch_index'],component=doc['component'],candidate_state='published',accepted=True,knowledge_sha256='e'*64)
+    elif command.route == 'source.finish.v1':
+        output.update(read_complete=True)
     else:
         assert command.route == ACTIVATE_ROUTE
         output = dict(source_id=result.document_id,accepted=True,knowledge_sha256='e'*64)
@@ -201,14 +211,14 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
 
 
 @pytest.mark.asyncio
-async def test_174_page_original_resumes_22_typed_batches_without_dev_graph_or_vectors(native_intake):
+async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_vectors(native_intake):
     s = native_intake
     result = await start(s)
     assert s.originals.receipts[result.ingestion_id].page_count == 174
     previous, seen = ZERO_HASH, []
-    for ordinal, first in enumerate(range(0,174,8)):
+    for ordinal, first in enumerate(range(0,174,4)):
         payload = batch(s,result,first=first)
-        assert 1 <= len(payload['pages']) <= 8
+        assert 1 <= len(payload['pages']) <= 4
         assert (await stage(s,result,payload)).state == 'processing'
         entry = await pending(s,result)
         doc = json.loads(entry.command.payload)
@@ -221,19 +231,62 @@ async def test_174_page_original_resumes_22_typed_batches_without_dev_graph_or_v
         previous = digest(entry.command.payload)
         seen.extend(p['physical_page_index'] for p in doc['model_payload']['pages'])
         await finish(s,result)
+        assert (await call(s,result,'status')).state == 'processing'
+        assert (await pending(s,result)).command.route=='source.batch.v1'
+        await finish(s,result)
+        assert (await call(s,result,'status')).state=='processing'
+        assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
+        await finish(s,result)
         assert (await call(s,result,'status')).state == 'staged'
         # An exact post-durability retry must not allocate batch ordinal+1.
         assert (await stage(s,result,payload)).state == 'staged'
-        assert operation_count(s) == ordinal+1
+        assert operation_count(s) == (ordinal+1)*3
         row = s.importer._row(s.principal.subject,result.ingestion_id)
         assert row['stage_json'] is None and row['semantic_json'] is None and row['native_proof_sha256'] is None
-    assert seen == list(range(174)) and state(s,result)['batch_count'] == 22
+    assert seen == list(range(174)) and state(s,result)['batch_count'] == 44
     assert state(s,result)['last_batch_sha256'] == previous and not s.token_calls
     with s.t.queue.connect(write=False) as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind<>'source_command'").fetchone()[0] == 0
         columns = {row[1] for row in db.execute('PRAGMA table_info(rkb_native_source_intake_state)')}
         assert not columns.intersection({'stage_json','semantic_json','model_payload','embedding','body'})
     assert len(s.originals.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_issued_native_page_without_model_sha_and_exact_replay(native_intake):
+    s=native_intake; result=await start(s); payload=batch(s,result,count=1)
+    issued_hash=payload['pages'][0].pop('source_image_receipt_sha256')
+    assert (await stage(s,result,payload)).state=='processing'
+    entry=await pending(s,result)
+    frozen=entry.command_bytes; doc=json.loads(entry.command.payload)
+    assert doc['model_payload']['pages'][0]['source_image_receipt_sha256']==issued_hash
+    assert len(doc['issued_images_b64'])==1 and operation_count(s)==1
+    assert (await stage(s,result,payload)).state=='processing'
+    assert (await pending(s,result)).command_bytes==frozen
+    guessed=copy.deepcopy(payload);guessed['pages'][0]['source_image_receipt_sha256']='0'*64
+    assert (await stage(s,result,guessed)).state=='processing'
+    assert (await pending(s,result)).command_bytes==frozen
+    assert operation_count(s)==1
+    await finish(s,result)
+    assert (await call(s,result,'status')).state=='processing'
+    assert (await s.spool.get(entry.command.operation_key)).command_bytes==frozen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',['unissued','foreign_ingestion','forged_page_id'])
+async def test_native_unissued_foreign_or_forged_page_denied_without_model_sha(native_intake,case):
+    s=native_intake; result=await start(s); payload=batch(s,result,count=1)
+    payload['pages'][0].pop('source_image_receipt_sha256')
+    if case=='unissued':
+        s.originals.issued.clear()
+    elif case=='foreign_ingestion':
+        (ingest,index,image_hash),value=s.originals.issued.popitem()
+        s.originals.issued[('00000000-0000-0000-0000-000000000099',index,image_hash)]=value
+    else:
+        payload['pages'][0]['page_id']='00000000-0000-0000-0000-000000000099'
+    with pytest.raises(ToolError):
+        await stage(s,result,payload)
+    assert operation_count(s)==0 and state(s,result)['pending_operation_key'] is None
 
 
 @pytest.mark.asyncio
@@ -250,9 +303,12 @@ async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(na
         await stage(s,result,changed)
     assert operation_count(s) == 1 and (await pending(s,result)).command.request_id == request
     await finish(s,result); await call(s,result,'status')
+    assert (await pending(s,result)).command.route=='source.batch.v1'
+    await finish(s,result);await call(s,result,'status')
+    await finish(s,result);await call(s,result,'status')
     await stage(s,result,changed)
     second = await pending(s,result)
-    assert second.command.sequence == entry.command.sequence+1
+    assert second.command.sequence == entry.command.sequence+3
     assert json.loads(second.command.payload)['previous_batch_sha256'] == digest(entry.command.payload)
     assert (await s.spool.get(entry.command.operation_key)).command_bytes == exact
 
@@ -279,59 +335,99 @@ async def test_real_lost_acceptance_ack_keeps_unknown_key_then_read_only_reconci
 
 
 @pytest.mark.asyncio
-async def test_inactive_apply_progress_and_final_activation_require_exact_receipts(native_intake):
+async def test_packet_progress_and_reading_completion_keep_exact_durability_receipts(native_intake):
     s = native_intake; result = await start(s)
     await stage(s,result,batch(s,result,count=1))
     staged = await finish(s,result,publish=False)
-    assert (await call(s,result,'status')).state == 'staged'
+    assert (await call(s,result,'status')).state == 'processing'
     assert state(s,result)['batch_count'] == 1 and operation_count(s) == 1
     assert (await s.spool.get(staged.command.operation_key)).outcome_state == 'NOT_SENT'
     await s.spool.publish_outcome(staged.command.operation_key,writer_generation='writer-1')
-    assert (await call(s,result,'status')).state == 'staged'
-    assert operation_count(s) == 1  # Status does not silently seal a staged candidate.
-    assert (await call(s,result,'validate')).state == 'processing'
-    assert (await pending(s,result)).command.route == SEAL_ROUTE
-    await finish(s,result)
-    assert (await call(s,result,'status')).state == 'ready'
-    assert state(s,result)['phase'] == 'sealed' and operation_count(s) == 2
-    assert (await call(s,result,'status')).state == 'ready'  # No implicit finalize.
-    assert (await call(s,result,'finalize')).state == 'processing'
-    for ordinal in range(2):
-        assert (await call(s,result,'status')).state == 'processing'
-        entry = await pending(s,result)
-        assert entry.command.route == MATERIALIZE_ROUTE and json.loads(entry.command.payload)['ordinal'] == ordinal
-        assert operation_count(s) == ordinal+3
-        assert (await call(s,result,'status')).state == 'processing'
-        assert (await pending(s,result)).command_bytes == entry.command_bytes
-        assert operation_count(s) == ordinal+3  # Poll is not whole-book inference or a new ordinal.
-        await finish(s,result)
     assert (await call(s,result,'status')).state == 'processing'
-    activation = await pending(s,result)
-    assert activation.command.route == ACTIVATE_ROUTE and operation_count(s) == 5
+    packet=await pending(s,result)
+    assert packet.command.route=='source.batch.v1' and operation_count(s)==2
+    await finish(s,result)
+    assert (await call(s,result,'status')).state=='processing'
+    assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
+    await finish(s,result)
+    assert (await call(s,result,'status')).state=='staged'
+    assert state(s,result)['published_batch_count']==1
+    assert (await call(s,result,'finalize')).state=='processing'
+    completion=await pending(s,result)
+    assert completion.command.route=='source.finish.v1'
     await finish(s,result,publish=False)
     assert (await call(s,result,'status')).state == 'processing'
-    assert state(s,result)['phase'] == 'ready_activation'
-    await s.spool.publish_outcome(activation.command.operation_key,writer_generation='writer-1')
+    await s.spool.publish_outcome(completion.command.operation_key,writer_generation='writer-1')
     assert (await call(s,result,'status')).state == 'finalized'
     assert (await call(s,result,'finalize')).state == 'finalized'
-    assert operation_count(s) == 5 and not s.token_calls
+    assert operation_count(s) == 4 and not s.token_calls
 
 
 @pytest.mark.asyncio
 async def test_start_allows_same_file_retry_but_blocks_second_original_before_acquisition(native_intake):
-    s = native_intake; first = await start(s)
+    s = native_intake
+    async def acquiring(self, context, *, operation_id, source_id, ingestion_id, file, max_bytes):
+        self.calls.append((ingestion_id,file.file_id))
+        return OriginalIntakeStatus(ingestion_id,'pending',reason='original_acquisition_pending')
+    s.originals.begin=MethodType(acquiring,s.originals)
+    first = await start(s)
+    assert first.state=='processing'
     assert (await start(s)).ingestion_id == first.ingestion_id
     calls = len(s.originals.calls)
     with pytest.raises(ToolError,match='another_native_ingestion_active'):
         await start(s,file_id='second-unrelated-original')
     assert len(s.originals.calls) == calls
+
+
+@pytest.mark.asyncio
+async def test_normal_start_keeps_inactive_legacy_rows_and_accepted_bytes_unchanged(native_intake):
+    s=native_intake;old=await start(s)
+    row=s.importer._row(s.principal.subject,old.ingestion_id)
+    s.importer.native_intake._state(row,create=True)
+    with s.t.queue.connect() as db:
+        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(old.ingestion_id,))
+    await stage(s,old,batch(s,old,count=1))
+    entry=await finish(s,old) # Known durable receipt, not yet settled in compact progress.
+    frozen=entry.command_bytes
+    before_row=s.importer._row(s.principal.subject,old.ingestion_id)
+    before_state=state(s,old)
+    new=await start(s)
+    assert new.ingestion_id!=old.ingestion_id and new.document_id!=old.document_id
+    assert s.importer._row(s.principal.subject,old.ingestion_id)==before_row
+    assert state(s,old)==before_state
+    assert (await s.spool.get(entry.command.operation_key)).command_bytes==frozen
+    assert (await s.spool.get(entry.command.operation_key)).outcome_state=='DURABLE'
+    assert len(s.originals.calls)==2
+
+
+@pytest.mark.asyncio
+async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying_it(native_intake):
+    s=native_intake;old=await start(s)
+    row=s.importer._row(s.principal.subject,old.ingestion_id)
+    s.importer.native_intake._state(row,create=True)
+    with s.t.queue.connect() as db:
+        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(old.ingestion_id,))
+    await stage(s,old,batch(s,old,count=1))
+    entry=await pending(s,old)
+    await s.spool.mark_apply_sent(entry.command.operation_key)
+    before_row=s.importer._row(s.principal.subject,old.ingestion_id)
+    before_state=state(s,old)
+    again=await start(s)
+    assert again.ingestion_id!=old.ingestion_id
+    assert s.importer._row(s.principal.subject,old.ingestion_id)==before_row
+    assert state(s,old)==before_state
+    assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
+    assert len(s.originals.calls)==2
+    with pytest.raises(ToolError,match='prior_write_pending'):
+        await stage(s,again,batch(s,again,count=1))
     with s.t.queue.connect(write=False) as db:
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 2
 
 
 @pytest.mark.asyncio
 async def test_revocation_during_selected_image_read_prevents_spool_acceptance(native_intake):
     s = native_intake; result = await start(s); payload = batch(s,result,count=1)
+    payload['pages'][0].pop('source_image_receipt_sha256')
     selected = s.originals.selected_image_receipts
     async def revoke(*args):
         values = await selected(*args)
@@ -435,3 +531,19 @@ async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(n
         for chunk in payload["chunks"]
     ]
     assert operation_count(s) == 1
+
+
+@pytest.mark.asyncio
+async def test_status_releases_verified_upload_and_current_file_dedup_survives_other_book(native_intake):
+    s=native_intake
+    first=await start(s,file_id='first-upload')
+    row=s.importer._row(s.principal.subject,first.ingestion_id)
+    # Crash seam: receipt was persisted before its acquiring -> staging save.
+    s.importer._save(row,phase='acquiring')
+    assert (await call(s,first,'status')).source_archive_status=='verified'
+    assert s.importer._row(s.principal.subject,first.ingestion_id)['phase']=='staging'
+    second=await start(s,file_id='second-upload')
+    assert second.ingestion_id!=first.ingestion_id
+    repeated=await start(s,file_id='first-upload')
+    assert (repeated.ingestion_id,repeated.document_id)==(first.ingestion_id,first.document_id)
+    assert s.importer._row(s.principal.subject,second.ingestion_id)['phase']=='staging'

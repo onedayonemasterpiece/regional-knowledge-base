@@ -217,6 +217,26 @@ def channel_route(queue, *, read_telemetry=None):
             async def status():
                 return await queue_call(queue.channel_status, run_id, token, generation)
 
+            stop_sent = False
+
+            async def maybe_stop():
+                nonlocal stop_sent
+                if stop_sent:
+                    return True
+                predicate = getattr(queue, 'stop_eligible', None)
+                if predicate is None or not await queue_call(predicate, run_id, token, generation):
+                    return False
+                if shared is not None:
+                    resource = shared.status()['resource']
+                    if resource is not None and resource.run_id == run_id:
+                        return False
+                # Same authenticated WSS, exact run/incarnation, no new frame.
+                # A delivered STOP is not native provider terminal evidence.
+                stop_sent = True
+                await send('STOP', run_id=run_id, launch_nonce=hello['launch_nonce'],
+                           runtime_incarnation=hello['runtime_incarnation'])
+                return True
+
             def bootstrap_idle_current():
                 # An idle baseline is control evidence only. Reauthenticate and
                 # bind it to the persisted finite plan on every reception.
@@ -279,22 +299,13 @@ def channel_route(queue, *, read_telemetry=None):
                 nonlocal last_work, cancelled_work
                 resume_pending = True
                 while True:
+                    # Inspect the original run before admission for a successor
+                    # can fence this channel. Never stop merely on draining.
+                    if promoted and await maybe_stop():
+                        await asyncio.Event().wait()  # Sender waits for the worker's ordinary close.
                     if not promoted or shared is None or probe_nonce is not None:
                         observed = await status()
                         await promote(observed)
-                    else:
-                        observed = await status()
-                    if (observed.get('state')=='draining'
-                            and (shared is None or shared.status()['resource'] is None)):
-                        # Controller maintenance may expire an idle drain in 5s,
-                        # before the worker's next 20s HEARTBEAT. Deliver STOP
-                        # on the already authenticated dispatch channel now.
-                        # The socket sender owns serialization; wait for the
-                        # worker to close without claiming provider terminal.
-                        await send('STOP',run_id=run_id,
-                            launch_nonce=hello['launch_nonce'],
-                            runtime_incarnation=hello['runtime_incarnation'])
-                        await asyncio.Event().wait()
                     if shared is not None:
                         if promoted and source_dispatch is not None:
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
@@ -478,18 +489,10 @@ def channel_route(queue, *, read_telemetry=None):
                             await promote(observed)
                     elif frame['type'] == 'HEARTBEAT':
                         _fields(frame, common, ('diagnostics',))
-                        heartbeat=await queue_call(queue.heartbeat, run_id, token,
+                        await queue_call(queue.heartbeat, run_id, token,
                                          diagnostics=frame.get('diagnostics'),
                                          connection_generation=generation)
-                        if (isinstance(heartbeat,dict) and heartbeat.get('state')=='draining'
-                                and (shared is None or shared.status()['resource'] is None)):
-                            # The existing exact-owner planned idle drain has
-                            # already fenced new work. Stop THIS incarnation;
-                            # socket close alone is not provider terminal proof.
-                            await send('STOP',run_id=run_id,
-                                launch_nonce=hello['launch_nonce'],
-                                runtime_incarnation=hello['runtime_incarnation'])
-                        else:
+                        if not await maybe_stop():
                             await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
                                        if observed['provider_version'] is not None else None))
                     elif frame['type']=='SNAPSHOT_UPLOAD_INTENT':

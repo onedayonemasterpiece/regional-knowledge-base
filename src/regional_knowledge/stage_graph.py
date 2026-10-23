@@ -174,6 +174,7 @@ def compile_model_stage(
     chunks: list[StageChunkInput],
     poi_facts: list[StagePoiFactInput] | None = None,
     poi_media_links: list[StagePoiMediaLinkInput] | None = None,
+    allow_footnote_spans: bool = False,
 ) -> IngestStagePayload:
     if graph.revision != revision:
         raise ValueError("staged graph revision mismatch")
@@ -308,11 +309,11 @@ def compile_model_stage(
                 raise ValueError(
                     f"chunk {chunk.chunk_key} references unknown source span region"
                 )
-            if region.kind not in {
+            if not (allow_footnote_spans and region.kind is RegionKind.FOOTNOTE) and region.kind not in {
                 RegionKind.HEADING,RegionKind.BODY,RegionKind.CAPTION,
                 RegionKind.TABLE,RegionKind.MARGINALIA,
             }:
-                raise ValueError("source span must point to a textual non-footnote region")
+                raise ValueError("source span must point to a textual region")
             text = region.source_text
             digest=hashlib.sha256(text.encode("utf-8")).hexdigest()
             if digest!=span.source_text_sha256:
@@ -570,11 +571,13 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     )
 
 
-def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False) -> GraphValidation:
+def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reuse_verified: bool = False,
+                   selected_page_indexes: frozenset[int] | None = None, require_figure_review: bool = True,
+                   passage_evidence: bool = False) -> GraphValidation:
     errors: list[str] = []
     warnings: list[str] = []
     for bundle in graph.entity_candidates:
-        try: validate_staged_bundle(bundle,graph)
+        try: validate_staged_bundle(bundle,graph,passage_evidence=passage_evidence)
         except ValueError as error: errors.append(str(error))
 
     for page in graph.pages:
@@ -588,6 +591,11 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
     if len(page_indexes) != len(set(page_indexes)):
         errors.append("duplicate physical_page_index")
     expected = set(range(expected_page_count))
+    if selected_page_indexes is not None:
+        if (type(selected_page_indexes) is not frozenset or not selected_page_indexes
+                or any(type(i) is not int or not 0 <= i < expected_page_count for i in selected_page_indexes)):
+            raise ValueError("exact bounded selected page indexes required")
+        expected = set(selected_page_indexes)
     present = set(page_indexes)
     missing = sorted(expected - present)
     extra = sorted(present - expected)
@@ -667,7 +675,7 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
     represented = {str(item.source_region_id) for item in graph.illustrations}
     for page in graph.pages:
         for region in page.regions:
-            if region.kind is RegionKind.FIGURE and str(region.region_id) not in represented and not page.excluded_figure_regions.get(region.region_key, '').strip():
+            if require_figure_review and region.kind is RegionKind.FIGURE and str(region.region_id) not in represented and not page.excluded_figure_regions.get(region.region_key, '').strip():
                 errors.append(f'figure must be staged or explicitly excluded: {region.region_id}')
     covered_regions: set[str] = set()
     fully_covered_regions: set[str] = set()

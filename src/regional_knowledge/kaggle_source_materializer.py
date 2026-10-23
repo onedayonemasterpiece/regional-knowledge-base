@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from uuid import UUID, uuid5
@@ -62,7 +64,7 @@ def _typed(model, raw):
 
 def materializer_fingerprint():
     root=Path(__file__).parent
-    names=('kaggle_source_materializer.py','source_graph_native.py','source_stage.py',
+    names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
         'source_activation.py','stage_graph.py','contracts.py','entity_graph.py',
         'story_contracts.py','search_material.py','region_policy.py','continuation_context.py',
         'source_manifest.py','kaggle_import_contracts.py','bge_contract.py')
@@ -165,7 +167,7 @@ def merge_native_stage(graph: StagedGraph, payload: IngestStagePayload) -> Stage
 
 
 
-def refresh_native_graph_evidence(graph, replacement):
+def refresh_native_graph_evidence(graph, replacement, *, passage_evidence=False):
     """Refresh only superseded evidence; exact accepted batches stay immutable.
 
     A changed entity mention requires the calling model's explicit replacement
@@ -181,6 +183,9 @@ def refresh_native_graph_evidence(graph, replacement):
             chunk=next(c for c in graph.chunks if c.chunk_id==proof.chunk_id)
             region=next(r for p in graph.pages if p.page_id==proof.page_id
                         for r in p.regions if r.region_id==proof.region_id)
+            if passage_evidence:
+                return (proof.page_id in chunk.page_ids
+                    and proof.region_id in [*chunk.region_ids,*chunk.footnote_region_ids])
             return (proof.page_id in chunk.page_ids and proof.region_id in chunk.region_ids
                 and proof.exact_quote in region.source_text and proof.exact_quote in chunk.text)
         except StopIteration:return False
@@ -372,11 +377,55 @@ class NativeSourceCompiler:
         except (ValueError,TypeError,KeyError):
             raise failure('native_source_model_input_invalid') from None
 
-    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations):
+    async def compile_batch(self,batches,*,batch_index,source_id,person_id,last_batch_sha256,text_only=False):
+        """Compile one packet without requiring the unread remainder of a book."""
+        try:
+            return await self._compile(batches,source_id=source_id,person_id=person_id,
+                last_batch_sha256=last_batch_sha256,include_illustrations=True,batch_index=batch_index,text_only=text_only)
+        except SourceMaterializationRejected:
+            raise
+        except (ValueError,TypeError,KeyError):
+            raise failure('native_source_batch_input_invalid') from None
+
+    async def compile_current(self,raw,view,*,source_id,person_id,text_only=False):
+        """Lower current accepted bytes plus indexed, explicitly referenced context.
+
+        The private context view is assembled beside PG from working passages,
+        page provenance and entity identities. Its source identity must equal the accepted current command;
+        no artificial full-book chain is constructed or traversed.
+        """
+        original=validate_stage_payload(raw,source_id=source_id)
+        if view.get('source')!=original['source'] or view.get('ingestion_id')!=original['ingestion_id']:
+            raise failure('native_source_context_identity_changed')
+        internal=copy.deepcopy(view)
+        internal.update(batch_index=0,previous_batch_sha256=ZERO_HASH)
+        encoded=canonical(internal)
+        try:
+            return await self._compile([encoded],source_id=source_id,person_id=person_id,
+                last_batch_sha256=digest(encoded),include_illustrations=True,text_only=text_only,
+                trusted_packet=internal)
+        except SourceMaterializationRejected:raise
+        except (ValueError,TypeError,KeyError):raise failure('native_source_packet_input_invalid') from None
+
+    async def _compile(self,batches,*,source_id,person_id,last_batch_sha256,include_illustrations,batch_index=None,text_only=False,trusted_packet=None):
         self._current()
+        passage_evidence=batch_index is not None or trusted_packet is not None
         if type(batches) is not list or not 1<=len(batches)<=2500:
             raise failure('native_source_batch_chain_required')
-        documents=[validate_stage_payload(raw,source_id=source_id) for raw in batches]
+        documents=[trusted_packet] if trusted_packet is not None else [validate_stage_payload(raw,source_id=source_id) for raw in batches]
+        selected_indexes=(frozenset(p['physical_page_index'] for p in trusted_packet['model_payload']['pages'])
+            if trusted_packet is not None else None)
+        if batch_index is not None:
+            # Identity and immutable chain checks below use original bytes;
+            # only semantic compilation uses the selected dependency views.
+            from .source_batch_selection import select_batch
+            documents,selected_indexes=select_batch(documents,batch_index,source_id=source_id,text_only=text_only)
+        if text_only:
+            for doc in documents:
+                payload=doc['model_payload']
+                payload.update(story_candidates=[],entity_candidates=None,poi_facts=[],poi_media_links=[])
+                for page in payload['pages']:page['illustrations']=[]
+                for chunk in payload['chunks']:chunk['illustration_refs']=[]
         # The model can explicitly replace a chunk under its stable key after
         # seal rejects it. Do not compile the superseded invalid selection before
         # its correction is reached; the accepted batch chain stays unchanged.
@@ -401,10 +450,16 @@ class NativeSourceCompiler:
             if not include_illustrations and (media or any(page.illustrations for page in pages)):
                 raise failure('native_illustration_activation_unavailable')
             partial=compile_model_stage(graph,document_id=source_id,revision=1,pages=pages,chunks=chunks,
-                poi_facts=facts,poi_media_links=media)
+                poi_facts=facts,poi_media_links=media,allow_footnote_spans=passage_evidence)
+            # Existing passage selections come from ordinary PG provenance.
+            # Their internal lookup keys are not new model chunk identities.
+            if trusted_packet is not None:
+                for chunk in partial.chunks:
+                    ident=trusted_packet.get('context_chunk_ids',{}).get(chunk.chunk_key)
+                    if ident is not None:chunk.chunk_id=UUID(ident)
             graph=merge_native_stage(graph,partial)
             bundle=_typed(GraphBundle,payload['entity_candidates']) if payload.get('entity_candidates') else None
-            graph=refresh_native_graph_evidence(graph,bundle)
+            graph=refresh_native_graph_evidence(graph,bundle,passage_evidence=passage_evidence)
             if bundle is not None:
                 # Evidence is checked against the final corrected graph below.
                 # refresh_native_graph_evidence requires explicit same-identity
@@ -426,13 +481,14 @@ class NativeSourceCompiler:
             research=doc['research']
         if previous!=last_batch_sha256:raise failure('native_source_batch_chain_changed')
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(base64.b64decode(source['original_receipt_b64'],validate=True)))
-        validation=validate_graph(graph,expected_page_count=receipt.page_count)
+        validation=validate_graph(graph,expected_page_count=receipt.page_count,selected_page_indexes=selected_indexes,
+            require_figure_review=not text_only,passage_evidence=passage_evidence)
         if not validation.ready:raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')
         metadata=StartMetadataInput.model_validate(source['metadata'])
         language=(metadata.language or '').lower().replace('_','-').split('-',1)[0]
-        language=language if language in ('ru','de') else 'simple'
+        language=language if re.fullmatch(r'[a-z][a-z0-9-]{1,23}',language) else 'simple'
         pages={str(p.page_id):p for p in graph.pages}
         counts=await self._counts([chunk.text for chunk in graph.chunks])
         passages=[]
@@ -445,7 +501,7 @@ class NativeSourceCompiler:
         row=dict(source_id=source_id,person_id=person_id,
             semantic_json=canonical(dict(candidates=candidates,page_reviews=reviews)).decode(),
             research_json=canonical({k:research[k] for k in ('state','continuation')}).decode())
-        semantic,_=await self._semantic(row,graph,passages)
+        semantic,_=await self._semantic(row,graph,passages,passage_evidence=passage_evidence)
         self._current()
         resolved=dict(codec=PROJECTION_CODEC,bibliography=source['bibliography'],revision=1,
             work_id=source['work_id'],edition_id=source['edition_id'],original=receipt.original,
@@ -454,10 +510,11 @@ class NativeSourceCompiler:
                 dimension=DIMENSION,max_tokens=MAX_TOKENS),
             passages=passages,semantic=semantic,research=research,
             image_manifest=build_image_manifest(metadata=metadata,receipt=receipt,graph=graph,
-                semantic=semantic,passages=passages,issued_images=list(images.values())))
+                semantic=semantic,passages=passages,issued_images=list(images.values()),selected_page_indexes=selected_indexes,
+                validate=not text_only))
         if graph.entity_candidates or graph.poi_facts or any(f['entity_keys'] for f in semantic['findings']):
             resolved['source_graph']=resolve_native_source_graph(graph,source_id=source_id,person_id=person_id,
-                semantic=semantic,batch_count=len(batches))
+                semantic=semantic,batch_count=len(batches),passage_evidence=passage_evidence)
         # Resource capacity is explicit; it is not the old32-page codec limit.
         knowledge_bytes(resolved)
         if include_illustrations:
@@ -466,7 +523,7 @@ class NativeSourceCompiler:
             return resolved,native_illustration_projection(graph,resolved,raw_poi_locators)
         return resolved
 
-    async def _semantic(self, row, graph, passages):
+    async def _semantic(self, row, graph, passages, *, passage_evidence=False):
         staged = json.loads(row['semantic_json'])
         regions = {str(region.region_id): region for page in graph.pages for region in page.regions}
         by_ref = {(str(region.page_id), region.region_key): region for region in regions.values()}
@@ -492,27 +549,43 @@ class NativeSourceCompiler:
                 region = by_ref.get((ref.page_id, ref.region_key))
                 if region is None:
                     raise failure('finding_requires_staged_native_region', status='invalid_query')
-                begin, end = ref.start, ref.end
-                if begin is None:
-                    begin = region.source_text.find(ref.original_excerpt)
-                    if begin < 0 or region.source_text.find(ref.original_excerpt, begin+1) >= 0:
-                        raise failure('finding_requires_unambiguous_exact_source_offsets', status='invalid_query')
-                    end = begin+len(ref.original_excerpt)
-                if region.source_text[begin:end] != ref.original_excerpt:
-                    raise failure('finding_excerpt_mismatch', status='invalid_query')
-                matching = []
-                for chunk in graph.chunks:
-                    if region.region_id not in chunk.region_ids:
-                        continue
-                    spans = [span for span in chunk.source_spans if span.region_id == region.region_id]
-                    if spans and not any(span.start <= begin < end <= span.end for span in spans):
-                        continue
-                    if ref.original_excerpt in chunk.text:
-                        matching.append(str(chunk.chunk_id))
-                if not matching:
-                    raise failure('finding_requires_exact_source_passage', status='invalid_query')
-                evidence.append(dict(region_id=str(region.region_id), passage_id=matching[0], start=begin,
-                    end=end, original_excerpt=ref.original_excerpt))
+                if passage_evidence:
+                    matching = [chunk for chunk in graph.chunks
+                        if region.region_id in [*chunk.region_ids,*chunk.footnote_region_ids]
+                        and region.page_id in chunk.page_ids]
+                    if ref.chunk_key is not None:
+                        matching = [chunk for chunk in matching if chunk.chunk_key == ref.chunk_key]
+                    elif ref.chunk_id is not None:
+                        matching = [chunk for chunk in matching if str(chunk.chunk_id) == ref.chunk_id]
+                    elif len(matching) > 1:
+                        # Read an already accepted quote-based packet without
+                        # copying that quotation into its new passage evidence.
+                        matching = [chunk for chunk in matching if ref.original_excerpt in chunk.text]
+                    if not matching:
+                        raise failure('finding_requires_source_passage', status='invalid_query')
+                    evidence.append(dict(region_id=str(region.region_id), passage_id=str(matching[0].chunk_id)))
+                else:
+                    begin, end = ref.start, ref.end
+                    if begin is None:
+                        begin = region.source_text.find(ref.original_excerpt)
+                        if begin < 0 or region.source_text.find(ref.original_excerpt, begin+1) >= 0:
+                            raise failure('finding_requires_unambiguous_exact_source_offsets', status='invalid_query')
+                        end = begin+len(ref.original_excerpt)
+                    if region.source_text[begin:end] != ref.original_excerpt:
+                        raise failure('finding_excerpt_mismatch', status='invalid_query')
+                    matching = []
+                    for chunk in graph.chunks:
+                        if region.region_id not in chunk.region_ids:
+                            continue
+                        spans = [span for span in chunk.source_spans if span.region_id == region.region_id]
+                        if spans and not any(span.start <= begin < end <= span.end for span in spans):
+                            continue
+                        if ref.original_excerpt in chunk.text:
+                            matching.append(str(chunk.chunk_id))
+                    if not matching:
+                        raise failure('finding_requires_exact_source_passage', status='invalid_query')
+                    evidence.append(dict(region_id=str(region.region_id), passage_id=matching[0], start=begin,
+                        end=end, original_excerpt=ref.original_excerpt))
             result['findings'].append(dict(assertion_id=assertion_id, candidate_key=key,
                 proposition=candidate.proposition, account_kind=candidate.account_kind,
                 attributed_to=candidate.attributed_to, reported_by=candidate.reported_by, evidence=evidence,
@@ -564,6 +637,10 @@ class NativeSourceMaterializer:
         if not self.current():raise PermissionError('native_source_owner_changed')
 
     async def __call__(self,command,*,acquire,database):
+        from .source_batch import ROUTE as BATCH_ROUTE
+        if command.route==BATCH_ROUTE:
+            from .kaggle_source_batch import materialize_packet
+            return await materialize_packet(self,command,acquire=acquire,database=database)
         from .source_activation import MATERIALIZE_ROUTE,validate_materialize_command
         from .source_stage import load_stage_batch,SEAL_ROUTE
         from .bge_contract import validate_vector

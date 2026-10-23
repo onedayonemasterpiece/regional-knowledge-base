@@ -140,3 +140,5 @@ the stored apply/outcome receipts settle the job before ordinary dispatch resume
 An unreconciled job must not be redispatched with its historical writer on the
 new executor. Native terminal logs diagnose channel closure; a generic
 `revoked_run` channel reason is not evidence that the bearer token was revoked.
+
+The owner policy dated 2026-10-23 starts the existing successor warmup at 8 h 15 min, with handover and confirmed native stop required before nine hours. This threshold schedules warmup; actual handover continuity, writer pause duration and predecessor stop time require a live receipt. STOP remains the existing planned-handover work, not an additional cancellation mechanism.

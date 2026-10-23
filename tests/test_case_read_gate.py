@@ -61,23 +61,23 @@ async def test_empty_case_has_real_independent_acl_without_fake_source_dependenc
     gated=await gate.finish(permit,result(header()))
     assert gated.result.status=='ok' and gated.result.record['source_dependencies']==[]
     assert gate.issuance_current(gated.ticket)
-    env.spool._source_version=object()
-    assert not gate.issuance_current(gated.ticket)
+    env.spool._source_version=object()  # unrelated history refresh is not Case ACL
+    assert gate.issuance_current(gated.ticket)
     refreshed=await gate.refresh(gated)
-    assert refreshed.result.status=='ok' # re-read same current independent policy
+    assert refreshed.result.status=='ok'
 
 
 @pytest.mark.asyncio
 async def test_missing_coverage_and_forged_native_acl_are_closed_without_private_payload(env,auth):
     gate,authority,b,anchor=await setup(env,auth)
     permit=await gate.dispatch(authority,request(),b)
-    bad=header();bad['acl_revision']=99
+    bad=header();bad['case_role']=0  # native PG can never grant anonymous Case access
     gated=await gate.finish(permit,result(bad))
     assert gated.result.status=='unavailable' and gated.result.record is None and gated.result.reason=='internal_error'
     env.spool._source_anchor=None
     permit=await gate.dispatch(authority,request(),b)
     gated=await gate.finish(permit,result(header()))
-    assert gated.result.reason=='prior_write_pending' and gated.result.record is None
+    assert gated.result.status=='ok' and gated.result.record is not None
 
 
 @pytest.mark.asyncio
@@ -91,9 +91,9 @@ async def test_private_draft_requires_current_personal_capability_and_exact_auth
     record=header();record.update(section='draft_get',draft_id=OBJECT,version=1,current_version=1,
         visibility='personal',payload=json.loads(commands[1].payload)['command'])
     gated=await gate.finish(permit,result(record));assert gated.result.status=='ok'
-    # Current Case managers do not inherit another author's private draft.
-    data=anchor.case_state.cases;data[CASE]['drafts'][OBJECT]['actor']=auth.p.owner.subject
-    anchor.case_state=type(anchor.case_state)(canonical(data))
+    # Private output still requires the personal capability at refresh;
+    # the controller cannot infer draft authority from stale history.
+    change(auth.p,ParticipantGrant(capability='personal_conclusion',granted=False,reason='synthetic revoke'))
     with pytest.raises(PermissionError):await gate.refresh(gated)
 
 

@@ -134,6 +134,10 @@ def current_binding(queue):
         raise TargetUnavailable('target runtime unavailable') from None
 
 
+PENDING_STARTUP_MESSAGE_RU = ("Запускаем инфраструктуру, подождите. Первый поиск займёт дольше обычного; "
+    "следующие запросы будут быстрыми.")
+
+
 class KaggleSourceBackend:
     """Current source vertical; unsupported product operations fail explicitly."""
     current_read_output_required = True
@@ -200,14 +204,11 @@ class KaggleSourceBackend:
         issued = None
         retained = False
         try:
-            # Exactly the same verified OAuth resolver/destination/current
-            # source-history owners as the existing search/fetch routes.
+            # Reuse the OAuth, current PG binding and independent native media
+            # issuance owner; ordinary pixels do not require history renewal.
             verified = await self.read_authority.resolve_oauth(
                 principal.access_token, destination=self.destination)
             await self.read_authority.require(verified, "public_search")
-            startup = getattr(self, "startup", None)
-            if startup is not None and not startup.reads_current():
-                raise PermissionError("source history unavailable")
             binding = await asyncio.to_thread(current_binding, self.worker_queue)
             if self.source_gate.binding_current(binding) is not True:
                 raise PermissionError("target binding changed")
@@ -329,11 +330,25 @@ class KaggleSourceBackend:
 
     @staticmethod
     def _render_story(result, *, attempt):
-        return {**(result.record or {}),**({'next_cursor':editorial_cursor(result.record,result.observed_database_generation)}
+        output={**(result.record or {}),**({'next_cursor':editorial_cursor(result.record,result.observed_database_generation)}
             if type(result) is EditorialReadResult and result.record is not None else {}),'status':result.status,'reason':result.reason,
             'observed_data_seq':result.observed_data_seq,'observed_projection_seq':result.observed_projection_seq,
             'read_trace':ReadTrace(**attempt.correlation(),
                 backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json')}
+        # Use the SAME opaque locator and independent ACL/revocation checks as
+        # ordinary fetch. The Story never confers a new passage-read grant.
+        if result.record is not None and 'passage_refs' in result.record:
+            if (result.observed_database_generation is None or result.observed_visibility_epoch is None
+                    or len(result.evidence)!=1 or len(result.evidence[0].dependencies.source_revisions)!=1):
+                raise ValueError('current Story source locator required')
+            source=result.evidence[0].dependencies.source_revisions[0]
+            output['passage_refs']=[{**ref,'fetch_id':passage_fetch_id(PassageContinuation(
+                database_generation=result.observed_database_generation,
+                source=source, passage_id=ref['passage_id'],
+                visibility_epoch=result.observed_visibility_epoch,
+                text_offset=0,bibliography_offset=0))}
+                for ref in result.record['passage_refs']]
+        return output
 
     @staticmethod
     def _render_fact(result, *, attempt, comparison=False):
@@ -416,11 +431,9 @@ class KaggleSourceBackend:
                         raise PermissionError('adapter destination differs')
                     await measured('auth_ms',self.read_authority.require(authority,'public_search'))
                 try:
-                    # The source-history/restore gate is checked only AFTER
-                    # actor authorization; a cold read must not bypass it.
-                    startup = getattr(self, 'startup', None)
-                    if startup is not None and not startup.reads_current():
-                        raise TargetUnavailable('source history not ready')
+                    # Authenticated actor + verified current PG/worker binding
+                    # suffice for reads. History renewal belongs to writes
+                    # and must never hide previously published pages.
                     binding = await measured('binding_ms',asyncio.to_thread(current_binding, self.worker_queue))
                 except TargetUnavailable:
                     # An already-authorized caller records a durable demand;
@@ -438,7 +451,8 @@ class KaggleSourceBackend:
                         raise ToolError(json.dumps({'status':'unavailable','reason':'target_warming',
                             'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
                     startup_status=StartupStatus(startup_ref=demand['startup_ref'],
-                        status='pending',reason='target_warming')
+                        status='pending',reason='target_warming',
+                        message_ru=PENDING_STARTUP_MESSAGE_RU)
                     common=dict(status='pending',reason='target_warming',mode='lexical_degraded',
                         retrieval_mode='lexical_only',main_state='starting',startup=startup_status,
                         read_trace=ReadTrace(**attempt.correlation(),
@@ -542,9 +556,6 @@ class KaggleSourceBackend:
             observed=await asyncio.to_thread(self.worker_queue.startup_status,startup_ref)
             if observed['status']=='ready':
                 try:
-                    target=getattr(self,'startup',None)
-                    if target is not None and not target.reads_current():
-                        raise TargetUnavailable('source history unavailable')
                     await asyncio.to_thread(current_binding,self.worker_queue)
                 except TargetUnavailable:
                     observed.update(status='unavailable',reason='target_not_ready')
@@ -596,6 +607,8 @@ class KaggleSourceBackend:
                 except TargetUnavailable:still_current=False
                 if not still_current:
                     observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
+            if observed['status']=='pending':
+                observed['message_ru']=PENDING_STARTUP_MESSAGE_RU
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None

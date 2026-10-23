@@ -23,6 +23,33 @@ async def flush(sink):
 
 
 @pytest.mark.asyncio
+async def test_completed_native_search_returns_ok_and_existing_stages_in_same_reply():
+    sink, records = collector()
+    runtime = ReadRuntime('run-a', 'incarnation-a')
+    request = frame()
+    handler = KaggleWorkerQuery(acquire=Lease().acquire, tokenizer=pinned(),
+        telemetry=asyncio.Queue(maxsize=8))
+    async def encode(text):
+        return VECTOR
+    with bind_read_runtime(runtime):
+        response = await handler(request, encode=encode)
+    assert response['status'] == 'ok' and response['reason'] is None
+    events = response.pop('read_events')
+    sink.native_events(events, request_id=request['request_id'],
+        run_id=runtime.run_id, runtime_incarnation=runtime.runtime_incarnation,
+        connection_generation=4, turn_generation=9)
+    await flush(sink)
+    assert sink.failed == 0 and len(records) == 2
+    event = next(record for record in records if record['terminal'])
+    assert event['request_ref'] == sha256(request['request_id'].encode()).hexdigest()
+    assert event['status'] == 'ok' and event['executed_branches'] == ['lexical', 'dense']
+    assert {'encode_ms', 'lexical_ms', 'dense_ms', 'hydrate_ms'} <= event['stages_ms'].keys()
+    assert request['query'] not in json.dumps(events)
+    from regional_knowledge.kaggle_protocol import decode_envelope
+    assert decode_envelope(json.dumps(response).encode()).status == 'ok'
+
+
+@pytest.mark.asyncio
 async def test_concurrent_identical_queries_join_public_attempts_to_exact_native_runtime():
     sink, public = collector()
     native = asyncio.Queue(maxsize=16)
@@ -42,13 +69,15 @@ async def test_concurrent_identical_queries_join_public_attempts_to_exact_native
             return VECTOR
         with bind_read_runtime(runtime):
             response = await handler(request, encode=encode)
+        # The same bounded existing events are carried with their own result.
+        native_events.extend(response.pop('read_events'))
         assert sink.finish_attempt(attempt, status=response['status'], reason=response['reason'],
             executed_branches=('dense', 'lexical'), stages_ms={'search_ms': 1, 'total_ms': 2})
         assert not sink.finish_attempt(attempt, status='error', reason='internal_error')
 
+    native_events = []
     await asyncio.gather(*(execute(a, n + 1) for n, a in enumerate(attempts)))
     await flush(sink)
-    native_events = [native.get_nowait() for _ in range(native.qsize())]
     assert len(native_events) == 4
     for attempt, turn in zip(attempts, (1, 2)):
         assert attempt.request_ref == sha256(attempt.request_id.encode()).hexdigest()
@@ -58,8 +87,8 @@ async def test_concurrent_identical_queries_join_public_attempts_to_exact_native
         events = [e for e in native_events if e['request_ref'] == attempt.request_ref]
         assert len(events) == 2
         terminal = next(e for e in events if e['plane'] == 'adapter')
-        assert terminal['terminal'] and terminal['status'] == 'degraded'
-        assert terminal['reason'] == 'bounded_retrieval'
+        assert terminal['terminal'] and terminal['status'] == 'ok'
+        assert terminal['reason'] is None
         assert terminal['run_id'] == 'run-a' and terminal['runtime_incarnation'] == 'incarnation-a'
         assert (terminal['connection_generation'], terminal['turn_generation']) == (4, turn)
         assert terminal['executed_branches'] == ('lexical', 'dense')
@@ -111,7 +140,7 @@ async def test_actual_adapter_terminal_overrides_executor_stage_after_serializat
     import regional_knowledge.kaggle_worker_query as adapter
     wire = adapter._wire
     def failed_after_search(result):
-        if result.status == 'degraded':
+        if result.status in ('ok', 'degraded'):
             raise ValueError('private serialization failure')
         return wire(result)
     monkeypatch.setattr(adapter, '_wire', failed_after_search)
@@ -122,7 +151,7 @@ async def test_actual_adapter_terminal_overrides_executor_stage_after_serializat
     with bind_read_runtime(ReadRuntime('run-a', 'incarnation-a')):
         response = await handler(frame(), encode=encode)
     assert response['status'] == 'unavailable' and response['reason'] == 'internal_error'
-    events = [native.get_nowait() for _ in range(native.qsize())]
+    events = response.get('read_events', []) + [native.get_nowait() for _ in range(native.qsize())]
     assert events[0]['plane'] == 'executor_stage' and not events[0]['terminal']
     assert events[-1]['plane'] == 'adapter' and events[-1]['terminal']
     assert events[-1]['status'] == 'unavailable' and events[-1]['reason'] == 'internal_error'
@@ -140,7 +169,7 @@ async def test_native_early_parse_refusal_and_invalid_identity_never_echo_privat
         with pytest.raises(WorkerQueryInputError):
             await handler({'request_id': private, 'connection_generation': True, 'query': private}, encode=forbidden_encode)
     assert reply['status'] == 'invalid_query'
-    events = [native.get_nowait() for _ in range(native.qsize())]
+    events = reply.get('read_events', []) + [native.get_nowait() for _ in range(native.qsize())]
     assert len(events) == 2 and all(e['terminal'] and e['reason'] == 'invalid_input' for e in events)
     assert events[0]['request_ref'] == sha256(b'synthetic-read').hexdigest()
     assert events[1]['request_ref'] is None and events[1]['diagnostic_state'] == 'inconclusive'
@@ -256,7 +285,7 @@ async def test_adapter_deadline_after_serialization_is_the_final_terminal(monkey
     with bind_read_runtime(ReadRuntime('run-a', 'incarnation-a')):
         result = await handler(frame(), encode=encode)
     assert result['status'] == 'unavailable' and result['reason'] == 'deadline_exceeded'
-    events = [native.get_nowait() for _ in range(native.qsize())]
+    events = result.get('read_events', []) + [native.get_nowait() for _ in range(native.qsize())]
     assert len(events) == 2 and not events[0]['terminal']
     assert events[1]['terminal'] and events[1]['reason'] == result['reason']
 

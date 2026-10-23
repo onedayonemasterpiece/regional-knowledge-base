@@ -21,6 +21,8 @@ from regional_knowledge.kaggle_bootstrap import CandidateReadiness, PreparedRunt
 from regional_knowledge.kaggle_readiness import RUNTIME_HASHES, SearchRuntimeExpectation
 from regional_knowledge.kaggle_protocol import Query, QueryFilters, TrustedActorContext
 from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+from regional_knowledge.query_telemetry import ReadRuntime, bind_read_runtime
+from regional_knowledge.read_telemetry import ReadTelemetry
 from test_bge_wss_worker import CONFIG, module
 from test_kaggle_pg_driver import database
 from test_kaggle_query import env, publish, PG, tokenizer, SOURCE, VECTOR
@@ -61,7 +63,9 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
     authority = await auth.resolver.resolve_oauth(auth.tokens.access_token, destination=auth.destination)
     # No document actor is registered: this durable seed creates the owned run
     # without authorizing document computation in the shared admission fixture.
-    app = Starlette(routes=[channel_route(queue)])
+    native_records = []
+    read_telemetry = ReadTelemetry(sink=lambda raw: native_records.append(json.loads(raw)))
+    app = Starlette(routes=[channel_route(queue, read_telemetry=read_telemetry)])
     listener = sockets.socket()
     listener.bind(('127.0.0.1', 0))
     listener.listen(5)
@@ -127,7 +131,11 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
     try:
         await until(lambda: server.started)
         transport = module('bge_wss_transport')
-        handler = KaggleWorkerQuery(acquire=env['acquire'], tokenizer=tokenizer())
+        executor = KaggleWorkerQuery(acquire=env['acquire'], tokenizer=tokenizer(),
+            telemetry=asyncio.Queue(maxsize=8))
+        async def handler(frame, *, encode):
+            with bind_read_runtime(ReadRuntime(run, worker.incarnation)):
+                return await executor(frame, encode=encode)
         preparations = []
         async def prepare(encoder, **identity):
             assert loads == ['resident-encoder-stub-loaded']
@@ -156,8 +164,8 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
         ticket = await admission.begin_read(authority, original, dialog_ref='native-roundtrip',
                                              deadline=time.monotonic() + 1.9)
         result = await asyncio.wait_for(asyncio.shield(ticket.result), 2)
-        assert result.status == 'degraded' and result.mode == 'hybrid'
-        assert result.reason == 'bounded_retrieval'
+        assert result.status == 'ok' and result.mode == 'hybrid'
+        assert result.reason is None
         assert result.observed_data_seq == result.observed_projection_seq == 5
         assert result.observed_database_generation == 'query-fixture'
         assert result.evidence and len(result.evidence) <= original.evidence_limit
@@ -176,6 +184,13 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
         outgoing = [frame for direction, frame in frames if direction == 'worker']
         responses = [frame for frame in outgoing if frame['type'] == 'QUERY_RESULT']
         assert len(responses) == 1 and responses[0]['request_id'] == ticket.request_id
+        events = responses[0]['read_events']
+        assert len(events) == 2 and query_text not in json.dumps(events)
+        await until(lambda: len(native_records) == 2)
+        assert read_telemetry.failed == 0
+        terminal = next(record for record in native_records if record['terminal'])
+        assert terminal['status'] == 'ok'
+        assert {'encode_ms', 'lexical_ms', 'dense_ms', 'hydrate_ms'} <= terminal['stages_ms'].keys()
         assert not any(frame['type'] == 'RESULT' for frame in outgoing)
         assert 'vectors' not in responses[0] and 'embedding' not in responses[0]
         assert len(json.dumps(responses[0], ensure_ascii=False).encode()) <= 256 * 1024

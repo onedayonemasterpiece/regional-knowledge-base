@@ -147,7 +147,8 @@ async def test_retained_terminal_geo_spool_and_gate_survive_current_registry_wit
     gate,authority,b,manifest,commands,keys=await setup(env,auth,canonical_receipts=True)
     original={command.operation_key:await env.spool.get(command.operation_key) for command in commands}
     env.spool.registry=current_registry()
-    assert len(env.spool.registry.handlers)==13
+    from regional_knowledge.kaggle_native_source_bindings import NATIVE_ROUTES
+    assert set(env.spool.registry.handlers)==NATIVE_ROUTES
     for command in commands:
         retained=await env.spool.get(command.operation_key)
         old=original[command.operation_key]

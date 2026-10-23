@@ -188,11 +188,13 @@ async def test_full_rank_union_current_source_gate_withdraws_whole_observation(e
     result=decode_envelope(json.dumps(wire).encode())
     permit=await gate.dispatch(owner,request(f,owner),b);gated=await gate.finish(permit,result)
     assert len(gated.result.evidence)==25 and gate.issuance_current(gated.ticket)
-    await stage(env)  # New source restriction invalidates ranks beyond fused top5 too.
+    await stage(env)  # This exact acceptance fixture includes source A in
+    # the entire 25-result rank union. Withdrawal must clear ALL frozen ranks.
     assert not gate.issuance_current(gated.ticket)
     closed=await gate.refresh(gated)
-    assert closed.result.status=='unavailable' and closed.result.evidence==()
-    assert closed.result.ranks==BranchRanks() and closed.result.mode is None
+    assert closed.result.status=='unavailable' and closed.result.reason=='evidence_withdrawn'
+    assert closed.result.evidence==() and closed.result.ranks==BranchRanks()
+    assert closed.result.mode is None
     assert type(decode_envelope(encode_envelope(closed.result))) is AcceptanceReadResult
 
 
@@ -302,6 +304,8 @@ async def test_real_generated_transport_asgi_admission_gate_and_final_private_is
             monkeypatch.setattr(gate,'refresh',racing_refresh)
         consumed=[]
         if late_restriction:
+            # The acceptance fixture includes A and B; restricting A while
+            # the response is retained invalidates the frozen rank union.
             with pytest.raises(RuntimeError,match='unavailable'):
                 await observer.observe('synthetic harbour',authority=owner,
                     request_id='actual-acceptance-wire',consume=consumed.append)

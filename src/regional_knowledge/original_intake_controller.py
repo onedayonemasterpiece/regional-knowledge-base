@@ -361,7 +361,7 @@ class OriginalIntakeController:
                 if row is None:raise OriginalIntakeError('original_source_image_not_issued')
                 value=json.loads(row['receipt_json'])
                 if (value!=issued_image_receipt(receipt,value)
-                        or value['source_image_receipt_sha256']!=expected):
+                        or (expected is not None and value['source_image_receipt_sha256']!=expected)):
                     raise OriginalIntakeError('original_source_image_receipt_changed')
                 result.append(value)
         await self._authorize(context)

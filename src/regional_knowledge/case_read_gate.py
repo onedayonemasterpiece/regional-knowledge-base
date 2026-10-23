@@ -47,7 +47,7 @@ class CaseReadGate(SourceReadGate):
     def _policy(self,query,authority):
         anchor=self.spool._source_anchor
         state=getattr(anchor,'case_state',None)
-        if anchor is None or not anchor.current() or type(state) is not CaseHistory:return None,None,0
+        if anchor is None or type(state) is not CaseHistory:return None,None,0
         case=state.cases.get(query.case_id)
         if case is None:raise SourceGateDenied('Case access unavailable')
         role=4 if case['owner']==authority.person_id else {'viewer':1,'contributor':2,'curator':3,'manager':4}.get(case['grants'].get(authority.person_id),0)
@@ -66,10 +66,12 @@ class CaseReadGate(SourceReadGate):
             raise SourceGateDenied('Case semantics unavailable')
         key=binding_key(binding)
         if not self.binding_current(binding) or query.connection_generation!=key[2]:raise SourceGateDenied('runtime binding changed')
-        self._policy(query,authority)
+        # Native read_disagreement_v1 checks actor role and draft ownership in
+        # the PG read transaction; a global history projection is not admission.
         actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
             auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref)
-        query=query.model_copy(update={'actor':actor,'min_data_seq':max(query.min_data_seq,key[4])})
+        query=query.model_copy(update={'actor':actor,'min_data_seq':(
+            max(query.min_data_seq,key[4]) if query.section=='operation' else query.min_data_seq)})
         permit=DispatchPermit(query)
         self._permits[permit]=_Read(authority,query,binding,key,self.clock()+min(self.ttl_seconds,query.deadline_ms/1000))
         return permit
@@ -110,67 +112,111 @@ class CaseReadGate(SourceReadGate):
         return result.model_copy(update={'status':'denied' if reason=='access_denied' else 'unavailable',
             'record_b64':None,'reason':reason,'evidence':(),'prior_write_pending':reason=='prior_write_pending'})
 
+    def _case_restriction_after(self,case_id,sequence):
+        # A not-yet-observed local grant/revoke cannot make an older PG result
+        # public. Unlike global history, this is just the affected Case ACL.
+        with self.spool._db() as db:
+            return db.execute("""SELECT 1 FROM rkb_control_operations WHERE source_id=?
+                AND sequence>? AND json_extract(CAST(dependency_bytes AS TEXT),
+                    '$.restriction')=1 LIMIT 1""",('case:'+case_id,sequence)).fetchone() is not None
+
     async def _gate(self,read,result):
         await self._authority(read.authority,read.query)
         if not self._binding(read):raise SourceGateDenied('runtime binding changed')
         q=read.query
-        if type(result) is not CaseReadResult or any(getattr(q,k)!=getattr(result,k) for k in ('request_id','connection_generation','turn_generation')):
+        if type(result) is not CaseReadResult or any(getattr(q,k)!=getattr(result,k)
+                for k in ('request_id','connection_generation','turn_generation')):
             raise SourceGateDenied('Case result request binding differs')
         try:CaseReadResult.model_validate_json(result.model_dump_json())
         except (ValueError,TypeError):result=self._closed(result,'internal_error')
-        if result.status!='ok':read.facts,read.result=None,result;return result
-        try:validate_case_record(q,result.record)
-        except (ValueError,TypeError,KeyError):
-            result=self._closed(result,'internal_error');read.facts,read.result=None,result;return result
-        anchor,case,role=self._policy(q,read.authority)
-        if anchor is None:result=self._closed(result,'prior_write_pending');read.facts,read.result=None,result;return result
-        facts=await self._facts(q,read.authority,anchor,case)
-        record=result.record
-        deps=record.get('source_dependencies')
-        good=(record.get('case_id')==q.case_id and type(deps) is list and len(deps)==len(case['sources']))
-        seen=set()
-        if good:
+        if result.status!='ok':
+            read.facts,read.result=None,result
+            return result
+        if q.section=='search':
+            try:
+                record=validate_case_record(q,result.record)
+                if (result.observed_database_generation!=read.key[3]
+                        or result.observed_data_seq is None or result.observed_data_seq<q.min_data_seq
+                        or result.observed_projection_seq is None or result.observed_projection_seq<q.min_data_seq
+                        or result.observed_visibility_epoch is None):
+                    raise ValueError('native Case search binding differs')
+                cases=tuple(item['case_id'] for item in record['items'])
+                sources=tuple(sorted({dep['source_id'] for item in record['items']
+                    for dep in item['source_dependencies']}))
+                # Only affected Case grants or source withdrawals invalidate
+                # candidate disclosure, not unrelated next-page writes.
+                if (any(self._case_restriction_after(case_id,result.observed_data_seq)
+                        for case_id in cases) or self._restricted_sources(sources)):
+                    result=self._closed(result,'access_denied')
+            except (ValueError,TypeError,KeyError,AttributeError):
+                result=self._closed(result,'internal_error')
+                cases=()
+                sources=()
+            await self._authority(read.authority,q)
+            if not self._binding(read):raise SourceGateDenied('runtime binding changed')
+            if result.status=='ok' and (any(
+                    self._case_restriction_after(case_id,result.observed_data_seq)
+                    for case_id in cases) or self._restricted_sources(sources)):
+                result=self._closed(result,'access_denied')
+            read.facts=(cases,sources,result.observed_data_seq) if result.status=='ok' else None
+            read.result=result
+            return result
+        try:
+            record=validate_case_record(q,result.record)
+            if (record.get('case_id')!=q.case_id or result.observed_database_generation!=read.key[3]
+                    or result.observed_data_seq is None or result.observed_data_seq<q.min_data_seq
+                    or result.observed_projection_seq is None or result.observed_projection_seq<q.min_data_seq
+                    or result.observed_visibility_epoch is None):
+                raise ValueError('native Case database binding differs')
+            deps=record.get('source_dependencies')
+            if type(deps) is not list or len(deps)>32:raise ValueError('Case dependencies invalid')
+            seen=set()
             for dep in deps:
                 if (type(dep) is not dict or set(dep)!={'source_id','content_revision','eligibility_revision'}
-                        or dep['source_id'] in seen or case['sources'].get(dep['source_id'])!=dep['content_revision']
-                        or type(dep['eligibility_revision']) is not int or dep['eligibility_revision']<1):good=False;break
-                seen.add(dep['source_id'])
-        if q.section=='edit_context':
-            candidate=record.get('candidate_dependency')
-            good=good and (candidate is None if q.candidate_source_id is None else
-                type(candidate) is dict and set(candidate)=={'source_id','content_revision','eligibility_revision'}
-                and candidate['source_id']==q.candidate_source_id
-                and all(type(candidate[k]) is int and candidate[k]>=1 for k in ('content_revision','eligibility_revision')))
-        if q.section!='operation':
-            good=good and (record.get('section'),record.get('case_role'),record.get('acl_revision'),record.get('event_seq'))==(
-                q.section,role,case['acl_revision'],case['event_seq'])
-            good=good and record.get('case_revision')==(q.revision or case['revision'])
-            if q.section=='draft_get':
-                draft=case['drafts'][q.draft_id]
-                good=good and record.get('draft_id')==q.draft_id and record.get('current_version')==draft['version'] and record.get('version')==(q.draft_version or draft['version'])
-            if q.section=='draft_list':
-                good=good and type(record.get('items')) is list and len(record['items'])<=q.limit
-                if good:
-                    for item in record['items']:
-                        d=case['drafts'].get(item.get('draft_id'))
-                        if d is None or d['actor']!=read.authority.person_id or d['version']!=item.get('version'):good=False;break
-        else:good=good and record.get('operation_key')==q.operation_key
-        minimum=min(result.observed_data_seq,result.observed_projection_seq)
-        if facts.sequence>getattr(anchor,'applied_sequence',minimum):result=self._closed(result,'prior_write_pending')
-        elif not good:result=self._closed(result,'internal_error')
-        elif result.observed_database_generation!=read.key[3]:result=self._closed(result,'not_ready')
-        elif (facts.pending or facts.unknown or facts.sequence>minimum or minimum<q.min_data_seq
-                or facts.sources.pending or facts.sources.unknown or facts.sources.scope_sequence>minimum):
-            result=self._closed(result,'prior_write_pending')
-        elif any(change.restriction or change.sequence>minimum for change in facts.sources.changes):
-            result=self._closed(result,'evidence_withdrawn')
+                        or dep['source_id'] in seen or type(dep['content_revision']) is not int
+                        or type(dep['eligibility_revision']) is not int
+                        or min(dep['content_revision'],dep['eligibility_revision'])<1):
+                    raise ValueError('Case source references invalid')
+                from .kaggle_case_contracts import exact_uuid
+                exact_uuid(dep['source_id']);seen.add(dep['source_id'])
+            if q.section=='operation':
+                if record.get('operation_key')!=q.operation_key:
+                    raise ValueError('Case operation is not this actor request')
+            else:
+                if (record.get('section')!=q.section or type(record.get('case_role')) is not int
+                        or not 1<=record['case_role']<=4
+                        or type(record.get('acl_revision')) is not int or record['acl_revision']<1
+                        or type(record.get('event_seq')) is not int or record['event_seq']<0
+                        or type(record.get('case_revision')) is not int or record['case_revision']<1
+                        or q.revision is not None and record['case_revision']!=q.revision):
+                    raise ValueError('native Case role/record differs')
+                if (q.section=='draft_get' and (record.get('draft_id')!=q.draft_id
+                        or record.get('version')!=(q.draft_version or record.get('current_version')))):
+                    raise ValueError('private draft actor/selector differs')
+                if (q.section=='edit_context' and (record.get('candidate_dependency') is not None
+                        and record['candidate_dependency'].get('source_id')!=q.candidate_source_id)):
+                    raise ValueError('Case candidate scope differs')
+            if self._case_restriction_after(q.case_id,result.observed_data_seq):
+                result=self._closed(result,'access_denied')
+        except (ValueError,TypeError,KeyError,AttributeError):
+            result=self._closed(result,'internal_error')
         await self._authority(read.authority,q)
         if not self._binding(read):raise SourceGateDenied('runtime binding changed')
-        if not self._current(facts):result=self._closed(result,'prior_write_pending');facts=None
-        read.facts,read.result=facts,result
+        if result.status=='ok' and self._case_restriction_after(q.case_id,result.observed_data_seq):
+            result=self._closed(result,'access_denied')
+        read.facts=(q.case_id,result.observed_data_seq) if result.status=='ok' else None
+        read.result=result
         return result
 
     def issuance_current(self,ticket):
         read=self._tickets.get(ticket)
-        try:return read is not None and self._binding(read) and (read.facts is None or self._current(read.facts))
+        try:
+            if read is not None and read.query.section=='search' and read.facts is not None:
+                cases,sources,sequence=read.facts
+                return bool(self._binding(read) and read.result is not None
+                    and not self._restricted_sources(sources)
+                    and not any(self._case_restriction_after(case_id,sequence)
+                                for case_id in cases))
+            return bool(read is not None and self._binding(read) and read.result is not None
+                and (read.facts is None or not self._case_restriction_after(*read.facts)))
         except Exception:return False

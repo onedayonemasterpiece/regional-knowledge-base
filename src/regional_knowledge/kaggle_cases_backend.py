@@ -115,7 +115,9 @@ class KaggleCasesBackend:
         self.output_gate=CaseOperationGate(self)
 
     def _binding_current(self,binding):
-        return self.startup.binding_current(binding) and self.startup.reads_current()
+        # Case actor rights are checked in PG; unrelated history refresh is
+        # not an availability condition for a current PG Case binding.
+        return self.startup.binding_current(binding)
 
     async def _native(self,authority,binding,*,deadline=None,**selector):
         deadline=min(deadline,time.monotonic()+2) if deadline is not None else time.monotonic()+2
@@ -123,7 +125,8 @@ class KaggleCasesBackend:
         try:
             async with asyncio.timeout_at(deadline):
                 query=CaseReadRequest(request_id='case-'+secrets.token_hex(16),connection_generation=binding.connection_generation,
-                    turn_generation=0,min_data_seq=binding.min_data_seq,deadline_ms=max(1,int((deadline-time.monotonic())*1000)),
+                    turn_generation=0,min_data_seq=(binding.min_data_seq if selector.get('section')=='operation' else 0),
+                    deadline_ms=max(1,int((deadline-time.monotonic())*1000)),
                     actor=TrustedActorContext(person_id=authority.person_id,audience=self.destination.key,
                         auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref),**selector)
                 permit=await self.gate.dispatch(authority,query,binding)
@@ -171,7 +174,8 @@ class KaggleCasesBackend:
         authority=gated=None;retained=False
         try:
             async with asyncio.timeout_at(deadline):
-                if not self.startup.reads_current():raise failure('case_history_unavailable')
+                # PG owns the current Case role/draft ACL. Do not wait for the
+                # unrelated global source-history maintenance proof.
                 authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
                 binding=await asyncio.to_thread(current_binding,self.queue)
                 gated=await self._native(authority,binding,deadline=deadline,**selector)
@@ -243,9 +247,16 @@ class KaggleCasesBackend:
             query=CaseReadRequest(request_id='case-write-check',connection_generation=binding.connection_generation,turn_generation=0,
                 case_id=command.ids['case_id'],actor=TrustedActorContext(person_id=authority.person_id,
                     audience=self.destination.key,auth_epoch=authority.auth_revision,visibility_epoch=0),min_data_seq=0,deadline_ms=1)
+            # Existing Case ACL is actor-scoped. Only restrictions on this
+            # Case or its accepted source dependencies may stop the write;
+            # an unrelated incoming page does not make the Case stale.
             facts=await self.gate._facts(query,authority,anchor,case)
-            if not self.gate._current(facts):raise failure('case_history_unavailable')
-            if any(change.restriction for change in facts.sources.changes):raise failure('evidence_withdrawn')
+            # Even if a grant/revoke is staged WHILE reading source facts,
+            # its exact Case restriction must close this writer request.
+            if self.gate._case_restriction_after(command.ids['case_id'],getattr(anchor,'applied_sequence',0)):
+                raise failure('prior_write_pending')
+            if any(change.restriction for change in facts.sources.changes):
+                raise failure('evidence_withdrawn')
         if (self.spool._writing or self.spool._source_anchor is not anchor
                 or self.spool._source_version is not version):raise failure('prior_write_pending')
         return anchor,version
@@ -396,7 +407,6 @@ class KaggleCasesBackend:
                       case_revision=0,object_version=0,status_only=False):
         authority=context=binding=entry=gated=None;retained=False;collected=False
         try:
-            if not self.startup.reads_current():raise failure('case_history_unavailable')
             authority=await self.read_authority.resolve_oauth(principal.access_token,destination=self.destination)
             await self.read_authority.require(authority,'case_read')
             if authority.public_only or authority.route not in ('owner','personal','expert'):raise PermissionError('personal Case authority required')
@@ -435,7 +445,12 @@ class KaggleCasesBackend:
                         collected=True
                     if entry is None and not collected:
                         scope=await self.spool.scope_state()
-                        if scope['pending'] or scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:raise failure('prior_write_pending')
+                        # An already accepted unrelated page may be awaiting
+                        # PG/Dataset outcome. Journal predecessor proof permits
+                        # the next Case intent, not a fictitious applied/Saved
+                        # receipt. UNKNOWN or an unaccepted seal still blocks.
+                        if scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
+                            raise failure('prior_write_pending')
                         head=await self.spool.journal.head();sequence=head.reference.last_sequence if head else 0
                         if sequence!=scope['accepted_sequence']:raise failure('case_history_unavailable')
                         revisions={h.revisions for h in self.spool.registry.handlers.values() if h.route.startswith('disagreement.')}
@@ -492,6 +507,17 @@ class KaggleCasesBackend:
         finally:
             if gated is not None:self.gate.release(gated.ticket)
             if authority is not None and not retained:self.read_authority.release(authority)
+
+    async def disagreement_search(self,query,principal,*,place=None,source_id=None,after_case_id=None,limit=5):
+        # Model interprets Case identity; this returns only bounded
+        # actor-authorized question/place/source candidate records.
+        if (type(query) is not str or len(query)>120
+                or not any((query.strip(),place,source_id))
+                or type(limit) is not int or not 1<=limit<=8):
+            raise failure('invalid_input','invalid_query')
+        return await self._read(principal,case_id='00000000-0000-0000-0000-000000000000',
+            section='search',search_query=query.strip() or None,place=place,
+            source_id=source_id,after_case_id=after_case_id,limit=limit)
 
     async def disagreement_get(self,case_id,principal,*,section='case',after_seq=0,limit=20,revision=None):
         return await self._read(principal,case_id=str(case_id),section=section,after_seq=after_seq,limit=limit,revision=revision)

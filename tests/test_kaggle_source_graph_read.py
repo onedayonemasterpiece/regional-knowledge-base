@@ -48,6 +48,18 @@ async def test_native_source_graph_retrieval_is_indexed_with_real_source_revisio
 
 
 @pytest.mark.asyncio
+async def test_native_graph_reads_reference_proof_and_source_passage_text():
+    import copy,json
+    values=list(row());values[4]=copy.deepcopy(values[4])
+    proof=values[4]['mention']['evidence']
+    for key in ('exact_quote','start','end','source_region_sha256'):proof.pop(key,None)
+    values[5]='The actual linked synthetic source passage.'
+    result=await execute_source_graph_read(request(),acquire=native([tuple(values)]).acquire)
+    assert result.status=='ok' and result.evidence[0].text==values[5]
+    assert 'exact_quote' not in json.dumps(result.model_dump(mode='json'))
+
+
+@pytest.mark.asyncio
 async def test_worker_graph_branch_never_counts_or_encodes_and_pairs_exact_type():
     n=native([row()])
     async def forbidden(*_):raise AssertionError('graph read must not encode/count')

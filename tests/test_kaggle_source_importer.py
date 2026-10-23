@@ -156,11 +156,15 @@ async def staged(s,metadata=None):
     return result
 
 
-def test_public_rights_requires_existing_verified_distribution_policy():
+def test_optional_owner_rights_keep_typed_limits_without_second_legal_check():
+    # The owner has already authorized legal shared import. Legacy typed
+    # claims remain optional and bounded, not another mandatory approval.
+    assert PublicImportRights(rights_status='unknown',evidence={},policy_version='x').rights_status=='unknown'
+    assert PublicImportRights(rights_status='licensed',evidence={},policy_version='x').rights_status=='licensed'
     with pytest.raises(ValidationError):
-        PublicImportRights(rights_status='unknown',evidence={'public_distribution':True},policy_version='x')
+        PublicImportRights(rights_status='invalid_status',evidence={},policy_version='x')
     with pytest.raises(ValidationError):
-        PublicImportRights(rights_status='licensed',evidence={},policy_version='x')
+        PublicImportRights(rights_status='licensed',evidence={},policy_version='')
     assert options().public_rights.rights_status=='licensed'
 
 
@@ -395,7 +399,7 @@ async def test_source_and_authored_story_activate_only_after_exact_remote_outcom
 @pytest.mark.asyncio
 async def test_copied_rights_model_and_wrong_launch_pin_cannot_acquire_original(intake):
     s=intake
-    forged=options().model_copy(update={'public_rights':options().public_rights.model_copy(update={'rights_status':'unknown'})})
+    forged=options().model_copy(update={'public_rights':options().public_rights.model_copy(update={'rights_status':'invalid_status'})})
     with pytest.raises(ToolError,match='invalid_small_source_input'):
         await s.importer.book_ingest(command='start',principal=s.principal,source_import=forged)
     s.importer.launch_config_sha256='f'*64

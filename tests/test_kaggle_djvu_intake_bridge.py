@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from regional_knowledge.kaggle_original_parser import parse
+from regional_knowledge.kaggle_original_native import HISTORICAL_PDF_SCRIPT_SHA256
 from regional_knowledge.original_intake import OriginalIntakeSpec, canonical, digest
 from regional_knowledge.kaggle_importer import MAX_BYTES, MAX_PAGES
 from test_kaggle_djvu_inspect import fixture as djvu_fixture, _chunk
@@ -79,18 +80,20 @@ async def test_native_verified_djvu_archive_over_2mib_139_pages_without_bulk_ren
     assert acquired["page_count"] == 139
     assert acquired["size"] == len(raw) and acquired["sha256"] == digest(raw)
     assert acquired["parser_sha256"] == native.handler.parser_sha256
-    # Deployment receipts must pin BOTH parser code and the DjVu inspector:
-    # the worker bundle must ship the actual module executed by python -I.
+    # Existing receipt identities are unchanged; only one parser is bundled.
+    # The DjVu inspector remains pinned to the same executable parser.
     from regional_knowledge.kaggle_target_launch import MODULES
     import regional_knowledge.kaggle_original_native as native_module
     assert "kaggle_djvu_inspect" in MODULES
+    assert "kaggle_original_parser" in MODULES
+    assert "kaggle_original_parser_pdf_v1" not in MODULES
     parser_path = Path(native_module.__file__).with_name("kaggle_original_parser.py")
     inspector_path = Path(native_module.__file__).with_name("kaggle_djvu_inspect.py")
     expected_parser_hash = digest(canonical(dict(
         packages={"PyMuPDF": "pinned-version"},
         code=digest(parser_path.read_bytes()),
         djvu_inspector_sha256=digest(inspector_path.read_bytes()),
-        legacy_pdf_parser_sha256=digest(parser_path.with_name("kaggle_original_parser_pdf_v1.py").read_bytes()),
+        legacy_pdf_parser_sha256=HISTORICAL_PDF_SCRIPT_SHA256,
     )))
     assert acquired["parser_sha256"] == expected_parser_hash
     # Reconciliation remains idempotent and must not reread the attachment.
