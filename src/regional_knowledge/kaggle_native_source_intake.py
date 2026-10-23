@@ -289,6 +289,10 @@ class NativeSourceIntake:
         await self._check(access)
         entry=await self.spool.get(entry.command.operation_key)
         if self._can_settle(state,entry): return await self._settle(access,row,state,entry)
+        if entry.apply_receipt is not None and entry.apply_state in ('APPLIED','REJECTED_PRECONDITION'):
+            # Known native outcome waiting for Dataset durability is not new
+            # compute demand. Keep the same pending intent and truthful status.
+            return state
         await self.startup.source_dispatch.enqueue(access.context,entry.command.operation_key,
             writer_generation=self.startup.config.writer_generation)
         await self._check(access)
