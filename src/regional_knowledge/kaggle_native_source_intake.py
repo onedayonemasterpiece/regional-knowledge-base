@@ -362,7 +362,7 @@ class NativeSourceIntake:
         from .product_telemetry import emit_product_event
         emit_product_event({'event':'import.phase','phase':{
             'stage':'stage','seal':'seal','materialize':'materialize',
-            'activate':'activation','batch':'stage','finish':'reading_complete'}[kind], 'status':'applied',
+            'activate':'activation','batch':'stage','finish':'stage'}[kind], 'status':'applied',
             'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
         return updated
 
