@@ -79,6 +79,7 @@ class CaseOperationGate:
         except BaseException:
             if native is not None:self.backend.gate.release(native.ticket)
             self._tickets.pop(gated.ticket,None)
+            self.backend.read_authority.release(retained[1])
             raise
         self._tickets[gated.ticket]=(*retained[:5],witness,native)
         return gated
