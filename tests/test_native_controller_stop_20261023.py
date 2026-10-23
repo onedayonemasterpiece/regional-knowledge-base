@@ -74,3 +74,35 @@ async def test_explicit_wss_stop_exits_unready_worker_without_900_seconds():
             task.cancel()
             never.set()
             await asyncio.gather(task,return_exceptions=True)
+
+
+def test_dispatch_sends_planned_stop_before_next_20s_worker_heartbeat():
+    """Real controller maintenance ticks every 5s; do not await heartbeat20s."""
+    import threading
+    class PlannedQueue(Queue):
+        planned=False
+        def channel_status(self,run,token,generation):
+            status=super().channel_status(run,token,generation)
+            return dict(status,state='draining') if self.planned else status
+    queue=PlannedQueue()
+    with client(queue) as app, app.websocket_connect(
+            '/bge-worker/channel',headers={'Authorization':'Bearer secret'}) as socket:
+        generation=attach(socket)['connection_generation']
+        assert ready(socket,generation)['status']=='ready'
+        queue.planned=True
+        completed=threading.Event()
+        result=[]
+        def receive():
+            try:result.append(socket.receive_json())
+            finally:completed.set()
+        reader=threading.Thread(target=receive,daemon=True)
+        reader.start()
+        if not completed.wait(1):
+            # Unblock a failed RED fixture without leaving a test thread live.
+            send(socket,generation,'HEARTBEAT')
+            completed.wait(1)
+            pytest.fail('STOP waited for next heartbeat and missed controller drain')
+        reader.join(timeout=1)
+        assert result==[dict(type='STOP',protocol_version=2,
+            connection_generation=generation,run_id='run',launch_nonce='nonce',
+            runtime_incarnation='instance')]
