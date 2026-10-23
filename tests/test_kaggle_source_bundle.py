@@ -71,6 +71,13 @@ def frame(handle):
 async def main():
  missing=await n(frame('missing'))
  assert missing['value']==dict(error='original_retained_bytes_unavailable')
+ execute=n._execute
+ async def broken_before_effect(_):raise ModuleNotFoundError('private optional dependency detail')
+ n._execute=broken_before_effect
+ rejected=await n(frame('unexpected'))
+ assert rejected['value']==dict(error='original_intake_unavailable',error_class='ModuleNotFoundError')
+ assert 'private optional' not in str(rejected)
+ n._execute=execute
  expected=dict(physical_page_index=0,native_text='Synthetic bundled page')
  cursor=canonical(dict(block=0,offset=0,text=0)).decode()
  n._records['retained']=dict(sha256='a'*64,page_count=1,verified={},pages={0:dict(chunks={cursor:expected})})

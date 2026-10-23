@@ -185,7 +185,10 @@ class NativeOriginalIntake:
             except asyncio.CancelledError:raise
             except OriginalIntakeRejected as exc:value={'error':exc.code,'terminal':True}
             except OriginalIntakeError as exc:value={'error':str(exc)}
-            except Exception:value={'error':'original_intake_unavailable'}
+            except Exception as exc:
+                value={'error':'original_intake_unavailable','error_class':type(exc).__name__}
+                _LOG.warning('native_original_phase state=unavailable run_id=%s phase=%s operation_sha256=%s error_class=%s',
+                    self.identity[0],frame['phase'],operation_ref,type(exc).__name__)
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
             if len(canonical(result))>120*1024:raise OriginalIntakeError('original_result_bound')
             if value.get('error')=='original_telegram_binding_required':
