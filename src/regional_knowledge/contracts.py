@@ -458,6 +458,10 @@ class StartupStatus(BaseModel):
     startup_ref: str = Field(min_length=51,max_length=51)
     status: Literal['pending','ready','unavailable']
     reason: str | None = None
+    # No measured end-to-end cold-search profile exists yet: worker startup
+    # diagnostics and run ready_at are not substitutes for a user-facing ETA.
+    eta_seconds: int | None = Field(default=None,ge=1,strict=True)
+    message_ru: str | None = None
     # Sanitized operator health (no run/incarnation/provider identifiers).
     health: dict | None = None
 

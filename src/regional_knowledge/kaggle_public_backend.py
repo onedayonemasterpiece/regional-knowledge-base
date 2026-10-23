@@ -134,6 +134,10 @@ def current_binding(queue):
         raise TargetUnavailable('target runtime unavailable') from None
 
 
+PENDING_STARTUP_MESSAGE_RU = ("Запускаем инфраструктуру, подождите. Первый поиск займёт дольше обычного; "
+    "следующие запросы будут быстрыми.")
+
+
 class KaggleSourceBackend:
     """Current source vertical; unsupported product operations fail explicitly."""
     current_read_output_required = True
@@ -447,7 +451,8 @@ class KaggleSourceBackend:
                         raise ToolError(json.dumps({'status':'unavailable','reason':'target_warming',
                             'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
                     startup_status=StartupStatus(startup_ref=demand['startup_ref'],
-                        status='pending',reason='target_warming')
+                        status='pending',reason='target_warming',
+                        message_ru=PENDING_STARTUP_MESSAGE_RU)
                     common=dict(status='pending',reason='target_warming',mode='lexical_degraded',
                         retrieval_mode='lexical_only',main_state='starting',startup=startup_status,
                         read_trace=ReadTrace(**attempt.correlation(),
@@ -602,6 +607,8 @@ class KaggleSourceBackend:
                 except TargetUnavailable:still_current=False
                 if not still_current:
                     observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
+            if observed['status']=='pending':
+                observed['message_ru']=PENDING_STARTUP_MESSAGE_RU
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
