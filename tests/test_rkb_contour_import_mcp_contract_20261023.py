@@ -98,6 +98,21 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
+    # The actual stage wire supports one multi-page chunk via exact page-scoped refs;
+    # 256 is guidance, not a new hard-token cap or an instruction to restage pages.
+    chunk_guidance = native.instructions
+    assert chunk_guidance.count("Build semantically coherent source chunks") == 1
+    for expected in (
+        "about 256 BGE tokens", "roughly 800-1000 characters",
+        "a guideline rather than a hard limit", "preserve whole sentences",
+        "an arbitrary chunk or page boundary", "read it with book_pages",
+        "both issued, visually reviewed pages", "one book_ingest(stage) packet",
+        "up to four pages", "one cross-page chunk",
+        "ordered region_refs OR exact span_refs", "both real page_ids",
+        "within existing exact token bounds", "original page/region/span provenance",
+        "never invent unseen continuation",
+    ):
+        assert expected in chunk_guidance, expected
     assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
     assert "Finalization alone activates" not in native.instructions
     # Cold search continuation is one native instruction, not a new method.
