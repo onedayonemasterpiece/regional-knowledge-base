@@ -73,4 +73,5 @@ async def test_native_accepted_two_page_story_returns_fetchable_source_bound_pag
             foreign=copy.deepcopy(record)
             foreign['source']['source_id']='00000000-0000-0000-0000-000000000099'
             assert (await _accepted_story_passages(foreign,execute,cursor))['passage_refs']==[]
-            assert (await accepted(env,command)).duplicate is True
+    # Ordered replay runs outside the explicit read transaction.
+    assert (await accepted(env,command)).duplicate is True
