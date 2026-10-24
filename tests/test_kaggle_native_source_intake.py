@@ -125,6 +125,9 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
                 MATERIALIZE_CODEC='rkb.source-materialize.v1',resolved_activation_command=lambda **kw:builder(ACTIVATE,**kw),
                 resolved_materialize_command=lambda **kw:builder(MATERIALIZE,**kw)),
             'regional_knowledge.kaggle_native_source_bindings':NS(resolved_native_stage_command=lambda route,**kw:builder(route,**kw)),
+            'regional_knowledge.source_catalog_command':NS(ROUTE='source.catalog.v1',CODEC='rkb.source-catalog.v1',
+                resolved_catalog_command=lambda **kw:builder('source.catalog.v1',**kw),
+                validate_catalog_payload=lambda raw:json.loads(raw)),
             'regional_knowledge.kaggle_source_materializer':NS(materializer_fingerprint=lambda:'f'*64),
             'regional_knowledge.source_batch':NS(ROUTE='source.batch.v1',FINISH_ROUTE='source.finish.v1',CODEC='rkb.source-batch.v1',
                 resolved_command=lambda **kw:builder('source.finish.v1' if kw['payload']['codec']=='rkb.source-finish.v1' else 'source.batch.v1',**kw)),
@@ -158,6 +161,8 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             value.update(batch_index=doc['batch_index'],component=doc['component'],candidate_state='published',accepted=True,knowledge_sha256=knowledge)
         elif entry.command.route=='source.finish.v1':
             value.update(read_complete=True)
+        elif entry.command.route=='source.catalog.v1':
+            value.update(catalog_revision=1,accepted=True,payload_sha256=digest(entry.command.payload))
         else: value=dict(source_id=SOURCE,accepted=True,knowledge_sha256=knowledge)
         raw=canonical(value); entry.apply_receipt=NS(status=status,outcome=canonical(dict(
             result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw))))
@@ -170,6 +175,44 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
 
     def packet_mode(self):
         with self.queue.connect() as db:db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=1')
+
+    async def test_catalog_correction_is_separate_ordered_command_and_keeps_source_bytes(self):
+        await self.stage();self.finish();await self.helper.status(self.access,self.row)
+        original=self.row['metadata_json'];head=self.state()['last_batch_sha256']
+        patch={'expected_revision':1,'title':'Corrected from the title page',
+               'publication_year':None}
+        first=await self.stage({'catalog_update':patch})
+        self.assertEqual(first.next_action,'wait')
+        command=self.pending().command
+        self.assertEqual(command.route,'source.catalog.v1')
+        self.assertEqual(json.loads(command.payload)['catalog_update'],patch)
+        self.assertEqual(self.row['metadata_json'],original)
+        self.finish()
+        result=await self.stage({'catalog_update':patch})
+        self.assertEqual(result.state,'staged')
+        self.assertIn('APPLIED',result.message)
+        self.assertEqual(self.state()['last_batch_sha256'],head)
+        self.assertEqual(self.row['metadata_json'],original)
+        self.assertEqual(sum(x.command.route==STAGE_ROUTE for x in self.spool.entries.values()),1)
+        self.assertEqual(sum(x.command.route=='source.catalog.v1' for x in self.spool.entries.values()),1)
+        # Exactly the same key reuses its original accepted operation.
+        again=await self.stage({'catalog_update':patch})
+        self.assertEqual(again.state,'staged')
+        self.assertEqual(sum(x.command.route=='source.catalog.v1' for x in self.spool.entries.values()),1)
+        # A genuinely new correction is a different ordered accepted operation,
+        # not an overwrite of either the first command or stage metadata.
+        revised={'expected_revision':1,'title':'Second corrected title'}
+        pending=await self.stage({'catalog_update':revised})
+        self.assertEqual(pending.next_action,'wait')
+        newer=self.pending().command
+        self.assertEqual(newer.route,'source.catalog.v1')
+        self.assertNotEqual(newer.operation_key,command.operation_key)
+        self.finish()
+        done=await self.stage({'catalog_update':revised})
+        self.assertIn('APPLIED',done.message)
+        self.assertEqual(sum(x.command.route=='source.catalog.v1' for x in self.spool.entries.values()),2)
+        self.assertEqual(self.state()['last_batch_sha256'],head)
+        self.assertEqual(self.row['metadata_json'],original)
 
     async def test_packet_status_exposes_computed_tail_and_finalize_does_not_drop_it(self):
         from uuid import UUID,uuid5

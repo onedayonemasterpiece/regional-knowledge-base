@@ -57,6 +57,12 @@ async def test_mcp_adapter_preserves_null_and_rejects_mixed_payload(monkeypatch)
         with pytest.raises(Exception,match='metadata_only'):
             await server._tool_manager.call_tool('book_ingest',{**args,**extra},None)
     assert len(calls)==1
+    # A title correction may not be silently dropped when pages/chunks arrive.
+    with pytest.raises(Exception):
+        await server._tool_manager.call_tool('book_ingest',{
+            'command':'stage','ingestion_id':args['ingestion_id'],
+            'metadata':{'title':'From the title page'},'pages':[]},None)
+    assert len(calls)==1
 
 
 def test_nested_correction_preserves_explicit_null_and_rejects_acl():

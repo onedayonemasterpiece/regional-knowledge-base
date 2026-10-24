@@ -60,7 +60,7 @@ def _entry(source,tmp_path):
     exec(compile(ast.Module(body=tree.body,type_ignores=[]),'fixture','exec'),namespace)
     class Redirect(ast.NodeTransformer):
         def visit_Constant(self,node):
-            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/rkb-target-'):
+            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/rkb-tgt-'):
                 return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
             return node
     return namespace,ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[])))
