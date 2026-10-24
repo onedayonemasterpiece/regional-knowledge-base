@@ -9,6 +9,20 @@ import sys
 from regional_knowledge.kaggle_target_launch import MODULES, source_bundle
 
 
+
+
+def test_compact_notebook_bundle_label_preserves_full_per_file_digests():
+    import hashlib
+    label,files,entries=source_bundle(Path(__file__).resolve().parents[1])
+    assert label.startswith('rkb-tgt-') and len(label)==len('rkb-tgt-')+16
+    for entry in entries:
+        assert entry['name'].startswith(label+'/')
+        relative=entry['name'][len(label)+1:]
+        data=files[relative].encode('utf-8')
+        assert entry['size']==len(data)
+        assert entry['sha256']==hashlib.sha256(data).hexdigest()
+
+
 def test_shipped_package_import_closure_is_self_contained(tmp_path):
     repository = Path(__file__).resolve().parents[1]
     _, files, _ = source_bundle(repository)

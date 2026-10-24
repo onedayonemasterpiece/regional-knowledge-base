@@ -138,6 +138,7 @@ class NativeSourceIntake:
     @staticmethod
     def _operation(row, kind, ordinal=None, *, head=None):
         if kind=='stage': return f"source-stage:{row['ingestion_id']}:{ordinal}"
+        if kind=='catalog': return f"source-catalog:{row['ingestion_id']}:{ordinal}"
         if kind=='batch': return f"source-packet:{row['ingestion_id']}:{ordinal}"
         if kind=='finish': return f"source-finish:{row['ingestion_id']}"
         if kind=='materialize': return f"source-materialize:{row['ingestion_id']}:{ordinal}"
@@ -198,13 +199,13 @@ class NativeSourceIntake:
                 return False
             command=_command(pending['command_bytes'])
             applied=(pending['apply_state']=='APPLIED' or
-                command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
+                command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1','source.catalog.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
             if (pending['source_id']!=row['source_id'] or pending['person_id']!=row['person_id']
                     or pending['database_generation']!=access.binding.database_generation
                     or pending['seal_state']!='ACCEPTED' or not applied
                     or pending['outcome_state']!='NOT_SENT'):
                 return False
-            if (command.route not in INACTIVE_SOURCE_ROUTES|{'source.batch.v1','source.finish.v1'}
+            if (command.route not in INACTIVE_SOURCE_ROUTES|{'source.batch.v1','source.finish.v1','source.catalog.v1'}
                     or json.loads(command.payload).get('ingestion_id')!=row['ingestion_id']):
                 return False
         return proof.current()
@@ -220,7 +221,7 @@ class NativeSourceIntake:
                 and entry.apply_receipt is not None and
                 (getattr(entry,'apply_state',None),entry.apply_receipt.status) in
                     (('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition')))
-        if state['pending_kind']=='batch' or state.get('packet_mode') and state['pending_kind']=='stage':
+        if state['pending_kind'] in ('batch','catalog') or state.get('packet_mode') and state['pending_kind']=='stage':
             return (entry.outcome_state=='NOT_SENT' and entry.accepted is not None and entry.seal_state=='ACCEPTED'
                 and entry.apply_receipt is not None and
                 (getattr(entry,'apply_state',None),entry.apply_receipt.status) in
@@ -243,7 +244,7 @@ class NativeSourceIntake:
                 scope=await self.spool.scope_state()
                 if scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
                     raise _failure('prior_write_pending')
-                continuation=(scope['pending'] and kind in ('stage','seal','materialize','batch','finish')
+                continuation=(scope['pending'] and kind in ('stage','seal','materialize','batch','finish','catalog')
                     and await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))
                 if scope['pending'] and not continuation:raise _failure('prior_write_pending')
                 head=await self.spool.journal.head()
@@ -295,6 +296,9 @@ class NativeSourceIntake:
         if entry.apply_receipt.status not in ('applied','rejected_precondition'):
             raise _failure('native_durable_outcome_status_unknown')
         if entry.apply_receipt.status!='applied':
+            if state['pending_kind']=='catalog':
+                # Rejected descriptive corrections never fail an accepted source.
+                return await asyncio.to_thread(self._update,row,pending_operation_key=None,pending_kind=None)
             if state.get('packet_mode') and state['pending_kind'] in ('stage','batch','finish'):
                 kind=state['pending_kind'];reason='native_source_packet_requires_review'
                 raw=json.loads(entry.apply_receipt.outcome)
@@ -323,7 +327,13 @@ class NativeSourceIntake:
         kind=state['pending_kind']; changes=dict(pending_operation_key=None,pending_kind=None)
         if kind in ('stage','seal') and result.get('ingestion_id')!=row['ingestion_id']:
             raise _failure('native_outcome_identity_differs')
-        if kind=='stage':
+        if kind=='catalog':
+            if (result.get('ingestion_id')!=row['ingestion_id']
+                    or result.get('catalog_revision')!=1 or result.get('accepted') is not True
+                    or result.get('payload_sha256')!=digest(entry.command.payload)):
+                raise _failure('native_catalog_outcome_differs')
+            # The catalog projection changes, never accepted stage metadata or bytes.
+        elif kind=='stage':
             if (result.get('batch_index')!=doc['batch_index'] or result.get('batch_sha256')!=digest(entry.command.payload)
                     or result.get('candidate_state')!='staged_inactive'):
                 raise _failure('native_stage_outcome_differs')
@@ -380,7 +390,7 @@ class NativeSourceIntake:
         from .product_telemetry import emit_product_event
         emit_product_event({'event':'import.phase','phase':{
             'stage':'stage','seal':'seal','materialize':'materialize',
-            'activate':'activation','batch':'stage','finish':'stage'}[kind], 'status':'applied',
+            'activate':'activation','batch':'stage','finish':'stage','catalog':'stage'}[kind], 'status':'applied',
             'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
         return updated
 
@@ -489,12 +499,45 @@ class NativeSourceIntake:
         if state['pending_operation_key']: return await self._drive(access,row,state)
         entry=await self._entry(key)
         if entry is None: return state
-        expected_route={'stage':STAGE_ROUTE,'seal':SEAL_ROUTE,'materialize':'source.materialize.v1','activate':'source.activate.v1','batch':'source.batch.v1','finish':'source.finish.v1'}[kind]
+        expected_route={'stage':STAGE_ROUTE,'seal':SEAL_ROUTE,'materialize':'source.materialize.v1','activate':'source.activate.v1','batch':'source.batch.v1','finish':'source.finish.v1','catalog':'source.catalog.v1'}[kind]
         if (entry.command.person_id!=row['person_id'] or entry.command.ids!={'source_id':row['source_id']}
                 or entry.command.route!=expected_route):
             raise _failure('native_operation_identity_differs')
         state=await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
         return await self._drive(access,row,state)
+
+    async def catalog_update(self, access, row, correction):
+        """Separate exact catalog command on the existing owner-authorized stage path."""
+        from .contracts import CatalogUpdateInput
+        from .source_catalog_command import (ROUTE, CODEC, resolved_catalog_command,
+            validate_catalog_payload)
+        await self._check(access,row)
+        update=CatalogUpdateInput.model_validate(correction).model_dump(mode='json',exclude_unset=True)
+        doc=dict(codec=CODEC,ingestion_id=row['ingestion_id'],owner_person_id=row['person_id'],
+            catalog_update=update)
+        validate_catalog_payload(canonical(doc))
+        key=self._operation(row,'catalog',digest(canonical(doc)))
+        state=await asyncio.to_thread(self._state,row,create=True)
+        if state['pending_operation_key']:
+            state=await self._drive(access,row,state)
+            if state['pending_operation_key'] or state['phase']=='failed':return self._output(row,state)
+        state=await self._recover_orphan(access,row,state,'catalog',key)
+        if not state['pending_operation_key']:
+            await self._stage_exact(access,row,kind='catalog',key=key,route=ROUTE,
+                payload=doc,builder=resolved_catalog_command)
+            state=await asyncio.to_thread(self._state,row)
+        state=await self._drive(access,row,state)
+        if state['pending_operation_key']:return self._output(row,state)
+        entry=await self._entry(key)
+        if entry is None or entry.apply_receipt is None:
+            return self.importer._output(row,'processing','Catalog outcome unconfirmed','wait')
+        if entry.apply_receipt.status!='applied':
+            return self.importer._output(row,'needs_review',
+                'Catalog correction rejected; original source and accepted pages unchanged',
+                'continue_pages',warnings=['catalog_update_rejected'])
+        return self.importer._output(row,'finalized' if state['phase']=='finalized' else 'staged',
+            'Catalog correction APPLIED; original stage metadata and accepted bytes unchanged',
+            'done' if state['phase']=='finalized' else 'continue_pages')
 
     @_timed_native_phase('stage')
     async def stage(self, access, row, payload, source_import):
@@ -502,6 +545,9 @@ class NativeSourceIntake:
         from .kaggle_import_contracts import SourceResearchInput
         from .kaggle_native_source_bindings import resolved_native_stage_command
         await self._check(access,row)
+        if type(payload) is dict and set(payload)=={'catalog_update'}:
+            if source_import is not None: raise _failure('catalog_metadata_only_stage_required',status='invalid_query')
+            return await self.catalog_update(access,row,payload['catalog_update'])
         raw_payload=canonical(payload)
         if len(raw_payload)>1024*1024: raise _failure('stage_envelope_bound',status='invalid_query')
         payload=json.loads(raw_payload)
