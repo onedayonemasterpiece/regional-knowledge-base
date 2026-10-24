@@ -71,9 +71,25 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     assert "never UUIDs" in server.instructions
     assert "book_pages" in server.instructions and "book_ingest(reprocess)" in server.instructions
     assert "model performs semantic reading" in server.instructions
+    # Default question answering is model-owned; search results are evidence, not responses.
+    for phrase in ("ONE direct answer", "language of the user's question", "Источники:",
+                   "В доступной базе подтверждений не найдено",
+                   "Не удалось проверить базу сейчас", "disagreement_search",
+                   "printed-page versus scan-number"):
+        assert phrase in server.instructions
     live = {tool.name for tool in await build_server(profile="live").list_tools()}
     assert "book_find" not in live and "book_ingest" not in live
 
+
+
+def test_answer_contract_is_shared_with_kaggle_mcp_profile():
+    # Native target requires a real typed installed TargetServiceStartup; its
+    # source-only wiring must not silently miss the answer-first instructions.
+    import inspect
+    code = inspect.getsource(build_server)
+    assert code.count("_answer_instructions +") == 2
+    assert ") if selected!='kaggle_source' else (" in code
+    assert code.count("For a factual question") == 1
 
 
 def test_auth_uses_application_issuer_not_supabase(monkeypatch):

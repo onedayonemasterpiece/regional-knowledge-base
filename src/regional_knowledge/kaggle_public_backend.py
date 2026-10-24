@@ -292,7 +292,7 @@ class KaggleSourceBackend:
             return item.id
         if evidence:
             return EvidenceSearchOutput(evidence=[FetchOutput(id=fetch_id(item),
-                title=item.metadata.title or item.id, text=item.text, url=locator(item),
+                title=item.metadata.title or "Источник без названия", text=item.text, url=locator(item),
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
                     'text_form': item.text_form, 'continuation': item.continuation,
                     'source_continuation': item.source_continuation.model_dump(mode='json')
@@ -301,10 +301,15 @@ class KaggleSourceBackend:
                     'next_id': passage_fetch_id(item.source_continuation)
                         if item.source_continuation and not item.continuation_complete else None,
                     'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions],
-                    'kind':item.kind,'exact_variant_ref':item.exact_variant_ref,
+                    'kind':item.metadata.source_kind or item.kind,
+                    'source_language':item.metadata.source_language,
+                    'passage_language':item.metadata.passage_language,
+                    'exact_variant_ref':item.exact_variant_ref,
                     'variant_refs':list(item.dependencies.variant_refs)})
                 for item in result.evidence], **common)
-        return SearchOutput(results=[SearchResult(id=fetch_id(item), title=item.metadata.title or item.id,
+        return SearchOutput(results=[SearchResult(id=fetch_id(item), title=item.metadata.title or "Источник без названия",
+            kind=item.metadata.source_kind, language=item.metadata.source_language,
+            passage_language=item.metadata.passage_language,
             url=locator(item)) for item in result.evidence], **common)
 
     @staticmethod

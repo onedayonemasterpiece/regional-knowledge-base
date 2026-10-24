@@ -235,3 +235,37 @@ async def test_contract_rechecked_before_each_callback_and_wrong_executor_identi
             status='unavailable', mode=None, reason='not_ready', observed_data_seq=None, observed_projection_seq=None)
     monkeypatch.setattr('regional_knowledge.kaggle_worker_query.execute_query', wrong_identity)
     assert (await handler(frame(), encode=forbidden_encode))['reason'] == 'internal_error'
+
+
+class CatalogueServingConnection(ServingConnection):
+    """Synthetic SQL witness: SQL034 catalogue and page ride on the same hydrate call."""
+    async def fetchall(self):
+        if "source_catalog_corrections" in self.statement:
+            return [(UUID(PASSAGE), UUID(SOURCE), 1, "pages 4",
+                     "Подтверждённый источник о замке", "saved bibliography",
+                     {"title": "Кёнигсберг в Пруссии", "authors": ["Фриц Гаузе"],
+                      "publication_year": 1994, "language": "ru",
+                      "catalog": {"kind": "book"}}, "ru", 3, "12")]
+        return await super().fetchall()
+
+
+@pytest.mark.asyncio
+async def test_catalog_titles_use_same_one_hydrate_without_second_roundtrip():
+    connection = CatalogueServingConnection()
+    lease = Lease(connection)
+    handler = KaggleWorkerQuery(acquire=lease.acquire, tokenizer=pinned(), catalog_titles=True)
+    result = await handler(frame(), encode=lambda text: asyncio.sleep(0, result=VECTOR))
+    native = decode_envelope(json.dumps(result).encode())
+    assert native.status == "ok" and native.mode == "hybrid"
+    item = native.evidence[0]
+    assert item.metadata.title == "Фриц Гаузе. Кёнигсберг в Пруссии. 1994, с. 12"
+    assert item.metadata.source_kind == "book"
+    assert item.metadata.source_language == item.metadata.passage_language == "ru"
+    assert item.dependencies.source_ids == (SOURCE,)
+    sql = [query for query, _ in connection.statements if "hydrate(" in query]
+    assert len(sql) == 1 and "source_catalog_corrections" in sql[0]
+    assert "source_passage_provenance" in sql[0] and "source_manifests" in sql[0]
+    assert "source_stage_pages" not in sql[0]  # rkb_reader must not read private staging
+    # The only extra work is within the existing bounded hydrate SELECT.
+    assert len([query for query, _ in connection.statements if "source_catalog" in query]) == 1
+    assert lease.entered == lease.exited == 1

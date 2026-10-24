@@ -431,7 +431,8 @@ class TargetRuntime:
         from dataclasses import is_dataclass
         if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
-            handler=replace(handler,source_provenance=True)
+            handler=replace(handler,source_provenance=True,
+                catalog_titles=self.database.schema_version>=34)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],

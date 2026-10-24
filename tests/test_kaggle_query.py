@@ -18,6 +18,7 @@ from regional_knowledge.kaggle_protocol import (
 )
 from regional_knowledge.kaggle_query import PinnedTokenizer, execute_query, read_continuation
 from regional_knowledge.kaggle_query import _item
+from regional_knowledge.kaggle_query import _source_label
 from regional_knowledge.kaggle_search import SearchEvidence
 from test_kaggle_pg_driver import database, connect
 from test_kaggle_apply import pinned
@@ -142,6 +143,23 @@ def test_json_escaped_metadata_and_terminal_excerpt_remain_explicit():
     assert final.text_form == "excerpt" and final.continuation_complete
     assert final.source_continuation.text_offset == 16000
     assert final.source_continuation.bibliography_offset == 8000
+
+
+
+def test_source_labels_from_catalog_use_printed_page_or_distinct_scan_without_invention():
+    hit = SearchEvidence(PASSAGE, SOURCE, 1, "pages 4", "text", "saved",
+        catalog_metadata={"title": "Die Stadt", "authors": ["Ernst Wiechert"],
+            "publication_year": 1975, "language": "de", "catalog": {"kind": "article"}},
+        passage_language="de", physical_page_index=3, printed_page_number="14")
+    title, kind, language, passage_language = _source_label(hit)
+    assert title == "Ernst Wiechert. Die Stadt. 1975, с. 14"
+    assert (kind, language, passage_language) == ("article", "de", "de")
+    from dataclasses import replace
+    assert _source_label(replace(hit, printed_page_number=None))[0].endswith("скан №4")
+    # A locator like 'pages 4' is not proof of a printed-page number.
+    unknown = SearchEvidence(PASSAGE, SOURCE, 1, "pages 4", "text", "")
+    assert _source_label(unknown)[0] is None  # no catalogue: no asserted title
+    assert _source_label(unknown)[1:] == (None, None, None)
 
 
 @pytest_asyncio.fixture
