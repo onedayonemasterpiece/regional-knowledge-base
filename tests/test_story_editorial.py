@@ -108,7 +108,6 @@ async def test_independent_case_pending_keeps_global_order_without_book_pending(
         assert not facts.pending and not facts.unknown and facts.scope_sequence==0
         with spool._db(write=True) as db:
             db.execute("UPDATE rkb_control_operations SET seal_state='SENT_UNKNOWN' WHERE operation_key=?",(c.operation_key,))
-            db.execute("UPDATE rkb_control_spool_meta SET unknown_count=1 WHERE id=1")
         assert (await spool.scope_state())['unknown']
         facts=await spool.read_facts(None)
         assert not facts.pending and not facts.unknown
