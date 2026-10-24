@@ -285,3 +285,77 @@ async def test_nonrestrictive_source_import_intent_does_not_close_native_pg_resu
     assert gated.result.status=='ok'
     assert {i.id for i in gated.result.evidence}=={'earlier-visible','different-source'}
     assert gate.issuance_current(gated.ticket)
+
+
+
+def chunk_read_request(*, source=SOURCE, start=1, end=2):
+    from regional_knowledge.kaggle_source_read import SourceReadRequest
+    return SourceReadRequest(request_id='chunks',connection_generation=1,turn_generation=1,
+        operation='accepted_chunks',source_id=source,page_start=start,page_end=end,
+        actor=TrustedActorContext(person_id='untrusted',audience='public',
+            auth_epoch=0,visibility_epoch=0),min_data_seq=0,deadline_ms=10000)
+
+
+def chunk_read_result(*, source=SOURCE, physical_page=1, page=None):
+    from regional_knowledge.kaggle_source_read import SourceReadResult
+    page=page or '40000000-0000-0000-0000-000000000001'
+    region='50000000-0000-0000-0000-000000000001'
+    chunk='60000000-0000-0000-0000-000000000001'
+    proof=item(source,id=chunk)
+    return SourceReadResult(request_id='chunks',connection_generation=1,turn_generation=1,
+        operation='accepted_chunks',status='ok',
+        records=(dict(source_id=source,chunk_id=chunk,ordinal=0,text='synthetic evidence',
+            pages=[dict(page_id=page,physical_page_index=physical_page,printed_page_number=None)],
+            regions=[dict(page_id=page,region_id=region,start=0,end=9,role='body')]),),
+        evidence=(proof,),observed_data_seq=0,observed_projection_seq=0,
+        observed_visibility_epoch=0,observed_database_generation='db-source')
+
+
+@pytest.mark.asyncio
+async def test_accepted_chunk_gate_reuses_public_search_and_exact_source_page_scope(env, auth, monkeypatch):
+    gate, authority, b = await setup(env,auth)
+    monkeypatch.setattr(gate,'catalog_supported',lambda:True)
+    permit=await gate.dispatch(authority,chunk_read_request(),b)
+    assert permit.query.actor.person_id==authority.person_id
+    assert permit.query.actor.auth_epoch==authority.auth_revision
+    gated=await gate.finish(permit,chunk_read_result())
+    assert gated.result.status=='ok'
+    assert gate.issuance_current(gated.ticket)
+    gate.release(gated.ticket)
+    for invalid in (chunk_read_result(source=OTHER),
+                    chunk_read_result(physical_page=4)):
+        permit=await gate.dispatch(authority,chunk_read_request(),b)
+        with pytest.raises(SourceGateDenied,match='chunk/source/page'):
+            await gate.finish(permit,invalid)
+
+
+@pytest.mark.asyncio
+async def test_accepted_chunk_gate_denies_restriction_and_changed_authority(env, auth, monkeypatch):
+    gate, authority, b = await setup(env,auth)
+    monkeypatch.setattr(gate,'catalog_supported',lambda:True)
+    permit=await gate.dispatch(authority,chunk_read_request(),b)
+    await stage(env)  # A true source restriction intent, never an unrelated page stage.
+    gated=await gate.finish(permit,chunk_read_result())
+    assert gated.result.status=='unavailable'
+    assert gated.result.reason=='evidence_withdrawn'
+    assert not gated.result.records and not gated.result.evidence
+    assert gated.result.next_after_ordinal is None
+    gate.release(gated.ticket)
+    permit=await gate.dispatch(authority,chunk_read_request(),b)
+    change(auth.p,ParticipantDisable(disabled=True,reason='synthetic revoke'))
+    with pytest.raises(PermissionError):
+        await gate.finish(permit,chunk_read_result())
+
+
+@pytest.mark.asyncio
+async def test_accepted_chunk_gate_revalidates_bypassed_payload_before_output(env, auth, monkeypatch):
+    gate, authority, b = await setup(env,auth)
+    monkeypatch.setattr(gate,'catalog_supported',lambda:True)
+    record=chunk_read_result()
+    spoiled=dict(record.records[0])
+    spoiled['regions']=[dict(record.records[0]['regions'][0],start=80,end=3)]
+    record=record.model_copy(update={'records':(spoiled,)})
+    permit=await gate.dispatch(authority,chunk_read_request(),b)
+    gated=await gate.finish(permit,record)
+    assert gated.result.status=='unavailable' and gated.result.reason=='internal_error'
+    assert not gated.result.records and gated.result.next_after_ordinal is None
