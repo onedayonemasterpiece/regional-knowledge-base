@@ -14,6 +14,7 @@ from regional_knowledge.kaggle_protocol import (
     PassageReadRequest, PassageReadResult, Query, QueryResult, decode_envelope,
 )
 from regional_knowledge.kaggle_public_backend import parse_passage_fetch_id
+from regional_knowledge.contracts import FetchOutput, FetchChunksOutput
 from regional_knowledge.server import KnowledgeMCPServer
 from test_public_source_roundtrip import vertical, database, auth, people, A, B, pending_withdrawal
 from test_kaggle_query import PG, VECTOR
@@ -29,8 +30,8 @@ async def call(s,operation,*,fetch_id=None,source_id=B,after_result=None):
     async def search() -> dict:
         return (await s.backend.search('castle',principal,document_ids=[source_id])).model_dump(mode='json')
     @server.tool()
-    async def fetch(id:str) -> dict:
-        return (await s.backend.fetch(id,principal)).model_dump(mode='json')
+    async def fetch(id:str) -> FetchOutput | FetchChunksOutput:
+        return await s.backend.fetch(id,principal)
     app=server.streamable_http_app(stateless_http=True,json_response=True,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
     async def boundary(scope,receive,send):
@@ -90,7 +91,8 @@ async def test_full_profile_search_fetch_native_passage_and_bibliography(vertica
     assert locator.source.source_id==B and locator.text_offset==locator.bibliography_offset==0
     result,forwards=await call(vertical,'fetch',fetch_id=fetch_id)
     assert not result['isError'] and forwards==[]
-    payload=result['structuredContent']
+    assert list(result['structuredContent']) == ['result']
+    payload=result['structuredContent']['result']
     assert payload['text']=='safe-source-b castle' and payload['status']=='ok'
     assert payload['metadata']['citation']=='safe bibliography B'
     assert payload['metadata']['continuation_complete'] and payload['metadata']['next_id'] is None
