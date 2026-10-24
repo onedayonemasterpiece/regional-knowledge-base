@@ -406,7 +406,9 @@ class AcceptedSourceDispatch:
         self._current(run,identity,generation)
         self.queue.shared_reads.require_durable_resource(run_id,run['runtime_incarnation'],generation,
             job['id'],frame['compute_claim'],frame['dispatch_generation'])
-        if (frame['claim']!=job['claim'] and job['state']=='claimed'
+        if (entry.command.route!='source.batch.v1'
+                or entry.command.schema_revision!='rkb-v4-sql001-014-v1'
+                or frame['claim']!=job['claim'] and job['state']=='claimed'
                 or frame['run_id']!=run_id or frame['launch_nonce']!=run['launch_nonce']
                 or frame['runtime_incarnation']!=run['runtime_incarnation']
                 or frame['command_sha256']!=entry.command_sha256
