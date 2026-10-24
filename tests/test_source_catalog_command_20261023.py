@@ -143,7 +143,20 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
         catalog=dict(cover_page=0,cover_kind='title_page')), 'catalog-correction:first')
     assert validate_native_source_command(first)['owner_person_id']==editor
     assert editor!=PERSON
-    result=await accepted(env,first)
+    try:
+        result=await accepted(env,first)
+    except Exception:
+        # Disposable PG17 fixture only: reveal fixed SQLSTATE/primary diagnostic
+        # that the production apply boundary deliberately keeps private.
+        import psycopg
+        from psycopg.types.json import Jsonb
+        try:
+            async with db.transaction():
+                await db.execute('SELECT rkb_v4.apply_source_catalog_v1(%s,%s,%s,%s)',(
+                    first.payload,Jsonb(dict(first.ids)),Jsonb(dict(first.expected_revisions)),TIME))
+        except psycopg.Error as exc:
+            pytest.fail('synthetic SQL034: '+str(exc.sqlstate)+' '+str(exc.diag.message_primary))
+        raise
     assert result.status=='applied' and not result.duplicate
     replay=await accepted(env,first)
     assert replay.duplicate and replay.outcome==result.outcome
