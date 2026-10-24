@@ -14,7 +14,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .participant_contracts import ParticipantGrant, ParticipantUpsert
+from .participant_contracts import AccountBegin, AccountConfirm, ParticipantGrant, ParticipantUpsert
 from .participants import ParticipantError, Participants, RequestAuthority
 from .read_authority import ReadAuthorityError
 
@@ -33,8 +33,9 @@ def register_participant_tools(mcp, startup, principal):
         title='Owner administration of existing RKB participants',
         description='Owner-personal only. Read/get/list/audit or change current participant '
             'categories with ParticipantUpsert, and explicitly grant/revoke only '
-            'scan_proof_read with ParticipantGrant. Changes use existing revision '
-            'compare-and-set, audit events and idempotent operation_key. '
+            'scan_proof_read with ParticipantGrant, or begin/confirm an owner-attested '
+            'Slack account with existing AccountBegin/AccountConfirm. Changes use existing '
+            'revision compare-and-set, audit events and idempotent operation_key. '
             'operation_status retrieves the same owner operation after an uncertain reply. '
             'Categories alone do not grant scan access; revocation is not restored '
             'by profile updates. This does not grant access to an original, private '
@@ -48,7 +49,7 @@ def register_participant_tools(mcp, startup, principal):
         after_revision: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
         expected_revision: Annotated[int | None, Field(ge=0)] = None,
-        command: ParticipantUpsert | ParticipantGrant | None = None,
+        command: ParticipantUpsert | ParticipantGrant | AccountBegin | AccountConfirm | None = None,
         operation_key: Annotated[str | None, Field(min_length=8, max_length=128)] = None,
     ) -> dict:
         # The bearer comes from MCP middleware, never an argument. Resolve its
@@ -99,9 +100,14 @@ def register_participant_tools(mcp, startup, principal):
                         or command is None or not operation_key
                         or after_id is not None or after_revision):
                     raise ToolError('invalid_participants_change')
-                if (type(command) not in (ParticipantUpsert, ParticipantGrant)
+                if (type(command) not in (ParticipantUpsert, ParticipantGrant, AccountBegin, AccountConfirm)
                         or isinstance(command, ParticipantGrant)
-                        and command.capability != 'scan_proof_read'):
+                        and command.capability != 'scan_proof_read'
+                        or isinstance(command, AccountBegin)
+                        and command.provider != 'slack'
+                        or isinstance(command, AccountConfirm)
+                        and (command.method != 'owner_confirmed_slack'
+                             or command.observation_id is not None)):
                     raise ToolError('participants_change_out_of_scope')
                 # The existing Participants.change itself checks owner/admin,
                 # active canonical subject, revision, request hash, audit and
