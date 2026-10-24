@@ -122,17 +122,19 @@ def test_known_not_sent_failures_have_finite_budget_and_honest_unavailable(tmp_p
             assert len(active)==1 and active[0]['id']!=current
             current=active[0]['id']
         else:
-            assert state['startup_state']=='blocked'
+            assert state['startup_state']=='pending'
     assert queue.startup_status(initial['startup_ref'])['status']=='unavailable'
     assert queue.startup_status(initial['startup_ref'])['reason']=='startup_retry_exhausted'
-    assert queue.request_startup()['status']=='unavailable'
-    # A separate already-authorized document producer may append work, but
-    # must NOT create an unbounded replacement run through queue._ensure.
-    queued=queue.enqueue('actor','post-block',['some text'],kind='document')
+    # The same locator is exhausted, but a *new* authorized request is not.
+    renewed=queue.request_startup()
+    assert renewed['status']=='pending' and renewed['startup_ref']!=initial['startup_ref']
+    assert renewed['run_id']!=current
+    assert queue.startup_status(initial['startup_ref'])['reason']=='startup_ref_stale'
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    queued=queue.enqueue('actor','post-exhaustion',['some text'],kind='document')
     assert queue.result('actor',queued)['state']=='pending'
-    now[0]+=3600
-    assert len(queue.maintenance())==MAX_STARTUP_FAILURES
-    assert not any(x['status']=='starting' for x in queue.maintenance())
+    assert queue.request_startup()['startup_ref']==renewed['startup_ref']
 
 
 def test_cold_demand_survives_controller_down_and_known_prelaunch_failure(tmp_path):
