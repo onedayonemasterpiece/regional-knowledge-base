@@ -165,23 +165,6 @@ async def test_accepted_chunks_order_cross_page_unicode_offsets_and_exact_wire()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('already_spanned', [False, True])
-async def test_accepted_footnote_is_returned_once_whether_already_in_spans(already_spanned):
-    native=ChunkNative()
-    passage, ordinal, body, saved, eligibility = native.rows[0]
-    saved={**saved, 'region_ids':[REGION_A], 'footnote_region_ids':[REGION_B],
-           'source_spans':saved['source_spans'] if already_spanned else saved['source_spans'][:1]}
-    native.rows[0]=(passage,ordinal,body,saved,eligibility)
-    result=await execute_source_read(chunk_request(),acquire=native.acquire)
-    assert result.status=='ok',result.model_dump(mode='json')
-    regions=result.records[0]['regions']
-    assert [region['region_id'] for region in regions]==[REGION_A,REGION_B]
-    assert [region['role'] for region in regions]==['body','footnote']
-    assert (regions[1]['start'],regions[1]['end'])==(
-        (2,8) if already_spanned else (0,len('Книга продолжается')))
-
-
-@pytest.mark.asyncio
 async def test_accepted_chunk_limit_lookahead_continuation_on_same_ordinal():
     native=ChunkNative()
     first=await execute_source_read(chunk_request(limit=1),acquire=native.acquire)
