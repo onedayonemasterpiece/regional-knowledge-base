@@ -383,7 +383,6 @@ class NativeSourceHistoryVerifier:
         s=self.spool
         with s._db(write=True) as db:
             used=s._used_bytes(db)
-            pending_delta=unknown_delta=0;maximum=0
             for c in changes:
                 old=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown,reserved_bytes '
                     'FROM rkb_control_source_heads WHERE source_id=?',(c.source_id,)).fetchone()
@@ -392,16 +391,11 @@ class NativeSourceHistoryVerifier:
                     used+=size
                     if used>s.max_bytes:raise SpoolConflict('incremental compact source heads exceed spool budget')
                 seq,ch=(old[0],old[1]) if old and old[0]>c.sequence else (c.sequence,c.command_sha256)
-                restriction=bool(c.restriction or old and old[2]);maximum=max(maximum,seq)
-                pending_delta+=int(c.pending)-(old[3] if old else 0)
-                unknown_delta+=int(c.unknown)-(old[4] if old else 0)
+                restriction=bool(c.restriction or old and old[2])
                 db.execute('INSERT INTO rkb_control_source_heads VALUES(?,?,?,?,?,?,?) '
                     'ON CONFLICT(source_id) DO UPDATE SET sequence=excluded.sequence,command_sha256=excluded.command_sha256,'
                     'restriction=excluded.restriction,pending=excluded.pending,unknown=excluded.unknown',
                     (c.source_id,seq,ch,int(restriction),int(c.pending),int(c.unknown),size))
-            db.execute('UPDATE rkb_control_source_head_meta SET sequence=max(sequence,?),'
-                'pending_count=pending_count+?,unknown_count=unknown_count+? WHERE id=1',
-                (maximum,pending_delta,unknown_delta))
 
     async def _head_unchanged(self,head):
         # The retained verified token names these exact previously checked
