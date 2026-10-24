@@ -341,18 +341,21 @@ class KaggleSourceImporter:
     async def _native_research_status(self, access, row, output):
         """Expose the SAME accepted model's exact page continuation on status.
 
-        A finalized source is not automatically a completed investigation.
+        An accepted stage or finalized source is not automatically completed research.
         This is a read-only, retained owner MCP output; the old source is
         neither restaged nor given a new activation/revision or inference.
         """
         await self._check(access.authority, access.context, access.binding)
-        if (output.state != 'finalized' or output.ingestion_id != row['ingestion_id']
-                or output.document_id != row['source_id']):
+        if (output.state not in ('staged','finalized') or output.ingestion_id != row['ingestion_id']
+                or output.document_id != row['source_id']
+                or output.state=='staged' and output.next_action!='continue_pages'):
             raise failure('native_research_status_identity_changed')
         current = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
-        if current['phase'] != 'finalized':
+        if current['phase'] != ('staging' if output.state=='staged' else 'finalized'):
             raise failure('native_research_terminal_state_changed')
         if not current['research_json']:
+            if output.state=='staged':
+                return output.model_copy(update={'next_cursor':'0'})
             raise failure('native_research_accepted_frontier_missing')
         try:
             research = SourceResearchInput.model_validate_json(current['research_json'])
@@ -375,6 +378,8 @@ class KaggleSourceImporter:
             raise failure('native_research_continuation_unreachable')
         if 'batch_size' in args and (type(args['batch_size']) is not int or args['batch_size'] != 1):
             raise failure('native_research_continuation_unreachable')
+        if cursor is None:
+            cursor = await self.native_intake.applied_page_cursor(access,current)
         # Recover an exact existing owner-bound archived original instead of
         # asking the user to upload it again. The actual next book_pages call
         # independently checks current actor, source, render/pixel provenance.
@@ -992,7 +997,8 @@ class KaggleSourceImporter:
                             else:
                                 output = await self._original_pending(row,status)
                 if (command == 'status' and getattr(self, 'native_intake', None) is not None
-                        and output.state == 'finalized'):
+                        and (output.state == 'finalized' or output.state == 'staged'
+                            and output.next_action == 'continue_pages' and not output.warnings)):
                     output = await self._native_research_status(access, row, output)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64
