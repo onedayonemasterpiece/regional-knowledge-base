@@ -66,10 +66,15 @@ class SlackChatSender:
                 json={"channel":channel,"thread_ts":thread,"text":text,
                       "client_msg_id":event_id,"unfurl_links":False,"unfurl_media":False})
             data=response.json()
-        message=data.get("message") or {}
+        message=data.get("message")
+        # Slack's documented chat.postMessage response need not echo optional
+        # user/thread/client_msg_id fields. The bot principal was verified by
+        # auth.test; reject conflicting values if those fields are present.
         if (response.status_code!=200 or data.get("ok") is not True or data.get("channel")!=channel
-                or message.get("user")!=self.bot_user_id or message.get("text")!=text
-                or message.get("thread_ts")!=thread or message.get("client_msg_id")!=event_id
+                or type(message) is not dict or message.get("text")!=text
+                or message.get("user",self.bot_user_id)!=self.bot_user_id
+                or message.get("thread_ts",thread)!=thread
+                or message.get("client_msg_id",event_id)!=event_id
                 or not re.fullmatch(r"[0-9]+\.[0-9]+",str(data.get("ts","")))):
             raise RuntimeError("Slack native provider echo unverified")
         return {"event_id":event_id,"channel":channel,"thread_ts":thread,
