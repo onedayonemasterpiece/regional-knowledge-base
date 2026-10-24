@@ -10,7 +10,7 @@ import pytest
 
 from regional_knowledge.kaggle_apply import ApplyReceipt
 from regional_knowledge.kaggle_owned_pg import OwnedDatabase
-from regional_knowledge.kaggle_pg_snapshot_native import BlobRef,SnapshotError,archive_suffix_hash,encode,sha
+from regional_knowledge.kaggle_pg_snapshot_native import BlobRef,SnapshotError,encode,sha
 from regional_knowledge.pg_snapshot_recovery import PhysicalSnapshotRecovery,S3SnapshotTransport
 from test_control_spool import env,accept,SOURCE,VERSIONS
 from test_source_history_verifier import Pg,verifier
@@ -33,7 +33,7 @@ class Transport:
 class Native:
     def __init__(self,e,blob):
         self.e,self.blob=e,blob;self.events=[];self.database=None;self.final=None
-        self.archive_cursor=0;self.archive_digest=archive_suffix_hash(())
+        self.archive_cursor=0
     async def capture(self,b,**kwargs):
         self.events.append('capture')
         return dict(database_generation='db-source',writer_generation='writer-1',applied_sequence=0,
@@ -44,8 +44,7 @@ class Native:
     async def prepare(self,b,**kwargs):
         assert any('/recovery-intents/' in key for key in self.e.store.objects)
         self.events.append('prepare');self.database=kwargs['database']
-        return dict(handle='retained-native-session',archived_sequence=self.archive_cursor,
-            archive_suffix_sha256=self.archive_digest)
+        return dict(handle='retained-native-session',archived_sequence=self.archive_cursor)
     async def apply(self,b,handle,**kwargs):
         assert handle=='retained-native-session' and kwargs['command_bytes']==self.e.cmd.encode()
         assert kwargs['original_pg_writer']=='writer-1'
@@ -136,9 +135,6 @@ async def test_archive_ahead_committed_prefix_ready_with_remainder_still_accepte
     env.store.writer='writer-2'
     command=env.cmd
     native.archive_cursor=1
-    native.archive_digest=archive_suffix_hash(((command.sequence,command.operation_key,
-        sha(command.encode()),env.registry.resolve(command).fingerprint,first.manifest.sha256,
-        'db-source','writer-1'),))
     database=OwnedDatabase('VERIFIED_INITIALIZED','db-source','writer-2',
         '/kaggle/temp/restore/socket','rkb',ownership_evidence='synthetic-owned-restore')
     proof=await controller.recover(base,b,database=database,expected_versions=versions(),
@@ -154,8 +150,7 @@ async def test_archive_ahead_committed_prefix_ready_with_remainder_still_accepte
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind',['digest','cursor'])
-async def test_archive_ahead_rejects_unproven_native_prefix(env,monkeypatch,kind):
+async def test_archive_ahead_rejects_cursor_beyond_accepted_tail(env,monkeypatch):
     b=binding();history=verifier(env,Pg(),b,monkeypatch)
     await history.establish_genesis(b)
     blob=BlobRef(env.journal.prefix+'/snapshots/blobs/'+'a'*64,123,'a'*64,'"native-version-1"')
@@ -165,14 +160,12 @@ async def test_archive_ahead_rejects_unproven_native_prefix(env,monkeypatch,kind
         current=lambda value:value is b,private_storage_current=lambda:True)
     base=await controller.create_base(b,versions=versions(),writer_generation='writer-1')
     await accept(env);env.store.writer='writer-2'
-    native.archive_cursor=1 if kind=='digest' else 2
-    native.archive_digest='f'*64
+    native.archive_cursor=2
     database=OwnedDatabase('VERIFIED_INITIALIZED','db-source','writer-2',
         '/kaggle/temp/restore/socket','rkb',ownership_evidence='synthetic-owned-restore')
-    with pytest.raises(SnapshotError,match='snapshot_archive_ahead_identity_changed' if kind=='digest'
-            else 'snapshot_archive_cursor_outside_accepted_tail'):
+    with pytest.raises(SnapshotError,match='snapshot_archive_cursor_outside_accepted_tail'):
         await controller.recover(base,b,database=database,expected_versions=versions(),
-            identity=('run','nonce','inc'),operation_key='archive-ahead-refuse-'+kind)
+            identity=('run','nonce','inc'),operation_key='archive-ahead-refuse-cursor')
     assert 'rollover-and-readiness' not in native.events
 
 
