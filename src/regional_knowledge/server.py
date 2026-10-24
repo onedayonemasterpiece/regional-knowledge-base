@@ -298,9 +298,7 @@ class KnowledgeMCPServer(MCPServer):
 
     async def call_tool(self, name, arguments, context=None):
         activity=getattr(self,'_bge_request_activity',None)
-        if activity is not None and name in {
-                'search','knowledge_search','fetch','book_ingest','book_pages',
-                'book_find','story_search','story_get','story_observation_search'}:
+        if activity is not None:
             try:
                 await asyncio.to_thread(activity)
             except Exception:

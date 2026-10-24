@@ -126,7 +126,7 @@ def test_supabase_configuration_never_enables_mcp_auth(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('name',['search','fetch','book_ingest','book_pages'])
+@pytest.mark.parametrize('name',['search','fetch','book_ingest','book_pages','profile','unknown_tool','participants_manage'])
 async def test_rejected_request_still_records_idle_activity(name):
     from regional_knowledge.server import KnowledgeMCPServer
     from mcp.server.mcpserver.exceptions import ToolError
