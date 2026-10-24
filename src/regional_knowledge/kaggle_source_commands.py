@@ -182,7 +182,8 @@ class ControllerAcceptedProof:
 
 
 class _ObservedPrepareConnection:
-    def __init__(self,connection):self.connection,self.canceled=connection,False
+    def __init__(self,connection):
+        self.connection,self.canceled,self.rollback_verified=connection,False,False
     def __getattr__(self,name):return getattr(self.connection,name)
 
     async def execute(self,query,*args,**kwargs):
@@ -235,7 +236,16 @@ class WorkerSourceExecutor:
                     async with self.acquire() as connection:
                         proxy=_ObservedPrepareConnection(connection)
                         observed.append(proxy)
-                        yield proxy
+                        try:
+                            yield proxy
+                        except psycopg.errors.QueryCanceled:
+                            # The materializer's transaction has unwound, but
+                            # acquire still owns this live connection. Owned PG
+                            # closes it when this context exits, so capture the
+                            # rollback proof before that close.
+                            proxy.rollback_verified=(proxy.canceled and not connection.closed
+                                and connection.info.transaction_status==TransactionStatus.IDLE)
+                            raise
                 try:
                     await self.materializer(command,acquire=(
                         observed_acquire if command.route=='source.batch.v1' else self.acquire),
@@ -250,8 +260,7 @@ class WorkerSourceExecutor:
                 except psycopg.errors.QueryCanceled as error:
                     if (command.route=='source.batch.v1' and error.sqlstate=='57014'
                             and attempt==0 and observed and observed[-1].canceled
-                            and not observed[-1].connection.closed
-                            and observed[-1].connection.info.transaction_status==TransactionStatus.IDLE):
+                            and observed[-1].rollback_verified):
                         _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
                             command.route,command.sequence)
                         continue

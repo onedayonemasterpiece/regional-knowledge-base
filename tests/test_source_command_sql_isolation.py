@@ -135,8 +135,14 @@ async def test_real_prepare_57014_rollback_retries_locally_once_same_key(image_p
                     command_bytes,knowledge_bytes,media,expected_database,expected_writer);
             END $$;
         """,prepare=False)
+    from test_kaggle_pg_driver import connect
+    acquisitions=[]
     @asynccontextmanager
-    async def acquire():yield connection
+    async def acquire():
+        owned=await connect()
+        acquisitions.append(owned)
+        try:yield owned
+        finally:await owned.close()
     async def count(text):return len(text.split())+2
     async def encode(text):return [1.]+[0.]*1023
     native=NativeSourceMaterializer(count=count,encode=encode,current=lambda:True)
@@ -145,6 +151,9 @@ async def test_real_prepare_57014_rollback_retries_locally_once_same_key(image_p
         calls.append(command.encode())
         try:return await native(command,acquire=acquire,database=database)
         except psycopg.errors.QueryCanceled:
+            # Match NativeSnapshotFactory: the owned acquisition closes after
+            # transaction rollback, before WorkerSourceExecutor catches it.
+            assert acquisitions[-1].closed
             # Test the *first* rollback before the executor catches it.
             assert connection.info.transaction_status==TransactionStatus.IDLE
             async with connection.transaction():
@@ -196,6 +205,7 @@ async def test_real_prepare_57014_rollback_retries_locally_once_same_key(image_p
             assert await (await connection.execute(
                 'SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(1,)
     assert connection.info.transaction_status==TransactionStatus.IDLE
+    assert acquisitions and all(c.closed for c in acquisitions)
 
 
 @pytest.mark.asyncio
