@@ -179,6 +179,8 @@ class ExpertSlackSearchReply:
         """Only the signed ingress calls this after durable coverage/ACK."""
         if type(request_id) is not str or len(request_id) > 128:
             raise ValueError("exact remotely accepted request required")
+        if len(self._pending) >= 64 and request_id not in self._pending:
+            raise RuntimeError("bounded Slack reply wake capacity exceeded")
         self._pending.add(request_id)
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._drain())
@@ -286,7 +288,7 @@ class ExpertSlackSearchReply:
                 while True:
                     claim = await asyncio.to_thread(self.control.claim, self.credentials)
                     if claim.get("state") != "leased":
-                        return
+                        break
                     try:
                         await self._one(claim)
                     except asyncio.CancelledError:
@@ -298,7 +300,10 @@ class ExpertSlackSearchReply:
                                      type(exc).__name__)
                         return
         finally:
-            self._pending.clear()
+            self._worker = None
+            # A signed retry may arrive while the previous drain is finishing.
+            if self._pending:
+                self._worker = asyncio.create_task(self._drain())
 
 
 def compose_expert_slack_search_reply(*, ingress, evidence, credentials, sender):
