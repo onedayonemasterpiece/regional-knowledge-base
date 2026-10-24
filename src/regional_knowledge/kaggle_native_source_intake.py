@@ -416,6 +416,14 @@ class NativeSourceIntake:
         await self._check(access)
         return state
 
+    async def applied_page_cursor(self, access, row):
+        with self.queue.connect(write=False) as db:
+            latest=db.execute("SELECT operation_key FROM rkb_control_operations WHERE source_id=? "
+                "AND operation_key LIKE ? AND apply_state='APPLIED' ORDER BY sequence DESC LIMIT 1",
+                (row['source_id'],f"source-stage:{row['ingestion_id']}:%")).fetchone()
+        entry=await self._entry(latest[0]) if latest else None
+        return str(max(p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages'])+1) if entry else None
+
     def _output(self, row, state):
         phase=state['phase']
         if phase=='failed': return self.importer._output(row,'failed','Native command rejected; no successful source activation','blocker')
