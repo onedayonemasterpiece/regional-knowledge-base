@@ -396,14 +396,13 @@ class WorkerRecoveryPhases:
                     manifest_bytes=manifest,expected_manifest_sha256=sha(manifest),archive_path=archive,
                     control_bytes=control,expected_versions=args['expected_versions'],
                     workspace=self.workspace(args['restore_operation'],'restore'))
-            if (type(session.archived_sequence) is not int or session.archive_suffix_sha256 is None):
-                raise SnapshotError('native_restore_archive_attestation_missing')
+            if type(session.archived_sequence) is not int:
+                raise SnapshotError('native_restore_archive_cursor_missing')
             for handle,retained in self._sessions.items():
                 if retained is session:break
             else:
                 handle=secrets.token_urlsafe(24);self._sessions[handle]=session
-            return {'handle':handle,'archived_sequence':session.archived_sequence,
-                'archive_suffix_sha256':session.archive_suffix_sha256}
+            return {'handle':handle,'archived_sequence':session.archived_sequence}
         if phase=='apply':
             session=self._session(args,binding)
             if args['original_pg_writer']!=session.manifest['writer_generation']:
