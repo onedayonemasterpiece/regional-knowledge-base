@@ -100,6 +100,8 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     s=service;startup=s.startup
     monkeypatch.setattr('regional_knowledge.server.backend_from_env',lambda:pytest.fail('legacy fallback'))
     server=build_server(target_startup=startup)
+    assert ('state plain dated facts directly. Place such attribution after the claim it qualifies, '
+        'never as the opening words of a body.') in server.instructions
     assert server._target_startup is startup
     assert startup.backend.worker_queue is s.target.queue is startup.config.spool.queue
     assert startup.admission is s.target.admission
