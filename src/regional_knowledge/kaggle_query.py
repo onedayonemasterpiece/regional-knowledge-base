@@ -256,13 +256,14 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
             emit_executor_stage(telemetry, query, stages)
 
 
-async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False) -> PassageReadResult:
+async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False, public_illustrations=False) -> PassageReadResult:
     if type(request) is not PassageReadRequest:
         raise TypeError("validated PassageReadRequest required")
-    return await read_continuation(request, request.locator, acquire=acquire,source_provenance=source_provenance)
+    return await read_continuation(request, request.locator, acquire=acquire,
+        source_provenance=source_provenance,public_illustrations=public_illustrations)
 
 
-async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False) -> PassageRead:
+async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False,public_illustrations=False) -> PassageRead:
     """Internal continuation resolver after renewed upstream authorization.
 
     An unchanged immutable passage/source/eligibility fence is required. The
@@ -323,8 +324,14 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                             metadata=await cursor.fetchone()
                             if metadata is None or type(metadata[0]) is not dict:
                                 raise ReadUnavailable('not_ready')
+                            provenance = dict(metadata[0])
+                            if public_illustrations:
+                                from .kaggle_passage_illustrations import read_passage_illustrations
+                                provenance['illustrations'] = await read_passage_illustrations(
+                                    cursor, execute, source_id=locator.source.source_id,
+                                    passage_id=locator.passage_id)
                             from dataclasses import replace
-                            hit=replace(hit,source_provenance=metadata[0])
+                            hit=replace(hit,source_provenance=provenance)
                         if locator.text_offset>len(hit.body) or locator.bibliography_offset>len(hit.bibliography):
                             raise ReadUnavailable("invalid_input")
                         if locator.text_offset==len(hit.body) and locator.bibliography_offset==len(hit.bibliography):

@@ -431,7 +431,8 @@ class TargetRuntime:
         from dataclasses import is_dataclass
         if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
-            handler=replace(handler,source_provenance=True)
+            handler=replace(handler,source_provenance=True,
+                public_illustrations=self.database.schema_version>=37)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
@@ -478,6 +479,8 @@ class TargetRuntime:
             try:
                 original_handler=NativeOriginalIntake(config=OriginalIntakeConfig.from_wire(self.target['original_intake']),
                     database=self.database,identity=identity,workspace=workspace,
+                    illustration_acquire=self.pool.connection,
+                    illustration_writer_acquire=self.writer_pool.connection if self.writer_pool else None,
                     telegram_downloader=self.telegram_original_downloader,current=lambda binding:
                         not self.closed and binding[:2]==(run_id,runtime_incarnation))
             except BaseException:

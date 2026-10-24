@@ -269,7 +269,7 @@ class SourceReadGate:
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
-        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else ((q.source_id,) if q.operation=='accepted_chunks' else None) if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else ((q.source_id,) if q.source_id is not None else None) if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
         guard_sources=set(sources)
         if scope is not None:guard_sources.update(scope)

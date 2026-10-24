@@ -45,10 +45,10 @@ SQL020 treats media hashes as representation identifiers. Refreshed media
 metadata uses upsert and retains its accepted source/page/figure geometry;
 different media hashes or JSON serialization do not reject it. Accepted source
 commands, Dataset snapshots and code artifacts keep their separate integrity
-checks. Media availability and public delivery still require current source
+checks. Archive-backed media delivery still requires current source
 eligibility, the registered archive locator and authorized pixel geometry.
 
-The public/native readers and final MCP ImageContent rendering follow the same
+The archive-backed readers and final MCP ImageContent rendering follow the same
 rule: source/figure identity, geometry, current authorization and owner-held
 archive proof govern delivery. A different media hash, optional hash identifier
 or re-encoded PNG/JPEG/WebP does not reject those actual pixels. SHA checks on
@@ -57,6 +57,20 @@ code and accepted command receipts remain independent of media delivery.
 Search material may include accepted captions and labelled visual observations without overwriting source text. An omitted descriptor can be projected only from the exact accepted shared figure/caption region, recorded as `association_basis=exact_shared_region`. A keyword or neighboring place cannot supply a missing image link. Search ranks source evidence; the agent follows its descriptor and fetches the real image.
 
 Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh MCP import, not backfilled as accepted target content. Reuse verified original bytes and existing archive infrastructure as permitted; preserve GEO minimal provenance and exact reanchor under the [cutover contract](../migrations/rkb-layers-only-cutover-20261019.md).
+
+## Public preview rendering
+
+Public `illustration_fetch` reads the accepted figure and physical page through
+the existing source-read channel, renders that page with the same verified
+original renderer as `book_pages`, then returns only the accepted figure crop
+as actual JPEG ImageContent. The complete page stays internal. Ordinary source
+authorization and withdrawal checks apply through the existing read issuer.
+The image path does not require a Telegram mirror, registration, media hash or
+archive availability state. Original acquisition/storage integrity remains the
+existing `book_pages` contract. `fetch.metadata.illustrations[]` contains exact
+accepted passage links or shared figure/caption evidence, excluding unrelated
+pictures on the same page. Figure metadata includes the zero-based physical
+page. This public preview is independent of archival mirror work.
 
 ## Source-proof and locator contract
 
