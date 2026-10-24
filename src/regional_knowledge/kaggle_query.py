@@ -122,7 +122,8 @@ def _source_label(hit: SearchEvidence):
         label += ", с. " + printed
     elif type(hit.physical_page_index) is int and 0 <= hit.physical_page_index <= 2499:
         label += ", скан №" + str(hit.physical_page_index + 1)
-    kind = card.get("kind") if card.get("kind") in ("book", "journal_issue", "article") else None
+    kind = (card.get("kind") if card.get("kind") in ("book", "journal_issue", "article")
+            else "book")  # Current accepted root without a kind predates article/journal intake.
     lang = clean(meta.get("language"), 80) or None
     passage_lang = hit.passage_language if hit.passage_language in ("ru","de","simple") else None
     return label[:2048], kind, lang, passage_lang
