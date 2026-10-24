@@ -13,12 +13,12 @@ was performed. This agrees with the upstream CLI's
 [`_kernel_version_label`](https://github.com/Kaggle/kaggle-cli/blob/main/src/kaggle/api/kaggle_api_extended.py)
 normalization. Provider errors are observations, not proof of absent compute.
 
-The response exposes a phase, not an independently verified execution identity.
-A version-qualified COMPLETE is not alone permission to release a Telegram
-lease or declare a scoped Stop complete. Apply the separate execution-binding,
-freshness and contradictory-evidence gates in `kaggle_readiness` before target
-runtime ownership/termination acceptance. These helpers do not repair all
-legacy launch/expiry semantics or certify target serving readiness.
+For a stored owner/slug/version, native ERROR, COMPLETE and
+CANCEL_ACKNOWLEDGED retire the compute reservation. This is the coordinator's
+2026-10-24 operational decision: writer and WSS generation fences remain the
+write authority. A caller's Stop request or an unqualified latest-slug status
+is not a terminal observation. Compute retirement does not settle domain work
+or prove independent VM shutdown.
 
 Launch failures now retain the fixed boundary, exception type and bounded
 numeric HTTP/provider codes, with a fixed source-size reason when supplied by
@@ -28,71 +28,34 @@ can be marked failed. Any exception or invalid receipt after calling that
 boundary stays unknown and must be reconciled; logging an error does not
 authorize a second push.
 
-## Exact saved-session persisted-log retirement
+## Exact-version status retirement
 
-The native read adapter in `regional_knowledge.kaggle_provider_terminal` pins
-`kaggle==2.2.4` and `kagglesdk==0.1.37`. The inspected SDK's
-`kernels/services/kernels_api_service.py`, `get_kernel_session_logs_stream`,
-documents live SSE while a session runs and a persisted `application/json` log
-fallback after session termination. The CLI's `kernels_logs_stream` and
-`_iter_blob_lines` describe the same completed-session fallback. Primary sources:
-[SDK service](https://github.com/Kaggle/kagglesdk/blob/main/kagglesdk/kernels/services/kernels_api_service.py),
-[CLI implementation](https://github.com/Kaggle/kaggle-cli/blob/main/src/kaggle/api/kaggle_api_extended.py).
-These upstream links are navigation; the adapter supports the inspected package
-versions only, not arbitrary future installations.
+`regional_knowledge.kaggle_provider_terminal` requests only
+`ApiGetKernelSessionStatusRequest` with the stored owner, slug and explicit
+`version_label=v<N>`. ERROR, COMPLETE and CANCEL_ACKNOWLEDGED are terminal;
+RUNNING, QUEUED, CANCEL_REQUESTED and unknown phases retain the reservation.
+Missing versions, unsupported version selectors and provider failures remain
+UNKNOWN. There is no latest-version fallback or guessed session ID.
 
-For a **previously bound saved version**, the controller requests source, native
-status, session log stream, then source again, each with the identical explicit
-`version_label=v<N>`. Source must contain the exact stored RUN_CONFIG run ID and
-launch nonce (including an absent nonce for legacy HTTP), metadata must identify
-the stored owner/slug, and both source hashes must match. Native status must be
-ERROR, COMPLETE or CANCEL_ACKNOWLEDGED. The *stream* response must be HTTP 200 with JSON content type
-and a nonempty array of valid native `{stream_name,time,data}` records. Ordinary
-output/download JSON, error envelopes, empty logs, SSE, EOF and cancellation ACKs
-alone are not proof. An acknowledged cancellation plus the exact session's
-post-termination JSON log fallback satisfies the same source/freshness checks;
-the controller does not normalize an ACK into a terminal result without logs.
-Missing/invalid/oversized evidence leaves UNKNOWN.
+Installed package version numbers, source downloads and log availability are
+not prerequisites. In particular an unavailable or empty persisted log cannot
+block an otherwise exact terminal observation. Logs remain diagnostics and are
+never requested by this observer. The existing receipt identifier is preserved
+so already persisted receipts remain readable; new receipts contain identity,
+status and observation timestamps, without invented source/log hashes.
 
-An acknowledged cancellation **before any channel attachment** can return the
-completed-session JSON fallback `[]`, with no persisted log records.
-The observer accepts that array only with a persisted nonempty launch nonce,
-no incarnation, connection generation zero, no active/conflicting channel and
-heartbeat equal to creation time. The exact source/run/nonce still match before
-and after the stream. An attached or heartbeat-active session still requires
-nonempty native records. Empty EOF, running/queued status, live SSE and an ACK
-without the completed JSON stream remain UNKNOWN. This does not settle commands,
-writer state or Saved data.
+The native status response is bounded to 16 KiB before SDK decoding. The
+existing send wrapper closes responses, rejects redirects without reading their
+body, disables verbose payload logging and restores the client's transport on
+exit. Short connection/read timeouts and a 12-second total observation deadline
+bound provider latency. Unsupported signal/thread contexts fail before I/O.
+The fresh transactional CAS still requires an observation at most 30 seconds
+old and the same run, provider version, nonce, incarnation, connection generation,
+channel state and heartbeat. Attachment conflicts and unsettled publication
+still prevent retirement.
 
-The adapter bounds logs to 256 KiB and each source response to 2 MiB (observation
-budgets, not book limits). It wraps only its fresh pinned SDK client's send
-boundary to bound response bytes **before SDK JSON decoding** and applies short
-connect/read timeouts plus a POSIX main-thread ITIMER_REAL deadline spanning the
-entire observation. The alarm interrupts headers or buffered body reads even if
-bytes keep arriving below the inactivity timeout. Unsupported threads/platforms,
-a blocked SIGALRM, or an already occupied alarm fail closed before network I/O.
-The prior handler is restored and this timer disarmed on all exits. No background
-reader thread/process survives a timeout. The wrapper invokes the session's
-selected HTTPAdapter.send directly with the SDK-prepared/authenticated request,
-not Session.send: Requests may consume redirect bodies while preparing a next
-request even when redirect following is disabled. All 3xx responses are closed
-and rejected before reading their body; Location is never followed. It closes responses
-and restores the client's send method on every exit. Requests that exceed the
-budget fail closed. Begin/end wall times must be finite and ordered, beginning
-after the stored heartbeat; monotonic time bounds collection. Retirement requires
-proof no older than 30 seconds and an unchanged run/version/nonce/incarnation,
-connection generation, channel state and heartbeat under the same transaction.
-Automatic historical diagnostics select only already-expired rows. An exact
-native proof may also retire current starting/READY/draining compute after its
-process terminates, provided publication is settled. This changes only compute
-reservation state; writer authority, job claims and local readiness status remain
-for ordinary maintenance to reconcile. Attachment conflicts still fail closed.
-
-This is provider-managed *saved-session termination*, not independent VM
-forensics or closure of other interactive/batch sessions at that notebook.
-[Kaggle documents separate sessions and concurrent batch runs](https://www.kaggle.com/docs/efficient-gpu-usage).
-No numeric version is treated as a session ID. Status alone remains insufficient.
-Package/shape mismatch, source mismatch and 404 never establish non-creation.
+These checks describe saved-version status and reservation bookkeeping, not
+independent host forensics or closure of other interactive sessions at the slug.
 In particular old10893, with no bound provider version, remains UNKNOWN.
 
 Only the internal adapter mints proof; no MCP/operator boolean can mark a row
@@ -125,13 +88,12 @@ rowid cursor: UNKNOWN/unmapped rows are retained, exhausted cycles back off for
 idempotent across retries. Healthy nominated successor admission and one-shot
 claiming of the current request remain in place.
 
-Validation is synthetic: native request selectors/response modes, invalid bodies,
-freshness/CAS, 101 mixed historical rows, cross-process RAM-debt reconciliation,
-retry/restart, real writer publication triggers and native settlement, finite
-claim-lease requeue/pointer liveness, actual loopback HTTP slow-drip/redirect
-responses, unresolved accepted seq1/source_history preservation and existing
-queue/admission regressions. No live provider, model, runtime database, Stop,
-launch, rollout or product acceptance is implied.
+Validation covers version-qualified terminal and nonterminal phases, unavailable
+source/log endpoints, unsupported selectors, provider errors, freshness and
+identity CAS, cross-process RAM-debt reconciliation, idempotent receipts,
+publication/claim preservation and bounded real HTTP transport. No local test
+implies a live launch, restore, Saved checkpoint or successful product read.
+
 
 
 ## Development launch scope (owner clarification 2026-10-21)

@@ -1,6 +1,6 @@
 """Real loopback HTTP bodies using the installed, declared httpx dependency.
 
-The thin session/adapter surface models the pinned SDK's Requests boundary;
+The thin session/adapter surface models the SDK's Requests boundary;
 httpx supplies actual socket reads, buffering and redirect responses. No Kaggle.
 """
 import contextlib
@@ -101,7 +101,7 @@ def test_nonchunked_slow_drip_has_total_deadline_and_closes_response(server):
         original=session.send;started=time.monotonic()
         with pytest.raises((TimeoutError,httpx.HTTPError)):
             with native._bounded_transport(client,started+.12,time.monotonic) as budget:
-                budget[0]=native.MAX_LOG_BYTES
+                budget[0]=native.MAX_STATUS_BYTES
                 session.send(SimpleNamespace(url=base+'/drip'))
         assert time.monotonic()-started<.6
         assert session.send is original
@@ -127,10 +127,9 @@ def test_successful_real_http_body_remains_available_for_sdk_decode(server):
     with sdk_boundary() as (client,session,state):
         started=time.monotonic()
         with native._bounded_transport(client,started+1,time.monotonic) as budget:
-            budget[0]=native.MAX_LOG_BYTES
+            budget[0]=native.MAX_STATUS_BYTES
             response=session.send(SimpleNamespace(url=base+'/complete'))
             assert response.json()[0]['data']=='fixture'
-            assert native._persisted_log(response,started+1,time.monotonic) is not None
         assert state.session_calls==0 and all(r.closed for r in state.responses)
 
 
