@@ -538,18 +538,6 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             settled=dict(job_id=frame['job_id'],claim=frame['claim'],status='stale')
                         shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
                         await send('RESULT_ACK',**settled)
-                    elif frame['type']=='SOURCE_COMMAND_NOT_APPLIED':
-                        _fields(frame,(*common,'job_id','claim','command_sha256','reason','run_id',
-                            'launch_nonce','runtime_incarnation','compute_claim','dispatch_generation'))
-                        if source_dispatch is None or shared is None or not ready or observed['provider_version'] is None:
-                            raise ValueError('source_executor_unavailable')
-                        _identifier(frame['job_id']);_identifier(frame['claim'])
-                        if frame['reason']!='prepare_timeout_57014':
-                            raise ValueError('source retry code is not a confirmed prepare rollback')
-                        settled=await source_dispatch.receive_not_applied(frame,
-                            run_id=run_id,token=token,generation=generation)
-                        shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
-                        await send('RESULT_ACK',**settled)
                     elif frame['type']=='SOURCE_COMMAND_RESULT':
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation'))
