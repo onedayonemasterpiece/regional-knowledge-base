@@ -200,3 +200,71 @@ delivery/echo, PG evidence and product acceptance are still NOT RUN.
 `tests/test_expert_slack_ingress.py` exercises signed HTTP challenges, initial 503,
 remote-accepted retry 200, duplicate/tampered events, revocation, forged HMAC,
 wrong app/team and disabled-by-default route, all on synthetic fixtures.
+
+
+## 2026-10-24: opt-in source-only Slack search reply (not installed)
+
+The existing authenticated Slack Events ingress may be bound to a **bounded
+source-search reply** in the same RKB process. This is not an LLM/expert-agent
+executor, does not register the expert_executor_* claim/result/recovery routes,
+and does not add a service, model, IAM, queue, provider scheduler or PG connection.
+
+Source wiring:
+
+1. The **existing** RKB target is selected with its canonical Participants,
+   ControlSpool, source/read authority and Dataset-backed recovery. The existing
+   configured_expert_slack_ingress reads the private
+   RKB_EXPERT_SLACK_INGRESS_CONFIG and allows only explicitly listed channels.
+   An external Slack Events app_mention/DM subscription must be configured by
+   the live operator to reach /internal/rkb/expert-slack-events; a bot being in
+   the channel does not mean this subscription is active.
+2. server.main composes the existing ExpertEvidenceReceiver under the same
+   authority, then (only with RKB_EXPERT_SLACK_REPLY_CONFIG set) binds
+   configured_expert_slack_search_reply. That private JSON file is required to
+   contain exactly:
+   {"codec":"rkb.expert-slack-search-reply.v1",
+    "service_id":"EXISTING_PREPROVISIONED_EXECUTOR",
+    "service_token_file":"/absolute/owner-private/service-token",
+    "bot_token_file":"/absolute/owner-private/bot-token"}
+   All three files must be regular, bounded, owner-only (no group/other bits).
+   No token, service credential, new grant or Slack webhook is provisioned
+   by this code. The service_id/token must **already** exist in the current
+   TargetExpertRequestControl rkb_expert_services authority. The bot token
+   must be a bot xoxb- credential for the **same** Slack team/bot user as
+   the signed ingress, with chat:write permission. Slack auth.test verifies
+   team/user at send; the sender does not use an owner's Slack token.
+3. Only signed, replay-checked human messages with a verified external
+   identity and current public_search grant reach ingress.accept. An initial
+   local received row returns **HTTP 503** until the exact original intake
+   is externally covered by the existing writer; replay with coverage returns
+   **HTTP 200** and wakes the in-process responder. Bot messages and other
+   event types remain ignored. Ordinary nonowners must have their own verified
+   Slack link and public_search; the owner channel test is not a nonowner test.
+4. The responder claims an accepted request using the **existing**
+   TargetExpertRequestControl (not the expert_executor_* HTTP subsystem),
+   performs one BGE/native search via the same ExpertEvidenceReceiver source
+   gate under the original verified human and group/public destination, and
+   retains the source issuance ticket until the decision to send.
+   Only exact returned source title, citation, page locator and excerpt can
+   appear in the text; a missing page is marked unknown and zero hits become
+   an explicit "not found", not a fabricated answer. Internal urn: refs are
+   not misrepresented as public links or original-page proof.
+5. The existing TargetExpertDeliveryControl stages/verifies the exact original
+   result and send-intent in Dataset, then grants **one** atomic send permit.
+   chat.postMessage uses the original signed channel/thread_ts and a stable
+   client_msg_id derived from the original event/request. A returned response
+   must confirm the same bot, text, thread and client_msg_id; otherwise the
+   result is UNKNOWN, never an automatic second post. The existing native
+   receipt is externally staged and confirmed before marking delivered.
+   Auth, source policy, channel allowlist and output ticket are checked again
+   before the send permit; private scan images are never returned in a group.
+
+This source change does **not** install or start the Slack Events callback,
+expose a public URL, modify credentials, obtain owner/nonowner grants, or
+run a live E2E. Operator (Shkiper) must independently verify the installed
+ingress path, callback acknowledgments, Dataset coverage, current service
+credential, bot-token permissions, and real native Slack echo, then arrange
+the permitted live test. Opus is the sole source reviewer/merger.
+A crash after Slack ACK but before the opportunistic in-process wakeup completes
+leaves a durable pending request; this slice does not claim an installed
+recovery scheduler or a delivered result. UNKNOWN send remains non-retriable.
