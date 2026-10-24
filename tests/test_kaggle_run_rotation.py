@@ -2,6 +2,8 @@
 from dataclasses import replace
 import json
 import stat
+import subprocess
+import sys
 
 import pytest
 
@@ -65,3 +67,23 @@ def test_successor_rejects_rollback_or_foreign_saved_before_freezing(tmp_path,ba
     with pytest.raises(ValueError,match='same restore base'):
         successor_target(queue,restore_target().wire(),run)
     assert not (tmp_path/'bge-launches'/run/'target.json').exists()
+
+
+def test_uvicorn_rotation_shutdown_reaches_systemd_failure_restart_status():
+    # Exercise the actual signal handler in a separate small ASGI process;
+    # SIGTERM would be re-raised before main could choose exit status 75.
+    code='''
+import asyncio,os,signal,uvicorn
+async def app(scope,receive,send):
+    assert scope['type']=='lifespan'
+    assert (await receive())['type']=='lifespan.startup'
+    await send({'type':'lifespan.startup.complete'})
+    asyncio.get_running_loop().call_later(.1,os.kill,os.getpid(),signal.SIGINT)
+    assert (await receive())['type']=='lifespan.shutdown'
+    print('graceful-shutdown',flush=True)
+    await send({'type':'lifespan.shutdown.complete'})
+uvicorn.run(app,host='127.0.0.1',port=0,log_level='error')
+raise SystemExit(75)
+'''
+    result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=10)
+    assert result.returncode==75 and result.stdout.strip()=='graceful-shutdown',result.stderr

@@ -1810,6 +1810,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         log_level=mcp.settings.log_level.lower(),
         timeout_graceful_shutdown=10,
     )
+    if target_startup is not None and target_startup.restart_requested:
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":

@@ -200,8 +200,25 @@ def configured_source_service():
     people=provider.personal_policy.participants
     object_store=_object_store_from_env()
     if type(object_store) is not S3ObjectStore:raise ValueError('existing configured native S3 authority required')
-    database=OwnedDatabase(**value['database'])
     queue=BgeQueue(queue_path)
+    with queue.connect(write=False) as db:
+        run_id=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+        runtime=queue._runtime_row(db,run_id) if run_id else None
+    target_path=queue.path.parent/'bge-launches'/str(run_id)/'target.json'
+    if (run_id and runtime is not None and runtime['expected_json'] and target_path.is_file()
+            and value.get('source_restore',{}).get('dataset_checkpoint') is not None):
+        from .kaggle_launch_config import load_target_launch
+        target=load_target_launch(target_path)
+        checkpoint=target.dataset_checkpoint.wire()
+        value['run_id']=run_id;value['database']=target.database.wire()
+        restore=value['source_restore'];manifest=checkpoint['manifest']
+        restore.update(dataset_checkpoint=checkpoint,operation_key='rkb-restore-'+run_id,
+            launch_config_sha256=queue._runtime_expected(runtime).hashes['launch_config'],
+            manifest=dict(key=restore['manifest']['key'].rsplit('/',1)[0]+'/'+manifest['sha256'],
+                last_sequence=checkpoint['base_sequence'],length=manifest['size'],sha256=manifest['sha256']))
+        if 'source_import' in value:
+            value['source_import']['launch_config_sha256']=restore['launch_config_sha256']
+    database=OwnedDatabase(**value['database'])
     with queue.connect(write=False) as db:
         runtime=queue._runtime_row(db,value['run_id'])
         observed=json.loads(runtime['observed_json']) if runtime is not None and runtime['observed_json'] else None

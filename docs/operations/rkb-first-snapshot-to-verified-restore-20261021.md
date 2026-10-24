@@ -9,17 +9,18 @@ in the existing private `bge-launches/<run>/target.json` before composition/push
 Retries reuse that exact file, even if a later Saved becomes available. Dataset
 readiness preflight still precedes provider submission; the slug stays stable.
 
-API history maintenance follows the queue's current run using those frozen
-pins and its existing launch expectation. It retains the public backend,
-OAuth/participants, admission, spool and accepted journal; it closes the former
-writer capability and recreates only the run-bound restore/history owners.
-The existing `begin_restore` and native restore/verification remain responsible
-for persisted writer activation and readiness. An unresolved publication keeps
-its original receipt; it is never cleared to permit rotation.
+When the queue's current run changes and its frozen launch expectation is
+available, API maintenance requests graceful ASGI shutdown. After shutdown the
+process exits with status 75, so the existing systemd `Restart=on-failure`
+restarts it. Ordinary startup reads the frozen target and launch expectation,
+then composes its owners through the same path as any server restart. The
+existing `begin_restore` and native restore/verification still own writer
+activation and readiness; no live objects are rebound.
 
 Ordinary rotations require no manual `mint_restore_successor`, configuration
-installation or API/controller stop. Installing a new main release remains a
-separate deployment; this description does not claim a live rotation passed.
+installation or operator stop/start. A short API reconnect during rotation is
+expected. Installing a new main release remains a separate deployment; this
+description does not claim a live rotation passed.
 The dated first-transition evidence and original genesis requirements follow.
 
 Status 2026-10-21: **actual installed prelaunch failure confirmed by authorized
