@@ -7,7 +7,9 @@ from uuid import UUID
 import pytest
 
 from regional_knowledge.disagreement_contracts import EvidenceAdd
+from regional_knowledge.kaggle_case_contracts import CaseReadRequest,validate_case_record
 from regional_knowledge.kaggle_domain_bindings import resolved_current_case_command
+from regional_knowledge.kaggle_protocol import TrustedActorContext
 from regional_knowledge.kaggle_native_source_bindings import new_native_command
 from regional_knowledge.source_stage import canonical, digest
 from test_disagreement_native import CASE, OBJECT, create
@@ -101,7 +103,18 @@ async def test_late_packet_case_evidence_uses_all_accepted_manifest_pages(image_
         verified = await (await env['connection'].execute(
             "SELECT rkb_v4.verify_disagreement_origins_v1(ARRAY[%s::uuid])",
             (CASE,))).fetchone()
+        native_read = await (await env['connection'].execute(
+            "SELECT rkb_v4.read_disagreement_v1(%s,%s,%s,%s,%s,%s,%s,%s,NULL)",
+            (CASE,PERSON,'evidence',0,20,None,None,None))).fetchone()
     assert row is not None and row[0]['quote'] == source_text
     assert row[0]['page_provenance']['page_id'] == later_page
     assert row[0]['region_provenance']['region_id'] == str(region_id)
     assert verified == (True,), 'replayed Case proof must use the same packet manifest'
+    # The real SQL031 late-packet evidence must traverse the same public native
+    # Case result validator, not only a direct row/manifest lookup.
+    selector=CaseReadRequest(request_id='sql031-evidence-read',connection_generation=1,
+        turn_generation=1,case_id=CASE,section='evidence',min_data_seq=0,
+        deadline_ms=2000,actor=TrustedActorContext(person_id=PERSON,
+            audience='synthetic',auth_epoch=0,visibility_epoch=0))
+    assert native_read is not None and native_read[0] is not None
+    assert validate_case_record(selector,native_read[0]) is native_read[0]
