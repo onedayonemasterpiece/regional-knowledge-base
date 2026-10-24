@@ -31,7 +31,6 @@ from .kaggle_public_illustration_gate import (
     PublicIllustrationOutputGate, IssuedPublicIllustration, IssuedArtifactBytes,
 )
 from .read_telemetry import ReadTelemetry
-from .kaggle_read_binding import TargetReadBinding
 
 
 class TargetUnavailable(RuntimeError):
@@ -96,6 +95,16 @@ class _GatedMedia:
         return self.issued.ticket
 
 
+@dataclass(frozen=True)
+class TargetReadBinding:
+    run_id: str
+    runtime_incarnation: str
+    connection_generation: int
+    database_generation: str
+    min_data_seq: int
+    provider_version: str
+
+
 def current_binding(queue):
     """Small read-only control snapshot; BGE-only readiness never suffices."""
     try:
@@ -144,6 +153,7 @@ class KaggleSourceBackend:
         # Only the single native/root owner can bind a trusted Media15 gate.
         # No WSS, pool, PG role or archive client is constructed here.
         self.public_media_gate = None
+        self.illustration_renderer = None
 
     def configure_public_illustrations(self, gate: PublicIllustrationOutputGate):
         """Owner-only explicit composition; unconfigured target stays CLOSED.
@@ -189,9 +199,12 @@ class KaggleSourceBackend:
             source_id, illustration_id = _media_selector(locator)
         except PublicQueryInvalid:
             raise ToolError('{"status":"invalid_query","reason":"invalid_illustration_locator"}') from None
+        if self.illustration_renderer is not None:
+            return await self._search(None,principal,evidence=True,catalog_request=dict(
+                operation='source_illustration',source_id=source_id,query=illustration_id))
         gate = self.public_media_gate
         if gate is None:
-            raise ToolError('{"status":"unavailable","reason":"not_ready"}')
+            raise ToolError('{"status":"unavailable","reason":"media_owner_not_registered"}')
         verified = None
         issued = None
         retained = False
@@ -313,7 +326,7 @@ class KaggleSourceBackend:
         return FetchOutput(text=item.text, metadata={
             'citation': item.metadata.citation, 'locator': item.metadata.locator,
             'source_provenance':item.metadata.source_provenance,
-            'illustrations': (item.metadata.source_provenance or {}).get('illustrations', []),
+            'illustrations':(item.metadata.source_provenance or {}).get('illustrations',[]),
             'text_form': item.text_form, 'bounded_passage': True,
             'text_offset': item.source_continuation.text_offset - len(item.text)
                 if item.source_continuation else locator.text_offset,
@@ -405,10 +418,12 @@ class KaggleSourceBackend:
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
         # One budget includes auth, admission, network, native execution and gate.
-        deadline = min(time.monotonic()+2,trusted['deadline']) if trusted is not None else time.monotonic()+2
+        illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
+        deadline = (time.monotonic()+120 if illustration else
+            min(time.monotonic()+2,trusted['deadline']) if trusted is not None else time.monotonic()+2)
         telemetry = self.read_telemetry
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
-        operation='fetch' if exact else 'knowledge_search' if evidence else 'search'
+        operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation,**({'request_id':trusted['request_id']} if trusted else {}))
         authority = trusted['authority'] if trusted is not None else None
         destination=trusted['destination'] if trusted is not None else self.destination
@@ -479,7 +494,8 @@ class KaggleSourceBackend:
                         min_data_seq=max(binding.min_data_seq,trusted['min_data_seq']) if trusted else binding.min_data_seq,
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                        deadline_ms=max(1, int((deadline-time.monotonic())*1000)))
+                        deadline_ms=max(1,int((deadline-time.monotonic())*1000)) if illustration else
+                            min(2000,max(1,int((deadline-time.monotonic())*1000))))
                     request = (SourceGraphReadRequest(**graph_request,**identity) if graph_request is not None else
                         SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
@@ -500,7 +516,7 @@ class KaggleSourceBackend:
                         connection_generation=resource.dispatch_generation,
                         turn_generation=request.turn_generation)
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
-                    dialog_ref=destination.key, deadline=deadline, on_dispatch=dispatched)
+                    dialog_ref=destination.key, deadline=min(deadline,time.monotonic()+2), on_dispatch=dispatched)
                 result = await asyncio.shield(ticket.result)
                 received_at=time.monotonic()
                 if dispatched_at is not None:
@@ -514,7 +530,18 @@ class KaggleSourceBackend:
                 render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:self._render_chunks(value,attempt=attempt,request=catalog_request)) if catalog_request is not None and catalog_request.get('operation')=='accepted_chunks' else (lambda value:BookFindOutput(
                     query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt,comparison=fact_request['action']=='observation_compare')) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
-                output = render(gated.result)
+                output = None if illustration else render(gated.result)
+                if illustration:
+                    pixels=await self.illustration_renderer(gated.result.records[0],binding)
+                    def render(value):
+                        if value.status!='ok':
+                            return CallToolResult(isError=True,content=[TextContent(type='text',
+                                text=json.dumps(dict(status=value.status,reason=value.reason)))])
+                        return CallToolResult(content=[TextContent(type='text',text=json.dumps(
+                            dict(status='ready',metadata=value.records[0]),ensure_ascii=False)),
+                            ImageContent(type='image',data=base64.b64encode(pixels).decode('ascii'),
+                                mimeType='image/jpeg')])
+                    output=render(gated.result)
                 if not retain_read_output(self.source_gate, gated, render,
                         on_release=lambda: self.read_authority.release(authority),
                         on_terminal=terminal):

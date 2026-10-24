@@ -45,10 +45,10 @@ SQL020 treats media hashes as representation identifiers. Refreshed media
 metadata uses upsert and retains its accepted source/page/figure geometry;
 different media hashes or JSON serialization do not reject it. Accepted source
 commands, Dataset snapshots and code artifacts keep their separate integrity
-checks. Media availability and public delivery still require current source
+checks. Archive-backed media delivery still requires current source
 eligibility, the registered archive locator and authorized pixel geometry.
 
-The public/native readers and final MCP ImageContent rendering follow the same
+The archive-backed readers and final MCP ImageContent rendering follow the same
 rule: source/figure identity, geometry, current authorization and owner-held
 archive proof govern delivery. A different media hash, optional hash identifier
 or re-encoded PNG/JPEG/WebP does not reject those actual pixels. SHA checks on
@@ -58,35 +58,19 @@ Search material may include accepted captions and labelled visual observations w
 
 Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh MCP import, not backfilled as accepted target content. Reuse verified original bytes and existing archive infrastructure as permitted; preserve GEO minimal provenance and exact reanchor under the [cutover contract](../migrations/rkb-layers-only-cutover-20261019.md).
 
-## Public packet illustration composition
+## Public preview rendering
 
-The production entry point configures `PublicIllustrationOutputGate` before
-building the MCP server. Ordinary passage fetch projects `illustrations[]`
-from accepted packet links, or from an exact shared figure/caption region.
-Descriptors contain the existing source/illustration locator and zero-based
-physical page index; an unrelated picture on the same page is excluded.
-Discovery does not depend on archive readiness or media hashes.
-
-`NativePublicIllustrationReader` reads current packet manifests through the
-existing reader pool. SQL037 grants the existing native reader only the
-accepted figure/publication metadata and availability columns it needs.
-Participant permissions and original/proof access rules are unchanged.
-
-The existing original maintenance channel handles the fixed
-`original_illustration` operation. It renders only accepted figure geometry
-from the verified original and reuses the leased Telethon client for topic 4.
-The existing availability projection records UNKNOWN before a send and the
-registered locator before verification. Registered media is read again without
-a new upload. After a Dataset restore, the retained maintenance receipt can
-recover its exact locator after native presence and geometry checks. An
-unresolved send fences that figure while other reads/imports remain usable.
-
-Real registered pixels return through the existing MCP issuance middleware
-with their MIME, source identity and physical page. Maintenance replies carry
-a bounded preview (at most 72 KiB of encoded image); large registered images
-are reduced within their exact crop frame for this preview. This path does
-not provide an original-resolution document. Deployment and live image
-acceptance are separate from the synthetic PG/MCP regression tests.
+Public `illustration_fetch` reads the accepted figure and physical page through
+the existing source-read channel, renders that page with the same verified
+original renderer as `book_pages`, then returns only the accepted figure crop
+as actual JPEG ImageContent. The complete page stays internal. Ordinary source
+authorization and withdrawal checks apply through the existing read issuer.
+The image path does not require a Telegram mirror, registration, media hash or
+archive availability state. Original acquisition/storage integrity remains the
+existing `book_pages` contract. `fetch.metadata.illustrations[]` contains exact
+accepted passage links or shared figure/caption evidence, excluding unrelated
+pictures on the same page. Figure metadata includes the zero-based physical
+page. This public preview is independent of archival mirror work.
 
 ## Source-proof and locator contract
 

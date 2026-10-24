@@ -380,8 +380,7 @@ def test_static_exact_source_sql_pins_are_immutable_in_this_leaf():
     root=Path(__file__).resolve().parents[1]
     assert hashlib.sha256((root/"sql/kaggle/014_source_stage_activation.sql").read_bytes()).hexdigest()==SQL014_SHA256
     assert hashlib.sha256((root/"sql/kaggle/015_source_illustrations.sql").read_bytes()).hexdigest()==SQL015_SHA256
-    from regional_knowledge.kaggle_public_illustration_native_read import BATCH_READ_SQL
-    assert hashlib.sha256((READ_SQL+'\n'+BATCH_READ_SQL).encode()).hexdigest()==READ_SQL_SHA256
+    assert hashlib.sha256(READ_SQL.encode()).hexdigest()==READ_SQL_SHA256
 
 
 class _Rollback(Exception):

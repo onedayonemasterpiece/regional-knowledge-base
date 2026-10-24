@@ -88,7 +88,7 @@ class OriginalIntakeController:
 
     async def dispatch_transfer(self,identity,binding):
         if identity['phase'] not in PHASES or not self.binding_current(binding):raise PermissionError('original transfer binding unavailable')
-        if identity['phase'] in ('original_pages','original_illustration'):return {}
+        if identity['phase']=='original_pages':return {}
         if identity['phase']=='original_acquire' and set(identity['arguments'])=={'spec','telegram_locator'}:
             # The immutable document locator is already in the request hash;
             # no ephemeral URL/session or separate private transfer is needed.
@@ -288,25 +288,8 @@ class OriginalIntakeController:
         index,native_cursor=decode_page_cursor(cursor)
         if index<0 or index>=receipt.page_count:raise OriginalIntakeError('original_page_cursor_invalid')
         record=json.loads(row['acquisition_json'])
-        args=dict(handle=record['handle'],original_sha256=record['sha256'],index=index,cursor=native_cursor)
-        try:page=await self._phase(binding,'original_pages',args)
-        except OriginalIntakeError as exc:
-            if str(exc)!='original_retained_bytes_unavailable':raise
-            record=await self._restore_handle(context,actor,binding,receipt,record)
-            page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']))
-        native=await self._archive(binding,record,page=page)
-        def derivative():
-            result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
-            body=result['Body']
-            try:
-                if result.get('ContentLength')!=page['image_size'] or page['image_size']>256*1024:
-                    raise OriginalIntakeError('original_render_storage_invalid')
-                data=body.read(page['image_size']+1)
-                if len(data)!=page['image_size'] or digest(data)!=page['image_sha256']:
-                    raise OriginalIntakeError('original_render_storage_invalid')
-                return data
-            finally:body.close()
-        data=await _blocking(derivative)
+        record,page,data=await self._page_data(binding,record,index,native_cursor,
+            restore=lambda prior:self._restore_handle(context,actor,binding,receipt,prior))
         await self._authorize(context)
         expected_page=str(uuid5(UUID(receipt.source_id),f'page:1:{index}'))
         if (page.get('page_id')!=expected_page or page.get('original_sha256')!=receipt.sha256
@@ -329,6 +312,28 @@ class OriginalIntakeController:
                 source_image_receipt_sha256=issued['source_image_receipt_sha256'],
                 image_sha256=issued['image_sha256'])),),
             next_cursor)
+
+    async def _page_data(self,binding,record,index,native_cursor,*,restore):
+        args=dict(handle=record['handle'],original_sha256=record['sha256'],index=index,cursor=native_cursor)
+        try:page=await self._phase(binding,'original_pages',args)
+        except OriginalIntakeError as exc:
+            if str(exc)!='original_retained_bytes_unavailable':raise
+            record=await restore(record)
+            page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']))
+        native=await self._archive(binding,record,page=page)
+        def derivative():
+            result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
+            body=result['Body']
+            try:
+                if result.get('ContentLength')!=page['image_size'] or page['image_size']>256*1024:
+                    raise OriginalIntakeError('original_render_storage_invalid')
+                data=body.read(page['image_size']+1)
+                if len(data)!=page['image_size'] or digest(data)!=page['image_sha256']:
+                    raise OriginalIntakeError('original_render_storage_invalid')
+                return data
+            finally:body.close()
+        data=await _blocking(derivative)
+        return record,page,data
 
     def _record_issued_image(self,receipt,page):
         issued=issued_image_receipt(receipt,page)
@@ -406,79 +411,33 @@ class OriginalIntakeController:
                     or tuple(restored.get(k) for k in ('sha256','size','format','page_count','parser_sha256','acquisition_sha256'))!=(
                         receipt.sha256,receipt.size,receipt.format,receipt.page_count,receipt.parser_sha256,receipt.acquisition_sha256)):
                 raise OriginalIntakeError('original_restore_receipt_changed')
-            if recheck is None:
-                await self._authorize(context)
-            else:
-                await recheck()
+            if recheck is None:await self._authorize(context)
+            else:await recheck()
             with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET acquisition_json=?,restore_json=NULL WHERE ingestion_id=?',
                 (canonical(restored).decode(),receipt.ingestion_id))
             return restored
 
-    async def public_illustration(self,source_id,illustration_id,actor_id,binding,*,pixels=False):
-        """Purpose-scoped callback for PublicIllustrationOutputGate only.
+    async def illustration_page(self,figure,binding):
+        """Internal page renderer for the already authorized accepted-figure read.
 
-        The gate owns the verified public actor and rechecks after every await.
-        The stored importer identity selects retained original infrastructure;
-        it never becomes the requesting actor or a direct-original read grant.
-        Native code accepts only the current accepted figure's exact crop.
+        Whole-page pixels stay inside the crop callback. The stored importer
+        selects the existing original; it never impersonates the requesting user.
         """
-        from dataclasses import asdict
-        for value in (source_id,illustration_id,actor_id):uuid_value(value)
-        if not self.binding_current(binding):
-            raise OriginalIntakeError('original_current_binding_required')
-        with self.queue.connect(write=False) as db:
-            runtime=self.queue._runtime_row(db,binding.run_id)
-            expected=json.loads(runtime['expected_json']) if runtime and runtime['expected_json'] else {}
-            if expected.get('schema_version',0)<37:
-                # Do not dispatch a new native operation during an API-first
-                # rolling install while the old worker still owns this run.
-                raise OriginalIntakeError('public_illustration_runtime_unavailable')
-            rows=db.execute('''SELECT * FROM rkb_original_intakes
-                WHERE json_extract(spec_json,'$.source_id')=? AND receipt_json IS NOT NULL
-                AND storage_sha256=? LIMIT 2''',(source_id,self._storage)).fetchall()
-        if len(rows)!=1:raise OriginalIntakeError('public_illustration_original_unavailable')
-        row=dict(rows[0]);receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
-        if receipt.source_id!=source_id:raise OriginalIntakeError('public_illustration_source_changed')
-        record=json.loads(row['acquisition_json'])
-        recovery=None
-        # Reuse the retained native receipt after PG restores an older Dataset.
-        # An assigned attempt with a lost result fences only this figure; it
-        # never blocks launches, other figures or ordinary source reads.
-        with self.queue.connect(write=False) as db:
-            previous=db.execute('''SELECT state,result FROM jobs WHERE kind='recovery_phase'
-                AND json_extract(identity,'$.phase')='original_illustration'
-                AND json_extract(identity,'$.arguments.source_id')=?
-                AND json_extract(identity,'$.arguments.illustration_id')=?
-                AND json_extract(identity,'$.database_generation')=?
-                ORDER BY created DESC LIMIT 32''',
-                (source_id,illustration_id,binding.database_generation)).fetchall()
-        uncertain=False
-        for prior in previous:
-            if prior['state']=='claimed':uncertain=True
-            value=json.loads(prior['result'])['value'] if prior['result'] else {}
-            snapshot=value.get('snapshot')
-            if (type(snapshot) is dict and snapshot.get('source_id')==source_id
-                    and snapshot.get('illustration_id')==illustration_id
-                    and snapshot.get('archive_state',{}).get('status')=='ready'):
-                recovery=snapshot['archive_state'];break
-            if value.get('error')=='public_illustration_send_unknown':uncertain=True
-        if recovery is None and uncertain:recovery={'status':'unknown'}
         async def recheck():
             if not self.binding_current(binding):
                 raise OriginalIntakeError('original_current_binding_required')
-        async def invoke(record):
-            return await self._phase(binding,'original_illustration',dict(
-                handle=record['handle'],original_sha256=record['sha256'],source_id=source_id,
-                illustration_id=illustration_id,actor_id=actor_id,binding=asdict(binding),
-                pixels=pixels,nonce=secrets.token_hex(16),recovery=recovery))
-        try:
-            value=await invoke(record)
-        except OriginalIntakeError as exc:
-            if str(exc)!='original_retained_bytes_unavailable':raise
-            record=await self._restore_handle(None,row['actor'],binding,receipt,record,recheck=recheck)
-            value=await invoke(record)
         await recheck()
-        return value
+        with self.queue.connect(write=False) as db:
+            row=db.execute('''SELECT * FROM rkb_original_intakes
+                WHERE json_extract(spec_json,'$.source_id')=? AND receipt_json IS NOT NULL
+                AND storage_sha256=? LIMIT 1''',(figure['source_id'],self._storage)).fetchone()
+        if row is None:raise OriginalIntakeError('original_verified_receipt_required')
+        receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
+        record=json.loads(row['acquisition_json'])
+        _,_,data=await self._page_data(binding,record,figure['physical_page_index'],
+            dict(block=0,offset=0,text=0),restore=lambda prior:self._restore_handle(
+                None,row['actor'],binding,receipt,prior,recheck=recheck))
+        return data
 
     async def native_pages(self,context,ingestion_id):
         receipt=await self.verified(context,ingestion_id)

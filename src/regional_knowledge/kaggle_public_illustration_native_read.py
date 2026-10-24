@@ -16,50 +16,14 @@ import hashlib
 import json
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any
 from uuid import UUID
 
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
-from .original_intake import canonical as _canonical
-from .kaggle_read_binding import binding_key
+from .kaggle_public_illustration_gate import NativeMediaSnapshot, _canonical
+from .source_read_gate import binding_key
 from .source_activation import MEDIA_HASH_IDENTIFIERS,media_crop_identity
-
-@dataclass(frozen=True)
-class NativeMediaSnapshot:
-    """Internal, bounded, one-illustration native PG readback from SQL015+014.
-
-    The existing media reader's PUBLIC row has data with crop_binding removed.
-    The owner must additionally resolve PRIVATE source/page/region/crop/availability
-    from the same canonical PG transaction; do not substitute model JSON.
-    """
-
-    source_id: str
-    illustration_id: str
-    source_revision: int
-    eligibility_revision: int
-    accepted: bool
-    withdrawn: bool
-    original_sha256: str | None
-    origin_original_sha256: str | None
-    media_candidate_sha256: str | None
-    media_origin_sha256: str | None
-    item: dict[str, Any] = field(repr=False)
-    manifest_page: dict[str, Any] = field(repr=False)
-    manifest_region: dict[str, Any] = field(repr=False)
-    public_row: dict[str, Any] = field(repr=False)
-    archive_state: dict[str, Any] = field(repr=False)
-    archive_chat_id: int = field(repr=False)
-    archive_topic_id: int = field(repr=False)
-    archive_scope: str = field(repr=False)
-    native_reader_sha256: str
-    database_generation: str
-    observed_data_seq: int
-    observed_projection_seq: int
-    observed_visibility_epoch: int
-
 
 SQL014_SHA256 = "5f8257e9fe58e2e2bdd00f67042ad17b8db007c7873dcc04f52d53be3523e855"
 SQL015_SHA256 = "7faacbf7fbb2b99f0dbdbd4339dea5138f134347e31a6be09577dff35be8c773"
@@ -70,7 +34,7 @@ SQL015_SHA256 = "7faacbf7fbb2b99f0dbdbd4339dea5138f134347e31a6be09577dff35be8c77
 # crop_binding; this private exact-id read reconstructs the SAME projection
 # plus immutable accepted source/manifest/figure/archive provenance in one
 # REPEATABLE READ READ ONLY snapshot. A missing SELECT grant fails closed.
-LEGACY_READ_SQL = """
+READ_SQL = """
 SELECT
  s.source_id::text, i.illustration_id::text,
  active.revision, visibility.eligibility_revision, s.accepted, s.withdrawn,
@@ -129,64 +93,9 @@ WHERE s.source_id=%s::uuid AND i.illustration_id=%s::uuid
 LIMIT 2
 """.strip()
 
-# Packet publication already commits its accepted figure and exact manifest.
-# It has no whole-book source_image/illustration_origins row. Do not require
-# those historical receipts or compare media representation hashes for delivery.
-BATCH_READ_SQL = """
-SELECT s.source_id::text,i.illustration_id::text,
- active.revision,visibility.eligibility_revision,s.accepted,s.withdrawn,
- imported.original_sha256,imported.original_sha256,NULL::text,NULL::text,
- i.data,page.value,region.value,
- availability.binding_bytes,availability.operation_key,availability.status,
- availability.photo,availability.document,
- availability.archive_chat_id,availability.archive_topic_id,
- recovery.database_generation,recovery.applied_seq,
- frontier.projection_seq,frontier.visibility_epoch
-FROM rkb_v4.source_illustrations i
-JOIN rkb_v4.sources s USING(source_id)
-JOIN rkb_v4.active_revision active USING(source_id)
-JOIN rkb_v4.source_visibility visibility USING(source_id)
-JOIN rkb_v4.source_import_origins imported ON imported.source_id=s.source_id
- AND imported.revision=active.revision
-JOIN LATERAL (SELECT b.manifest FROM rkb_v4.source_batch_publications b
- WHERE b.source_id=i.source_id AND b.component='semantic'
- AND b.figure_ids @> ARRAY[i.illustration_id]
- ORDER BY b.batch_index DESC LIMIT 1) publication ON true
-JOIN LATERAL jsonb_array_elements(publication.manifest->'pages') page(value)
- ON page.value->>'page_id'=i.data->>'page_id'
-JOIN LATERAL jsonb_array_elements(publication.manifest->'regions') region(value)
- ON region.value->>'region_id'=i.data->>'source_region_id'
-JOIN rkb_v4.source_illustration_availability availability
- ON availability.source_id=i.source_id AND availability.illustration_id=i.illustration_id
-CROSS JOIN rkb_v4.recovery_state recovery
-CROSS JOIN rkb_v4.read_frontier frontier
-WHERE s.source_id=%s::uuid AND i.illustration_id=%s::uuid
- AND s.accepted AND NOT s.withdrawn AND active.revision=1
- AND page.value->>'page_id'=region.value->>'page_id'
- AND region.value->>'kind'='figure' AND region.value->'bbox'=i.data->'bbox'
- AND availability.status='ready' AND availability.archive_chat_id=%s::bigint
- AND availability.archive_topic_id=%s::integer
- AND recovery.singleton AND frontier.singleton AND frontier.text_ready
- AND frontier.pending_seq IS NULL AND frontier.projection_seq=recovery.applied_seq
-LIMIT 2
-""".strip()
-
-READ_SQL = LEGACY_READ_SQL
-
 # Stable public code fingerprint; never a caller-provided string or an
 # assertion that a deployment has installed SQL015/this reader.
-READ_SQL_SHA256 = hashlib.sha256((READ_SQL+'\n'+BATCH_READ_SQL).encode("utf-8")).hexdigest()
-
-ACCEPTED_FIGURE_SQL = BATCH_READ_SQL.replace(
-    'availability.binding_bytes,availability.operation_key,availability.status,',
-    "coalesce(availability.binding_bytes,convert_to((i.data->'crop_binding')::text,'UTF8')),"
-    "coalesce(availability.operation_key,'illustration:'||i.illustration_id::text),"
-    "coalesce(availability.status,'pending'),"
-).replace('availability.archive_chat_id,availability.archive_topic_id,',
-          '%s::bigint,4::integer,').replace(
-    'JOIN rkb_v4.source_illustration_availability availability',
-    'LEFT JOIN rkb_v4.source_illustration_availability availability'
-).replace(" AND availability.status='ready' AND availability.archive_chat_id=%s::bigint\n AND availability.archive_topic_id=%s::integer", '')
+READ_SQL_SHA256 = hashlib.sha256(READ_SQL.encode("utf-8")).hexdigest()
 
 _FIELDS = (
     "source_id", "illustration_id", "source_revision", "eligibility_revision",
@@ -219,8 +128,7 @@ def _uuid(value) -> bool:
 
 def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
                      reader_key: tuple, archive_chat_id: int,
-                     archive_topic_id: int, archive_scope: str,
-                     allow_pending: bool = False) -> NativeMediaSnapshot:
+                     archive_topic_id: int, archive_scope: str) -> NativeMediaSnapshot:
     if type(values) not in (tuple, list) or len(values) != len(_FIELDS):
         _deny()
     d = dict(zip(_FIELDS, values))
@@ -237,8 +145,7 @@ def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
             or d["observed_visibility_epoch"] < 0
             or d["archive_chat_id"] != archive_chat_id
             or d["archive_topic_id"] != archive_topic_id
-            or d["archive_status"] not in (('pending','unknown','registered','ready','unavailable','failed')
-                if allow_pending else ('ready',))):
+            or d["archive_status"] != "ready"):
         _deny()
     item, page, region = (d["item"], d["manifest_page"], d["manifest_region"])
     if any(type(v) is not dict for v in (item, page, region)):
@@ -281,9 +188,9 @@ def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
     photo, document = d["photo"], d["document"]
     if (photo is not None and type(photo) is not dict
             or document is not None and type(document) is not dict
-            or d['archive_status']=='ready' and photo is None and document is None):
+            or photo is None and document is None):
         _deny()
-    archive_state = dict(status=d['archive_status'], binding=archived_binding,
+    archive_state = dict(status="ready", binding=archived_binding,
                          operation_key=d["archive_operation_key"],
                          photo=photo, document=document)
     public_row = dict(
@@ -291,7 +198,7 @@ def _row_to_snapshot(values, *, source_id: str, illustration_id: str,
         eligibility_revision=d["eligibility_revision"],
         illustration_id=illustration_id,
         data={k: v for k, v in item.items() if k != "crop_binding"},
-        archive_status=d['archive_status'],
+        archive_status="ready",
     )
     if (len(_canonical(item)) > 65536 or len(_canonical(public_row)) > 65536
             or len(_canonical(archive_state)) > 16384):
@@ -326,8 +233,7 @@ class NativePublicIllustrationReader:
     """
 
     def __init__(self, *, acquire, binding_current: Callable, archive_chat_id: int,
-                 archive_scope: str, timeout_seconds: float = 2.0,
-                 packet_publications: bool = False):
+                 archive_scope: str, timeout_seconds: float = 2.0):
         if (not callable(acquire) or not callable(binding_current)
                 or type(archive_chat_id) is not int
                 or not -(2**63) < archive_chat_id < 0
@@ -341,7 +247,6 @@ class NativePublicIllustrationReader:
         self.archive_chat_id, self.archive_topic_id = archive_chat_id, 4
         self.archive_scope = archive_scope
         self.timeout_seconds = float(timeout_seconds)
-        self.packet_publications = packet_publications
         self.native_reader_sha256 = READ_SQL_SHA256
 
     def _current(self, binding, key):
@@ -353,13 +258,6 @@ class NativePublicIllustrationReader:
 
     async def __call__(self, source_id: str, illustration_id: str,
                        actor_id: str, binding) -> NativeMediaSnapshot:
-        return await self._read(source_id,illustration_id,actor_id,binding,allow_pending=False)
-
-    async def accepted_figure(self, source_id, illustration_id, actor_id, binding):
-        """Accepted geometry for the existing native mirror, before availability."""
-        return await self._read(source_id,illustration_id,actor_id,binding,allow_pending=True)
-
-    async def _read(self,source_id,illustration_id,actor_id,binding,*,allow_pending):
         if not _uuid(source_id) or not _uuid(illustration_id) or not _uuid(actor_id):
             _deny("native_media_verified_actor_and_source_required")
         try:
@@ -385,10 +283,9 @@ class NativePublicIllustrationReader:
                                 "SELECT set_config('statement_timeout',%s,true)",
                                 (str(max(1, int((deadline-loop.time()) * 1000))),))
                             self._current(binding, key)
-                            await cursor.execute(ACCEPTED_FIGURE_SQL if allow_pending else
-                                (BATCH_READ_SQL if self.packet_publications else READ_SQL),
-                                (self.archive_chat_id,source_id,illustration_id) if allow_pending else
-                                (source_id, illustration_id, self.archive_chat_id,self.archive_topic_id))
+                            await cursor.execute(
+                                READ_SQL, (source_id, illustration_id, self.archive_chat_id,
+                                           self.archive_topic_id))
                             self._current(binding, key)
                             rows = await cursor.fetchmany(2)
                             self._current(binding, key)
@@ -399,7 +296,7 @@ class NativePublicIllustrationReader:
                                 illustration_id=illustration_id, reader_key=key,
                                 archive_chat_id=self.archive_chat_id,
                                 archive_topic_id=self.archive_topic_id,
-                                archive_scope=self.archive_scope,allow_pending=allow_pending)
+                                archive_scope=self.archive_scope)
                         self._current(binding, key)
                     self._current(binding, key)
                 self._current(binding, key)

@@ -2,6 +2,33 @@
 from __future__ import annotations
 
 
+async def read_source_illustration(request,cursor,execute):
+    from .kaggle_protocol import EvidenceItem,EvidenceMetadata,ItemDependencies,SourceDependency
+    from .kaggle_query import ReadUnavailable
+    await execute('''SELECT i.data,pg.physical_page_index,v.eligibility_revision
+        FROM rkb_v4.source_illustrations i
+        JOIN rkb_v4.sources s USING(source_id)
+        JOIN rkb_v4.active_revision a USING(source_id)
+        JOIN rkb_v4.source_visibility v USING(source_id)
+        JOIN rkb_v4.source_stage_pages pg ON pg.source_id=i.source_id
+            AND pg.page_id=(i.data->>'page_id')::uuid
+        WHERE i.source_id=%s::uuid AND i.illustration_id=%s::uuid
+            AND s.accepted AND NOT s.withdrawn AND a.revision=1 LIMIT 1''',
+        (request.source_id,request.query))
+    row=await cursor.fetchone()
+    if row is None:raise ReadUnavailable('evidence_withdrawn')
+    data,physical,eligibility=row
+    figure={key:value for key,value in data.items() if key!='crop_binding'}
+    figure.update(source_id=request.source_id,physical_page_index=physical)
+    evidence=EvidenceItem(id=request.query,kind='source',
+        text=(data.get('caption_text') or data.get('visual_description') or data['illustration_key'])[:2000],
+        metadata=EvidenceMetadata(locator='source:'+request.source_id),
+        dependencies=ItemDependencies(source_ids=(request.source_id,),variant_refs=(),grant_refs=(),
+            source_revisions=(SourceDependency(source_id=request.source_id,content_revision=1,
+                eligibility_revision=eligibility),)))
+    return (figure,),(evidence,),None
+
+
 async def read_passage_illustrations(cursor, execute, *, source_id, passage_id):
     # Select the accepted figure relation, not every picture on a nearby page.
     # Representation hashes and archive readiness do not decide discoverability.
