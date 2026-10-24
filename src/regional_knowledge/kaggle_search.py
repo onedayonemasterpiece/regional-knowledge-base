@@ -55,12 +55,20 @@ class SearchResult:
     branch_ranks: tuple[tuple[str, ...], ...] | None = None
 
 
-def vector_literal(values: Sequence[float]) -> str:
-    # validate_vector performs dimension/finite/L2 checks, but accepts coercions;
-    # reject wire booleans and strings before using the shared contract.
+def validate_vector_values(values: Sequence[float]) -> list[float]:
+    """Reject invalid encoder output *before* it can become a hybrid result.
+
+    Keep the existing strict Python list/element types and pinned BGE dimension,
+    finite and L2-norm checks, without allocating a disposable pgvector string.
+    Future callers of vector_literal still pass the very same validation.
+    """
     if not isinstance(values, list) or any(type(v) not in (int, float) for v in values):
         raise ValueError("vector values must be numeric, excluding booleans")
-    return "[" + ",".join(map(str, validate_vector(values))) + "]"
+    return validate_vector(values)
+
+
+def vector_literal(values: Sequence[float]) -> str:
+    return "[" + ",".join(map(str, validate_vector_values(values))) + "]"
 
 
 async def fused_search(connection, query: str, *,

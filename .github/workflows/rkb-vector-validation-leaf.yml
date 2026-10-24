@@ -1,0 +1,118 @@
+name: rkb-vector-validation-leaf
+
+on:
+  push:
+    branches:
+      - chatgpt/rkb-linza-python-validate-once-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-source-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pin input revisions and source-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p vector-validation-artifacts
+          echo "base=f2c6ad0ba9df283a08240ee31de5ae771c2820eb" | tee vector-validation-artifacts/base.txt
+          echo "head=$(git rev-parse HEAD)" | tee vector-validation-artifacts/head.txt
+          git merge-base --is-ancestor f2c6ad0ba9df283a08240ee31de5ae771c2820eb HEAD
+          git diff --name-only f2c6ad0ba9df283a08240ee31de5ae771c2820eb HEAD | tee vector-validation-artifacts/changed-paths.txt
+          python --version | tee vector-validation-artifacts/python.txt
+          sha256sum src/regional_knowledge/kaggle_query.py src/regional_knowledge/kaggle_search.py tests/test_kaggle_vector_validation_leaf.py | tee vector-validation-artifacts/source.sha256
+      - name: Exact source-backed synthetic parity and cancellation BEFORE performance
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s python -m unittest discover -s tests -p 'test_kaggle_vector_validation_leaf.py' -v 2>&1 | tee vector-validation-artifacts/parity.log
+      - name: Install existing declared development and integration extras on CI runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 300s python -m pip install -e '.[dev,ingest,kaggle]' 2>&1 | tee vector-validation-artifacts/project-dependency-install.log
+      - name: Import actual regional_knowledge Python modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s python - <<'PY' 2>&1 | tee vector-validation-artifacts/actual-package-import.log
+          import inspect
+          from regional_knowledge import kaggle_query, kaggle_search
+          from regional_knowledge.bge_contract import validate_vector
+          assert inspect.iscoroutinefunction(kaggle_query.execute_query)
+          assert kaggle_query.validate_vector_values is kaggle_search.validate_vector_values
+          actual = [1.0] + [0.0] * 1023
+          assert kaggle_search.validate_vector_values(actual) == validate_vector(actual)
+          assert kaggle_search.vector_literal(actual) == "[1.0," + ",".join(["0.0"] * 1023) + "]"
+          for bad in ([True] + [0.0] * 1023, [0.0] * 1024,
+                      [float("nan")] + [0.0] * 1023,
+                      [float("inf")] + [0.0] * 1023, [1.0]):
+              for check in (kaggle_search.validate_vector_values, kaggle_search.vector_literal):
+                  try:
+                      check(bad)
+                  except ValueError:
+                      pass
+                  else:
+                      raise AssertionError("invalid encoder input accepted")
+          print("ACTUAL_PACKAGE_IMPORT_PASS module identities, return shape, strict invalid handling")
+          PY
+      - name: Existing package-level query and search regression without PG or model
+        shell: bash
+        env:
+          RKB_KAGGLE_TEST_DSN: ""
+          RKB_GRAPH_TEST_DSN: ""
+          RKB_PG_DRIVER_FIXTURE_SOCKET: ""
+          RKB_PG_SEARCH_FIXTURE_CONTAINER: ""
+        run: |
+          set -euo pipefail
+          timeout 180s python -m pytest -q -ra \
+            tests/test_kaggle_query.py \
+            tests/test_kaggle_search_scope.py \
+            tests/test_kaggle_pg_search.py \
+            tests/test_kaggle_worker_query.py \
+            tests/test_kaggle_query_roundtrip.py \
+            2>&1 | tee vector-validation-artifacts/installed-query-regressions.log
+      - name: Detect whether measured production source changed
+        id: native_source_change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e a3d4338b8e60b9c7d42a02a10c05e2d167fc4583^{commit}
+          if git diff --quiet a3d4338b8e60b9c7d42a02a10c05e2d167fc4583 HEAD -- \
+            src/regional_knowledge/kaggle_query.py src/regional_knowledge/kaggle_search.py; then
+            echo "rerun=false" >> "$GITHUB_OUTPUT"
+            echo "Source unchanged since measured CI 39691439134; existing A/D results retained, no new benchmark." | tee vector-validation-artifacts/benchmark-decision.txt
+          else
+            echo "rerun=true" >> "$GITHUB_OUTPUT"
+            echo "Production source changed since measured CI; bounded A/D rerun enabled." | tee vector-validation-artifacts/benchmark-decision.txt
+          fi
+      - name: Bounded smoke A original vs D actual changed path
+        if: steps.native_source_change.outputs.rerun == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 40s python tests/test_kaggle_vector_validation_leaf.py --benchmark --smoke --iterations 24 --output vector-validation-artifacts/smoke.json
+      - name: Bounded source-backed A/D wall CPU RSS measurement
+        if: steps.native_source_change.outputs.rerun == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 110s python tests/test_kaggle_vector_validation_leaf.py --benchmark --iterations 1200 --output vector-validation-artifacts/benchmark.json
+      - name: Preserve synthetic-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rkb-query-validation-leaf
+          path: vector-validation-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
