@@ -150,8 +150,31 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
                     raise AssertionError(f"{name} returned {actual!r}, expected {value!r}")
             measurements[name] = round(median(timings), 2)
 
-    # The diagnostic baseline deliberately prints exact per-helper server-side
-    # SELECT durations in the GitHub CI warning summary, not a live/RCA claim.
-    warnings.warn(f"RKB_SQL032_BASELINE disposable_pg17 synthetic "
+        # Exact negative branches of the existing SQL028 graph contract.
+        # Mutations never enter the accepted journal or a live/Dev database.
+        for case in ("poi_missing_region","poi_wrong_page","finding_unknown",
+                     "finding_wrong_keys","duplicate_proof_region","duplicate_proof_passage"):
+            changed = copy.deepcopy(graph)
+            if case == "poi_missing_region":
+                changed["source_graph"]["poi_facts"][0]["evidence"][0]["region_id"] = ident("absent-region", 0)
+            elif case == "poi_wrong_page":
+                changed["source_graph"]["poi_facts"][0]["evidence"][0]["page_id"] = ident("absent-page", 0)
+            elif case == "finding_unknown":
+                changed["source_graph"]["finding_entities"][0]["assertion_id"] = ident("absent-finding", 0)
+            elif case == "finding_wrong_keys":
+                changed["source_graph"]["finding_entities"][0]["entity_keys"] = ["foreign-unbound-key"]
+            elif case == "duplicate_proof_region":
+                changed["semantic"]["regions"].append(copy.deepcopy(changed["semantic"]["regions"][0]))
+            else:
+                changed["passages"].append(copy.deepcopy(changed["passages"][0]))
+            got = (await (await conn.execute(
+                "SELECT rkb_v4.check_source_batch_graph_v1(%s::jsonb,%s::uuid,89)",
+                (Jsonb(changed),SOURCE))).fetchone())[0]
+            assert got is False, case
+        # The SQL029 base/originals and SQL028 strict evidence owner checks
+        # remain byte-identical; only the two hot JOIN existence branches change.
+
+    warnings.warn(f"RKB_SQL032_AFTER disposable_pg17 synthetic "
         f"passages=1600 regions=700 findings=800 timings_ms={measurements}",
         UserWarning, stacklevel=1)
+    assert measurements["sql028_graph"] < 1500, measurements
