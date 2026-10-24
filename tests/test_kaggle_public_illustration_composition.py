@@ -60,7 +60,12 @@ async def test_configure_before_server_returns_real_pixels_and_physical_page(ser
         assert private not in wire
 
 
-def test_native_illustration_import_has_no_mcp_oauth_or_dev_corpus_dependencies():
+def test_native_illustration_bundle_has_no_mcp_oauth_or_dev_corpus_dependencies(tmp_path):
+    from regional_knowledge.kaggle_target_launch import source_bundle
+    _,members,_=source_bundle(Path(__file__).resolve().parents[1])
+    for name,value in members.items():
+        path=tmp_path/name;path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text(value)
     source='''
 import importlib.abc,sys
 class Guard(importlib.abc.MetaPathFinder):
@@ -71,6 +76,6 @@ sys.meta_path.insert(0,Guard())
 from regional_knowledge.kaggle_illustration_native import NativeIllustrationService
 from regional_knowledge.kaggle_original_native import NativeOriginalIntake
 '''
-    result=subprocess.run([sys.executable,'-c',source],cwd=Path(__file__).resolve().parents[1],
-        env={**os.environ,'PYTHONPATH':'src'},capture_output=True,text=True,timeout=15)
+    result=subprocess.run([sys.executable,'-c',source],cwd=tmp_path,
+        env={**os.environ,'PYTHONPATH':str(tmp_path)},capture_output=True,text=True,timeout=15)
     assert result.returncode==0,result.stderr

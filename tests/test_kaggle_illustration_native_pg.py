@@ -1,5 +1,6 @@
 """Actual packet PG/reader-role/mirror composition; synthetic source and Telegram only."""
 import base64
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from io import BytesIO
@@ -51,6 +52,21 @@ class Telegram:
 @pytest.mark.asyncio
 async def test_packet_real_reader_crop_mirror_repeat_and_withdrawal(image_pg_sql18):
     env=image_pg_sql18;connection=env['connection'];doc=json.loads(illustrated_batch())
+    page=doc['model_payload']['pages'][0]
+    page['regions'].extend([
+        dict(region_key='other-figure',kind='figure',reading_order=3,
+             bbox=dict(left=600,top=600,right=800,bottom=800),source_text=''),
+        dict(region_key='other-caption',kind='caption',reading_order=4,
+             bbox=dict(left=600,top=820,right=800,bottom=860),source_text='An unrelated illustration.')])
+    other=deepcopy(page['illustrations'][0])
+    other.update(illustration_key='other',source_region_key='other-figure',
+        caption_region_keys=['other-caption'])
+    page['illustrations'].append(other)
+    chunk=deepcopy(doc['model_payload']['chunks'][0])
+    chunk.update(chunk_key='zz-unrelated',
+        region_refs=[dict(page_id=page['page_id'],region_key='other-caption')],
+        illustration_refs=[dict(page_id=page['page_id'],illustration_key='other')])
+    doc['model_payload']['chunks'].append(chunk)
     prepare,_=native(env)
     assert (await accepted(env,stage_command(doc,1))).status=='applied'
     for part in ('text','semantic'):
@@ -61,8 +77,8 @@ async def test_packet_real_reader_crop_mirror_repeat_and_withdrawal(image_pg_sql
         await configure_native_roles(connection,selected_sql=sorted(
             path.name for path in (ROOT/'sql/kaggle').glob('[0-9][0-9][0-9]_*.sql')),
             dbname=connection.info.dbname,create_roles=False)
-        figure=(await (await connection.execute('SELECT illustration_id FROM rkb_v4.source_illustrations')).fetchone())[0]
-        passage=(await (await connection.execute('SELECT passage_id FROM rkb_v4.source_passage_provenance')).fetchone())[0]
+        figure=(await (await connection.execute("SELECT illustration_id FROM rkb_v4.source_illustrations WHERE data->>'illustration_key'='picture'")).fetchone())[0]
+        passage=(await (await connection.execute('SELECT passage_id FROM rkb_v4.passage_search ORDER BY ordinal LIMIT 1')).fetchone())[0]
     @asynccontextmanager
     async def role(name):
         conn=await connect()
@@ -94,6 +110,8 @@ async def test_packet_real_reader_crop_mirror_repeat_and_withdrawal(image_pg_sql
                         source_id=SOURCE,passage_id=str(passage))
         assert len(descriptors)==1 and descriptors[0]['illustration_id']==str(figure)
         assert descriptors[0]['physical_page_index']==0
+        # The other accepted figure shares the page, but neither passage nor
+        # caption/figure evidence; it must not become this passage's descriptor.
         result=await service(dict(arguments=args),record)
         assert result['snapshot']['archive_state']['status']=='ready'
         assert len(telegram.sent)==1

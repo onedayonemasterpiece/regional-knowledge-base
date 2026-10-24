@@ -443,7 +443,9 @@ class OriginalIntakeController:
                 AND json_extract(identity,'$.phase')='original_illustration'
                 AND json_extract(identity,'$.arguments.source_id')=?
                 AND json_extract(identity,'$.arguments.illustration_id')=?
-                ORDER BY created DESC LIMIT 32''',(source_id,illustration_id)).fetchall()
+                AND json_extract(identity,'$.database_generation')=?
+                ORDER BY created DESC LIMIT 32''',
+                (source_id,illustration_id,binding.database_generation)).fetchall()
         uncertain=False
         for prior in previous:
             if prior['state']=='claimed':uncertain=True
