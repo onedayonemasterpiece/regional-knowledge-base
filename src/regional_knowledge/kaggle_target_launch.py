@@ -23,7 +23,8 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands','kaggle_dataset_base',
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
     'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','kaggle_source_geo_mvp','stage_graph','poi_reference','kaggle_recovery_composition','kaggle_snapshot_drill','kaggle_acceptance_contracts','source_stage','source_activation','source_graph_native','source_catalog_command','kaggle_native_source_bindings',
-    'kaggle_source_materializer','kaggle_source_batch','source_batch','source_batch_selection','source_batch_context','source_packet_tails','kaggle_import_contracts','rights','search_material','region_policy','continuation_context')
+    'kaggle_source_materializer','kaggle_source_batch','source_batch','source_batch_selection','source_batch_context','source_packet_tails','kaggle_import_contracts','rights','search_material','region_policy','continuation_context',
+    'kaggle_passage_illustrations')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_JSON_BYTES = 3 * 1024 * 1024
 MAX_NOTEBOOK_SOURCE_BYTES = 1_000_000

@@ -256,13 +256,14 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
             emit_executor_stage(telemetry, query, stages)
 
 
-async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False) -> PassageReadResult:
+async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False, public_illustrations=False) -> PassageReadResult:
     if type(request) is not PassageReadRequest:
         raise TypeError("validated PassageReadRequest required")
-    return await read_continuation(request, request.locator, acquire=acquire,source_provenance=source_provenance)
+    return await read_continuation(request, request.locator, acquire=acquire,
+        source_provenance=source_provenance,public_illustrations=public_illustrations)
 
 
-async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False) -> PassageRead:
+async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False,public_illustrations=False) -> PassageRead:
     """Internal continuation resolver after renewed upstream authorization.
 
     An unchanged immutable passage/source/eligibility fence is required. The
@@ -318,13 +319,20 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                                 or observed["visibility"] != locator.visibility_epoch):
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
+                        illustrations, illustrations_has_more = (), False
                         if source_provenance:
                             await execute('SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([locator.passage_id],))
                             metadata=await cursor.fetchone()
                             if metadata is None or type(metadata[0]) is not dict:
                                 raise ReadUnavailable('not_ready')
+                            provenance = dict(metadata[0])
+                            if public_illustrations:
+                                from .kaggle_passage_illustrations import read_passage_illustrations
+                                illustrations, illustrations_has_more = await read_passage_illustrations(
+                                    cursor, execute, source_id=locator.source.source_id,
+                                    passage_id=locator.passage_id)
                             from dataclasses import replace
-                            hit=replace(hit,source_provenance=metadata[0])
+                            hit=replace(hit,source_provenance=provenance)
                         if locator.text_offset>len(hit.body) or locator.bibliography_offset>len(hit.bibliography):
                             raise ReadUnavailable("invalid_input")
                         if locator.text_offset==len(hit.body) and locator.bibliography_offset==len(hit.bibliography):
@@ -336,6 +344,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                                       database_generation=observed["database"],
                                       text_offset=text_start, bibliography_offset=locator.bibliography_offset)
                         result = PassageRead(**_identity(query), status="ok",
+                            illustrations=illustrations, illustrations_has_more=illustrations_has_more,
                             evidence=(entry,), observed_data_seq=observed["data"],
                             observed_projection_seq=observed["projection"], observed_visibility_epoch=observed["visibility"],
                             observed_database_generation=observed["database"])

@@ -80,6 +80,8 @@ class ReadHandlerSlot:
         names=('acquire','tokenizer','telemetry','source_provenance')
         self._pinned={key:getattr(handler,key) for key in names} if all(
             hasattr(handler,key) for key in names) else None
+        if self._pinned is not None and hasattr(handler,'public_illustrations'):
+            self._pinned['public_illustrations']=handler.public_illustrations
         self._hash = loaded_sha256
         self._active_module: str | None = None
         self._compatibility = compatibility
@@ -195,7 +197,7 @@ class ReadHandlerSlot:
                 if not _async_handler(candidate):
                     raise WarmHandlerRejected('read_handler_candidate_not_async')
                 if self._pinned is not None and any(
-                    (getattr(candidate,key,None)!=value if key=='source_provenance'
+                    (getattr(candidate,key,None)!=value if key in ('source_provenance','public_illustrations')
                      else getattr(candidate,key,None) is not value)
                     for key,value in self._pinned.items()
                 ):

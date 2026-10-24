@@ -18,7 +18,7 @@ from .kaggle_query import ReadUnavailable, _frontier, _identity
 class SourceReadRequest(ReadIdentity):
     type: Literal['SOURCE_READ'] = 'SOURCE_READ'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration'] = 'source_catalog'
     operation_version: Literal[1] = 1
     query: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
     source_id: Identifier | None = None
@@ -33,6 +33,13 @@ class SourceReadRequest(ReadIdentity):
 
     @model_validator(mode='after')
     def bounded_query(self):
+        if self.operation=='source_illustration':
+            if (self.query is None or self.source_id is None
+                    or any(x is not None for x in (self.page_start,self.page_end,self.after_ordinal))):
+                raise ValueError('exact accepted illustration selector required')
+            if any(str(UUID(x))!=x for x in (self.source_id,self.query)):
+                raise ValueError('canonical illustration UUIDs required')
+            return self
         if self.operation == 'source_catalog':
             if (self.query is None or not self.query.strip() or len(self.query.encode()) > 4096
                     or any(value is not None for value in
@@ -54,7 +61,7 @@ class SourceReadRequest(ReadIdentity):
 class SourceReadResult(ReadIdentity):
     type: Literal['SOURCE_READ_RESULT'] = 'SOURCE_READ_RESULT'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration'] = 'source_catalog'
     status: Literal['ok','unavailable','invalid_query','denied','cancelled']
     records: tuple[dict,...] = Field(default=(), max_length=8)
     evidence: tuple[EvidenceItem,...] = Field(default=(), max_length=8)
@@ -171,7 +178,10 @@ async def execute_source_read(request, *, acquire):
                             await cursor.execute(statement,params)
 
                         await _frontier(cursor,execute,request,observed,require_dense=False)
-                        if request.operation == 'accepted_chunks':
+                        if request.operation=='source_illustration':
+                            from .kaggle_passage_illustrations import read_source_illustration
+                            records,evidence,next_ordinal=await read_source_illustration(request,cursor,execute)
+                        elif request.operation == 'accepted_chunks':
                             records, evidence, next_ordinal = await _accepted_chunks(request,cursor,execute)
                         else:
                             await execute('SELECT * FROM rkb_v4.find_source_catalog_v1(%s,%s)',

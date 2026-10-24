@@ -614,10 +614,10 @@ def build_server(
         embedded_provider.register_routes(mcp)
 
     mcp._target_source_profile=selected=='kaggle_source'
-    # Do not advertise an image result without the trusted, installed native
-    # source gate AND its independent real archive byte-issuer owner.
+    # Public previews use the existing source issuer and page renderer.
     mcp._target_media_available=(selected=='kaggle_source'
-        and getattr(backend,'public_media_gate',None) is not None)
+        and (getattr(backend,'illustration_renderer',None) is not None
+             or getattr(backend,'public_media_gate',None) is not None))
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
@@ -1728,6 +1728,9 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
     if target_startup is None and os.getenv('RKB_BACKEND_PROFILE','').strip()=='kaggle_source':
         from .kaggle_source_owners import configured_source_service
         target_startup=configured_source_service()
+    if target_startup is not None:
+        from .kaggle_illustration_preview import configure_illustration_preview
+        configure_illustration_preview(target_startup)
     reader_config=os.getenv('RKB_PROJECTS_HUB_READER_CONFIG','').strip()
     if reader_config and projects_hub_receiver is None:
         if target_startup is None:
