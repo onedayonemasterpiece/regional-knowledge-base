@@ -58,6 +58,36 @@ Search material may include accepted captions and labelled visual observations w
 
 Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh MCP import, not backfilled as accepted target content. Reuse verified original bytes and existing archive infrastructure as permitted; preserve GEO minimal provenance and exact reanchor under the [cutover contract](../migrations/rkb-layers-only-cutover-20261019.md).
 
+## Public packet illustration composition
+
+The production entry point configures `PublicIllustrationOutputGate` before
+building the MCP server. Ordinary passage fetch projects `illustrations[]`
+from accepted packet links, or from an exact shared figure/caption region.
+Descriptors contain the existing source/illustration locator and zero-based
+physical page index; an unrelated picture on the same page is excluded.
+Discovery does not depend on archive readiness or media hashes.
+
+`NativePublicIllustrationReader` reads current packet manifests through the
+existing reader pool. SQL037 grants the existing native reader only the
+accepted figure/publication metadata and availability columns it needs.
+Participant permissions and original/proof access rules are unchanged.
+
+The existing original maintenance channel handles the fixed
+`original_illustration` operation. It renders only accepted figure geometry
+from the verified original and reuses the leased Telethon client for topic 4.
+The existing availability projection records UNKNOWN before a send and the
+registered locator before verification. Registered media is read again without
+a new upload. After a Dataset restore, the retained maintenance receipt can
+recover its exact locator after native presence and geometry checks. An
+unresolved send fences that figure while other reads/imports remain usable.
+
+Real registered pixels return through the existing MCP issuance middleware
+with their MIME, source identity and physical page. Maintenance replies carry
+a bounded preview (at most 72 KiB of encoded image); large registered images
+are reduced within their exact crop frame for this preview. This path does
+not provide an original-resolution document. Deployment and live image
+acceptance are separate from the synthetic PG/MCP regression tests.
+
 ## Source-proof and locator contract
 
 Port the existing corpus/authorization boundary in `quote_proof` and `source_archive` to PG. An authorized nonowner proof request must reach the original through purpose-scoped internal rendering access; never impersonate the owner or grant direct source download as a side effect. Restrict the model's input and final composited pixels to the authorized class/scope. A full private page underneath a highlighted crop is a disclosure.

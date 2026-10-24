@@ -341,7 +341,7 @@ class NativeTelegramIllustrations:
         queue. They must not retain a PG transaction across this method's awaits.
         """
         if (type(operation_key) is not str or not 1<=len(operation_key)<=256
-                or type(crop) is not bytes or not 1<=len(crop)<=8*1024*1024
+                or crop is not None and (type(crop) is not bytes or not 1<=len(crop)<=8*1024*1024)
                 or mime_type not in ('image/jpeg','image/png','image/webp')
                 or kind not in ('photo','document')):
             raise ValueError('bounded exact illustration send required')
@@ -355,6 +355,8 @@ class NativeTelegramIllustrations:
             return actual
         if state['status']!='pending':
             raise IllustrationArchiveUnknown('reconcile the same unknown send; no blind resend')
+        if crop is None:
+            raise ValueError('pending illustration requires actual crop bytes')
         if await begin(operation_key) is not True:
             raise IllustrationArchiveUnknown('send already admitted; reconcile same operation')
         self._check()

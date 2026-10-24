@@ -31,6 +31,7 @@ from .kaggle_public_illustration_gate import (
     PublicIllustrationOutputGate, IssuedPublicIllustration, IssuedArtifactBytes,
 )
 from .read_telemetry import ReadTelemetry
+from .kaggle_read_binding import TargetReadBinding
 
 
 class TargetUnavailable(RuntimeError):
@@ -93,16 +94,6 @@ class _GatedMedia:
     @property
     def ticket(self):
         return self.issued.ticket
-
-
-@dataclass(frozen=True)
-class TargetReadBinding:
-    run_id: str
-    runtime_incarnation: str
-    connection_generation: int
-    database_generation: str
-    min_data_seq: int
-    provider_version: str
 
 
 def current_binding(queue):
@@ -200,7 +191,7 @@ class KaggleSourceBackend:
             raise ToolError('{"status":"invalid_query","reason":"invalid_illustration_locator"}') from None
         gate = self.public_media_gate
         if gate is None:
-            raise ToolError('{"status":"unavailable","reason":"media_owner_not_registered"}')
+            raise ToolError('{"status":"unavailable","reason":"not_ready"}')
         verified = None
         issued = None
         retained = False
@@ -322,6 +313,7 @@ class KaggleSourceBackend:
         return FetchOutput(text=item.text, metadata={
             'citation': item.metadata.citation, 'locator': item.metadata.locator,
             'source_provenance':item.metadata.source_provenance,
+            'illustrations': (item.metadata.source_provenance or {}).get('illustrations', []),
             'text_form': item.text_form, 'bounded_passage': True,
             'text_offset': item.source_continuation.text_offset - len(item.text)
                 if item.source_continuation else locator.text_offset,

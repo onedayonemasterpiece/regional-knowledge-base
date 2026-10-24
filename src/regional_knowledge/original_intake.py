@@ -8,7 +8,8 @@ import json
 from uuid import UUID
 import math
 
-PHASES=frozenset({'original_acquire','original_archive','original_verify','original_pages'})
+PHASES=frozenset({'original_acquire','original_archive','original_verify','original_pages',
+                  'original_illustration'})
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
 def digest(value):return hashlib.sha256(value).hexdigest()

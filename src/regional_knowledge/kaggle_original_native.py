@@ -58,7 +58,8 @@ class OriginalIntakeConfig:
 
 
 class NativeOriginalIntake:
-    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None,telegram_downloader=None):
+    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None,telegram_downloader=None,
+                 illustration_acquire=None,illustration_writer_acquire=None):
         if type(config) is not OriginalIntakeConfig or not callable(current):raise TypeError('retained original owner required')
         root=Path(workspace)
         if not root.is_absolute() or not root.is_relative_to(PRIVATE_ROOT) or root.resolve(strict=True)!=root or root.stat().st_mode&0o077:
@@ -84,6 +85,11 @@ class NativeOriginalIntake:
         self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,256*1024),timeout_seconds=config.seconds)
         self.generation=None;self.closed=False;self._records={};self._requests={};self._results={};self._lock=asyncio.Lock()
         self._prebinding_retry=set();self.telegram_channel=None
+        self.illustrations=None
+        if illustration_acquire is not None and illustration_writer_acquire is not None:
+            from .kaggle_illustration_native import NativeIllustrationService
+            self.illustrations=NativeIllustrationService(self,acquire=illustration_acquire,
+                writer_acquire=illustration_writer_acquire)
 
     def attached(self,generation):self.generation=generation
     def detached(self,generation):
@@ -171,14 +177,16 @@ class NativeOriginalIntake:
 
     async def __call__(self,frame):
         self._validate(frame);key=frame['operation_key'];request=frame['request_sha256']
+        media_read=frame['phase']=='original_illustration'
         async with self._lock:
             if key in self._requests:
                 if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
                 if key in self._results:return self._results[key]
                 if key not in self._prebinding_retry:raise OriginalIntakeError('original_operation_unknown_reconcile')
                 self._prebinding_retry.remove(key)
-            if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
-            self._requests[key]=request
+            if not media_read:
+                if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
+                self._requests[key]=request
             started = time.monotonic()
             operation_ref = digest(key.encode())
             _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],operation_ref)
@@ -193,7 +201,12 @@ class NativeOriginalIntake:
                     self.identity[0],frame['phase'],operation_ref,type(exc).__name__)
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
             if len(canonical(result))>120*1024:raise OriginalIntakeError('original_result_bound')
-            if value.get('error')=='original_telegram_binding_required':
+            if media_read:
+                # A read is fresh on retry. Mirror effects retain their exact
+                # operation/UNKNOWN/locator in the existing native PG projection.
+                # Public reads must not exhaust the private intake record cache.
+                pass
+            elif value.get('error')=='original_telegram_binding_required':
                 self._prebinding_retry.add(key)  # Retain exact fingerprint, no native effect occurred.
             else:self._results[key]=result
             elapsed_ms=(time.monotonic()-started)*1000
@@ -287,6 +300,10 @@ class NativeOriginalIntake:
             finally:
                 if not acquired:await _blocking(shutil.rmtree,folder)
         record=self._record(args)
+        if phase=='original_illustration':
+            if self.illustrations is None:
+                raise OriginalIntakeError('public_illustration_runtime_unavailable')
+            return await self.illustrations(frame,record)
         if phase in ('original_archive','original_verify'):
             if (set(args) not in ({'handle','original_sha256'},{'handle','original_sha256','page_index'})
                     or type(private) is not dict or set(private)!={'ticket'}):

@@ -1728,6 +1728,9 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
     if target_startup is None and os.getenv('RKB_BACKEND_PROFILE','').strip()=='kaggle_source':
         from .kaggle_source_owners import configured_source_service
         target_startup=configured_source_service()
+    if target_startup is not None:
+        from .kaggle_public_illustration_composition import configure_public_illustrations
+        configure_public_illustrations(target_startup)
     reader_config=os.getenv('RKB_PROJECTS_HUB_READER_CONFIG','').strip()
     if reader_config and projects_hub_receiver is None:
         if target_startup is None:
