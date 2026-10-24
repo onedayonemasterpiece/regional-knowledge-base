@@ -182,7 +182,7 @@ class ControllerAcceptedProof:
 
 
 class SourcePrepareNotApplied(RuntimeError):
-    """Exact timed-out prepare SQL with completed PG rollback only."""
+    pass
 
 
 class _PrepareRollbackWitness:
@@ -214,7 +214,6 @@ class _ObservedPrepareConnection:
         try:
             async with self._connection.transaction(*args,**kwargs) as tx:yield tx
         except psycopg.errors.QueryCanceled:
-            # The transaction exited; IDLE proves no retained aborted TX.
             if (self._prepare_canceled and not self._connection.closed
                     and self._connection.info.transaction_status==TransactionStatus.IDLE):
                 self._witness.confirmed=True
@@ -389,7 +388,6 @@ class AcceptedSourceDispatch:
             command_b64=base64.b64encode(entry.command_bytes).decode(),accepted=seal_wire(entry.accepted))
 
     async def receive_not_applied(self, frame, *, run_id, token, generation):
-        # A typed native *attempt* result, not an apply receipt or a domain terminal.
         run,job=await asyncio.to_thread(self.queue._source_claim,self,run_id,token,generation,
             frame['job_id'],known_retry=True)
         entry,identity=await self._entry(job)
