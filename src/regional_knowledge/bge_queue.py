@@ -364,7 +364,7 @@ class BgeQueue:
                 (job_id,actor,key,'source_command','[]',encoded,'pending',now,now))
             return job_id
 
-    def _source_claim(self,owner,run_id,token,generation,job_id=None,*,known_retry=False):
+    def _source_claim(self,owner,run_id,token,generation,job_id=None):
         if owner is None or owner is not self._source_commands:
             raise PermissionError('configured source dispatch required')
         with self.connect(write=False) as db:
@@ -374,46 +374,8 @@ class BgeQueue:
                 job=db.execute("select * from jobs where kind='source_command' and state='claimed' and run_id=? order by created,id limit 1",(run_id,)).fetchone()
             else:
                 job=db.execute("select * from jobs where id=? and kind='source_command' and run_id=?",(job_id,run_id)).fetchone()
-            if job is None or job['state'] not in (
-                    ('claimed','done','pending','held') if known_retry else ('claimed','done')):
-                raise LookupError('exact source assignment absent')
+            if job is None or job['state'] not in ('claimed','done'):raise LookupError('exact source assignment absent')
             return dict(run),dict(job)
-
-    def _record_source_not_applied(self,owner,run_id,token,generation,job_id,claim,
-                                   command_hash,incarnation):
-        if owner is None or owner is not self._source_commands:
-            raise PermissionError('canonical source retry authority required')
-        with self.connect() as db:
-            run=self._authorize(db,run_id,token,self.clock())
-            self._dispatch_authorize(run,generation)
-            self._require_runtime(db,run_id,generation)
-            if incarnation!=run['runtime_incarnation']:
-                raise StaleClaim('native retry incarnation changed')
-            job=db.execute("select * from jobs where id=? and kind='source_command'",(job_id,)).fetchone()
-            if job is None or job['run_id']!=run_id:
-                raise StaleClaim('source retry assignment missing')
-            if json.loads(job['identity'])['command_sha256']!=command_hash:
-                raise ValueError('source retry command hash changed')
-            previous=json.loads(job['result']) if job['result'] else {}
-            if previous and previous.get('command_sha256')!=command_hash:
-                raise ValueError('source retry evidence hash changed')
-            attempts=previous.get('not_applied_attempts',[])
-            claim_hash=hashlib.sha256(claim.encode()).hexdigest()
-            for recorded in attempts:
-                if (recorded['claim_sha256']==claim_hash and recorded['run_id']==run_id
-                        and recorded['incarnation']==incarnation):
-                    return recorded['status']
-            if job['state']!='claimed' or job['claim']!=claim or job['attempt'] not in (1,2):
-                raise StaleClaim('source retry attempt is not current')
-            status='retry_scheduled' if job['attempt']==1 else 'retry_exhausted'
-            attempts.append(dict(attempt=job['attempt'],claim_sha256=claim_hash,
-                run_id=run_id,incarnation=incarnation,status=status))
-            result=json.dumps(dict(command_sha256=command_hash,not_applied_attempts=attempts),
-                sort_keys=True,separators=(',',':'))
-            db.execute("update jobs set state=?,result=?,lease_until=NULL,updated=? where id=?",
-                ('pending' if status=='retry_scheduled' else 'held',result,self.clock(),job_id))
-        self._notify_result(job_id)
-        return status
 
     def _complete_source_command(self,owner,run_id,token,generation,job_id,claim,command_hash,*,remote_outcome_durable=True):
         if owner is None or owner is not self._source_commands:raise PermissionError('canonical source dispatch required')
@@ -424,11 +386,7 @@ class BgeQueue:
             if not job or job['run_id']!=run_id or job['claim']!=claim:raise StaleClaim('source assignment changed')
             if json.loads(job['identity'])['command_sha256']!=command_hash:raise ValueError('source completion hash mismatch')
             if type(remote_outcome_durable) is not bool:raise ValueError('explicit outcome persistence state required')
-            retained=json.loads(job['result']) if job['result'] else {}
-            details=dict(command_sha256=command_hash,remote_outcome_durable=remote_outcome_durable)
-            if retained.get('not_applied_attempts'):
-                details['not_applied_attempts']=retained['not_applied_attempts']
-            result=json.dumps(details,sort_keys=True)
+            result=json.dumps(dict(command_sha256=command_hash,remote_outcome_durable=remote_outcome_durable),sort_keys=True)
             if job['state']=='done':
                 if job['result']!=result:raise ValueError('source result changed')
                 return 'duplicate'
@@ -836,8 +794,7 @@ class BgeQueue:
             for actors,kind in ((document_actors,'document'),(command_actors,'source_command')):
                 if kind=='source_command' and self._source_commands is None:continue
                 for actor in actors:
-                    row=db.execute("select * from jobs where state='pending' and kind=? and actor=? "
-                        "and (kind!='source_command' or attempt<2) order by created,id limit 1",(kind,actor)).fetchone()
+                    row=db.execute("select * from jobs where state='pending' and kind=? and actor=? order by created,id limit 1",(kind,actor)).fetchone()
                     if row is not None:rows.append(dict(row))
             if self._story_editorial is not None:
                 seen={row['id'] for row in rows}
@@ -888,10 +845,7 @@ class BgeQueue:
             if job['kind']=='source_command' and self._source_commands is None:return None
             if job['state']=='claimed' and job['run_id']==run_id and job['lease_until']>now:
                 return self._claim_payload(job)
-            if (job['state']!='pending'
-                    or job['kind']=='source_command' and job['attempt']>=2
-                    or db.execute("select 1 from jobs where run_id=? and state='claimed' and lease_until>?",(run_id,now)).fetchone()):
-                return None
+            if job['state']!='pending' or db.execute("select 1 from jobs where run_id=? and state='claimed' and lease_until>?",(run_id,now)).fetchone():return None
             claim=secrets.token_urlsafe(24)
             db.execute("update jobs set state='claimed',run_id=?,claim=?,lease_until=?,attempt=attempt+1,updated=? where id=?",(run_id,claim,min(now+(900 if maintenance else JOB_SECONDS),run['started']+MAX_LIFETIME),now,job_id))
             db.execute('update runs set useful=? where id=?',(now,run_id))
