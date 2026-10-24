@@ -959,10 +959,10 @@ class ControlSpool:
         with self._db() as db:
             if sources is None:
                 row=db.execute("""SELECT sequence,accepted_sequence,
-                    (SELECT count(*) FROM rkb_control_operations) AS operation_count,
-                    (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_pending WHERE outcome_state<>'DURABLE') AS pending_count,
-                    (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_unknown
-                        WHERE seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN') AS unknown_count
+                    (SELECT count(*) FROM rkb_control_operations) operation_count,
+                    (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_pending WHERE outcome_state<>'DURABLE') pending_count,
+                    (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_unknown WHERE seal_state='SENT_UNKNOWN'
+                        OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN') unknown_count
                     FROM rkb_control_spool_meta WHERE id=1""").fetchone()
             elif not sources:
                 row={'sequence':0,'accepted_sequence':0,'operation_count':0,'pending_count':0,'unknown_count':0}
