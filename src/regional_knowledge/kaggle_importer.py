@@ -346,11 +346,11 @@ class KaggleSourceImporter:
         neither restaged nor given a new activation/revision or inference.
         """
         await self._check(access.authority, access.context, access.binding)
-        if (output.state not in ('staged','finalized') or output.ingestion_id != row['ingestion_id']
+        if (output.state != 'finalized' or output.ingestion_id != row['ingestion_id']
                 or output.document_id != row['source_id']):
             raise failure('native_research_status_identity_changed')
         current = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
-        if current['phase'] != ('staging' if output.state == 'staged' else 'finalized'):
+        if current['phase'] != 'finalized':
             raise failure('native_research_terminal_state_changed')
         if not current['research_json']:
             raise failure('native_research_accepted_frontier_missing')
@@ -992,9 +992,7 @@ class KaggleSourceImporter:
                             else:
                                 output = await self._original_pending(row,status)
                 if (command == 'status' and getattr(self, 'native_intake', None) is not None
-                        and (output.state == 'finalized' or
-                            output.state == 'staged' and output.next_action == 'continue_pages'
-                            and row['research_json'] and not output.warnings)):
+                        and output.state == 'finalized'):
                     output = await self._native_research_status(access, row, output)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64
