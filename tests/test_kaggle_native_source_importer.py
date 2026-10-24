@@ -407,7 +407,7 @@ async def test_normal_start_keeps_inactive_legacy_rows_and_accepted_bytes_unchan
 
 
 @pytest.mark.asyncio
-async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying_it(native_intake):
+async def test_new_upload_can_stage_after_foreign_uncertain_legacy_operation(native_intake):
     s=native_intake;old=await start(s)
     row=s.importer._row(s.principal.subject,old.ingestion_id)
     s.importer.native_intake._state(row,create=True)
@@ -424,8 +424,11 @@ async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying
     assert state(s,old)==before_state
     assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
     assert len(s.originals.calls)==2
-    with pytest.raises(ToolError,match='prior_write_pending'):
-        await stage(s,again,batch(s,again,count=1))
+    assert (await stage(s,again,batch(s,again,count=1))).state=='processing'
+    next_entry=await pending(s,again)
+    assert next_entry.command.sequence==entry.command.sequence+1
+    assert (await s.spool.get(entry.command.operation_key)).command_bytes==entry.command_bytes
+    assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
     with s.t.queue.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 2
 
@@ -542,18 +545,18 @@ async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stag
     scope=await s.spool.scope_state()
     old=await s.spool.get(command.operation_key)
     assert scope['pending'] and old.outcome_state!='DURABLE' and old.remote_outcome is None
-    if phase in ('accepted','applied','rejected_precondition'):
+    if phase!='unaccepted':
         assert scope['accepted_sequence']==1
-        assert s.startup.coverage.applied_sequence==(0 if phase=='accepted' else 1)
+        assert s.startup.coverage.applied_sequence==(1 if phase in ('applied','rejected_precondition','outcome_unknown') else 0)
         assert old.accepted is not None
-        assert (old.apply_receipt is None)==(phase=='accepted')
+        assert (old.apply_receipt is None)==(phase in ('accepted','apply_unknown'))
         assert old.command_bytes==command.encode()
         result=await stage(s,book,pages)
         assert result.state=='processing'
         next_entry=await pending(s,book)
         assert next_entry.command.sequence==2 and next_entry.command.route==STAGE_ROUTE
         assert (await s.spool.get(command.operation_key)).command_bytes==command.encode()
-        assert (await s.spool.get(command.operation_key)).outcome_state=='NOT_SENT'
+        assert (await s.spool.get(command.operation_key)).outcome_state==('SENT_UNKNOWN' if phase=='outcome_unknown' else 'NOT_SENT')
     else:
         with pytest.raises(ToolError,match='prior_write_pending'):
             await stage(s,book,pages)

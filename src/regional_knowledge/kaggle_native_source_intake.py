@@ -165,46 +165,22 @@ class NativeSourceIntake:
             if k not in ('codec','batch_index','previous_batch_sha256')}))
 
     def _inactive_prefix_current(self, access, row, scope):
-        """Require this book's prior apply, not a foreign book's known queue."""
+        """Require this book's own accepted inactive predecessors."""
         proof=getattr(self.startup,'coverage',None)
         if (proof is None or not proof.current() or getattr(proof,'binding',None)!=access.binding
-                or self.spool._source_anchor is not proof
-                or getattr(proof,'accepted_sequence',None)!=scope['accepted_sequence']
-                or type(getattr(proof,'applied_sequence',None)) is not int
-                or not 0<=proof.applied_sequence<=scope['accepted_sequence']
-                or scope['unknown']):
+                or self.spool._source_anchor is not proof or scope['unknown']):
             return False
         from .source_history_verifier import INACTIVE_SOURCE_ROUTES
         with self.queue.connect(write=False) as db:
-            rows=db.execute("SELECT * FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
+            rows=db.execute("SELECT * FROM rkb_control_operations WHERE source_id=? AND outcome_state<>'DURABLE'",
+                (row['source_id'],)).fetchall()
         if not rows:return False
         for pending in rows:
-            if pending['source_id']!=row['source_id']:
-                # Foreign accepted work may still be queued. It keeps its
-                # original journal position and cannot borrow this book's ID.
-                if (pending['database_generation']==access.binding.database_generation
-                        and pending['seal_state']=='ACCEPTED'
-                        and pending['apply_state'] in ('NOT_SENT','APPLIED','REJECTED_PRECONDITION')
-                        and pending['outcome_state']=='NOT_SENT'):
-                    verified=self.spool._entry(pending)
-                    # An own ingestion cannot masquerade as another source.
-                    if (verified.command.route.startswith('source.') and
-                            json.loads(verified.command.payload).get('ingestion_id')==row['ingestion_id']):
-                        return False
-                    if (verified.accepted is not None and verified.apply_state=='NOT_SENT'
-                            and verified.apply_receipt is None):
-                        continue
-                    if (verified.accepted is not None
-                            and verified.apply_receipt is not None
-                            and (verified.apply_state,verified.apply_receipt.status) in (
-                                ('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition'))):
-                        continue
-                return False
             verified=self.spool._entry(pending)
             command=verified.command
             applied=(pending['apply_state']=='APPLIED' or
                 command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1','source.catalog.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
-            if (pending['source_id']!=row['source_id'] or pending['person_id']!=row['person_id']
+            if (pending['person_id']!=row['person_id']
                     or pending['database_generation']!=access.binding.database_generation
                     or pending['seal_state']!='ACCEPTED' or not applied
                     or pending['outcome_state']!='NOT_SENT'
@@ -248,15 +224,18 @@ class NativeSourceIntake:
                     raise _failure('native_operation_payload_changed',status='invalid_query')
             else:
                 await self._check(access)
-                scope=await self.spool.scope_state()
-                if scope['unknown'] or scope['sequence']!=scope['accepted_sequence']:
+                scope=await self.spool.scope_state([row['source_id']])
+                if scope['unknown']:
                     raise _failure('prior_write_pending')
                 continuation=(scope['pending'] and kind in ('stage','seal','materialize','batch','finish','catalog')
                     and await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))
                 if scope['pending'] and not continuation:raise _failure('prior_write_pending')
+                journal_scope=await self.spool.scope_state()
+                if journal_scope['sequence']!=journal_scope['accepted_sequence']:
+                    raise _failure('prior_write_pending')
                 head=await self.spool.journal.head()
                 sequence=head.reference.last_sequence if head else 0
-                if sequence!=scope['accepted_sequence']:
+                if sequence!=journal_scope['accepted_sequence']:
                     _LOG.warning('native_intake_admission reason=journal_prefix kind=%s journal_sequence=%s accepted_sequence=%s',
                         kind,sequence,scope['accepted_sequence'])
                     raise _failure('source_history_unavailable')
@@ -265,7 +244,7 @@ class NativeSourceIntake:
                     revisions=self.importer._revisions(access.binding),source_id=row['source_id'],payload=payload)
                 frozen,data,handler=self.spool._validate(command,access.binding.database_generation)
                 await self._check(access)
-                facts=await self.spool.read_facts(None)
+                facts=await self.spool.read_facts([row['source_id']])
                 await self._check(access)
                 if (not self.importer._intake_coverage_current(access.binding)
                         or facts.database_generation!=access.binding.database_generation
@@ -625,9 +604,8 @@ class NativeSourceIntake:
             return state
         from .source_batch import CODEC,ROUTE,resolved_command
         from .kaggle_source_materializer import materializer_fingerprint
-        scope=await self.spool.scope_state()
-        if (scope['unknown'] or scope['sequence']!=scope['accepted_sequence']
-                or scope['pending'] and not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope)):
+        scope=await self.spool.scope_state([row['source_id']])
+        if (scope['unknown'] or scope['pending'] and not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope)):
             return state
         idx=state['batch_count']-1
         component='text' if state['published_batch_count']<state['batch_count'] else 'semantic'
@@ -684,9 +662,8 @@ class NativeSourceIntake:
             key=self._operation(row,'finish')+':'+str(state['command_attempt'])
             state=await self._recover_orphan(access,row,state,'finish',key)
             if state['pending_operation_key'] or state['phase']=='finalized':return self._output(row,state)
-            scope=await self.spool.scope_state()
-            if (scope['unknown'] or scope['sequence']!=scope['accepted_sequence']
-                    or scope['pending'] and not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope)):
+            scope=await self.spool.scope_state([row['source_id']])
+            if (scope['unknown'] or scope['pending'] and not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope)):
                 return self._output(row,state)
             await self._stage_exact(access,row,kind='finish',key=key,route=FINISH_ROUTE,
                 payload=dict(codec='rkb.source-finish.v1',ingestion_id=row['ingestion_id']),builder=resolved_command)
@@ -716,10 +693,9 @@ class NativeSourceIntake:
         else:
             kind='activate'; route=ACTIVATE_ROUTE; key=self._operation(row,kind)
             doc['codec']=ACTIVATION_CODEC; builder=resolved_activation_command
-        scope=await self.spool.scope_state()
-        if (scope['unknown'] or scope['sequence']!=scope['accepted_sequence']
-                or scope['pending'] and (kind=='activate'
-                    or not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))):
+        scope=await self.spool.scope_state([row['source_id']])
+        if (scope['unknown'] or scope['pending'] and (kind=='activate'
+                or not await asyncio.to_thread(self._inactive_prefix_current,access,row,scope))):
             return self.importer._output(row,'processing',
                 'Inactive candidate is awaiting current-prefix verification or remote durability; resume the same finalize',
                 'wait',source_archive_status='verified')

@@ -196,9 +196,7 @@ class BgeQueue:
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)
         control = db.execute('select * from control where id=1').fetchone()
-        if control['startup_state']=='blocked':
-            # Durable jobs may still be accepted/stored; they cannot bypass
-            # an exhausted cold-start budget by invoking _ensure indirectly.
+        if control['startup_failures']>=MAX_STARTUP_FAILURES:
             return control['current_run']
         current = db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
         if current is None:
@@ -215,24 +213,6 @@ class BgeQueue:
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
 
-    def recover_not_sent_startup(self):
-        """Operator-only: reopen a BLOCKED demand whose exhausted budget was all not-sent.
-
-        Allowed only when the latest MAX_STARTUP_FAILURES runs are known
-        not-sent launch failures (no provider version) Returns the evidence or raises.
-        """
-        with self.connect() as db:
-            control=db.execute('select startup_state from control where id=1').fetchone()
-            if control['startup_state']!='blocked':raise ValueError('startup demand is not blocked')
-            recent=db.execute('select id,status,launch_state,provider_version from runs order by started desc limit ?',
-                (MAX_STARTUP_FAILURES,)).fetchall()
-            if (len(recent)<MAX_STARTUP_FAILURES
-                    or any(r['launch_state']!='failed' or r['provider_version'] is not None for r in recent)):
-                raise ValueError('blocked demand is not provably not-sent')
-            ref='rkb:startup:v1:'+str(uuid.uuid4())
-            db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
-            return {'startup_ref':ref,'not_sent_runs':[r['id'] for r in recent]}
-
     def record_request_activity(self):
         """User intent renews useful-idle time; liveness and max age stay fenced."""
         with self.connect() as db:
@@ -248,24 +228,15 @@ class BgeQueue:
         """
         now=self.clock()
         with self.connect() as db:
-            row=db.execute('select startup_ref,startup_state,current_run from control where id=1').fetchone()
-            if row['startup_state']=='blocked':
-                return {'status':'unavailable','reason':'startup_retry_exhausted',
-                    'run_id':row['current_run'],'startup_ref':row['startup_ref']}
-            run_id=self._ensure(db,now)
-            if row['startup_ref'] is None:
+            row=db.execute('select startup_ref,startup_state,startup_failures from control where id=1').fetchone()
+            if row['startup_failures']>=MAX_STARTUP_FAILURES or (row['startup_ref'] is not None and row['startup_state']!='pending'):
                 ref='rkb:startup:v1:'+str(uuid.uuid4())
-                # A preexisting legacy document/controller failure already
-                # consumes the same global Kaggle startup budget. Joining the
-                # demand must NEVER reset prior known-not-sent failures.
-                db.execute("update control set startup_ref=?,startup_state='pending' where id=1",(ref,))
-            elif row['startup_state']!='pending':
-                ref='rkb:startup:v1:'+str(uuid.uuid4())
-                # An actual fresh demand after a previously READY run is a
-                # new bounded lifecycle; BLOCKED never reaches this branch.
                 db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
+            elif row['startup_ref'] is None:
+                ref='rkb:startup:v1:'+str(uuid.uuid4())
+                db.execute("update control set startup_ref=?,startup_state='pending' where id=1",(ref,))
             else:ref=row['startup_ref']
-            return {'status':'pending','run_id':run_id,'startup_ref':ref}
+            return {'status':'pending','run_id':self._ensure(db,now),'startup_ref':ref}
 
     def startup_status(self, startup_ref):
         """Read only. A locator is NOT an access grant: caller reauths at MCP."""
@@ -278,14 +249,14 @@ class BgeQueue:
         except (ValueError,AttributeError):
             raise ValueError('invalid startup ref') from None
         with self.connect(write=False) as db:
-            row=db.execute('select startup_ref,startup_state,current_run from control where id=1').fetchone()
+            row=db.execute('select startup_ref,startup_state,startup_failures from control where id=1').fetchone()
             if row['startup_ref']!=startup_ref:
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'unavailable','reason':'startup_ref_stale'}
             if row['startup_state']=='ready':
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'ready','reason':None}
-            if row['startup_state']=='blocked':
+            if row['startup_failures']>=MAX_STARTUP_FAILURES:
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'unavailable','reason':'startup_retry_exhausted'}
             return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
@@ -318,6 +289,7 @@ class BgeQueue:
                 return previous['id']
             if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise RuntimeError('BGE queue full')
+            db.execute('update control set startup_ref=null,startup_state=null,startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                        (job_id,actor,idempotency,kind,json.dumps(texts),json.dumps(identity),'pending',now,now))
@@ -342,6 +314,7 @@ class BgeQueue:
                 return prior['id']
             if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise RuntimeError('BGE queue full')
+            db.execute('update control set startup_ref=null,startup_state=null,startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                 (job_id,actor,key,'source_command','[]',encoded,'pending',now,now))
@@ -946,9 +919,8 @@ class BgeQueue:
         if run and self._run_expired(run,now):run=None
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
-        blocked=control['startup_state']=='blocked'
-        return {'state':'blocked' if blocked else run['status'] if run else 'stopped',
-            'reason':'startup_retry_exhausted' if blocked else None,
+        return {'state':run['status'] if run else 'stopped',
+            'reason':'startup_retry_exhausted' if control['startup_failures']>=MAX_STARTUP_FAILURES else None,
             'space':SPACE,'queue_depth':db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0],
             'successor_starting':successor_starting,
             'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
@@ -1007,9 +979,8 @@ class BgeQueue:
         with self.connect() as db:
             self._expire(db,now)
             control=db.execute('select startup_state from control where id=1').fetchone()
-            if (control['startup_state']!='blocked' and
-                    (db.execute('select 1 from jobs where '+LIVE_JOBS).fetchone()
-                     or control['startup_state']=='pending')):
+            if (db.execute('select 1 from jobs where '+LIVE_JOBS).fetchone()
+                    or control['startup_state']=='pending'):
                 self._ensure(db,now,useful=False)
             control=db.execute('select * from control where id=1').fetchone()
             current=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
@@ -1196,7 +1167,7 @@ class BgeQueue:
                     # A normal useful-idle shutdown is NOT fresh demand. Do
                     # not resurrect an already satisfied startup merely
                     # because its old worker later terminates.
-                    if (control['current_run']==run_id and control['startup_state']!='blocked'
+                    if (control['current_run']==run_id
                             and (control['startup_state']!='ready' or outstanding)):
                         if row['status']=='starting' or control['startup_state']=='pending':
                             # Actual incomplete cold lifecycle. The plain
@@ -1204,10 +1175,8 @@ class BgeQueue:
                             # successful READY must NOT consume another
                             # preparation-failure attempt.
                             db.execute('''UPDATE control SET startup_failures=startup_failures+1,
-                                startup_state=CASE WHEN startup_failures+1>=? THEN 'blocked'
-                                    WHEN startup_ref IS NOT NULL THEN 'pending'
-                                    ELSE startup_state END WHERE current_run=?''',
-                                (MAX_STARTUP_FAILURES,run_id))
+                                startup_state=CASE WHEN startup_ref IS NOT NULL THEN 'pending'
+                                    ELSE startup_state END WHERE current_run=?''',(run_id,))
                         elif control['startup_state']=='ready' and outstanding and control['startup_ref'] is not None:
                             # Reopen only unsettled demand, with fresh
                             # permissions on next read; old incarnation is

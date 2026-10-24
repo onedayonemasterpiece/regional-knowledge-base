@@ -123,23 +123,3 @@ def test_promoted_checkpoint_replaces_the_restore_base_consistently():
         with pytest.raises(ValueError):m.successor_configs(target,service,run_id='r'*8,writer_generation='w',
             launch_config_sha256='c'*64,release_sha='d'*40,checkpoint=bad)
 
-
-def test_blocked_startup_reopens_only_for_provably_not_sent_attempts(tmp_path):
-    from regional_knowledge.bge_queue import BgeQueue,MAX_STARTUP_FAILURES
-    now=[1000.];q=BgeQueue(tmp_path/'q.sqlite',clock=lambda:now[0])
-    with pytest.raises(ValueError,match='not blocked'):q.recover_not_sent_startup()
-    q.request_startup()
-    for n in range(MAX_STARTUP_FAILURES):
-        q.maintenance()
-        with q.connect(write=False) as db:run=db.execute('select current_run from control').fetchone()[0]
-        assert q.launch_claim(run,provider_ref='o/s')
-        q.launch_record(run,'o/s',failed=True)
-        now[0]+=61
-    with q.connect(write=False) as db:assert db.execute('select startup_state from control').fetchone()[0]=='blocked'
-    with q.connect() as db:db.execute("update runs set provider_version=7 where id=?",(run,))
-    with pytest.raises(ValueError,match='provably not-sent'):q.recover_not_sent_startup()
-    with q.connect() as db:db.execute("update runs set provider_version=null where id=?",(run,))
-    evidence=q.recover_not_sent_startup()
-    assert len(evidence['not_sent_runs'])==MAX_STARTUP_FAILURES
-    with q.connect(write=False) as db:
-        assert tuple(db.execute('select startup_state,startup_failures from control').fetchone())==('pending',0)
