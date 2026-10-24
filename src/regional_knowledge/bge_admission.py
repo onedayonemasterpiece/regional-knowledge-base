@@ -95,21 +95,16 @@ def _identity(value):
 
 class SharedReadAdmission:
     def __init__(self, queue, read_authority, *, monotonic_clock=time.monotonic,
-                 max_reads=256, max_person_reads=8, max_dialog_reads=2, max_read_streak=8):
+                 max_reads=256, max_read_streak=8):
         if not isinstance(read_authority,ReadAuthority):
             raise TypeError('existing ReadAuthority required')
         if type(max_reads) is not int or not 1<=max_reads<=256:
             raise ValueError('bounded read capacity required')
         if type(max_read_streak) is not int or not 1<=max_read_streak<=256:
             raise ValueError('bounded document progress interval required')
-        for value in (max_person_reads,max_dialog_reads):
-            if type(value) is not int or not 1<=value<=256:
-                raise ValueError('bounded canonical person/dialog RAM capacity required')
         self.queue,self.authority=queue,read_authority
         self.clock=monotonic_clock
         self.max_reads,self.max_read_streak=max_reads,max_read_streak
-        self.max_person_reads=min(max_person_reads,max_reads)
-        self.max_dialog_reads=min(max_dialog_reads,self.max_person_reads)
         self._lock=asyncio.Lock()
         self._event=asyncio.Event()
         self._loop=None
@@ -211,10 +206,6 @@ class SharedReadAdmission:
         key=(query.connection_generation,query.request_id)
         if key in self._reads:raise ValueError('duplicate active read identity')
         if len(self._reads)>=self.max_reads:raise AdmissionLimit('read_capacity')
-        person_reads=[r for r in self._reads.values() if r.authority.person_id==authority.person_id]
-        if len(person_reads)>=self.max_person_reads:raise AdmissionLimit('person_read_capacity')
-        if sum(r.dialog==dialog_ref for r in person_reads)>=self.max_dialog_reads:
-            raise AdmissionLimit('dialog_read_capacity')
         future=asyncio.get_running_loop().create_future()
         ticket=ReadTicket(query.request_id,query.connection_generation,query.turn_generation,future)
         timer=asyncio.get_running_loop().call_later(max(0,deadline-self.clock()),self._cancel,key)
