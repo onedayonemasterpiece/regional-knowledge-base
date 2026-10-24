@@ -190,8 +190,8 @@ async def test_bare_query_canceled_or_failed_rollback_cannot_claim_prepare_succe
     from regional_knowledge.kaggle_apply import ApplyUnknown
     from regional_knowledge.kaggle_source_commands import SourcePrepareNotApplied
     from test_native_source_worker_wiring import worker_fixture
-    from regional_knowledge.source_batch import ROUTE as BATCH_ROUTE
-    value=await worker_fixture(BATCH_ROUTE,monkeypatch,
+    from regional_knowledge.source_stage import SEAL_ROUTE
+    value=await worker_fixture(SEAL_ROUTE,monkeypatch,
         materializer_error=psycopg.errors.QueryCanceled('synthetic outside prepare SQL'))
     with pytest.raises(ApplyUnknown):
         await value.worker(value.frame)
