@@ -165,45 +165,52 @@ class NativeSourceIntake:
             if k not in ('codec','batch_index','previous_batch_sha256')}))
 
     def _inactive_prefix_current(self, access, row, scope):
-        """Continue only this owned inactive prefix proved APPLIED by history."""
+        """Require this book's prior apply, not a foreign book's known queue."""
         proof=getattr(self.startup,'coverage',None)
         if (proof is None or not proof.current() or getattr(proof,'binding',None)!=access.binding
                 or self.spool._source_anchor is not proof
                 or getattr(proof,'accepted_sequence',None)!=scope['accepted_sequence']
-                or getattr(proof,'applied_sequence',None)!=scope['accepted_sequence']):
+                or type(getattr(proof,'applied_sequence',None)) is not int
+                or not 0<=proof.applied_sequence<=scope['accepted_sequence']
+                or scope['unknown']):
             return False
-        from .control_spool import _command
         from .source_history_verifier import INACTIVE_SOURCE_ROUTES
         with self.queue.connect(write=False) as db:
             rows=db.execute("SELECT * FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
         if not rows:return False
         for pending in rows:
             if pending['source_id']!=row['source_id']:
-                # The verified cursor includes this foreign terminal effect.
-                # ControlSpool._entry verifies its exact native seal/receipt,
-                # not merely mutable apply_state or an assumed Saved outcome.
+                # Foreign accepted work may still be queued. It keeps its
+                # original journal position and cannot borrow this book's ID.
                 if (pending['database_generation']==access.binding.database_generation
                         and pending['seal_state']=='ACCEPTED'
-                        and pending['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
+                        and pending['apply_state'] in ('NOT_SENT','APPLIED','REJECTED_PRECONDITION')
                         and pending['outcome_state']=='NOT_SENT'):
                     verified=self.spool._entry(pending)
                     # An own ingestion cannot masquerade as another source.
                     if (verified.command.route.startswith('source.') and
                             json.loads(verified.command.payload).get('ingestion_id')==row['ingestion_id']):
                         return False
+                    if (verified.accepted is not None and verified.apply_state=='NOT_SENT'
+                            and verified.apply_receipt is None):
+                        continue
                     if (verified.accepted is not None
                             and verified.apply_receipt is not None
                             and (verified.apply_state,verified.apply_receipt.status) in (
                                 ('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition'))):
                         continue
                 return False
-            command=_command(pending['command_bytes'])
+            verified=self.spool._entry(pending)
+            command=verified.command
             applied=(pending['apply_state']=='APPLIED' or
                 command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1','source.catalog.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
             if (pending['source_id']!=row['source_id'] or pending['person_id']!=row['person_id']
                     or pending['database_generation']!=access.binding.database_generation
                     or pending['seal_state']!='ACCEPTED' or not applied
-                    or pending['outcome_state']!='NOT_SENT'):
+                    or pending['outcome_state']!='NOT_SENT'
+                    or verified.accepted is None or verified.apply_receipt is None
+                    or (verified.apply_state,verified.apply_receipt.status) not in (
+                        ('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition'))):
                 return False
             if (command.route not in INACTIVE_SOURCE_ROUTES|{'source.batch.v1','source.finish.v1','source.catalog.v1'}
                     or json.loads(command.payload).get('ingestion_id')!=row['ingestion_id']):

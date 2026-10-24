@@ -524,7 +524,7 @@ async def test_unknown_status_retains_current_owner_output_fence(native_intake):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('domain',['case','story_access','source_import','geo_manifest','native_stage'])
-@pytest.mark.parametrize('phase',['applied','rejected_precondition','apply_unknown','outcome_unknown','unaccepted'])
+@pytest.mark.parametrize('phase',['accepted','applied','rejected_precondition','apply_unknown','outcome_unknown','unaccepted'])
 async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stage(native_intake,domain,phase):
     """Real exact receipt/seal/owner/history gate, never a synthetic success flag."""
     s=native_intake;book=await start(s);pages=batch(s,book,count=1)
@@ -597,9 +597,11 @@ async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stag
     scope=await s.spool.scope_state()
     old=await s.spool.get(command.operation_key)
     assert scope['pending'] and old.outcome_state!='DURABLE' and old.remote_outcome is None
-    if phase in ('applied','rejected_precondition'):
-        assert scope['accepted_sequence']==s.startup.coverage.applied_sequence==1
-        assert old.accepted is not None and old.apply_receipt is not None
+    if phase in ('accepted','applied','rejected_precondition'):
+        assert scope['accepted_sequence']==1
+        assert s.startup.coverage.applied_sequence==(0 if phase=='accepted' else 1)
+        assert old.accepted is not None
+        assert (old.apply_receipt is None)==(phase=='accepted')
         assert old.command_bytes==command.encode()
         result=await stage(s,book,pages)
         assert result.state=='processing'
