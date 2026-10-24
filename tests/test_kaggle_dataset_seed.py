@@ -103,3 +103,75 @@ async def test_existing_geo_journal_window_excludes_archive_and_fits_control_bud
     raw=await seed._journal_control()
     assert 4*1024**2<len(raw)<16*1024**2
     assert len(json.loads(raw)['objects'])==len(read)==43
+
+
+@pytest.mark.asyncio
+async def test_seed_large_journal_paginates_beyond_10000_and_uploads_exact_bytes(monkeypatch):
+    """All S3 entries and HTTPS transfer are synthetic; only source code runs."""
+    import base64
+    import json
+    from regional_knowledge.recovery_journal import StoredObject
+    from regional_knowledge.kaggle_dataset_seed import _put_control
+
+    count = 10001
+    prefix = 'recovery/fixture/'
+
+    def payload(n):
+        return b'control object' + b'z' * 6000 + n.to_bytes(2, 'big')
+
+    class Store:
+        bucket = 'fixture'
+        prefix = 'recovery/fixture/'
+
+        def __init__(self):
+            self.client = self
+            self.pages = 0
+
+        def list_objects_v2(self, **kwargs):
+            self.pages += 1
+            assert kwargs['MaxKeys'] == 1000
+            start = int(kwargs.get('ContinuationToken', '0'))
+            end = min(start + 1000, count)
+            result = dict(Contents=[
+                dict(Key=prefix + f'commands/{n:05d}', Size=len(payload(n)))
+                for n in range(start, end)], IsTruncated=end < count)
+            if end < count:
+                result['NextContinuationToken'] = str(end)
+            return result
+
+        async def read(self, key, *, max_bytes):
+            n = int(key.rsplit('/', 1)[-1])
+            raw = payload(n)
+            assert max_bytes == 1024 * 1024 and len(raw) < max_bytes
+            return StoredObject(raw, f'token-{n}')
+
+    store = Store()
+    seed = SourceDatasetSeed.__new__(SourceDatasetSeed)
+    seed.startup = NS(config=NS(spool=NS(journal=NS(store=store))))
+    journal = await seed._journal_control()
+    assert store.pages == 11
+    assert len(journal) > 64 * 1024**2
+    objects = json.loads(journal)['objects']
+    assert len(objects) == count
+    assert all(base64.b64decode(item['data_b64']) ==
+               payload(int(item['key'].rsplit('/', 1)[-1])) for item in objects)
+
+    observed = {}
+
+    class Connection:
+        def request(self, method, path, *, body, headers):
+            assert method == 'PUT' and headers['Content-Length'] == str(len(journal))
+            observed['body'] = body
+
+        def getresponse(self):
+            return NS(status=201)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed.http.client.HTTPSConnection',
+        lambda *a, **kw: Connection())
+    grant = NS(name='journal-control.json', size=len(journal),
+        sha256=sha(journal), url='https://storage.googleapis.com/checkpoint')
+    _put_control(grant, journal)
+    assert observed['body'] == journal

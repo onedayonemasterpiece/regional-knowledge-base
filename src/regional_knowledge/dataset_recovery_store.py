@@ -14,8 +14,6 @@ import secrets
 from .kaggle_dataset_base import DatasetCheckpoint
 from .recovery_journal import StoredObject, JournalConflict, JournalLimit
 
-MAX_CONTROL_OBJECTS = 10000
-MAX_CONTROL_BYTES = 64 * 1024**2
 CONTROL_PAGE_SIZE = 16
 
 
@@ -60,7 +58,7 @@ class DatasetRecoveryStore:
     def _import(self,checkpoint,manifest_ref,journal_bytes,control_bytes,manifest_bytes):
         manifest=json.loads(manifest_bytes);journal=json.loads(journal_bytes)
         if (journal.get('codec')!='rkb.dataset-journal.v1' or type(journal.get('objects')) is not list
-                or len(journal['objects'])>MAX_CONTROL_OBJECTS or manifest_ref.sha256!=checkpoint.manifest.sha256
+                or manifest_ref.sha256!=checkpoint.manifest.sha256
                 or manifest_ref.length!=len(manifest_bytes) or manifest_ref.last_sequence!=checkpoint.base_sequence
                 or manifest['source_control']['sha256']!=hashlib.sha256(control_bytes).hexdigest()):
             raise JournalConflict('dataset_control_metadata_binding_changed')
@@ -91,22 +89,18 @@ class DatasetRecoveryStore:
         return DatasetCheckpoint.from_wire(json.loads(row['latest_json'] or row['checkpoint_json']))
 
     def export_control(self):
-        # One SQLite read snapshot, bounded pages and a limit shared with
-        # restore. Do not fetch the entire 512 MiB pending spool into memory.
+        # One SQLite read snapshot, read in bounded pages and key order.
         raw=bytearray(b'{"codec":"rkb.dataset-journal.v1","objects":[')
         count=0
         with self.queue.connect(write=False) as db:
             rows=db.execute('SELECT key,data,token FROM rkb_dataset_recovery_objects WHERE storage=? '
-                'AND key NOT LIKE ? ORDER BY key LIMIT ?',
-                (self.storage_identity,self.prefix+'snapshots/%',MAX_CONTROL_OBJECTS+1))
+                'AND key NOT LIKE ? ORDER BY key',
+                (self.storage_identity,self.prefix+'snapshots/%'))
             while page:=rows.fetchmany(CONTROL_PAGE_SIZE):
                 for row in page:
-                    if count>=MAX_CONTROL_OBJECTS:raise JournalLimit('dataset_checkpoint_control_inventory_budget')
                     if len(row['data'])>1024*1024:raise JournalLimit('dataset_control_object_budget')
                     record=json.dumps(dict(key=row['key'],token=row['token'],
                         data_b64=base64.b64encode(row['data']).decode()),sort_keys=True,separators=(',',':')).encode()
-                    if len(raw)+bool(count)+len(record)+2>MAX_CONTROL_BYTES:
-                        raise JournalLimit('dataset_checkpoint_control_budget')
                     if count:raw.extend(b',')
                     raw.extend(record);count+=1
         raw.extend(b']}')
@@ -121,12 +115,11 @@ class DatasetRecoveryStore:
         digest=hashlib.sha256();count=0
         with self.queue.connect(write=False) as db:
             rows=db.execute('SELECT key,token FROM rkb_dataset_recovery_objects WHERE storage=? '
-                'AND key>=? AND key<? AND covered_version IS NULL ORDER BY key LIMIT ?',
-                (self.storage_identity,self.prefix+'control/',self.prefix+'control0',MAX_CONTROL_OBJECTS+1))
+                'AND key>=? AND key<? AND covered_version IS NULL ORDER BY key',
+                (self.storage_identity,self.prefix+'control/',self.prefix+'control0'))
             while page:=rows.fetchmany(CONTROL_PAGE_SIZE):
                 for row in page:
                     count+=1
-                    if count>MAX_CONTROL_OBJECTS:raise JournalLimit('dataset_checkpoint_control_inventory_budget')
                     digest.update(json.dumps([row['key'],row['token']],separators=(',',':')).encode())
         return digest.hexdigest() if count else None
 
@@ -146,7 +139,7 @@ class DatasetRecoveryStore:
         parsed=json.loads(journal);m=json.loads(manifest)
         c=json.loads(control)
         if (parsed.get('codec')!='rkb.dataset-journal.v1'
-                or type(parsed.get('objects')) is not list or len(parsed['objects'])>MAX_CONTROL_OBJECTS
+                or type(parsed.get('objects')) is not list
                 or (manifest_ref.sha256,manifest_ref.length,manifest_ref.last_sequence)!=(
                     checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence)
                 or (m.get('database_generation'),m.get('applied_sequence'))!=(
