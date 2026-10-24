@@ -1120,7 +1120,9 @@ class BgeQueue:
         pointers=db.execute('select current_run,successor from control where id=1').fetchone()
         for run_id in set(pointers):
             if run_id is None:continue
-            if pending(db,run_id):continue
+            closed=db.execute("""select 1 from runs r where r.id=? and r.status='expired'""",
+                (run_id,)).fetchone()
+            if not closed or pending(db,run_id):continue
             claimed=db.execute("""select 1 from jobs where run_id=? and state='claimed'
                 and kind in ('source_command','recovery_phase') limit 1""",(run_id,)).fetchone()
             if claimed:continue
