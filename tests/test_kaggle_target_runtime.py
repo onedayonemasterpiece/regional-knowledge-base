@@ -230,10 +230,14 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
         async def open(self,**kwargs): events.append('open')
         async def close(self,**kwargs): events.append('pool-close')
         def connection(self): pass
-    async def handler(frame,*,encode):
+    async def handler(frame,*,encode,lease_current=None):
         from regional_knowledge.query_telemetry import _RUNTIME
         assert _RUNTIME.get().run_id==CONFIG['run_id']
+        if frame.get('type')=='SQL_HEALTH':
+            assert lease_current is current_lease
+            assert lease_current()
         return {'ok':True}
+    def current_lease():return True
     async def prepare(encoder,**kwargs):
         assert kwargs['launch_config'] is config
         assert isinstance(kwargs['telemetry'],asyncio.Queue) and kwargs['telemetry'].maxsize==64
@@ -243,6 +247,10 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
     prepared=await runtime.prepare(SimpleNamespace(artifacts=None),**args)
     assert await runtime.prepare(None,**args) is prepared
     assert await prepared.query_handler({},encode=None)=={'ok':True}
+    # Regression for the actual PreparedRuntime -> invoke -> ReadHandlerSlot
+    # composition: SQL_HEALTH's optional lease_current must reach the handler.
+    assert await prepared.query_handler({'type':'SQL_HEALTH'},encode=None,
+        lease_current=current_lease)=={'ok':True}
     # A verified compatible handler is applied to this SAME bound invocation.
     # BGE/PG/pool preparation must not run a second time.
     from test_kaggle_warm_read import staged_module,good_probe,good_stage
