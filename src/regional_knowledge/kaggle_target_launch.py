@@ -146,7 +146,7 @@ if __name__ == '__main__':
     import base64 as _b64, hashlib as _hashlib, sys as _sys, json as _json, zlib as _zlib
     from pathlib import Path as _Path
     _decoder = _zlib.decompressobj()
-    _raw = _decoder.decompress(_b64.b85decode(BUNDLE_PACKED.encode('ascii')), BUNDLE_LIMIT + 1)
+    _raw = _decoder.decompress(_b64.b64decode(BUNDLE_PACKED, validate=True), BUNDLE_LIMIT + 1)
     if len(_raw) > BUNDLE_LIMIT or not _decoder.eof or _decoder.unused_data or _decoder.unconsumed_tail:
         raise RuntimeError('target_bundle_transport_invalid')
     _bundle = _json.loads(_raw)
@@ -194,7 +194,7 @@ if __name__ == '__main__':
     else:
         runtime = _DeferredTargetRuntime()
         main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)
-'''.replace('BUNDLE_PACKED',repr(base64.b85encode(zlib.compress(canonical(files),9)).decode('ascii')))\
+'''.replace('BUNDLE_PACKED',repr(base64.b64encode(zlib.compress(canonical(files),9)).decode()))\
     .replace('BUNDLE_LIMIT',str(MAX_BUNDLE_JSON_BYTES)).replace('BUNDLE_ROOT',repr(str(root/relative)))
     if template.count("if __name__=='__main__':main()") != 1:
         raise ValueError('target entrypoint slot missing')
