@@ -15,7 +15,7 @@ def test_shipped_package_import_closure_is_self_contained(tmp_path):
     for relative, encoded in files.items():
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(base64.b64decode(encoded, validate=True))
+        target.write_bytes(encoded.encode('utf-8'))
     # -I excludes cwd/PYTHONPATH. The package's own path must resolve only to
     # the shipped bundle; installed third-party dependencies remain available.
     script = """
@@ -44,7 +44,7 @@ def test_shipped_original_page_executes_and_replays_without_controller_telemetry
     _,files,_=source_bundle(Path(__file__).resolve().parents[1])
     for relative,encoded in files.items():
         target=tmp_path/relative;target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(base64.b64decode(encoded,validate=True))
+        target.write_bytes(encoded.encode('utf-8'))
     script="""
 import asyncio,pathlib,socket,sys
 from types import SimpleNamespace
@@ -125,7 +125,7 @@ def test_shipped_package_validates_exact_accepted_reviewed_poi_graph_and_hypothe
     _,files,_=source_bundle(Path(__file__).resolve().parents[1])
     for relative,encoded in files.items():
         target=tmp_path/relative;target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(base64.b64decode(encoded,validate=True))
+        target.write_bytes(encoded.encode('utf-8'))
     fixture=asyncio.run(_accepted_graph())
     (tmp_path/'accepted.json').write_text(json.dumps(fixture))
     script="""
@@ -161,7 +161,7 @@ def test_shipped_fact_compare_executes_lazy_path_without_dev_renderer_or_model(t
     _,files,_=source_bundle(Path(__file__).resolve().parents[1])
     for relative,encoded in files.items():
         target=tmp_path/relative;target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(base64.b64decode(encoded,validate=True))
+        target.write_bytes(encoded.encode('utf-8'))
     story='40000000-0000-0000-0000-000000000001'
     q=request(action='observation_compare',month=None,day=None,calendar=None,story_id=story,
         left_id=f'{ASSERTION}:o0',right_id=f'{ASSERTION}:o1',limit=2,compute_claim='existing-read-slot')

@@ -45,7 +45,9 @@ def source_bundle(repository):
     # every inventory path. Integrity still checks each file's full SHA-256;
     # a label collision fails that check instead of accepting different bytes.
     relative = 'rkb-target-'+bundle_id[:16]
-    encoded = {name:base64.b64encode(data).decode('ascii') for name,data in sorted(files.items())}
+    # Source members are UTF-8 Python/SQL. Compress their text directly; the
+    # outer base64 still transports the compressed bytes in the notebook.
+    encoded = {name:data.decode('utf-8') for name,data in sorted(files.items())}
     entries = [dict(name=relative+'/'+name,size=len(data),sha256=digest(data),role='code')
                for name,data in sorted(files.items())]
     return relative,encoded,entries
@@ -120,7 +122,7 @@ def compose_target(template,config,target,*,queue,repository):
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
-        sql_hashes = {name[4:]:digest(base64.b64decode(data)) for name,data in files.items() if name.startswith('sql/')}
+        sql_hashes = {name[4:]:digest(data.encode('utf-8')) for name,data in files.items() if name.startswith('sql/')}
         if (intent is None or intent['database']!=target.database.wire()
                 or intent['run_id']!=config['run_id'] or intent['launch_nonce']!=config['launch_nonce']
                 or intent.get('native_bundle')!=(target.native_bundle.wire() if target.native_bundle is not None else None)
@@ -162,7 +164,7 @@ if __name__ == '__main__':
         raise RuntimeError('target_bundle_invalid')
     for _name, _encoded in _bundle.items():
         _file = _root / _name
-        _data = _b64.b64decode(_encoded, validate=True)
+        _data = _encoded.encode('utf-8')
         if _new:
             _file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             with _file.open('xb') as _handle:

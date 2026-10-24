@@ -57,7 +57,6 @@ def test_b3_modules_are_in_exact_source_bundle_without_provider_execution():
     for name in ("kaggle_djvu_pixels","kaggle_djvu_elf","kaggle_djvu_decoder_child"):
         assert name in MODULES
     relative, files, manifest = source_bundle(root)
-    import base64
     for name in ("kaggle_djvu_pixels","kaggle_djvu_elf","kaggle_djvu_decoder_child"):
         member="regional_knowledge/"+name+".py"
-        assert base64.b64decode(files[member],validate=True)==(root/"src"/member).read_bytes()
+        assert files[member].encode('utf-8')==(root/"src"/member).read_bytes()
