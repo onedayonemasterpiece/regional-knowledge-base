@@ -43,6 +43,7 @@ from .contracts import (
     DocumentAccessOutput,
     EvidenceSearchOutput,
     FetchOutput,
+    FetchChunksOutput,
     Principal,
     ProfileOutput,
     SearchOutput,
@@ -329,6 +330,23 @@ class KnowledgeMCPServer(MCPServer):
         with capture_read_output() as calls:
             result = await super().call_tool(name, arguments, context)
             if calls:
+                if name == 'fetch':
+                    # FastMCP wraps this typed union in {result: ...}.
+                    # The final current-source issuance rerenders the backend
+                    # value; preserve the identical wire shape *after* refresh.
+                    original_render = calls[0].render
+
+                    def render_fetch_issued(value):
+                        output = original_render(value)
+                        if isinstance(output, dict):
+                            output = FetchChunksOutput.model_validate(output)
+                        if output.status != 'ok':
+                            # Keep existing isError/status/reason behavior on
+                            # withdrawn or unavailable exact evidence.
+                            return output
+                        return {'result': output.model_dump(mode='json')}
+
+                    calls[0].render = render_fetch_issued
                 bind_request_output(context, calls)
             return result
 
@@ -1276,7 +1294,7 @@ def build_server(
         page_end: Annotated[int | None, Field(ge=0, le=2499)] = None,
         after_ordinal: Annotated[int | None, Field(ge=0)] = None,
         limit: Annotated[int, Field(ge=1, le=8)] = 8,
-    ) -> FetchOutput | dict[str,Any]:
+    ) -> FetchOutput | FetchChunksOutput:
         # Both read modes resolve the same principal and use the same final
         # authorized output-issuance boundary. No legacy cross-backend fallback.
         from .product_telemetry import observe_async
@@ -1285,9 +1303,9 @@ def build_server(
                 raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
             if selected != 'kaggle_source':
                 raise ToolError('{"status":"unavailable","reason":"native_chunks_unavailable"}')
-            return await observe_async("fetch", lambda: backend.fetch_chunks(
+            return FetchChunksOutput.model_validate(await observe_async("fetch", lambda: backend.fetch_chunks(
                 _principal(),source_id=source_id,page_start=page_start,page_end=page_end,
-                after_ordinal=after_ordinal,limit=limit))
+                after_ordinal=after_ordinal,limit=limit)))
         if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         return await observe_async("fetch", lambda: backend.fetch(id, _principal()))

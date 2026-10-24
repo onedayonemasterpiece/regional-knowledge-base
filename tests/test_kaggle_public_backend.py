@@ -433,3 +433,122 @@ async def test_accepted_chunk_fetch_rejects_invalid_source_or_page_range_before_
             source_id='00000000-0000-0000-0000-000000000001',
             page_start=1,page_end=5)
     assert not s.gate.permits
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("branch", ["id", "chunks", "unavailable"])
+async def test_fastmcp_fetch_schema_matches_guarded_structured_wire(branch):
+    """Real FastMCP tools/list and tools/call through the final issuance guard.
+
+    FastMCP wraps union outputs itself. The guard must rerender in the same
+    one-result shape *after* checking current source authorization, rather than
+    undoing that wrapping or adding another level of result.
+    """
+    import httpx
+    from jsonschema import Draft202012Validator
+    from mcp.server.transport_security import TransportSecuritySettings
+    from regional_knowledge.contracts import (
+        FetchOutput, FetchChunksOutput, FetchChunkRecord,
+        FetchChunkPage, FetchChunkRegion, ReadTrace)
+    from regional_knowledge.read_issuance import retain_read_output
+    from regional_knowledge.server import KnowledgeMCPServer
+
+    server = KnowledgeMCPServer("fetch-guarded-wire-contract")
+    server._current_read_output_required = True
+
+    class SyntheticGate:
+        refreshes = 0
+        releases = 0
+
+        async def refresh(self, gated):
+            self.refreshes += 1
+            return gated
+
+        def issuance_current(self, ticket):
+            return True
+
+        def release(self, ticket):
+            self.releases += 1
+
+    gate = SyntheticGate()
+    trace = ReadTrace(trace_id="a" * 32, attempt_id="b" * 32,
+                      request_ref="c" * 64, backend_elapsed_ms=6.5)
+
+    @server.tool(name="fetch")
+    async def fetch(id: str | None = None) -> FetchOutput | FetchChunksOutput:
+        if branch == "chunks":
+            value = FetchChunksOutput(
+                source_id="00000000-0000-0000-0000-000000000001",
+                page_start=1, page_end=2,
+                chunks=[FetchChunkRecord(
+                    source_id="00000000-0000-0000-0000-000000000001",
+                    chunk_id="60000000-0000-0000-0000-000000000001",
+                    ordinal=0, text="Accepted source chunk",
+                    pages=[FetchChunkPage(
+                        page_id="40000000-0000-0000-0000-000000000001",
+                        physical_page_index=1)],
+                    regions=[FetchChunkRegion(
+                        page_id="40000000-0000-0000-0000-000000000001",
+                        region_id="50000000-0000-0000-0000-000000000001",
+                        start=0, end=12, role="body")])],
+                next_after_ordinal=0, has_more=True, status="ok",
+                observed_data_seq=5, observed_projection_seq=5,
+                read_trace=trace)
+        else:
+            value = FetchOutput(id=id or "opaque", title="Book",
+                                text="Source text" if branch == "id" else "",
+                                url="urn:rkb:passage:opaque",
+                                status="ok" if branch == "id" else "unavailable",
+                                reason=None if branch == "id" else "evidence_withdrawn",
+                                read_trace=trace)
+        assert retain_read_output(gate, SimpleNamespace(ticket=object(), result=value),
+                                  lambda _: value)
+        return value
+
+    app = server.streamable_http_app(
+        stateless_http=True, json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False))
+    headers = {"accept": "application/json, text/event-stream"}
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://localhost") as client:
+            listed = await client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
+            called = await client.post("/mcp", json={
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "fetch", "arguments": {"id": "opaque"}}},
+                headers=headers)
+
+    assert listed.status_code == called.status_code == 200
+    tools = listed.json()["result"]["tools"]
+    schema = next(t["outputSchema"] for t in tools if t["name"] == "fetch")
+    output = called.json()["result"]
+    payload = output["structuredContent"]
+    Draft202012Validator.check_schema(schema)
+    assert "result" in schema.get("required", ())
+    assert json.loads(output["content"][0]["text"]) == payload
+    assert gate.refreshes >= 1 and gate.releases == 1
+
+    if branch == "unavailable":
+        # Exact read failures retain existing MCP isError/status semantics.
+        assert output["isError"] is True
+        assert payload["status"] == "unavailable"
+        assert payload["reason"] == "evidence_withdrawn"
+        assert "result" not in payload
+    else:
+        assert not output["isError"]
+        Draft202012Validator(schema).validate(payload)
+        assert list(payload) == ["result"]
+        assert "result" not in payload["result"]
+        assert payload["result"]["status"] == "ok"
+        assert payload["result"]["read_trace"]["trace_id"] == "a" * 32
+        if branch == "chunks":
+            assert payload["result"]["chunks"][0]["regions"][0]["role"] == "body"
+            assert payload["result"]["next_after_ordinal"] == 0
+            assert payload["result"]["has_more"] is True
+        else:
+            assert payload["result"]["id"] == "opaque"
+            assert payload["result"]["text"] == "Source text"
