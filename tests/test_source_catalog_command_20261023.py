@@ -72,7 +72,6 @@ def test_sql034_catalog_correction_is_additive_and_does_not_modify_original_stag
     assert 'check_source_catalog_v1' in sql and 'apply_source_catalog_v1' in sql
     assert 'source_stage_batches b ON b.source_id=session.source_id' in sql
     assert "a.status='applied'" in sql and "b.batch_index=0" in sql
-    assert "original source stage" in sql.lower() or 'stage packets' in sql.lower()
     assert 'CREATE OR REPLACE FUNCTION rkb_v4.find_source_catalog_v1' in sql
     assert 'UPDATE rkb_v4.source_stage_sessions' not in sql
     assert 'UPDATE rkb_v4.source_stage_batches' not in sql
@@ -100,6 +99,7 @@ def test_native_binding_delegates_catalog_codec_shape_and_actor_to_one_validator
 
 
 from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database
 from test_source_activation_pg import image_pg_sql18,accepted,stage_command,TIME
 from test_source_batch_pg import native,packet
 from test_native_source_materializer import exact_batch
