@@ -220,7 +220,8 @@ def test_server_binds_product_sink_to_resource_channel_when_supported(monkeypatc
     monkeypatch.setattr(channel, "channel_route", fake_channel)
 
     class Backend:
-        worker_queue = object()
+        from types import SimpleNamespace
+        worker_queue = SimpleNamespace(record_request_activity=lambda:None)
 
         async def search(self, query, principal, **kwargs):
             from regional_knowledge.contracts import SearchOutput
