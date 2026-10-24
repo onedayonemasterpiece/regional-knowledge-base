@@ -860,16 +860,23 @@ class ControlSpool:
             if (row is None or row['seal_state']!='ACCEPTED' or row['apply_bytes'] is None
                     or row['outcome_state']!='DURABLE' or row['remote_receipt_bytes'] is None):
                 raise SpoolConflict('verified recovered durable outcome required')
-            result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=True),sort_keys=True)
             settled=[]
             for job in db.execute("select * from jobs where kind='source_command' and json_extract(identity,'$.operation_key')=?",(key,)).fetchall():
+                prior=json.loads(job['result']) if job['result'] else {}
+                attempts=prior.get('not_applied_attempts',[])
+                result_fields=dict(command_sha256=row['command_sha256'],remote_outcome_durable=True)
+                pending_fields=dict(command_sha256=row['command_sha256'],remote_outcome_durable=False)
+                if attempts:
+                    result_fields['not_applied_attempts']=attempts
+                    pending_fields['not_applied_attempts']=attempts
+                result=json.dumps(result_fields,sort_keys=True)
                 identity=json.loads(job['identity'])
                 if (job['actor']!=row['person_id'] or identity.get('command_sha256')!=row['command_sha256']
                         or identity.get('database_generation')!=row['database_generation']
                         or identity.get('sequence')!=row['sequence']):
                     raise SpoolConflict('recovered job differs from original accepted command')
                 if job['state']=='done' and job['result']!=result:
-                    pending_result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=False),sort_keys=True)
+                    pending_result=json.dumps(pending_fields,sort_keys=True)
                     if job['result']!=pending_result:
                         raise SpoolConflict('recovered job already has a different durable result')
                 db.execute("update jobs set state='done',result=?,updated=? where id=?",(result,self.clock(),job['id']))
