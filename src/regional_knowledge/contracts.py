@@ -426,6 +426,11 @@ class SearchResult(BaseModel):
     id: str
     title: str
     url: str
+    # Publication kind and source language come from the accepted catalogue;
+    # passage_language is independently observed during native hydration.
+    kind: Literal["book", "journal_issue", "article"] | None = None
+    language: str | None = None
+    passage_language: Literal["ru", "de", "simple"] | None = None
     ranking_signals: list[dict[str, Any]] = Field(default_factory=list)
 
 
