@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from regional_knowledge.kaggle_pg_snapshot_native import encode,sha
+from regional_knowledge.kaggle_pg_snapshot_native import encode,sha,archive_suffix_hash
 from regional_knowledge.kaggle_restore_startup import SourceRestoreConfig
 from regional_knowledge.kaggle_source_owners import compose_source_service
 from regional_knowledge.kaggle_current_registry import current_registry as fixed_registry
@@ -125,7 +125,8 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                         assert 'dataset_base' not in frame and 'dataset_observation' not in frame
                     else:assert frame['download_ticket']['headers']==[['If-Match','"native-blob"']]
                     assert frame['arguments']['manifest_b64'] and frame['writer_generation']=='writer-2'
-                    value={'handle':'native-retained-session'}
+                    value={'handle':'native-retained-session','archived_sequence':0,
+                        'archive_suffix_sha256':archive_suffix_hash(())}
                 elif phase=='finish':
                     assert frame['arguments']['handle']=='native-retained-session'
                     value={'reference':'retained-native-capability'}
