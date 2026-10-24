@@ -264,7 +264,8 @@ async def test_catalog_titles_use_same_one_hydrate_without_second_roundtrip():
     assert item.dependencies.source_ids == (SOURCE,)
     sql = [query for query, _ in connection.statements if "hydrate(" in query]
     assert len(sql) == 1 and "source_catalog_corrections" in sql[0]
-    assert "source_passage_provenance" in sql[0] and "source_stage_pages" in sql[0]
+    assert "source_passage_provenance" in sql[0] and "source_manifests" in sql[0]
+    assert "source_stage_pages" not in sql[0]  # rkb_reader must not read private staging
     # The only extra work is within the existing bounded hydrate SELECT.
     assert len([query for query, _ in connection.statements if "source_catalog" in query]) == 1
     assert lease.entered == lease.exited == 1
