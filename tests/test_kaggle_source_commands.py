@@ -501,3 +501,89 @@ def test_native_apply_diagnostic_keeps_sqlstate_and_excludes_private_message(cap
     assert 'sqlstate=55P03' in caplog.text and 'stage=writer_state' in caplog.text
     assert secret not in caplog.text and 'private.invalid' not in caplog.text
     assert digest(command.encode()) in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['applied','rejected_precondition','unknown','fresh','identity_mismatch'])
+async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblocks_next_accepted(
+        accepted,phase):
+    """Real auth/queue/spool/journal: old attempted job may complete without false Saved.
+
+    No provider, PG or native effect is invoked. Subsequent remote publication
+    uses the existing outcome/settlement contract independently.
+    """
+    from regional_knowledge.kaggle_service_startup import TargetServiceStartup
+    from test_source_import import resolved
+
+    e=accepted;s=e.s
+    first,work,frame=await dispatch(e)
+    await release(e,work)
+    with s.q.connect() as db:
+        # Exercise the real queue lease-expiry transition, never a manual live reset.
+        db.execute('UPDATE jobs SET lease_until=? WHERE id=?',(s.q.clock()-1,first))
+        s.q._expire(db,s.q.clock())
+    assert s.q.result(s.auth.p.owner.subject,first)['state']=='pending'
+
+    if phase!='unknown':
+        native=native_receipt(e.command,e.handler)
+        if phase=='rejected_precondition':
+            body=json.loads(native.outcome)
+            body['status']='rejected_precondition'
+            body['result_b64']=''
+            body['result_sha256']=digest(b'')
+            packed=canonical(body)
+            native=replace(native,status='rejected_precondition',
+                outcome=packed,outcome_sha256=digest(packed))
+        await e.spool.record_apply(e.command.operation_key,native)
+    else:
+        await e.spool.mark_apply_sent(e.command.operation_key)
+    if phase=='fresh':
+        with s.q.connect() as db:
+            db.execute('UPDATE jobs SET attempt=0 WHERE id=?',(first,))
+    if phase=='identity_mismatch':
+        with s.q.connect() as db:
+            db.execute("UPDATE jobs SET identity=json_set(identity,'$.command_sha256',?) WHERE id=?",
+                ('f'*64,first))
+
+    successor=resolved(person_id=e.command.person_id,
+        source_id='00000000-0000-0000-0000-000000000005',
+        sequence=e.command.sequence+1,operation_key='fixture-recovered-following-source',
+        request_id='fixture-recovered-following-request')
+    await e.spool.stage_source_import(s.auth.p.admin,successor,database_generation='synthetic-db')
+    await e.spool.seal(s.auth.p.admin,successor.operation_key,
+        predecessor=await e.journal.head(),writer_generation='writer-1')
+    second=await e.bridge.enqueue(s.auth.p.admin,successor.operation_key,writer_generation='writer-1')
+    assert s.q.result(s.auth.p.owner.subject,second)['state']=='pending'
+    binding=SimpleNamespace(database_generation='synthetic-db',run_id=s.run)
+    cursor=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},
+        current=lambda value:value is binding)
+    assert cursor.accepted_sequence==successor.sequence
+    assert cursor.applied_sequence==(e.command.sequence if phase!='unknown' else 0)
+    assert cursor.accepted_sequence>cursor.applied_sequence
+
+    startup=SimpleNamespace(config=SimpleNamespace(queue=s.q,spool=e.spool))
+    settled=await TargetServiceStartup._settle_restored_source_jobs(startup,cursor)
+    if phase in ('applied','rejected_precondition'):
+        assert settled==(first,)
+        old=s.q.result(s.auth.p.owner.subject,first)
+        assert old['state']=='done'
+        assert old['result']==dict(command_sha256=digest(e.command.encode()),
+            remote_outcome_durable=False)
+        assert (await e.spool.get(e.command.operation_key)).outcome_state=='NOT_SENT'
+        assert not e.bridge.maintenance_blocks_dispatch()
+        next_work=await s.a.next_channel_work(s.run,s.token,s.generation)
+        assert next_work is not None and next_work.document_payload['id']==second
+        assert next_work.document_payload['command_sha256']==digest(successor.encode())
+        assert next_work.document_payload['claim']!=frame['claim']
+        s.a.discard_unsent(next_work)
+        # Only the real existing remote outcome path can promote NOT_SENT.
+        await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
+        assert e.spool._settle_recovered_jobs(e.command.operation_key)==[first]
+        durable=s.q.result(s.auth.p.owner.subject,first)
+        assert durable['result']['remote_outcome_durable'] is True
+        assert (await e.spool.get(e.command.operation_key)).outcome_state=='DURABLE'
+    else:
+        assert settled==()
+        assert s.q.result(s.auth.p.owner.subject,first)['state']=='pending'
+        assert (await e.spool.get(e.command.operation_key)).remote_outcome is None
+        assert s.q.result(s.auth.p.owner.subject,second)['state']=='pending'
