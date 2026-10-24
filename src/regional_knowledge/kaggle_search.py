@@ -254,15 +254,15 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                            LEFT JOIN rkb_v4.source_passage_provenance prov ON
                              prov.source_id=h.source_id AND prov.source_revision=h.revision
                              AND prov.passage_id=h.passage_id
+                           LEFT JOIN rkb_v4.source_manifests manifest ON
+                             manifest.source_id=h.source_id AND manifest.source_revision=h.revision
                            LEFT JOIN LATERAL (
-                             SELECT pg.physical_page_index,
-                                    pg.model_page->>'printed_page_number' AS printed_page_number
-                             FROM jsonb_array_elements_text(coalesce(prov.data->'region_ids','[]'::jsonb)) r(region_id)
-                             JOIN rkb_v4.source_regions region ON
-                               region.source_id=h.source_id AND region.region_id=r.region_id::uuid
-                             JOIN rkb_v4.source_stage_pages pg ON
-                               pg.source_id=h.source_id AND pg.page_id=region.page_id
-                             ORDER BY pg.physical_page_index LIMIT 1
+                             SELECT (page_json->>'physical_page_index')::integer AS physical_page_index,
+                                    page_json->>'printed_page_number' AS printed_page_number
+                             FROM jsonb_array_elements(coalesce(manifest.manifest->'pages','[]'::jsonb))
+                                  AS page_row(page_json)
+                             WHERE prov.data->'page_ids' @> jsonb_build_array(page_json->'page_id')
+                             ORDER BY (page_json->>'physical_page_index')::integer LIMIT 1
                            ) page ON true
                            ORDER BY array_position(%s::uuid[],h.passage_id)"""
                         params = (ids, ids) if source_ids is None else (ids, source_ids, ids)
