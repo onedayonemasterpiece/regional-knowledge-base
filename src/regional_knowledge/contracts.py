@@ -500,6 +500,43 @@ class FetchOutput(BaseModel):
     read_trace: ReadTrace | None = None
 
 
+class FetchChunkPage(BaseModel):
+    page_id: str
+    physical_page_index: int = Field(ge=0)
+
+
+class FetchChunkRegion(BaseModel):
+    page_id: str
+    region_id: str
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    role: Literal["body", "footnote"]
+
+
+class FetchChunkRecord(BaseModel):
+    source_id: str
+    chunk_id: str
+    ordinal: int = Field(ge=0)
+    text: str
+    pages: list[FetchChunkPage]
+    regions: list[FetchChunkRegion]
+
+
+class FetchChunksOutput(BaseModel):
+    """Typed public result for the existing page-scoped accepted-chunk fetch."""
+    source_id: str
+    page_start: int = Field(ge=0)
+    page_end: int = Field(ge=0)
+    chunks: list[FetchChunkRecord] = Field(max_length=8)
+    next_after_ordinal: int | None = Field(default=None, ge=0)
+    has_more: bool
+    status: Literal["ok", "unavailable", "cancelled", "invalid_query", "denied"] | None = None
+    reason: str | None = None
+    observed_data_seq: int | None = Field(default=None, ge=0)
+    observed_projection_seq: int | None = Field(default=None, ge=0)
+    read_trace: ReadTrace | None = None
+
+
 class EvidenceSearchOutput(BaseModel):
     evidence: list[FetchOutput]
     status: Literal['ok','degraded','pending','unavailable','cancelled','invalid_query','denied'] | None = None
