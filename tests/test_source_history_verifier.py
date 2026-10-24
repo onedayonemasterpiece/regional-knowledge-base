@@ -234,3 +234,28 @@ async def test_legacy_closure_metadata_is_ignored_but_genesis_identity_remains_b
     changed['database_generation']='other'
     env.store.write(checkpoint_key,module._json(changed))
     with pytest.raises(SpoolConflict):await v.restore(b)
+
+
+@pytest.mark.parametrize('catalog_installed',[True,False])
+def test_native_catalog_correction_tail_requires_installed_catalog_route(catalog_installed):
+    from regional_knowledge.control_spool import ControlSpool
+    from regional_knowledge.kaggle_current_registry import current_registry
+    from regional_knowledge.source_catalog_command import resolved_catalog_command
+    spool=object.__new__(ControlSpool);spool.registry=current_registry();spool.max_command_bytes=1048576
+    verifier=object.__new__(NativeSourceHistoryVerifier);verifier.spool=spool
+    verifier.routes={'source.search':lambda:None,'source.fetch':lambda:None,'source.withdraw':lambda:None}
+    if catalog_installed:verifier.routes['source.catalog']=lambda:None
+    owner='00000000-0000-4000-8000-000000000001'
+    command=resolved_catalog_command(sequence=2,operation_key='catalog:test',request_id='request:test',
+        person_id=owner,logical_time='2026-10-24T00:00:00Z',
+        source_id='00000000-0000-4000-8000-000000000002',
+        payload={'codec':'rkb.source-catalog.v1','ingestion_id':'00000000-0000-4000-8000-000000000003',
+            'owner_person_id':owner,'catalog_update':{'expected_revision':1,'title':'Corrected catalog title'}})
+    reference=object()
+    if catalog_installed:
+        classified,handler,ref=verifier._classify(command.encode(),reference)
+        assert classified.encode()==command.encode() and ref is reference
+        assert handler==spool.registry.handlers['source.catalog.v1']
+    else:
+        with pytest.raises(SpoolConflict,match='unclassified accepted source dependency'):
+            verifier._classify(command.encode(),reference)
