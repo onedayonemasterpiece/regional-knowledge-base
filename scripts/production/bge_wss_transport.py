@@ -127,6 +127,10 @@ class BgeWssTransport:
     def _identifier(value):
         return isinstance(value, str) and 0 < len(value.encode('utf-8')) <= 256
 
+    def _bootstrap_event(self, stage, **fields):
+        print(json.dumps(dict(event='worker_bootstrap',run_id=self.config['run_id'],
+            stage=stage,timestamp=time.time(),**fields)),flush=True)
+
     @staticmethod
     def _read_identity(frame):
         return tuple(frame.get(key) for key in ('request_id', 'connection_generation', 'turn_generation'))
@@ -436,16 +440,20 @@ class BgeWssTransport:
 
         environment = {}
         if self.config.get('target_runtime') is not None:
+            self._bootstrap_event('environment_observation_start')
             from regional_knowledge.kaggle_environment import observe_environment
             environment['environment'] = observe_environment()
+            self._bootstrap_event('environment_observation_complete')
         await send({'type': 'ATTACH', 'run_id': self.config['run_id'],
                     'launch_nonce': self.config['launch_nonce'], 'runtime_incarnation': self.incarnation,
                     **environment})
+        self._bootstrap_event('attach_sent')
         welcome = await asyncio.wait_for(receive(), 10)
         generation = welcome.get('connection_generation')
         if welcome.get('type') != 'WELCOME' or type(generation) is not int or generation < 1:
             raise ValueError('server attachment generation required')
         self._connection_generation=generation
+        self._bootstrap_event('welcome_received',connection_generation=generation)
         connected_at=self._retry_clock()
         if self.recovery_attachment is not None:
             self.recovery_attachment.attached(generation,runtime_incarnation=self.incarnation)
@@ -782,11 +790,19 @@ class BgeWssTransport:
 
     async def run(self):
         from contextlib import asynccontextmanager
+        self._bootstrap_event('aiohttp_import_start')
         import aiohttp
+        self._bootstrap_event('aiohttp_import_complete')
 
         @asynccontextmanager
         async def native_connect():
-            async with aiohttp.ClientSession(trust_env=False) as client:
+            trace=aiohttp.TraceConfig()
+            async def dns_start(*args):self._bootstrap_event('dns_start')
+            async def dns_complete(*args):self._bootstrap_event('dns_complete')
+            trace.on_dns_resolvehost_start.append(dns_start)
+            trace.on_dns_resolvehost_end.append(dns_complete)
+            async with aiohttp.ClientSession(trust_env=False,trace_configs=[trace],
+                    timeout=aiohttp.ClientTimeout(total=15,connect=10,sock_connect=10)) as client:
                 async with client.ws_connect(self.config['channel'],
                         headers={'Authorization': 'Bearer ' + self.config['token']},
                         max_msg_size=4*1024*1024, heartbeat=30) as socket:
@@ -817,7 +833,9 @@ class BgeWssTransport:
                     self._failure(self.loading)
                     self._failure(self.encoding)
                     try:
+                        self._bootstrap_event('wss_connect_start',attempt=self._reconnect_attempt+1)
                         async with (self.connector() if self.connector else native_connect()) as socket:
+                            self._bootstrap_event('wss_connect_complete')
                             try:
                                 await self._session(socket)
                             except (ValueError,KeyError,TypeError,UnicodeError):
@@ -826,7 +844,9 @@ class BgeWssTransport:
                             break
                     except BgeChannelStopped:
                         raise
-                    except (ConnectionError, OSError, TimeoutError, aiohttp.ClientError):
+                    except (ConnectionError, OSError, TimeoutError, aiohttp.ClientError) as error:
+                        self._bootstrap_event('wss_connect_failed',error_type=type(error).__name__,
+                            http_status=getattr(error,'status',None))
                         self._reconnect_attempt += 1
                         now = self._retry_clock()
                         if self._outage_started is None:

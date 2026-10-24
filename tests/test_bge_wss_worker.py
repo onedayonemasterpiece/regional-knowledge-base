@@ -44,7 +44,10 @@ async def test_transport_failure_is_visible_before_native_drain_without_private_
     running=asyncio.create_task(worker.run())
     try:
         await asyncio.wait_for(entered.wait(),1)
-        event=json.loads(capsys.readouterr().out)
+        output=capsys.readouterr().out
+        assert CONFIG['token'] not in output and CONFIG['channel'] not in output
+        event=next(e for e in map(json.loads,output.splitlines())
+                   if e['event']=='worker_transport_failed')
         assert event==dict(event='worker_transport_failed',run_id='fixture-run',error_type='ValueError')
         assert not running.done() and not worker.loading.done() and not closed
     finally:
@@ -458,3 +461,36 @@ async def test_actual_existing_asgi_outbound_worker_queue_and_waiter(tmp_path, m
                 await asyncio.wait_for(serving, 3)
             finally:
                 listener.close()
+
+
+@pytest.mark.asyncio
+async def test_native_handshake_timeout_and_failure_stages_do_not_log_secrets(monkeypatch,capsys):
+    import aiohttp
+    from types import SimpleNamespace
+    transport=module('bge_wss_transport');stop=asyncio.Event();settings=[]
+    class Session:
+        def __init__(self,**kwargs):settings.append(kwargs)
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        @asynccontextmanager
+        async def ws_connect(self,*args,**kwargs):
+            trace=settings[-1]['trace_configs'][0]
+            for callback in trace.on_dns_resolvehost_start:await callback(None,None,None)
+            for callback in trace.on_dns_resolvehost_end:await callback(None,None,None)
+            stop.set()
+            raise aiohttp.WSServerHandshakeError(SimpleNamespace(real_url=CONFIG['channel']),(),
+                status=503,message='private provider response '+CONFIG['token'])
+            yield
+    monkeypatch.setattr(aiohttp,'ClientSession',Session)
+    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{},stop=stop)
+    await worker.run()
+    timeout=settings[0]['timeout']
+    assert (timeout.total,timeout.connect,timeout.sock_connect)==(15,10,10)
+    raw=capsys.readouterr().out
+    assert CONFIG['token'] not in raw and CONFIG['channel'] not in raw
+    assert 'private provider response' not in raw
+    events=[json.loads(line)for line in raw.splitlines()]
+    assert [e['stage']for e in events]==['aiohttp_import_start','aiohttp_import_complete',
+        'wss_connect_start','dns_start','dns_complete','wss_connect_failed']
+    assert events[-1]['error_type']=='WSServerHandshakeError'and events[-1]['http_status']==503
+    assert all(e['timestamp']>0 and e['run_id']==CONFIG['run_id']for e in events)

@@ -34,7 +34,7 @@ def decoder(source,packed=None):
                     node.args[0]=ast.copy_location(ast.Constant(packed),node.args[0])
                 return self.generic_visit(node)
         tree=Replace().visit(tree)
-    namespace={}
+    namespace={'RUN_CONFIG':{'run_id':'fixture-run'}}
     exec(compile(ast.fix_missing_locations(tree),'shipped-envelope-decoder','exec'),namespace)
     return namespace
 
