@@ -104,7 +104,7 @@ class ChunkNative(Native):
             return entries[:take]
         if 'FROM rkb_v4.source_stage_pages' in self.statement:
             requested=set(self.calls[-1][1][1])
-            return [row for row in [(UUID(PAGE_A),1,'12'),(UUID(PAGE_B),2,'13')]
+            return [row for row in [(UUID(PAGE_A),1),(UUID(PAGE_B),2)]
                     if str(row[0]) in requested]
         if 'FROM rkb_v4.source_regions' in self.statement:
             requested=set(self.calls[-1][1][1])
@@ -124,8 +124,8 @@ async def test_accepted_chunks_order_cross_page_unicode_offsets_and_exact_wire()
     assert [r['chunk_id'] for r in result.records]==[CHUNK_A,CHUNK_B]
     assert [r['ordinal'] for r in result.records]==[0,1]
     assert result.records[0]['pages']==[
-        {'page_id':PAGE_A,'physical_page_index':1,'printed_page_number':'12'},
-        {'page_id':PAGE_B,'physical_page_index':2,'printed_page_number':'13'}]
+        {'page_id':PAGE_A,'physical_page_index':1},
+        {'page_id':PAGE_B,'physical_page_index':2}]
     assert result.records[0]['regions']==[
         {'page_id':PAGE_A,'region_id':REGION_A,'start':0,'end':6,'role':'body'},
         {'page_id':PAGE_B,'region_id':REGION_B,'start':2,'end':8,'role':'body'}]
@@ -138,7 +138,7 @@ async def test_accepted_chunks_order_cross_page_unicode_offsets_and_exact_wire()
     assert any('ORDER BY p.ordinal' in query for query,_ in native.calls)
     assert any('REPEATABLE READ READ ONLY' in query for query,_ in native.calls)
     assert not any('original_receipt' in q or 'source_stage_batches' in q
-                   or 'embedding' in q for q,_ in native.calls)
+                   or 'model_page' in q or 'embedding' in q for q,_ in native.calls)
 
 
 @pytest.mark.asyncio
