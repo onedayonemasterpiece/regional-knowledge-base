@@ -495,12 +495,12 @@ class TargetServiceStartup:
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
-            if dataset:await self._settle_restored_source_jobs(coverage)
             if self.schema_migrations.pending() is not None:
                 # Dataset upload/readback may take minutes; keep ordinary
                 # history/read coverage refreshing beside the same barrier.
                 self.schema_migrations.kick(self.binding)
                 return self.reads_current()
+            if dataset:await self._settle_restored_source_jobs(coverage)
             if self.dataset_checkpoints is not None:
                 # Kaggle Dataset can take minutes to become ready. Capture
                 # continues through the existing background owner, never
