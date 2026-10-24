@@ -159,7 +159,7 @@ def test_legacy_unverified_heartbeat_does_not_reset_failure_budget(tmp_path):
             run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
     with queue.connect(write=False) as db:
         state=db.execute('select startup_state,startup_failures from control where id=1').fetchone()
-    assert tuple(state)==('blocked',3)
+    assert tuple(state)==(None,3)
 
 
 def test_legacy_document_demand_without_startup_ref_cannot_retry_forever(tmp_path):
@@ -186,13 +186,22 @@ def test_legacy_document_demand_without_startup_ref_cannot_retry_forever(tmp_pat
             assert ready!=run
             run=ready
         else:
-            assert control['startup_state']=='blocked'
-    assert queue.status()['state']=='blocked'
+            assert control['startup_state'] is None
+    assert queue.status()['reason']=='startup_retry_exhausted'
     assert queue.result('indexer',job)['state']=='pending'
-    queue.enqueue('indexer','second',['another safe passage'],kind='document')
+    # Replaying the old demand cannot silently consume a fourth launch.
+    assert queue.enqueue('indexer','owned-document',['synthetic passage'],kind='document')==job
     now[0]+=600
     assert len(queue.maintenance())==MAX_STARTUP_FAILURES
     assert not any(x['status']=='starting' for x in queue.maintenance())
+    # A distinct incoming import renews only its own finite startup budget.
+    second=queue.enqueue('indexer','second',['another safe passage'],kind='document')
+    assert second!=job
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    new_run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    assert new_run!=run
+    assert queue.launch_claim(new_run,provider_ref='owner/stable-slug') is not None
 
 
 def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
@@ -212,8 +221,16 @@ def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
         assert db.execute('select startup_failures from control where id=1').fetchone()[0]==MAX_STARTUP_FAILURES-1
     queue.launch_claim(run,provider_ref='owner/stable-slug')
     queue.launch_record(run,'owner/stable-slug',failed=True)
-    assert queue.request_startup()['status']=='unavailable'
     assert queue.startup_status(first['startup_ref'])['reason']=='startup_retry_exhausted'
+    # A new authorized search reopens a *new* budget, not the exhausted locator.
+    renewed=queue.request_startup()
+    assert renewed['status']=='pending'
+    assert renewed['startup_ref']!=first['startup_ref']
+    assert renewed['run_id']!=run
+    assert queue.startup_status(first['startup_ref'])['reason']=='startup_ref_stale'
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    assert queue.launch_claim(renewed['run_id'],provider_ref='owner/stable-slug') is not None
 
 
 def test_fusion_preserves_independent_alias_diagnostics_and_deduplicates():
