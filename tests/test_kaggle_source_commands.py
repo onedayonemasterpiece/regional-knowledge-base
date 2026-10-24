@@ -419,6 +419,27 @@ async def test_restored_dataset_cursor_dispatches_pending_command_without_resett
 
 
 @pytest.mark.asyncio
+async def test_unknown_accepted_tail_does_not_revoke_restored_prefix_reads(accepted):
+    from regional_knowledge.kaggle_service_startup import TargetServiceStartup
+    e=accepted;s=e.s
+    binding=SimpleNamespace(database_generation='synthetic-db',run_id=s.run,runtime_incarnation='incarnation-a')
+    current=lambda candidate:candidate is binding
+    control={'sequence':0,'heads':[]}
+    base=await e.spool.dataset_cursor(binding,control=control,current=current)
+    startup=SimpleNamespace(running=True,closed=False,snapshot=None,coverage=base,
+        binding=binding,binding_current=current)
+    assert TargetServiceStartup.reads_current(startup)
+    assert base.applied_sequence==0 and base.accepted_sequence==1
+    await e.spool.mark_apply_sent(e.command.operation_key)
+    unknown=await e.spool.dataset_cursor(binding,control=control,current=current)
+    startup.coverage=unknown
+    scope=await e.spool.scope_state()
+    assert scope['unknown'] and scope['pending']  # Canonical native intake remains fenced.
+    assert unknown.applied_sequence==0 and unknown.pending
+    assert TargetServiceStartup.reads_current(startup)  # Readiness is the Saved prefix, not tail.
+
+
+@pytest.mark.asyncio
 async def test_old_apply_receipt_replays_on_ordinary_queue_after_prefix_ready(accepted):
     """Preserve old receipts, resume without a live client and bind new writer."""
     e=accepted;s=e.s
@@ -430,9 +451,18 @@ async def test_old_apply_receipt_replays_on_ordinary_queue_after_prefix_ready(ac
     with s.q.connect() as db:
         # Only the synthetic fixture changes execution identity. The canonical
         # receipt/command and the old delivery itself remain retained.
-        db.execute("UPDATE jobs SET run_id='previous-owned-run' WHERE id=?",(old,))
+        # A lost previous claim may remain permanently unresolved; it cannot
+        # gate new PG work after the successor has completed the same command.
+        db.execute("UPDATE jobs SET run_id='previous-owned-run',state='claimed' WHERE id=?",(old,))
         retained=dict(db.execute('SELECT * FROM jobs WHERE id=?',(old,)).fetchone())
-    binding=SimpleNamespace(database_generation='synthetic-db',run_id=s.run)
+        # Reuse the persisted recovery owner contract, rather than a synthetic
+        # flag or an implicit assumption that all local receipts were restored.
+        db.execute('''CREATE TABLE IF NOT EXISTS rkb_writer_restore_control(
+            id INTEGER PRIMARY KEY CHECK(id=1),plan_json TEXT NOT NULL,
+            identity_json TEXT NOT NULL,head_json TEXT NOT NULL,state TEXT NOT NULL)''')
+        db.execute('INSERT INTO rkb_writer_restore_control VALUES(1,?,?,?,?)',
+            ('{}',json.dumps([s.run,'synthetic-nonce','incarnation-a']),'{}','active'))
+    binding=SimpleNamespace(database_generation='synthetic-db',run_id=s.run,runtime_incarnation='incarnation-a')
     current=lambda value:value is binding
     cursor=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},current=current)
     assert cursor.applied_sequence==0 and cursor.accepted_sequence==1 and len(cursor.pending)==1
@@ -459,6 +489,7 @@ async def test_old_apply_receipt_replays_on_ordinary_queue_after_prefix_ready(ac
     await release(e,following)
     advanced=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},current=current)
     assert advanced.applied_sequence==1 and advanced.pending==()
+    assert not e.bridge.maintenance_blocks_dispatch()  # Old claimed job is not this writer.
     with s.q.connect(write=False) as db:
         assert dict(db.execute('SELECT * FROM jobs WHERE id=?',(old,)).fetchone())==retained
     assert (await e.spool.get(e.command.operation_key)).apply_receipt==original.apply_receipt
