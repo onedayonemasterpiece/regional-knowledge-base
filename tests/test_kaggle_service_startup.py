@@ -104,6 +104,20 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
         'never as the opening words of a body.') in server.instructions
     assert ('story_candidates holds at most 12 per stage; when the pages hold more episodes '
         'and facts than that, stage fewer pages per packet instead of dropping or merging them.') in server.instructions
+    assert ('A list of figures, names or institutions is not a story: keep it as facts and '
+        'observations without a body; there is no story quota. '
+        'A first or an invention stated in one sentence still deserves a short body when '
+        'the adjacent sentences continue the same thread; never pad it beyond them.') in server.instructions
+    assert ('Do not split one episode into a body plus separate facts_only candidates: '
+        'the outcome, name, consequence or open question that closes it belongs in the same body. '
+        'One episode is one body even when its steps sit in separate paragraphs: a problem, '
+        'the decision, its execution and result belong together. A single dated fact without '
+        'development (a street laid out, a bridge built) stays a fact; '
+        'the v8 exception covers only firsts and inventions.') in server.instructions
+    assert ('Place such attribution after the claim it qualifies, never as the opening words of a body. '
+        'This holds for contested or painful periods too: state established events '
+        "(a pogrom, a siege, a deportation) directly, attribute only the author's judgment "
+        'or explanation after the event, and never cite a footnote number in the body.') in server.instructions
     assert server._target_startup is startup
     assert startup.backend.worker_queue is s.target.queue is startup.config.spool.queue
     assert startup.admission is s.target.admission
