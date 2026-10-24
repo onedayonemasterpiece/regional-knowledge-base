@@ -472,6 +472,30 @@ class TargetServiceStartup:
             if not coverage.current() or not self.binding_current(self.binding):
                 raise PermissionError('native history proof no longer current')
             self.coverage=coverage
+            if dataset and self.config.queue._source_commands is not None:
+                # A restored, already attempted source command can have a
+                # verified PG receipt while its old queue claim has expired.
+                # Reuse the existing checkpoint_pending (NOT Saved) settlement;
+                # no re-dispatch of that original accepted effect.
+                with self.config.queue.connect(write=False) as db:
+                    recovered=db.execute(
+                        "SELECT o.operation_key FROM jobs j INDEXED BY bge_pending "
+                        "JOIN rkb_control_operations o ON o.operation_key=json_extract(j.identity,'$.operation_key') "
+                        "WHERE j.state='pending' AND j.kind='source_command' AND j.attempt>=1 AND j.result IS NULL "
+                        "AND j.actor=o.person_id AND j.idempotency='source-command:'||o.operation_key "
+                        "AND json_extract(j.identity,'$.command_sha256')=o.command_sha256 "
+                        "AND json_extract(j.identity,'$.database_generation')=o.database_generation "
+                        "AND json_extract(j.identity,'$.sequence')=o.sequence "
+                        "AND o.database_generation=? AND o.sequence<=? "
+                        "AND o.seal_state='ACCEPTED' AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
+                        "AND o.outcome_state='NOT_SENT' ORDER BY j.created,j.id LIMIT 16",
+                        (coverage.database_generation,coverage.applied_sequence)).fetchall()
+                settled=[]
+                for row in recovered:
+                    settled.extend(await self.config.spool._write(
+                        self.config.spool._settle_recovered_jobs,row['operation_key'],coverage))
+                for job in settled:self.config.queue._notify_result(job)
+                if settled:self.config.queue.shared_reads.wake()
             if self.schema_migrations.pending() is not None:
                 # Dataset upload/readback may take minutes; keep ordinary
                 # history/read coverage refreshing beside the same barrier.
