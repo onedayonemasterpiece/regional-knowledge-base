@@ -396,8 +396,6 @@ class AcceptedSourceDispatch:
         run,job=await asyncio.to_thread(self.queue._source_claim,self,run_id,token,generation,frame['job_id'])
         entry,identity=await self._entry(job,verify=False)
         self._current(run,identity,generation)
-        self.queue.shared_reads.require_durable_resource(run_id,run['runtime_incarnation'],generation,
-            job['id'],frame['compute_claim'],frame['dispatch_generation'])
         if (frame['claim']!=job['claim'] or frame.get('run_id')!=run_id
                 or frame.get('launch_nonce')!=run['launch_nonce']
                 or frame.get('runtime_incarnation')!=run['runtime_incarnation']):
