@@ -218,9 +218,19 @@ async def test_controller_intent_includes_the_selected_native_story_migration(tm
 
 
 @pytest.mark.asyncio
-async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp_path):
+@pytest.mark.parametrize('originals',[False,True])
+async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp_path,monkeypatch,originals):
     events=[];loop=asyncio.get_running_loop()
     target=spec()
+    if originals:
+        from regional_knowledge import kaggle_original_native as original
+        monkeypatch.setattr(original,'PRIVATE_ROOT',tmp_path)
+        monkeypatch.setattr(original.importlib.metadata,'version',lambda _: '0.0')
+        monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda:tmp_path)
+        target=replace(target,dependency_packages=(*target.dependency_packages,'PyMuPDF'))
+        target=replace(target,stage0=stage0(target),original_intake=original.OriginalIntakeConfig(
+            allowed_origins=('https://archive.invalid',),
+            parser_packages=(('PyMuPDF','0.0'),),max_bytes=128,seconds=1))
     config=dict(CONFIG,target_runtime=dict(target.wire(),sql_root='/unused'))
     class Owner:
         def __init__(self,spec): pass
@@ -251,6 +261,10 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
     args=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],runtime_incarnation='incarnation')
     prepared=await runtime.prepare(SimpleNamespace(artifacts=None),**args)
     assert await runtime.prepare(None,**args) is prepared
+    if originals:
+        from regional_knowledge.kaggle_original_native import NativeOriginalIntake
+        assert type(prepared.original_intake_handler) is NativeOriginalIntake
+        assert prepared.original_intake_handler is runtime.original_intake_handler
     assert await prepared.query_handler({},encode=None)=={'ok':True}
     # Regression for the actual PreparedRuntime -> invoke -> ReadHandlerSlot
     # composition: SQL_HEALTH's optional lease_current must reach the handler.
