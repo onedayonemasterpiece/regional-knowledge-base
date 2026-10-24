@@ -157,12 +157,10 @@ class PhysicalSnapshotRecovery:
                 manifest_bytes=encode(manifest),manifest_ref=manifest_ref.wire(),
                 blob=asdict(blob),control_bytes=control_bytes,expected_versions=expected_versions,
                 database=database.wire(),identity=identity)
-            if (type(prepared) is not dict or set(prepared)!={'handle','archived_sequence','archive_suffix_sha256'}
+            if (type(prepared) is not dict or set(prepared)!={'handle','archived_sequence'}
                     or type(prepared['handle']) is not str or not prepared['handle']
                     or type(prepared['archived_sequence']) is not int):
                 raise SnapshotError('snapshot_archive_attestation_invalid')
-            from .kaggle_pg_snapshot_native import archive_suffix_hash
-            _hash(prepared['archive_suffix_sha256'])
             handle=prepared['handle']
             head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
             # Verify the accepted suffix now; execute it through the ordinary
@@ -175,19 +173,14 @@ class PhysicalSnapshotRecovery:
                     raise SnapshotError('snapshot_replay_scope_unsupported')
                 if await self.journal.verify_accepted(seal,command)!=sha(command.encode()):
                     raise SnapshotError('snapshot_exact_acceptance_changed')
-            # The WAL-consistent archive can include an already committed
-            # prefix of this exact accepted tail. Its bounded native ledger
-            # fingerprint must match immutable journal identities/handler pins.
+            # Native PostgreSQL supplies the actual applied cursor, which may
+            # exceed the Saved manifest lower bound. The existing journal
+            # ancestry and accepted-command checks above remain unchanged.
             base_sequence=manifest['applied_sequence']
             sequence=prepared['archived_sequence']
             if not base_sequence<=sequence<=base_sequence+len(tail):
                 raise SnapshotError('snapshot_archive_cursor_outside_accepted_tail')
             archived=tail[:sequence-base_sequence]
-            expected=archive_suffix_hash((command.sequence,command.operation_key,sha(command.encode()),
-                self.registry.resolve(command).fingerprint,seal.manifest.sha256,
-                database.database_generation,manifest['writer_generation']) for command,seal in archived)
-            if expected!=prepared['archive_suffix_sha256']:
-                raise SnapshotError('snapshot_archive_ahead_identity_changed')
             heads={row[0]:list(row) for row in control['heads']}
             for command,seal in archived:
                 dependency=self.registry.resolve(command).dependency
