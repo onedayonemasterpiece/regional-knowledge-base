@@ -198,7 +198,7 @@ def test_chunk_wire_rejects_fabricated_region_or_nonmonotonic_ordinals():
         dependencies=ItemDependencies(source_ids=(SOURCE,),variant_refs=(),grant_refs=(),
                                       source_revisions=(dependency,)))
     record=dict(source_id=SOURCE,chunk_id=CHUNK_A,ordinal=0,text='Accepted text',
-        pages=[dict(page_id=PAGE_A,physical_page_index=1,printed_page_number=None)],
+        pages=[dict(page_id=PAGE_A,physical_page_index=1)],
         regions=[dict(page_id=PAGE_A,region_id=REGION_A,start=0,end=6,role='body')])
     result=SourceReadResult(request_id='r',connection_generation=1,turn_generation=0,
         operation='accepted_chunks',status='ok',records=(record,),evidence=(evidence,),
