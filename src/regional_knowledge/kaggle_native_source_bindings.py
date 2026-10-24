@@ -10,7 +10,7 @@ from .source_activation import (ACTIVATION_REVISIONS, ACTIVATE_ROUTE, MATERIALIZ
 from .source_batch import ROUTE as BATCH_ROUTE,FINISH_ROUTE
 from .source_catalog_command import ROUTE as CATALOG_ROUTE, validate_catalog_command, catalog_handler
 
-NATIVE_ROUTES=CURRENT_ROUTES|frozenset({STAGE_ROUTE,SEAL_ROUTE,ACTIVATE_ROUTE,MATERIALIZE_ROUTE,BATCH_ROUTE,FINISH_ROUTE,CATALOG_ROUTE})
+NATIVE_ROUTES=CURRENT_ROUTES|frozenset({STAGE_ROUTE,SEAL_ROUTE,ACTIVATE_ROUTE,MATERIALIZE_ROUTE,BATCH_ROUTE,FINISH_ROUTE,CATALOG_ROUTE,'geo.resolve.v1'})
 
 
 def _view(command,revisions):
@@ -31,6 +31,9 @@ def validate_native_source_command(command):
         from .source_batch import validate_command
         return validate_command(command)
     if command.route==CATALOG_ROUTE:return validate_catalog_command(command)
+    if command.route=='geo.resolve.v1':
+        from .kaggle_source_geo_mvp import validate_command
+        return validate_command(command)
     if command.route=='geo.manifest.install.v1':
         from .geo_manifest_commands import GEO_V2_REVISIONS,validate_geo_manifest_command
         return validate_geo_manifest_command(_view(command,GEO_V2_REVISIONS))
@@ -53,6 +56,9 @@ def native_source_handler(route,*,check_sha256,apply_sha256):
         return handler(route=route,check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route==CATALOG_ROUTE:
         return catalog_handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
+    elif route=='geo.resolve.v1':
+        from .kaggle_source_geo_mvp import handler
+        return handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route=='geo.manifest.install.v1':
         from .geo_manifest_commands import GEO_V2_REVISIONS,geo_manifest_handler
         result=geo_manifest_handler(revisions=GEO_V2_REVISIONS,
