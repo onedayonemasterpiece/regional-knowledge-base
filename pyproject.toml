@@ -17,6 +17,7 @@ dependencies = [
   "psycopg[binary,pool]>=3.2,<4",
   "starlette>=0.47,<1",
   "websockets>=16,<17",
+  "slack_sdk>=3.35,<4",  # Official async Socket Mode adapter; no new runtime service
 ]
 
 [project.optional-dependencies]
