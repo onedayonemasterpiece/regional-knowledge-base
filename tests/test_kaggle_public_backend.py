@@ -404,7 +404,7 @@ async def test_accepted_chunk_fetch_uses_existing_oauth_gate_admission_and_issua
         connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
         operation='accepted_chunks',status='ok',
         records=(dict(source_id=source,chunk_id=chunk,ordinal=0,text='Accepted chunk',
-            pages=[dict(page_id=page,physical_page_index=1,printed_page_number='12')],
+            pages=[dict(page_id=page,physical_page_index=1)],
             regions=[dict(page_id=page,region_id=region,start=0,end=12,role='body')]),),
         evidence=(EvidenceItem(id=chunk,kind='source',text='Accepted chunk',
             dependencies=ItemDependencies(source_ids=(source,),variant_refs=(),grant_refs=(),
