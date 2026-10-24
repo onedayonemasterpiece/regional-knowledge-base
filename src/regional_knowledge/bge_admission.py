@@ -64,6 +64,7 @@ class ChannelWork:
     resource: ResourceClaim
     query: Query | SqlHealthRequest | PassageReadRequest | StoryReadRequest | FactReadRequest | SourceReadRequest | CaseReadRequest | GeoReadRequest | EditorialReadRequest | SourceGraphReadRequest | None = None
     document_payload: object | None = None
+    native_request: object | None = None
 
     @property
     def kind(self):return self.resource.resource_kind
@@ -122,6 +123,9 @@ class SharedReadAdmission:
         self._work=None
         self._last_release=None
         self._document_result=None
+        self._document_resource=None
+        self._native_forward=None
+        self._native_completed=None
         self._sent=False
         self._slot_version=object()
         self._probe=None
@@ -312,6 +316,7 @@ class SharedReadAdmission:
             if retired:
                 self._work=None;self._sent=False;self._state='unknown'
                 self._last_release=None;self._document_result=None
+                self._document_resource=None;self._native_forward=None;self._native_completed=None
                 self._changed_slot()
         if observe:self._observe_attachment(run,generation)
         return run,owner,docs,resumed
@@ -414,6 +419,15 @@ class SharedReadAdmission:
                 return True # restart has no claim memory; baseline still needed.
             if self._work is None or not self._sent or self._work.resource!=descriptor:
                 raise StaleAttachment('stale or unknown resource release')
+            if self._work.native_request is not None:
+                request=self._work.native_request
+                self._native_completed=(request['job_id'],request['claim'],request['request_id'])
+                self._native_forward=None
+            elif (resumed is not None and resumed['kind'] in ('source_command','recovery_phase')
+                    and descriptor.resource_kind=='document' and descriptor.resource_id!=resumed['id']):
+                # A fresh controller recovered a busy per-vector descriptor.
+                self._native_completed=(resumed['id'],resumed['claim'],descriptor.resource_id)
+                if self._native_forward==self._native_completed:self._native_forward=None
             self._work=None;self._sent=False;self._state='idle'
             self._last_release=descriptor
             self._remember_document_result(descriptor,resumed)
@@ -423,7 +437,12 @@ class SharedReadAdmission:
             return True
 
     def _remember_document_result(self, descriptor, resumed):
-        if descriptor.resource_kind=='document' and resumed is not None and resumed['id']==descriptor.resource_id:
+        if descriptor.resource_kind!='document':return
+        if self._document_result is None:
+            self._document_resource=descriptor
+        if resumed is not None and resumed['id']==descriptor.resource_id:
+            if self._document_result!=(resumed['id'],resumed['claim']):
+                self._document_resource=descriptor
             self._document_result=(resumed['id'],resumed['claim'])
 
     def durable_result_settled(self, job_id, claim, status):
@@ -431,15 +450,36 @@ class SharedReadAdmission:
         self._active()
         if status not in {'accepted','duplicate','stale','checkpoint_pending'}:raise ValueError('invalid durable settlement status')
         if self._document_result==(job_id,claim):
-            self._document_result=None;self._event.set()
+            # Keep the last receipt's admission until a new document arrives:
+            # a lost RESULT_ACK can replay it after independent QUERY releases.
+            self._document_result=None
+            self._native_forward=None;self._native_completed=None;self._event.set()
             return True
         return False
 
     def require_durable_resource(self,run_id,incarnation,generation,job_id,compute_claim,dispatch_generation):
         self._active()
         descriptor=self._descriptor(run_id,incarnation,generation,'document',job_id,compute_claim,dispatch_generation)
-        if descriptor!=self._last_release and not (self._work is not None and self._sent and self._work.resource==descriptor):
+        if descriptor not in (self._last_release,self._document_resource) and not (self._work is not None and self._sent and self._work.resource==descriptor):
             raise StaleAttachment('source receipt has no actual admitted resource binding')
+
+    async def request_native_forward(self,run_id,token,generation,*,job_id,claim,request_id):
+        """A retained native job borrows the SAME slot for one real forward."""
+        for value in (job_id,claim,request_id):_identity(value)
+        if request_id==job_id:raise ValueError('distinct native vector request required')
+        self._active()
+        async with self._lock:
+            run,_,_,job=await self._snapshot(run_id,token,generation)
+            if (job is None or job['id']!=job_id or job['claim']!=claim
+                    or job['kind'] not in ('source_command','recovery_phase')
+                    or self._document_result!=(job_id,claim)):
+                raise StaleAttachment('native forward requires retained admitted job')
+            request=(job_id,claim,request_id)
+            if request==self._native_completed:return False
+            if self._native_forward not in (None,request):
+                raise ValueError('one native forward request per job')
+            self._native_forward=request;self._event.set()
+            return True
 
     async def next_channel_work(self, run_id, token, connection_generation):
         self._active()
@@ -458,7 +498,9 @@ class SharedReadAdmission:
                 waiting_result=await asyncio.to_thread(self.queue._document_claim_waiting,*self._document_result)
                 if not waiting_result:self._document_result=None
             eligible=[];authorized={}
-            for doc in ([] if waiting_result else [resumed] if resumed else docs):
+            native=(resumed is not None and self._native_forward is not None
+                    and (resumed['id'],resumed['claim'])==self._native_forward[:2])
+            for doc in ([resumed] if native else [] if waiting_result else [resumed] if resumed else docs):
                 if doc['kind']=='recovery_phase':
                     if maintenance is not None and maintenance.eligible(doc,run,connection_generation):eligible.append(doc)
                     continue
@@ -493,6 +535,8 @@ class SharedReadAdmission:
             recovery=[d for d in eligible if d['kind']=='recovery_phase']
             if recovery:eligible=recovery
             reads=[r for r in self._reads.values() if r.dispatched is None] if ready else []
+            if native and reads and self._read_streak<self.max_read_streak:
+                eligible=[]  # QUERY first between vectors; preserve bounded native progress.
             if not reads and not eligible:return None
             # Person first, then dialog. Many dialogs cannot multiply a
             # person's share. Forced document turn bounds continuous read runs.
@@ -525,6 +569,17 @@ class SharedReadAdmission:
             else:
                 if (selected_doc['kind']=='source_command'
                         and self.queue._source_commands.maintenance_blocks_dispatch()):return None
+                if native and selected_doc['id']==self._native_forward[0]:
+                    if selected_doc['kind']=='source_command':
+                        self.queue._source_commands._current(run,json.loads(selected_doc['identity']),connection_generation)
+                    request_id=self._native_forward[2]
+                    resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),connection_generation,'document',request_id)
+                    work=ChannelWork(resource,native_request=MappingProxyType(dict(
+                        job_id=selected_doc['id'],claim=selected_doc['claim'],request_id=request_id)))
+                    self._turn+=1;self._person_turn[selected_doc['actor']]=self._turn
+                    self._read_streak=0;self._work=work;self._sent=False;self._state='reserved'
+                    self._changed_slot()
+                    return work
                 # Reserve before the durable writer await. Cancellation of the
                 # dispatcher cannot free an ambiguously committed assignment.
                 resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),connection_generation,'document',selected_doc['id'])
@@ -636,6 +691,7 @@ class SharedReadAdmission:
                 self._work=None;self._sent=False;self._state='unknown';self._attachment=None
                 self._last_release=None
                 self._document_result=None
+                self._document_resource=None;self._native_forward=None;self._native_completed=None
                 self._changed_slot()
                 self._event.set()
             return result
