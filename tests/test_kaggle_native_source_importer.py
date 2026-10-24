@@ -237,7 +237,9 @@ async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_v
         assert (await call(s,result,'status')).state=='processing'
         assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
         await finish(s,result)
-        assert (await call(s,result,'status')).state == 'staged'
+        progress=await call(s,result,'status')
+        assert progress.state == 'staged' and progress.next_action == 'continue_pages'
+        assert progress.next_cursor == str(first+len(payload['pages']))
         # An exact post-durability retry must not allocate batch ordinal+1.
         assert (await stage(s,result,payload)).state == 'staged'
         assert operation_count(s) == (ordinal+1)*3
