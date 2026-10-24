@@ -129,9 +129,10 @@ async def test_capability_copied_fields_never_replace_owner_retention():
 
 
 @pytest.mark.asyncio
-async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkeypatch):
+@pytest.mark.parametrize('archive_cursor',[0,1])
+async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkeypatch,archive_cursor):
     from contextlib import asynccontextmanager
-    events=[];binding=object();writer=['old'];sequence=[0]
+    events=[];binding=object();writer=['old'];sequence=[archive_cursor]
     class Connection:
         async def execute(self,sql,*args):
             self.row=(sequence[0],writer[0]) if 'applied_seq,writer_generation' in sql else (sequence[0],) if 'applied_seq' in sql else (writer[0],)
@@ -158,16 +159,17 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
         current=lambda b:b is binding,workspace_private_current=lambda path:True,native_uid=1,native_gid=1,probe=probe)
     monkeypatch.setattr(factory,'_sql_readiness',readiness)
     candidate=SimpleNamespace(acquire=acquire,process=SimpleNamespace(returncode=None))
-    session=native._NativeSession(candidate,{'applied_sequence':0,'writer_generation':'old'},b'{}',binding,executor,[])
+    session=native._NativeSession(candidate,{'applied_sequence':0,'writer_generation':'old'},
+        b'{}',binding,executor,[],archived_sequence=archive_cursor)
     factory._sessions.add(session)
-    await factory.apply(session,{});await factory.apply(session,{})
+    for _ in range(archive_cursor+1,3):await factory.apply(session,{})
     control=native.encode({'database_generation':'db','sequence':2,'journal_head':None,'schema_version':16})
     with pytest.raises(SnapshotError,match='tail_receipts_differ'):
         await factory.finish(session,expected_tail=(),final_head=None,control_bytes=control,expected_schema_version=16)
     assert not any(event[0]=='rollover' for event in events)
     cap=await factory.finish(session,expected_tail=tuple(session.receipts),final_head=None,
         control_bytes=control,expected_schema_version=16)
-    assert events==[('apply',1),('apply',2),('rollover',2),('readiness',2)]
+    assert events==[('apply',n) for n in range(archive_cursor+1,3)]+[('rollover',2),('readiness',2)]
     assert (await cap.verify_for(database,'run','nonce','inc'))['user']=='rkb_reader'
     with pytest.raises(SnapshotError):await replace(cap).verify_for(database,'run','nonce','inc')
     reference=factory.reference(cap);new_binding=object()
