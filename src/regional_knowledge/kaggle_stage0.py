@@ -30,7 +30,7 @@ MAX_FILES = 128
 # Native import source plus PDF/Telegram dependencies adds immutable code members.
 # GEO's new source module and SQL035 extend the previously saturated 192-entry
 # prepared inventory by two; download and wheel budgets remain 128.
-MAX_PREPARED_FILES = 194
+MAX_PREPARED_FILES = 195
 MAX_FILE_BYTES = 16 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
 CHUNK_BYTES = 1024 * 1024
