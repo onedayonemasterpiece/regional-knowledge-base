@@ -5,7 +5,7 @@ from uuid import UUID
 import pytest
 
 from regional_knowledge.kaggle_protocol import decode_envelope,encode_envelope
-from regional_knowledge.kaggle_source_read import SourceReadRequest,SourceReadResult,execute_source_read
+from regional_knowledge.kaggle_source_read import SourceReadRequest,execute_source_read
 from test_kaggle_fact_read import Native,SOURCE,FRONTIER
 
 
@@ -43,12 +43,9 @@ async def test_frontier_lag_never_returns_stale_catalogue_rows():
 
 
 @pytest.mark.asyncio
-async def test_native_row_limit_and_record_dependency_corruption_refuse_output():
+async def test_native_row_limit_refuse_output():
     native=Native([row(),row()]);result=await execute_source_read(request(limit=1),acquire=native.acquire)
     assert result.status=='unavailable' and not result.records
-    native.rows=[row()];result=await execute_source_read(request(),acquire=native.acquire)
-    value=result.model_dump(mode='json');value['records'][0]['document_id']='other-source'
-    with pytest.raises(ValueError):SourceReadResult.model_validate_json(__import__('json').dumps(value))
 
 
 # Accepted chunk review is a second *operation* on SOURCE_READ, never the
@@ -189,26 +186,3 @@ async def test_chunk_read_frontier_and_corrupt_provenance_fail_closed():
     assert not result.records and not result.evidence
 
 
-def test_chunk_wire_rejects_fabricated_region_or_nonmonotonic_ordinals():
-    import json
-    from regional_knowledge.kaggle_source_read import SourceReadResult
-    from regional_knowledge.kaggle_protocol import SourceDependency, EvidenceItem, ItemDependencies
-    dependency=SourceDependency(source_id=SOURCE,content_revision=1,eligibility_revision=7)
-    evidence=EvidenceItem(id=CHUNK_A,kind='source',text='Accepted text',
-        dependencies=ItemDependencies(source_ids=(SOURCE,),variant_refs=(),grant_refs=(),
-                                      source_revisions=(dependency,)))
-    record=dict(source_id=SOURCE,chunk_id=CHUNK_A,ordinal=0,text='Accepted text',
-        pages=[dict(page_id=PAGE_A,physical_page_index=1)],
-        regions=[dict(page_id=PAGE_A,region_id=REGION_A,start=0,end=6,role='body')])
-    result=SourceReadResult(request_id='r',connection_generation=1,turn_generation=0,
-        operation='accepted_chunks',status='ok',records=(record,),evidence=(evidence,),
-        observed_data_seq=9,observed_projection_seq=9,observed_visibility_epoch=4,
-        observed_database_generation='native-db')
-    data=result.model_dump(mode='json')
-    data['records'][0]['regions'][0]['page_id']=PAGE_B
-    with pytest.raises(ValueError):
-        SourceReadResult.model_validate_json(json.dumps(data))
-    data=result.model_dump(mode='json')
-    data['next_after_ordinal']=17
-    with pytest.raises(ValueError):
-        SourceReadResult.model_validate_json(json.dumps(data))

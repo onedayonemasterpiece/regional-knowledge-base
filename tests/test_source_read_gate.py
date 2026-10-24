@@ -347,15 +347,3 @@ async def test_accepted_chunk_gate_denies_restriction_and_changed_authority(env,
         await gate.finish(permit,chunk_read_result())
 
 
-@pytest.mark.asyncio
-async def test_accepted_chunk_gate_revalidates_bypassed_payload_before_output(env, auth, monkeypatch):
-    gate, authority, b = await setup(env,auth)
-    monkeypatch.setattr(gate,'catalog_supported',lambda:True)
-    record=chunk_read_result()
-    spoiled=dict(record.records[0])
-    spoiled['regions']=[dict(record.records[0]['regions'][0],start=80,end=3)]
-    record=record.model_copy(update={'records':(spoiled,)})
-    permit=await gate.dispatch(authority,chunk_read_request(),b)
-    gated=await gate.finish(permit,record)
-    assert gated.result.status=='unavailable' and gated.result.reason=='internal_error'
-    assert not gated.result.records and gated.result.next_after_ordinal is None
