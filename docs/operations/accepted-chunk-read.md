@@ -10,7 +10,7 @@ Use `fetch(source_id=<canonical source UUID>, page_start=0, page_end=3, limit=8)
 
 The read returns `status`, `source_id`, `page_start`, `page_end`, `chunks`, `has_more`, `next_after_ordinal` and existing read trace/frontier metadata. Each accepted chunk has its real `chunk_id`, `source_id`, accepted source `ordinal`, full accepted `text`, `pages` and `regions`.
 
-The `pages` array has exact `page_id`, `physical_page_index` and (when present) `printed_page_number`. The `regions` array has `region_id`, `page_id`, `start`, `end`, and `role` (`body` or `footnote`). Offsets are **[start, end) Unicode code-point offsets** into the accepted model-transcribed source region, not byte offsets into the original PDF. A chunk spanning the boundary of the requested range includes all its referenced pages and spans, so the reviewer can assess continuity. Chunk ordering uses immutable accepted `passage_search.ordinal`, not alphabetic UUID or page boundaries.
+The `pages` array has exact `page_id` and `physical_page_index`. Raw page metadata and image receipts remain private to the writer role. The `regions` array has `region_id`, `page_id`, `start`, `end`, and `role` (`body` or `footnote`). Offsets are **[start, end) Unicode code-point offsets** into the accepted model-transcribed source region, not byte offsets into the original PDF. A chunk spanning the boundary of the requested range includes all its referenced pages and spans, so the reviewer can assess continuity. Chunk ordering uses immutable accepted `passage_search.ordinal`, not alphabetic UUID or page boundaries.
 
 ## Authority and implementation
 
