@@ -17,7 +17,7 @@ import psycopg
 import pytest
 
 from regional_knowledge.kaggle_pg_snapshot_native import (
-    SnapshotLimits, applied_prefix,
+    SnapshotLimits, applied_prefix, archived_applied_suffix, archive_suffix_hash, sha,
 )
 from test_kaggle_apply import env, item, accepted, apply, facts
 from test_kaggle_pg_driver import database  # existing strictly checked disposable PG17 fixture
@@ -147,7 +147,19 @@ async def test_wal_backup_contains_concurrent_commit_and_replays_tail_once(env):
                 )
             assert restored_seq == 2 and restored_seq > saved_seq
             assert restored_prefix == prefix
-
+            # This is the exact native-prepared archive-ahead attestation
+            # consumed by controller recover/finish, not a second replay path.
+            original_identity=(second.sequence,second.operation_key,sha(second.encode()),
+                env['registry'].resolve(second).fingerprint,second_seal.manifest.sha256,
+                env['generation'],'writer-1')
+            expected=archive_suffix_hash((original_identity,))
+            async with restored.transaction():
+                actual=await archived_applied_suffix(restored,saved_seq,restored_seq,
+                    env['generation'],'writer-1',SnapshotLimits())
+                assert actual==expected
+                with pytest.raises(Exception,match='native_restore_archive_receipt_gap'):
+                    await archived_applied_suffix(restored,saved_seq,restored_seq+1,
+                        env['generation'],'writer-1',SnapshotLimits())
             # Ordinary authenticated accepted-command replay traverses the
             # journal tail (saved_seq, head] through the existing executor.
             # Seq2 is already in the physical snapshot: UNIQUE applied_ops
