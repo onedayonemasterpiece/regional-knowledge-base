@@ -470,6 +470,14 @@ class ControlSpool:
         changes={row[0]:SourceChange(row[0],row[1],row[2],bool(row[3]),bool(row[4]),bool(row[5]))
             for row in control['heads']}
         with self._db() as db:
+            # The existing writer restore record, not a new mode flag, proves
+            # that a local APPLIED receipt may belong to a previous PG run.
+            restored=False
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rkb_writer_restore_control'").fetchone():
+                owner=db.execute('SELECT state,identity_json FROM rkb_writer_restore_control WHERE id=1').fetchone()
+                if owner is not None and owner['state']=='active':
+                    identity=json.loads(owner['identity_json'])
+                    restored=(identity[0],identity[2])==(binding.run_id,binding.runtime_incarnation)
             for row in db.execute('SELECT sequence,seal_state,apply_state,command_bytes,outcome_bytes,'
                     'source_id,command_sha256,dependency_bytes,'
                     "json_extract(CAST(command_bytes AS TEXT),'$.route') AS route,"
@@ -477,12 +485,15 @@ class ControlSpool:
                     'FROM rkb_control_operations WHERE sequence>? AND sequence<=? ORDER BY sequence',
                     (base,accepted)):
                 known=row['seal_state']=='ACCEPTED' and row['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
-                # Old-executor receipts stay immutable. Only completion on this
-                # run proves its effect exists beyond the restored SQL prefix.
-                known=known and db.execute("SELECT 1 FROM jobs WHERE kind='source_command' "
-                    "AND state='done' AND run_id=? AND json_extract(identity,'$.operation_key')=? "
-                    "AND json_extract(identity,'$.command_sha256')=? LIMIT 1",
-                    (binding.run_id,json.loads(row['command_bytes'])['operation_key'],row['command_sha256'])).fetchone() is not None
+                # After a physical restore, an old native receipt says nothing
+                # about the successor PG. An exact completed job on this run
+                # must confirm that the suffix is actually installed. Ordinary
+                # (non-restore) receipts retain their established semantics.
+                if known and restored:
+                    known=db.execute("SELECT 1 FROM jobs WHERE kind='source_command' "
+                        "AND state='done' AND run_id=? AND json_extract(identity,'$.operation_key')=? "
+                        "AND json_extract(identity,'$.command_sha256')=? LIMIT 1",
+                        (binding.run_id,json.loads(row['command_bytes'])['operation_key'],row['command_sha256'])).fetchone() is not None
                 if row['sequence']==applied+1 and known:applied=row['sequence']
                 if not known:pending.append((bytes(row['command_bytes']),row['outcome_bytes'],False))
                 dependency=json.loads(row['dependency_bytes'])
