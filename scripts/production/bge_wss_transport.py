@@ -364,7 +364,6 @@ class BgeWssTransport:
                 except SourcePrepareNotApplied:
                     if job['kind'] != 'source_command':
                         raise
-                    # Attempt-only PG rollback evidence, never a forged apply receipt.
                     pending = dict(job_id=job['id'], claim=job['claim'],
                         command_sha256=job['command_sha256'],reason='prepare_timeout_57014',
                         **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
