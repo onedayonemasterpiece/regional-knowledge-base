@@ -114,3 +114,58 @@ async def test_native_extra_private_payload_and_duplicate_draft_paths_are_reject
     bad=header();bad['unrelated_private_draft']='Must never cross a Case header'
     gated=await gate.finish(permit,result(bad))
     assert gated.result.reason=='internal_error' and gated.result.record is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('shape',[
+    'valid','missing_page','extra_page','missing_region','extra_region',
+])
+async def test_nonempty_native_case_evidence_preserves_exact_page_region_keysets(
+        env,auth,shape):
+    from regional_knowledge.disagreement_contracts import EvidenceAdd
+    from regional_knowledge.kaggle_case_contracts import validate_case_record
+    from regional_knowledge.source_manifest import PAGE_KEYS,REGION_KEYS
+    from test_disagreement_native import SOURCE,PAGE,REGION
+
+    quote='The medieval gate was rebuilt in 1799.'
+    page=dict(page_id=PAGE,physical_page_index=1,printed_page_number='12',
+        width=612.0,height=792.0,page_receipt_sha256='a'*64,
+        image_sha256='b'*64,native_text_sha256='c'*64,native_blocks_sha256='d'*64,
+        preview_render=dict(policy='rkb.pdf-preview.v1',width=612,height=792,
+            scale=1.0,max_edge=792,jpeg_quality=75,byte_limit=256*1024,preview_only=True))
+    region=dict(region_id=REGION,page_id=PAGE,kind='body',
+        bbox=dict(left=50,top=50,right=400,bottom=300),reading_order=0,column_id=None,
+        text_sha256='e'*64,native_block_index=0,native_block_sha256='f'*64,
+        start_offset=0,end_offset=len(quote))
+    assert set(page)==set(PAGE_KEYS.split()) and set(region)==set(REGION_KEYS.split())
+    evidence=EvidenceAdd(document_id=UUID(SOURCE),source_revision=1,source_sha256='a'*64,
+        page_id=UUID(PAGE),region_id=UUID(REGION),text_start=0,quote=quote,
+        context='Synthetic source line observed on the native page.',
+        position_ids=['phase-one'],relation='supports',speaker='Archive author',
+        attribution='direct_statement').model_dump(mode='json')
+    evidence.update(text_end=len(quote),verification='accepted_text_match',
+        visual_confirmation=None,physical_page_index=1,
+        page_provenance=page,region_provenance=region)
+    if shape=='missing_page':del page['image_sha256']
+    elif shape=='extra_page':page['unexpected']='not permitted'
+    elif shape=='missing_region':del region['native_block_sha256']
+    elif shape=='extra_region':region['unexpected']='not permitted'
+    record=header()
+    record.update(section='evidence',items=[dict(evidence_id=OBJECT,version=1,
+        actor_id=auth.p.other.subject,event_seq=2,payload=evidence,
+        logical_time='2026-10-24T00:00:00Z')],has_more=False,next_after_seq=None)
+    q=request(section='evidence')
+    if shape=='valid':
+        assert validate_case_record(q,record) is record
+    else:
+        with pytest.raises(ValueError,match='exact native evidence provenance required'):
+            validate_case_record(q,record)
+    gate,authority,b,_=await setup(env,auth)
+    permit=await gate.dispatch(authority,q,b)
+    gated=await gate.finish(permit,result(record))
+    if shape=='valid':
+        assert gated.result.status=='ok' and gated.result.record==record
+        assert gate.issuance_current(gated.ticket)
+    else:
+        assert gated.result.status=='unavailable'
+        assert gated.result.reason=='internal_error' and gated.result.record is None
