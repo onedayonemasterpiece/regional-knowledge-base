@@ -506,7 +506,7 @@ def test_native_apply_diagnostic_keeps_sqlstate_and_excludes_private_message(cap
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase',['applied','rejected_precondition','unknown','fresh','identity_mismatch'])
 async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblocks_next_accepted(
-        accepted,phase):
+        accepted,phase,caplog):
     """Real auth/queue/spool/journal: old attempted job may complete without false Saved.
 
     No provider, PG or native effect is invoked. Subsequent remote publication
