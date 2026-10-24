@@ -122,6 +122,7 @@ class SharedReadAdmission:
         self._work=None
         self._last_release=None
         self._document_result=None
+        self._document_resource=None
         self._sent=False
         self._slot_version=object()
         self._probe=None
@@ -311,7 +312,7 @@ class SharedReadAdmission:
                                            prior.run_id,prior.runtime_incarnation)
             if retired:
                 self._work=None;self._sent=False;self._state='unknown'
-                self._last_release=None;self._document_result=None
+                self._last_release=None;self._document_result=None;self._document_resource=None
                 self._changed_slot()
         if observe:self._observe_attachment(run,generation)
         return run,owner,docs,resumed
@@ -405,7 +406,7 @@ class SharedReadAdmission:
             if (run['runtime_incarnation']!=runtime_incarnation
                     or (owner['run_id'],owner['incarnation'])!=(run_id,runtime_incarnation)):
                 raise StaleAttachment('stale or unknown resource release')
-            if self._last_release==descriptor:
+            if self._last_release==descriptor or self._document_resource==descriptor:
                 return False # exact replay never touches a newer reservation.
             if self._work is None and self._state=='unknown':
                 self._last_release=descriptor
@@ -423,6 +424,7 @@ class SharedReadAdmission:
             return True
 
     def _remember_document_result(self, descriptor, resumed):
+        if descriptor.resource_kind=='document':self._document_resource=descriptor
         if descriptor.resource_kind=='document' and resumed is not None and resumed['id']==descriptor.resource_id:
             self._document_result=(resumed['id'],resumed['claim'])
 
@@ -438,7 +440,7 @@ class SharedReadAdmission:
     def require_durable_resource(self,run_id,incarnation,generation,job_id,compute_claim,dispatch_generation):
         self._active()
         descriptor=self._descriptor(run_id,incarnation,generation,'document',job_id,compute_claim,dispatch_generation)
-        if descriptor!=self._last_release and not (self._work is not None and self._sent and self._work.resource==descriptor):
+        if descriptor not in (self._last_release,self._document_resource) and not (self._work is not None and self._sent and self._work.resource==descriptor):
             raise StaleAttachment('source receipt has no actual admitted resource binding')
 
     async def next_channel_work(self, run_id, token, connection_generation):
@@ -635,7 +637,7 @@ class SharedReadAdmission:
                 for key in tuple(self._reads):self._cancel(key)
                 self._work=None;self._sent=False;self._state='unknown';self._attachment=None
                 self._last_release=None
-                self._document_result=None
+                self._document_result=None;self._document_resource=None
                 self._changed_slot()
                 self._event.set()
             return result
