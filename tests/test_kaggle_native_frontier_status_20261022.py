@@ -119,7 +119,7 @@ async def test_finalized_pending_never_emits_forged_or_unusable_research_step(in
 
 
 @pytest.mark.asyncio
-async def test_verified_original_missing_blocks_frontier_without_reupload(intake, monkeypatch):
+async def test_missing_original_does_not_block_accepted_status_but_prevents_page_read(intake, monkeypatch):
     s = intake
     first, peer = await accepted_fixture(s,monkeypatch,research=dict(
         state="pending",continuation=dict(tool="book_pages",arguments=dict(ingestion_id="SELF"))))
@@ -127,9 +127,12 @@ async def test_verified_original_missing_blocks_frontier_without_reupload(intake
     s.importer._save(row,research_json=canonical(dict(state="pending",continuation=dict(
         tool="book_pages",arguments=dict(ingestion_id=first.ingestion_id)))).decode())
     s.originals.receipts.pop(first.ingestion_id)
-    with pytest.raises(ToolError,match="native_research_archived_original_unavailable"):
-        await s.importer.book_ingest(command="status",principal=s.principal,
-            document_id=first.document_id)
+    status=await s.importer.book_ingest(command="status",principal=s.principal,
+        document_id=first.document_id)
+    assert status.state=="finalized" and status.next_action=="continue_pages"
+    assert status.next_cursor is None and peer.calls==1
+    with pytest.raises(ToolError,match="verified_original_pending"):
+        await s.importer.book_pages(principal=s.principal,ingestion_id=first.ingestion_id)
     assert len(s.originals.calls) == 1
 
 
