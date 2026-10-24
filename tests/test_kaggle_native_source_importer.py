@@ -468,7 +468,7 @@ async def test_unknown_status_retains_current_owner_output_fence(native_intake):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('domain',['case','story_access','source_import','geo_manifest'])
+@pytest.mark.parametrize('domain',['case','story_access','source_import','geo_manifest','native_stage'])
 @pytest.mark.parametrize('phase',['applied','rejected_precondition','apply_unknown','outcome_unknown','unaccepted'])
 async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stage(native_intake,domain,phase):
     """Real exact receipt/seal/owner/history gate, never a synthetic success flag."""
@@ -498,6 +498,11 @@ async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stag
         handler=source_import_handler(revisions=VERSIONS,check_sha256='c'*64,apply_sha256='d'*64)
         command=resolved(sequence=1,operation_key='foreign-import-before-book-stage',
             request_id='foreign-import-request',person_id=actor,source_id=foreign_source)
+    elif domain=='native_stage':
+        from test_native_intake_history import commands
+        command=commands(actor)[0]
+        handler=s.spool.registry.resolve(command)
+        assert json.loads(command.payload)['ingestion_id']!=book.ingestion_id
     else:
         from regional_knowledge.geo_manifest_commands import GEO_REVISIONS,GEO_MANIFEST_INSTALL,geo_manifest_handler
         from regional_knowledge.recovery_journal import ExactCommand
@@ -512,7 +517,8 @@ async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stag
                 installer_person_id=actor),
             payload=canonical(dict(codec='rkb.geo-manifest-command.v1',action='activate')))
 
-    s.spool.registry=HandlerRegistry([*s.spool.registry.handlers.values(),handler])
+    if domain!='native_stage':
+        s.spool.registry=HandlerRegistry([*s.spool.registry.handlers.values(),handler])
     frozen,data,handler=s.spool._validate(command,'synthetic-db')
     assert s.spool._resource_key(command,handler.dependency)!=book.document_id
     await s.spool._write(s.spool._stage,frozen,data,handler,'synthetic-db')
