@@ -70,20 +70,6 @@ async def accept(e,cmd=None,predecessor=None):
     return await e.spool.seal(e.p.admin,cmd.operation_key,predecessor=predecessor,writer_generation='writer-1')
 
 
-@pytest.mark.asyncio
-async def test_legacy_derived_counters_migrate_without_losing_sequence(env):
-    e=env;await stage(e);e.spool.close()
-    with e.q.connect() as db:
-        for name in ('operation_count','pending_count','unknown_count'):
-            db.execute(f'ALTER TABLE rkb_control_spool_meta ADD COLUMN {name} INTEGER DEFAULT 99')
-        db.execute('CREATE TABLE rkb_control_source_head_meta(id INTEGER PRIMARY KEY)')
-    e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry)
-    with e.spool._db() as db:
-        assert not {'operation_count','pending_count','unknown_count'} & {r[1] for r in db.execute('PRAGMA table_info(rkb_control_spool_meta)')}
-        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_control_source_head_meta'").fetchone() is None
-    assert (await e.spool.scope_state())['pending_count']==1
-
-
 def test_static_dependency_frozen_and_legacy_fingerprint_unchanged():
     legacy=handler(None)
     expected={'key':legacy.key,'check':(legacy.check.name,legacy.check.definition_sha256),
@@ -231,7 +217,15 @@ async def test_remote_accepted_lost_ack_recovery_and_restart(env):
         await e.spool.seal(e.p.admin,e.cmd.operation_key,predecessor=None,writer_generation='writer-1')
     original=(await e.spool.get(e.cmd.operation_key)).command_bytes
     e.spool.close()
+    with e.q.connect() as db:
+        for name in ('operation_count','pending_count','unknown_count'):
+            db.execute(f'ALTER TABLE rkb_control_spool_meta ADD COLUMN {name} INTEGER DEFAULT 99')
+        db.execute('CREATE TABLE rkb_control_source_head_meta(id INTEGER PRIMARY KEY)')
     e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry)
+    with e.spool._db() as db:
+        assert not {'operation_count','pending_count','unknown_count'} & {r[1] for r in db.execute('PRAGMA table_info(rkb_control_spool_meta)')}
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_control_source_head_meta'").fetchone() is None
+    assert (await e.spool.scope_state())['pending_count']==1
     e.store.fail_head_read_after_cas=False;e.store.read_failures.clear()
     accepted=await e.spool.seal(e.p.admin,e.cmd.operation_key,writer_generation='writer-1')
     assert accepted.manifest.last_sequence==1 and (await e.spool.get(e.cmd.operation_key)).command_bytes==original
