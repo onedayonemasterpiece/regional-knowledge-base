@@ -354,24 +354,14 @@ class BgeWssTransport:
                 handler = self._native_handler(job)
                 if handler is None:
                     raise ValueError('fixed native executor unavailable')
-                from regional_knowledge.kaggle_source_commands import SourcePrepareNotApplied
-                try:
-                    if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
-                        with self.snapshot_channel.assignment(job):
-                            receipt = await handler(job)
-                    else:
+                if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
+                    with self.snapshot_channel.assignment(job):
                         receipt = await handler(job)
-                except SourcePrepareNotApplied:
-                    if job['kind'] != 'source_command':
-                        raise
-                    pending = dict(job_id=job['id'], claim=job['claim'],
-                        command_sha256=job['command_sha256'],reason='prepare_timeout_57014',
-                        **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
-                            'compute_claim', 'dispatch_generation')})
                 else:
-                    pending = dict(job_id=job['id'], claim=job['claim'], receipt=receipt,
-                        **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
-                            'compute_claim', 'dispatch_generation')})
+                    receipt = await handler(job)
+                pending = dict(job_id=job['id'], claim=job['claim'], receipt=receipt,
+                    **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
+                        'compute_claim', 'dispatch_generation')})
                 if len(json.dumps(pending, allow_nan=False).encode()) > (
                         130000 if job['kind'] == 'recovery_phase' else 15500):
                     raise ValueError('source command receipt bound')
@@ -567,9 +557,7 @@ class BgeWssTransport:
                     await put(frame)
                     ready_sent = True
                 if self.pending is not None and result_sent != (self.pending['job_id'], self.pending['claim']):
-                    result_type=('SOURCE_COMMAND_NOT_APPLIED' if 'reason' in self.pending else
-                        {'source_command':'SOURCE_COMMAND_RESULT','recovery_phase':'RECOVERY_PHASE_RESULT'}.get(
-                            self.job['kind'],'RESULT'))
+                    result_type={'source_command':'SOURCE_COMMAND_RESULT','recovery_phase':'RECOVERY_PHASE_RESULT'}.get(self.job['kind'],'RESULT')
                     await put({'type': result_type, **self.pending}, priority=1)
                     result_sent = (self.pending['job_id'], self.pending['claim'])
 
@@ -679,12 +667,8 @@ class BgeWssTransport:
                 elif kind == 'RESULT_ACK':
                     if (self.pending is None or frame.get('job_id') != self.pending['job_id']
                             or frame.get('claim') != self.pending['claim']
-                            or frame.get('status') not in ('accepted', 'duplicate', 'stale','apply_received','checkpoint_pending',
-                                'retry_scheduled','retry_exhausted')):
+                            or frame.get('status') not in ('accepted', 'duplicate', 'stale','apply_received','checkpoint_pending')):
                         raise ValueError('result acknowledgment mismatch')
-                    retry_ack=frame['status'] in ('retry_scheduled','retry_exhausted')
-                    if retry_ack != ('reason' in self.pending):
-                        raise ValueError('source retry acknowledgment mismatch')
                     if frame['status']=='apply_received':
                         if self.job['kind']!='source_command':raise ValueError('unexpected apply receipt acknowledgment')
                         continue  # Durable local receipt only; retain until remote outcome.
