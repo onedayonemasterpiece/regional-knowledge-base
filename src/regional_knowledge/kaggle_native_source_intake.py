@@ -445,7 +445,7 @@ class NativeSourceIntake:
             return '0'
         previous={**state,'batch_count':state['batch_count']-1}
         entry=await self._entry(self._stage_key(row,previous))
-        if (entry is None or entry.command_sha256!=state['last_batch_sha256']
+        if (entry is None or digest(entry.command.payload)!=state['last_batch_sha256']
                 or entry.apply_receipt is None or entry.apply_receipt.status!='applied'):
             raise _failure('native_research_accepted_frontier_missing')
         pages=json.loads(entry.command.payload)['model_payload']['pages']
