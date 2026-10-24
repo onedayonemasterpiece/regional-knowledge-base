@@ -174,10 +174,23 @@ class NativeSourceIntake:
         from .control_spool import _command
         from .source_history_verifier import INACTIVE_SOURCE_ROUTES
         with self.queue.connect(write=False) as db:
-            rows=db.execute("SELECT command_bytes,source_id,person_id,database_generation,seal_state,apply_state,outcome_state "
-                "FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
+            rows=db.execute("SELECT * FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
         if not rows:return False
         for pending in rows:
+            if pending['source_id']!=row['source_id']:
+                # The verified cursor includes this foreign terminal effect.
+                # ControlSpool._entry verifies its exact native seal/receipt,
+                # not merely mutable apply_state or an assumed Saved outcome.
+                if (pending['database_generation']==access.binding.database_generation
+                        and pending['seal_state']=='ACCEPTED'
+                        and pending['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
+                        and pending['outcome_state']=='NOT_SENT'):
+                    verified=self.spool._entry(pending)
+                    if (verified.accepted is not None and verified.apply_receipt is not None
+                            and (verified.apply_state,verified.apply_receipt.status) in (
+                                ('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition'))):
+                        continue
+                return False
             command=_command(pending['command_bytes'])
             applied=(pending['apply_state']=='APPLIED' or
                 command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
