@@ -347,7 +347,7 @@ class KaggleSourceImporter:
         """
         await self._check(access.authority, access.context, access.binding)
         if (output.state not in ('staged','finalized') or output.ingestion_id != row['ingestion_id']
-                or output.document_id != row['source_id'] or output.state=='staged' and output.next_action!='continue_pages'):
+                or output.document_id != row['source_id']):
             raise failure('native_research_status_identity_changed')
         current = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
         if current['phase'] != ('staging' if output.state=='staged' else 'finalized'):
@@ -377,11 +377,6 @@ class KaggleSourceImporter:
         if 'batch_size' in args and (type(args['batch_size']) is not int or args['batch_size'] != 1):
             raise failure('native_research_continuation_unreachable')
         if cursor is None and output.state=='staged': cursor=await self.native_intake.applied_page_cursor(access,current)
-        # Recover an exact existing owner-bound archived original instead of
-        # asking the user to upload it again. The actual next book_pages call
-        # independently checks current actor, source, render/pixel provenance.
-        if await self._receipt(access, current) is None:
-            raise failure('native_research_archived_original_unavailable')
         await self._check(access.authority, access.context, access.binding)
         return output.model_copy(update={
             'next_action': 'continue_pages', **({'next_cursor':cursor} if cursor is not None else {}),
