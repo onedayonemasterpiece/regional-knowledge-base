@@ -244,7 +244,7 @@ async def test_wrong_ack_nonce_exhausts_reconnect_without_discarding_result(monk
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('close_code',[4400,4403,4409,1012])
-async def test_native_socket_close_reconnects_with_exact_pending_result(monkeypatch,close_code):
+async def test_native_socket_close_reconnects_or_stops_revoked_run_with_pending_result(monkeypatch,capsys,close_code):
     import aiohttp
     from types import SimpleNamespace
     transport=module('bge_wss_transport')
@@ -282,13 +282,25 @@ async def test_native_socket_close_reconnects_with_exact_pending_result(monkeypa
             calls.append(text);return [1.]+[0.]*1023
         return encode
     worker=transport.BgeWssTransport(CONFIG,load,lambda:{},heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
-    await worker.run()
-    assert observed==[close_code] and wire.sessions==2
-    assert calls==['load','fixture text'] and worker.pending is None
+    if close_code==4403:
+        with pytest.raises(transport.BgeChannelStopped,match='server revoked'):
+            await worker.run()
+        assert wire.sessions==1 and worker.pending['claim']=='claim'
+    else:
+        await worker.run()
+        assert wire.sessions==2 and worker.pending is None
+    assert observed==[close_code] and calls==['load','fixture text']
     results=[f for f in wire.sent if f['type']=='RESULT']
-    assert len(results)==2
-    assert {k:v for k,v in results[0].items() if k!='connection_generation'}=={
-        k:v for k,v in results[1].items() if k!='connection_generation'}
+    assert len(results)==(1 if close_code==4403 else 2)
+    if close_code!=4403:
+        assert {k:v for k,v in results[0].items() if k!='connection_generation'}=={
+            k:v for k,v in results[1].items() if k!='connection_generation'}
+    output=capsys.readouterr().out
+    assert CONFIG['token'] not in output and CONFIG['channel'] not in output
+    events=[json.loads(line)for line in output.splitlines()]
+    assert any(e.get('stage')=='wss_session_closed' and e['close_code']==close_code for e in events)
+    assert not any(e.get('stage')=='wss_connect_failed' for e in events)
+    assert any(e.get('stage')=='wss_session_failed' for e in events)==(close_code!=4403)
 
 
 @pytest.mark.asyncio
@@ -461,6 +473,41 @@ async def test_actual_existing_asgi_outbound_worker_queue_and_waiter(tmp_path, m
                 await asyncio.wait_for(serving, 3)
             finally:
                 listener.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('message_type',['CLOSE','CLOSED'])
+async def test_native_revoked_attach_exits_before_model_load(monkeypatch,capsys,message_type):
+    import aiohttp
+    from types import SimpleNamespace
+    transport=module('bge_wss_transport');attempts=[];sent=[];loads=[];closed=[]
+    class Session:
+        def __init__(self,**kwargs):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        @asynccontextmanager
+        async def ws_connect(self,*args,**kwargs):
+            attempts.append(1)
+            class Socket:
+                close_code=4403
+                async def send_str(self,raw):sent.append(json.loads(raw))
+                async def receive(self):
+                    return SimpleNamespace(type=getattr(aiohttp.WSMsgType,message_type),
+                        data=4403 if message_type=='CLOSE' else None)
+            yield Socket()
+    monkeypatch.setattr(aiohttp,'ClientSession',Session)
+    async def close():closed.append(True)
+    worker=transport.BgeWssTransport(CONFIG,lambda:loads.append('model'),lambda:{},
+        maximum_seconds=1,close_runtime=close)
+    with pytest.raises(transport.BgeChannelStopped,match='server revoked'):
+        await worker.run()
+    assert attempts==[1] and not loads and closed==[True]
+    assert [f['type']for f in sent]==['ATTACH']
+    output=capsys.readouterr().out
+    assert CONFIG['token'] not in output and CONFIG['channel'] not in output
+    events=[json.loads(line)for line in output.splitlines()]
+    assert any(e.get('stage')=='wss_session_closed' and e['close_code']==4403 for e in events)
+    assert not any(e.get('stage') in ('wss_session_failed','wss_connect_failed')for e in events)
 
 
 @pytest.mark.asyncio
