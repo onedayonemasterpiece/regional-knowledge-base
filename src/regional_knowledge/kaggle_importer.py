@@ -378,7 +378,7 @@ class KaggleSourceImporter:
             raise failure('native_research_continuation_unreachable')
         if 'batch_size' in args and (type(args['batch_size']) is not int or args['batch_size'] != 1):
             raise failure('native_research_continuation_unreachable')
-        if cursor is None:
+        if cursor is None and output.state=='staged':
             cursor = await self.native_intake.applied_page_cursor(access,current)
         # Recover an exact existing owner-bound archived original instead of
         # asking the user to upload it again. The actual next book_pages call
