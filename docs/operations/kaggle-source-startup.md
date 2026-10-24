@@ -329,3 +329,7 @@ binding, including after an API-only restart. Keep the original job, claim,
 payload and attempt count. Shared admission must still reconcile the native
 busy/idle resource before resend; renewing authority does not prove an effect
 failed or release compute ownership.
+
+Book intake checks the exact receipts for that book's prior packets. Accepted,
+queued work for another book keeps its journal position without blocking intake;
+an unknown outcome anywhere still blocks a new packet.
