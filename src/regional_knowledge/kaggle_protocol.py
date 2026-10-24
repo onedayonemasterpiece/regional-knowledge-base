@@ -236,6 +236,9 @@ class EvidenceMetadata(Contract):
     citation: Annotated[str, Field(max_length=8192)] | None = None
     locator: Annotated[str, Field(max_length=2048)] | None = None
     source_provenance: dict | None = None
+    source_kind: Literal["book", "journal_issue", "article"] | None = None
+    source_language: Annotated[str, Field(max_length=80)] | None = None
+    passage_language: Literal["ru", "de", "simple"] | None = None
 
     @model_validator(mode='after')
     def bounded_provenance(self):
