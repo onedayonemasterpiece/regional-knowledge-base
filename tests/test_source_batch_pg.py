@@ -88,6 +88,51 @@ def native(env):
     return prepare,calls
 
 
+
+
+@PG
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('kind','cover_kind'),[
+    ('article','title_page'),('journal_issue','issue_cover')])
+async def test_native_root_article_or_journal_text_accepted_and_catalogued_in_pg17(
+        image_pg_sql18,kind,cover_kind):
+    """Real disposable PG17, current accepted journal and source_catalog SQL."""
+    from regional_knowledge.contracts import StartMetadataInput
+    env=image_pg_sql18
+    doc=exact_batch(count=1)
+    metadata=StartMetadataInput(title='Synthetic scanned source',authors=['Synthetic author'],
+        publication_year=1901,language='de',catalog=dict(kind=kind,publisher='Verified imprint',
+            cover_page=0,cover_kind=cover_kind,volume='IV',issue='2'))
+    doc['source']['metadata']=metadata.model_dump(mode='json')
+    original=canonical(doc)
+    staged=stage_command(doc,1)
+    receipt=await accepted(env,staged)
+    assert receipt.status=='applied'
+    assert (await accepted(env,staged)).duplicate
+    c=packet(env,doc)
+    prepare,_=native(env)
+    await prepare(c)
+    first=await accepted(env,c)
+    assert first.status=='applied'
+    assert (await accepted(env,c)).duplicate
+    assert canonical(doc)==original
+    async with env['connection'].transaction():
+        row=await (await env['connection'].execute(
+            'SELECT metadata FROM rkb_v4.source_catalog WHERE source_id=%s',(SOURCE,))).fetchone()
+        assert row[0]['catalog']['kind']==kind
+        assert row[0]['catalog']['cover_page']==0
+        assert row[0]['catalog']['cover_kind']==cover_kind
+        visible=await (await env['connection'].execute(
+            'SELECT metadata FROM rkb_v4.find_source_catalog_v1(%s,%s)',
+            ('Synthetic scanned source',8))).fetchall()
+        assert len(visible)==1 and visible[0][0]['catalog']['kind']==kind
+        assert visible[0][0]['catalog']['publisher']=='Verified imprint'
+        stored=await (await env['connection'].execute(
+            'SELECT payload_bytes FROM rkb_v4.source_stage_batches WHERE source_id=%s AND batch_index=0',
+            (SOURCE,))).fetchone()
+        assert bytes(stored[0])==original
+
+
 @PG
 @pytest.mark.asyncio
 async def test_one_of_174_pages_is_searchable_without_seal_and_retry_reuses_vector(image_pg_sql18):

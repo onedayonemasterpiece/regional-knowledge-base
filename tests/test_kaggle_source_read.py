@@ -6,6 +6,7 @@ import pytest
 
 from regional_knowledge.kaggle_protocol import decode_envelope,encode_envelope
 from regional_knowledge.kaggle_source_read import SourceReadRequest,SourceReadResult,execute_source_read
+from regional_knowledge.contracts import CatalogMetadata
 from test_kaggle_fact_read import Native,SOURCE,FRONTIER
 
 
@@ -28,6 +29,33 @@ async def test_fixed_catalogue_native_path_no_encoding_no_original_receipt_and_e
     assert decode_envelope(encode_envelope(result))==result
     assert any('find_source_catalog_v1' in sql for sql,_ in native.calls)
     assert not any('embedding' in sql or 'original_receipt' in sql for sql,_ in native.calls)
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('kind','cover_kind'),[
+    ('article','title_page'),('journal_issue','issue_cover')])
+async def test_native_catalogue_returns_typed_title_card_for_root_article_and_journal(kind,cover_kind):
+    card=CatalogMetadata(kind=kind,publisher='Verified imprint',volume='IV',
+        issue='2',cover_page=0,cover_kind=cover_kind).model_dump(mode='json')
+    old=row()
+    native=Native([(old[0],old[1],old[2],dict(old[3],catalog=card))])
+    result=await execute_source_read(request(),acquire=native.acquire)
+    assert result.status=='ok'
+    assert result.records[0]['catalog']['kind']==kind
+    assert result.records[0]['catalog']['cover_page']==0
+    assert result.records[0]['catalog']['cover_kind']==cover_kind
+    assert result.records[0]['catalog']['publisher']=='Verified imprint'
+    assert decode_envelope(encode_envelope(result))==result
+    bad=result.model_dump(mode='json')
+    bad['records'][0]['catalog']['parent_id']=str(old[0])
+    with pytest.raises(ValueError):
+        SourceReadResult.model_validate(bad)
+    bad=result.model_dump(mode='json')
+    bad['records'][0]['catalog']['untrusted_extra']='not source metadata'
+    with pytest.raises(ValueError):
+        SourceReadResult.model_validate(bad)
 
 
 @pytest.mark.parametrize('changes',[dict(query=' '),dict(query='x'*1001),dict(limit=9),dict(limit=True)])

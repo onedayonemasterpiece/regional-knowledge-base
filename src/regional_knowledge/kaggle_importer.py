@@ -261,9 +261,19 @@ class KaggleSourceImporter:
             raise failure('target_pdf_or_djvu_only')
         if not metadata.get('title') or metadata.get('duplicate_policy', 'reuse') != 'reuse' or metadata.get('catalog_update'):
             raise failure('new_small_source_metadata_required', status='invalid_query')
-        catalog = metadata.get('catalog') or {}
-        if catalog.get('parent_id') or catalog.get('region_ids') or catalog.get('kind', 'book') != 'book':
-            raise failure('target_source_components_unavailable')
+        # All three typed root-source kinds reuse the SAME verified original,
+        # owner-only source ID, stage/accepted journal and reader. An article
+        # referring to regions of a parent issue is a component, NOT a new
+        # independently uploaded source; never fabricate its original here.
+        from .contracts import CatalogMetadata
+        raw_catalog = metadata.get('catalog')
+        if raw_catalog is not None:
+            try: catalog = CatalogMetadata.model_validate(raw_catalog)
+            except ValueError:
+                raise failure('target_source_components_unavailable',status='invalid_query') from None
+            if (catalog.kind not in ('book','article','journal_issue')
+                    or catalog.parent_id is not None or catalog.region_ids):
+                raise failure('target_source_components_unavailable',status='invalid_query')
         actor = access.authority.person_id
         metadata_bytes = canonical(metadata)
         rights = (canonical(source_import.public_rights.model_dump(mode='json')).decode()
