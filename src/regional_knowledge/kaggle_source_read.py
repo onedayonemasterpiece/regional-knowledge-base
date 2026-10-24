@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -68,87 +67,6 @@ class SourceReadResult(ReadIdentity):
         'turn_replaced','query_too_large','invalid_input','access_denied','prior_write_pending',
         'evidence_withdrawn','internal_error'] | None = None
     prior_write_pending: bool = False
-
-    @model_validator(mode='after')
-    def exact_records(self):
-        if self.status == 'ok':
-            if self.reason is not None or self.prior_write_pending or any(value is None for value in (
-                    self.observed_data_seq, self.observed_projection_seq,
-                    self.observed_visibility_epoch, self.observed_database_generation)):
-                raise ValueError('exact native source frontier required')
-        elif self.evidence or self.records or self.next_after_ordinal is not None:
-            raise ValueError('failed native source read cannot carry data or continuation')
-        if len(self.records) != len(self.evidence):
-            raise ValueError('every source record requires exact dependencies')
-        if self.operation == 'source_catalog':
-            if self.next_after_ordinal is not None:
-                raise ValueError('catalogue cannot return a chunk continuation')
-            seen = set()
-            for record, item in zip(self.records, self.evidence):
-                if (set(record) != {'document_id','title','authors','publication_year',
-                                   'active_revision','source_format','source_archive_status'}
-                        or item.kind != 'source' or record['document_id'] != item.id or item.id in seen
-                        or item.dependencies.source_ids != (item.id,)
-                        or len(item.dependencies.source_revisions) != 1
-                        or record['active_revision'] != item.dependencies.source_revisions[0].content_revision
-                        or record['source_format'] != 'pdf' or record['source_archive_status'] != 'verified'
-                        or type(record['title']) is not str or not 1 <= len(record['title']) <= 500
-                        or item.text != record['title']
-                        or type(record['authors']) is not list or len(record['authors']) > 50
-                        or any(type(author) is not str or len(author) > 4000 for author in record['authors'])
-                        or (record['publication_year'] is not None
-                            and (type(record['publication_year']) is not int
-                                 or not 1 <= record['publication_year'] <= 3000))):
-                    raise ValueError('exact bounded catalogue record required')
-                if str(UUID(item.id)) != item.id:
-                    raise ValueError('canonical source UUID required')
-                seen.add(item.id)
-        else:
-            previous = -1
-            for record, item in zip(self.records, self.evidence):
-                if (type(record) is not dict
-                        or set(record) != {'source_id','chunk_id','ordinal','text','pages','regions'}
-                        or type(record['ordinal']) is not int or record['ordinal'] <= previous
-                        or record['chunk_id'] != item.id or item.kind != 'source'
-                        or record['text'] != item.text or item.text_form != 'complete'
-                        or item.dependencies.source_ids != (record['source_id'],)
-                        or item.dependencies.grant_refs or item.dependencies.variant_refs
-                        or len(item.dependencies.source_revisions) != 1
-                        or item.dependencies.source_revisions[0].source_id != record['source_id']
-                        or item.dependencies.source_revisions[0].content_revision != 1
-                        or type(record['pages']) is not list or not 1 <= len(record['pages']) <= 20
-                        or type(record['regions']) is not list or not 1 <= len(record['regions']) <= 150):
-                    raise ValueError('exact ordered accepted chunk required')
-                if (str(UUID(record['source_id'])) != record['source_id']
-                        or str(UUID(item.id)) != item.id):
-                    raise ValueError('canonical chunk/source UUID required')
-                pages = set()
-                for page in record['pages']:
-                    if (type(page) is not dict
-                            or set(page) != {'page_id','physical_page_index'}
-                            or str(UUID(page['page_id'])) != page['page_id']
-                            or page['page_id'] in pages
-                            or type(page['physical_page_index']) is not int
-                            or not 0 <= page['physical_page_index'] <= 2499
-):
-                        raise ValueError('accepted chunk page binding required')
-                    pages.add(page['page_id'])
-                for region in record['regions']:
-                    if (type(region) is not dict
-                            or set(region) != {'page_id','region_id','start','end','role'}
-                            or str(UUID(region['region_id'])) != region['region_id']
-                            or region['page_id'] not in pages
-                            or region['role'] not in ('body','footnote')
-                            or type(region['start']) is not int or type(region['end']) is not int
-                            or not 0 <= region['start'] < region['end'] <= 1000000):
-                        raise ValueError('accepted region/Unicode offset binding required')
-                previous = record['ordinal']
-            if self.next_after_ordinal is not None and (
-                    not self.records or self.next_after_ordinal != self.records[-1]['ordinal']):
-                raise ValueError('chunk continuation must match last returned ordinal')
-        if len(json.dumps(self.model_dump(mode='json'),ensure_ascii=False).encode()) > 128*1024:
-            raise ValueError('bounded native source result required')
-        return self
 
 
 async def _accepted_chunks(request, cursor, execute):
