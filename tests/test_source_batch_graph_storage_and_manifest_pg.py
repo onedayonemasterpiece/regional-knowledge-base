@@ -128,7 +128,7 @@ async def test_graph_same_input_before_after_with_manifest_and_storage_forms(ima
         assert hashlib.sha256(new_sql.encode()).hexdigest()=='a5dfec6fab2346c392a7fbc3736bf91d7f9b144c17891effe237f9a517909846'
         conn = image_pg_sql18['connection']
         rows = []
-        async with conn.transaction():
+        async with conn.transaction(force_rollback=True):
             # Diagnostic bound belongs only to this disposable CI transaction.
             await conn.execute("SET LOCAL statement_timeout='25000ms'")
             await conn.execute('CREATE TEMP TABLE graph_storage_profile '
