@@ -158,8 +158,8 @@ def test_source_labels_from_catalog_use_printed_page_or_distinct_scan_without_in
     assert _source_label(replace(hit, printed_page_number=None))[0].endswith("скан №4")
     # A locator like 'pages 4' is not proof of a printed-page number.
     unknown = SearchEvidence(PASSAGE, SOURCE, 1, "pages 4", "text", "")
-    assert _source_label(unknown)[0] == "Источник без установленной библиографии"
-    assert "с. 4" not in _source_label(unknown)[0]
+    assert _source_label(unknown)[0] is None  # no catalogue: no asserted title
+    assert _source_label(unknown)[1:] == (None, None, None)
 
 
 @pytest_asyncio.fixture
