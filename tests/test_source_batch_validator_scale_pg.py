@@ -19,6 +19,7 @@ from test_source_batch_compiler import passage_link_packet
 from test_native_source_materializer import SOURCE, PERSON
 from test_source_activation_pg import image_pg_sql18, TIME
 from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database  # exact disposable PG17 fixture dependency
 
 
 def ident(label, ordinal):
