@@ -103,10 +103,15 @@ class ChunkNative(Native):
                              for pid in row[3]['page_ids'])]
             return entries[:take]
         if 'FROM rkb_v4.source_stage_pages' in self.statement:
-            return [(UUID(PAGE_A),1,'12'),(UUID(PAGE_B),2,'13')]
+            requested=set(self.calls[-1][1][1])
+            return [row for row in [(UUID(PAGE_A),1,'12'),(UUID(PAGE_B),2,'13')]
+                    if str(row[0]) in requested]
         if 'FROM rkb_v4.source_regions' in self.statement:
-            return [(UUID(REGION_A),UUID(PAGE_A),'Привет читателю','a'*64),
+            requested=set(self.calls[-1][1][1])
+            return [row for row in [
+                (UUID(REGION_A),UUID(PAGE_A),'Привет читателю','a'*64),
                 (UUID(REGION_B),UUID(PAGE_B),'Книга продолжается','b'*64)]
+                if str(row[0]) in requested]
         return await super().fetchall()
 
 
