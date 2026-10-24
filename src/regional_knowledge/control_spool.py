@@ -849,7 +849,7 @@ class ControlSpool:
             if row['outcome_state']!='DURABLE':
                 db.execute('UPDATE rkb_control_spool_meta SET pending_count=pending_count-1,unknown_count=unknown_count-? WHERE id=1',(int(row['outcome_state']=='SENT_UNKNOWN'),))
 
-    def _settle_recovered_jobs(self,key):
+    def _settle_recovered_jobs(self,key,covered=None):
         """Only an exact locally recorded apply + remote durable outcome settles jobs.
 
         Called after physical restore verification, while intake is excluded.
@@ -857,16 +857,34 @@ class ControlSpool:
         """
         with self._db(write=True) as db:
             row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
-            if (row is None or row['seal_state']!='ACCEPTED' or row['apply_bytes'] is None
-                    or row['outcome_state']!='DURABLE' or row['remote_receipt_bytes'] is None):
-                raise SpoolConflict('verified recovered durable outcome required')
-            result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=True),sort_keys=True)
+            if covered is None:
+                if (row is None or row['seal_state']!='ACCEPTED' or row['apply_bytes'] is None
+                        or row['outcome_state']!='DURABLE' or row['remote_receipt_bytes'] is None):
+                    raise SpoolConflict('verified recovered durable outcome required')
+            else:
+                if (type(covered) is not SourceCursor or self._source_anchor is not covered
+                        or not covered.current() or row is None
+                        or row['database_generation']!=covered.database_generation
+                        or not 0<row['sequence']<=covered.applied_sequence
+                        or row['seal_state']!='ACCEPTED'
+                        or row['apply_state'] not in ('APPLIED','REJECTED_PRECONDITION')
+                        or row['outcome_state']!='NOT_SENT' or row['apply_bytes'] is None
+                        or row['remote_receipt_bytes'] is not None):
+                    raise SpoolConflict('verified recovered native receipt and current cursor required')
+                entry=self._entry(row)
+                if entry.accepted is None or entry.apply_receipt is None or entry.remote_outcome is not None:
+                    raise SpoolConflict('recovered exact native apply receipt required')
+            result=json.dumps(dict(command_sha256=row['command_sha256'],
+                remote_outcome_durable=covered is None),sort_keys=True)
             settled=[]
             for job in db.execute("select * from jobs where kind='source_command' and json_extract(identity,'$.operation_key')=?",(key,)).fetchall():
+                if covered is not None and (job['state']!='pending' or job['attempt']<1 or job['result'] is not None):
+                    continue  # A fresh/in-flight/unknown claim is never settled by a restored receipt.
                 identity=json.loads(job['identity'])
                 if (job['actor']!=row['person_id'] or identity.get('command_sha256')!=row['command_sha256']
                         or identity.get('database_generation')!=row['database_generation']
-                        or identity.get('sequence')!=row['sequence']):
+                        or identity.get('sequence')!=row['sequence']
+                        or job['idempotency']!='source-command:'+key):
                     raise SpoolConflict('recovered job differs from original accepted command')
                 if job['state']=='done' and job['result']!=result:
                     pending_result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=False),sort_keys=True)
