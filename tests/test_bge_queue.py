@@ -374,3 +374,19 @@ def test_request_activity_renews_idle_but_never_worker_heartbeat(tmp_path):
     now[0]+=121
     assert queue.record_request_activity()
     with pytest.raises(PermissionError):queue.heartbeat(run,token)
+
+
+def test_execution_clock_starts_at_single_launch_claim_after_preparation(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    run=queue.request_startup()['run_id']
+    now[0]+=500
+    assert queue.launch_claim(run,provider_ref='fixture/stable')
+    with queue.connect(write=False) as db:
+        r=db.execute('select * from runs where id=?',(run,)).fetchone()
+        assert r['started']==1500.
+        assert not queue._run_expired(r,now[0]+899)
+        assert queue._run_expired(r,now[0]+900.001)
+    now[0]+=100
+    assert queue.launch_claim(run,provider_ref='fixture/stable') is None
+    with queue.connect(write=False) as db:
+        assert db.execute('select started from runs where id=?',(run,)).fetchone()[0]==1500.
