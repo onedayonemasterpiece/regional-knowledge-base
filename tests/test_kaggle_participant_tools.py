@@ -76,12 +76,30 @@ async def test_owner_mcp_uses_existing_participants_get_list_audit_change_and_id
     profile = registry.get(s.t.auth.p.admin,person)
     assert set(profile['profile']['categories'])=={'expert','local_historian'}
     assert 'scan_proof_read' not in {g['capability'] for g in profile['grants']}
-    # An unrelated capability cannot be assigned via this narrowly scoped MCP.
+    # Public text search is a separate explicit owner-granted capability, not
+    # a side effect of category=expert or a public page/scan permission.
+    await call(action='change',person_id=person,expected_revision=profile['revision'],
+        operation_key='fixture-public-search-revoke-20261024',
+        command=dict(capability='public_search',granted=False,reason='synthetic owner revoke'))
+    revoked=registry.get(s.t.auth.p.admin,person)
+    assert 'public_search' not in {g['capability'] for g in revoked['grants']}
+    key='fixture-public-search-grant-20261024'
+    grant=dict(capability='public_search',granted=True,reason='synthetic owner grant')
+    await call(action='change',person_id=person,expected_revision=revoked['revision'],
+        operation_key=key,command=grant)
+    granted=registry.get(s.t.auth.p.admin,person)
+    assert granted['revision']==revoked['revision']+1
+    assert 'public_search' in {g['capability'] for g in granted['grants']}
+    assert 'applied' in str(await call(action='operation_status',operation_key=key))
+    await call(action='change',person_id=person,expected_revision=revoked['revision'],
+        operation_key=key,command=grant)
+    assert registry.get(s.t.auth.p.admin,person)==granted
+    # Other capabilities stay outside this narrowly scoped owner MCP.
     with pytest.raises(ToolError,match='participants_change_out_of_scope'):
-        await call(action='change',person_id=person,expected_revision=profile['revision'],
+        await call(action='change',person_id=person,expected_revision=granted['revision'],
             operation_key='fixture-unrelated-grant-20261023',
             command=dict(capability='case_read',granted=True,reason='must be rejected'))
-    assert registry.get(s.t.auth.p.admin,person)['revision']==profile['revision']
+    assert registry.get(s.t.auth.p.admin,person)==granted
 
 
 
@@ -156,7 +174,7 @@ async def test_owner_mcp_slack_account_begin_confirm_reuses_original_cas_and_aud
          'reason':'wrong provider'},
         {'link_id':link['id'],'expected_link_revision':2,
          'method':'provider_observation','reason':'wrong proof method'},
-        {'capability':'public_search','granted':True,'reason':'not this source scope'},
+        {'capability':'case_read','granted':True,'reason':'not this source scope'},
     ):
         with pytest.raises(ToolError,match='participants_change_out_of_scope'):
             await call(action='change',person_id=person,
@@ -182,6 +200,9 @@ async def test_nonowner_cannot_read_list_audit_or_change_and_cannot_forge_owner(
         {'action':'change','person_id':person,'expected_revision':before['revision'],
          'operation_key':'fixture-forged-revoke-20261023',
          'command':{'capability':'scan_proof_read','granted':False,'reason':'forged'}},
+        {'action':'change','person_id':person,'expected_revision':before['revision'],
+         'operation_key':'fixture-forged-public-search-20261024',
+         'command':{'capability':'public_search','granted':True,'reason':'forged'}},
         {'action':'change','person_id':person,'expected_revision':before['revision'],
          'operation_key':'fixture-forged-slack-begin-20261024',
          'command':{'provider':'slack','tenant':'T111','provider_subject':'U777',
