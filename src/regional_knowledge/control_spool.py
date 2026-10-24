@@ -884,7 +884,7 @@ class ControlSpool:
                 if (job['actor']!=row['person_id'] or identity.get('command_sha256')!=row['command_sha256']
                         or identity.get('database_generation')!=row['database_generation']
                         or identity.get('sequence')!=row['sequence']
-                        or job['idempotency']!='source-command:'+key):
+                        or covered is not None and job['idempotency']!='source-command:'+key):
                     raise SpoolConflict('recovered job differs from original accepted command')
                 if job['state']=='done' and job['result']!=result:
                     pending_result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=False),sort_keys=True)
