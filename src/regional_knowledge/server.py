@@ -237,6 +237,14 @@ def _book_mcp_error(exc: Exception) -> ToolError:
     elif isinstance(exc, (ConnectionError, OSError)):
         status, reason, error_class = "unknown", "transport_unavailable", "transport"
     # For every other exception the operation's effect is UNKNOWN, not rejected.
+    if error_class == "internal":
+        frames = []
+        origin = exc.__traceback__
+        while origin is not None:
+            frames.append((origin.tb_frame.f_code.co_name, origin.tb_lineno))
+            origin = origin.tb_next
+        logging.getLogger(__name__).error("book_tool_failure error_type=%s frames=%s",
+            type(exc).__name__, frames)
     response = {"status": status, "reason": reason, "error_class": error_class}
     if reason == "stage_file_schema" and isinstance(exc, ToolError):
         hints = _book_stage_schema_hints(exc)
