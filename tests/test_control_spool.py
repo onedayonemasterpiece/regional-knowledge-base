@@ -151,6 +151,43 @@ async def test_budget_reserves_outcome_before_remote_acceptance_and_never_ttl_de
 
 
 @pytest.mark.asyncio
+async def test_known_outcome_releases_unused_reserve_once_and_repairs_old_counter(env):
+    e=env
+    await accept(e)
+    with e.spool._db() as db:
+        reserved=db.execute('SELECT used_bytes FROM rkb_control_spool_meta').fetchone()[0]
+    e.spool.max_bytes=reserved+100
+    next_command=withdraw(e.p.owner.subject,2)
+    with pytest.raises(SpoolFull):await stage(e,next_command)
+    applied=receipt(e.cmd)
+    await e.spool.record_apply(e.cmd.operation_key,applied)
+    with e.spool._db() as db:
+        actual=db.execute('SELECT used_bytes FROM rkb_control_spool_meta').fetchone()[0]
+    assert actual==reserved-e.spool.max_outcome_bytes+len(applied.outcome)
+    await e.spool.record_apply(e.cmd.operation_key,applied)
+    with e.spool._db() as db:
+        assert db.execute('SELECT used_bytes FROM rkb_control_spool_meta').fetchone()[0]==actual
+        # Simulate a pre-fix process retaining its old maximum reservation.
+    with e.spool._db(write=True) as db:
+        db.execute('UPDATE rkb_control_spool_meta SET used_bytes=?',(reserved,))
+    e.spool.close()
+    e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry,max_bytes=reserved+100)
+    with e.spool._db() as db:
+        assert db.execute('SELECT used_bytes FROM rkb_control_spool_meta').fetchone()[0]==actual
+    # Choose a capacity that fits actual retained bytes and a new full reserve.
+    e.spool.max_bytes=actual+reserved+100
+    await stage(e,next_command)
+    before=await e.spool.get(e.cmd.operation_key)
+    assert before.apply_receipt.outcome==applied.outcome and before.command.encode()==e.cmd.encode()
+    with e.spool._db() as db:
+        total=db.execute('SELECT used_bytes FROM rkb_control_spool_meta').fetchone()[0]
+    e.spool.close()
+    e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry)
+    with e.spool._db() as db:
+        assert db.execute('SELECT used_bytes FROM rkb_control_spool_meta').fetchone()[0]==total
+
+
+@pytest.mark.asyncio
 async def test_seal_unknown_preserves_exact_predecessor_provisional_barrier_and_retry(env):
     e=env
     await stage(e)

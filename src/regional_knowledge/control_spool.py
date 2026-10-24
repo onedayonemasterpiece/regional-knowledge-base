@@ -326,6 +326,14 @@ class ControlSpool:
                     id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,
                     pending_count INTEGER NOT NULL,unknown_count INTEGER NOT NULL)''')
                 db.execute('INSERT OR IGNORE INTO rkb_control_source_head_meta VALUES(1,0,0,0)')
+                # Applied outcomes have their exact size; their unused maximum
+                # reservation is no longer future work. Repair older counters
+                # without changing any immutable intent or accepted receipt.
+                db.execute('''UPDATE rkb_control_spool_meta SET used_bytes=
+                    (SELECT coalesce(sum(CASE WHEN apply_bytes IS NULL THEN reserved_bytes ELSE
+                        length(command_bytes)+length(dependency_bytes)+length(outcome_bytes)+32768 END),0)
+                        FROM rkb_control_operations)+
+                    (SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads) WHERE id=1''')
         except BaseException:
             os.close(self._fd);self._fd=None;raise
 
@@ -809,6 +817,9 @@ class ControlSpool:
                 raise SpoolConflict('exact committed outcome differs')
             db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?
                 WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),key))
+            if row['apply_bytes'] is None:
+                unused=row['reserved_bytes']-len(row['command_bytes'])-len(row['dependency_bytes'])-32768-len(receipt.outcome)
+                db.execute('UPDATE rkb_control_spool_meta SET used_bytes=used_bytes-? WHERE id=1',(unused,))
             if row['apply_state']=='SENT_UNKNOWN':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count-1 WHERE id=1')
 
     async def record_apply(self,key,receipt):
