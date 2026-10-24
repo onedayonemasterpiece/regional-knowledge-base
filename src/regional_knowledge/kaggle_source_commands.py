@@ -259,11 +259,16 @@ class WorkerSourceExecutor:
                     break
                 except psycopg.errors.QueryCanceled as error:
                     if (command.route=='source.batch.v1' and error.sqlstate=='57014'
-                            and attempt==0 and observed and observed[-1].canceled
+                            and observed and observed[-1].canceled
                             and observed[-1].rollback_verified):
-                        _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
+                        if attempt==0:
+                            _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
+                                command.route,command.sequence)
+                            continue
+                        reject_reason='native_source_sql_rolled_back'
+                        _LOG.warning('source_prepare_57014 rolled_back_rejection route=%s sequence=%s',
                             command.route,command.sequence)
-                        continue
+                        break
                     raise ApplyUnknown('source prepare unresolved; preserve original operation') from None
                 except psycopg.OperationalError:
                     raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None

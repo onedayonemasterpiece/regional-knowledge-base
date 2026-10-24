@@ -179,17 +179,19 @@ async def test_real_prepare_57014_rollback_retries_locally_once_same_key(image_p
     seal=await env['journal'].seal([cmd],predecessor=await env['journal'].head(),writer_generation=WRITER)
     request=frame(cmd,seal,handler)
     if timeouts==2:
-        with pytest.raises(ApplyUnknown):
-            await worker(request)
+        receipt,_=decode_receipt(await worker(request))
+        assert receipt.status=='rejected_precondition' and not receipt.duplicate
         assert len(calls)==2 and calls==[cmd.encode()]*2
         async with connection.transaction():
             assert await (await connection.execute(
-                'SELECT count(*) FROM rkb_v4.applied_ops WHERE sequence=2')).fetchone()==(0,)
+                "SELECT status FROM rkb_v4.applied_ops WHERE sequence=2")).fetchone()==('rejected_precondition',)
             assert await (await connection.execute(
                 'SELECT count(*) FROM rkb_v4.source_batch_prepared WHERE command_sha256=%s',
                 (digest(cmd.encode()),))).fetchone()==(0,)
             assert await (await connection.execute(
-                'SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(1,)
+                'SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(2,)
+        duplicate,_=decode_receipt(await worker(request))
+        assert duplicate.duplicate and duplicate.outcome==receipt.outcome
     else:
         receipt,_=decode_receipt(await worker(request))
         assert receipt.status=='applied' and not receipt.duplicate
