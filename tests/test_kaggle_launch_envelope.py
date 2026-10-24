@@ -53,7 +53,7 @@ def test_actual_shipped_target_fits_provider_and_roundtrips_every_pinned_source_
     assert result['_bundle']==files and result['_raw']==canonical(files)
     assert len(result['_raw'])<=MAX_BUNDLE_JSON_BYTES
     for entry in entries:
-        raw=base64.b64decode(files[entry['name'].split('/',1)[1]],validate=True)
+        raw=files[entry['name'].split('/',1)[1]].encode('utf-8')
         assert (len(raw),hashlib.sha256(raw).hexdigest())==(entry['size'],entry['sha256'])
     with queue.connect(write=False) as db:
         expected=json.loads(db.execute('SELECT expected_json FROM bge_runtime_expectations WHERE run_id=?',(run,)).fetchone()[0])
@@ -63,7 +63,7 @@ def test_actual_shipped_target_fits_provider_and_roundtrips_every_pinned_source_
 @pytest.mark.parametrize('fault',['invalid_base64','corrupt_zlib','truncated','trailing','concatenated','overflow'])
 def test_actual_shipped_decoder_rejects_corrupt_or_oversized_transport_before_any_extraction(shipped,fault):
     source,_,_=shipped
-    raw=canonical({'regional_knowledge/synthetic.py':base64.b64encode(b'pass').decode()})
+    raw=canonical({'regional_knowledge/synthetic.py':'pass'})
     compressed=zlib.compress(raw)
     packed={'invalid_base64':'!', 'corrupt_zlib':base64.b64encode(b'not-zlib').decode(),
         'truncated':base64.b64encode(compressed[:-1]).decode(),

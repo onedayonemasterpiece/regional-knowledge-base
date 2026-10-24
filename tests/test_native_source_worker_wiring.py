@@ -51,7 +51,7 @@ def test_fresh_notebook_bundle_imports_actual_native_compiler_and_bindings(tmp_p
     for name, body in encoded.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(base64.b64decode(body, validate=True))
+        path.write_bytes(body.encode('utf-8'))
     assert len(entries) == len(encoded)
     for entry in entries:
         raw = (tmp_path / entry['name']).read_bytes()

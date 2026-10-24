@@ -130,12 +130,11 @@ async def test_dataset_attestation_flows_into_existing_native_pg_prepare(tmp_pat
 
 def test_generated_target_source_inventory_contains_dataset_verifier():
     from regional_knowledge.kaggle_target_launch import MODULES,source_bundle
-    import base64
     root=Path(__file__).resolve().parents[1]
     assert 'kaggle_dataset_base' in MODULES
     _,files,entries=source_bundle(root)
     path='regional_knowledge/kaggle_dataset_base.py'
-    data=base64.b64decode(files[path],validate=True)
+    data=files[path].encode('utf-8')
     assert data==(root/'src'/path).read_bytes()
     assert any(e['name'].endswith(path) and e['sha256']==hashlib.sha256(data).hexdigest()
                for e in entries)

@@ -1,7 +1,6 @@
 """Synthetic source, journal and pool checks; no native PG/model/provider effects."""
 import ast
 import asyncio
-import base64
 from dataclasses import replace
 import hashlib
 import json
@@ -69,7 +68,7 @@ def test_shipped_worker_constructs_runtime_without_repository_imports(tmp_path):
     for name,raw in files.items():
         path=tmp_path/name
         path.parent.mkdir(parents=True,exist_ok=True)
-        path.write_bytes(base64.b64decode(raw,validate=True))
+        path.write_bytes(raw.encode('utf-8'))
     target=replace(spec(fresh=True),registry_sha256=registry_sha256())
     child='''import json,sys
 from pathlib import Path
@@ -95,12 +94,11 @@ def test_generated_target_persists_final_hash_outside_source_and_is_stable(tmp_p
     # Shipping the patch boundary in the exact notebook source inventory is
     # essential: a local-only module otherwise fails after Kaggle ATTACH.
     from regional_knowledge.kaggle_target_launch import source_bundle
-    import base64
     _,shipped,entries=source_bundle(ROOT)
     for relative in ('regional_knowledge/kaggle_warm_read.py',
                      'regional_knowledge/kaggle_warm_maintenance.py'):
         assert relative in shipped
-        raw=base64.b64decode(shipped[relative],validate=True)
+        raw=shipped[relative].encode('utf-8')
         assert raw==(ROOT/'src'/relative).read_bytes()
         assert any(e['name'].endswith('/'+relative) and e['size']==len(raw)
                    and e['sha256']==hashlib.sha256(raw).hexdigest() for e in entries)
@@ -159,6 +157,13 @@ def test_generated_entrypoint_executes_lifecycle_with_stubs(tmp_path,monkeypatch
     exec(compile(ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[]))),
                  'fixture-entry','exec'),namespace)
     assert calls==[('main',),('runtime',run)]
+    from regional_knowledge.kaggle_target_launch import source_bundle
+    _,files,entries=source_bundle(ROOT)
+    assert any(not text.isascii() for text in files.values())
+    for item in entries:
+        data=(tmp_path/item['name']).read_bytes()
+        assert data==files[item['name'].split('/',1)[1]].encode('utf-8')
+        assert (len(data),hashlib.sha256(data).hexdigest())==(item['size'],item['sha256'])
 
 
 @pytest.mark.asyncio
