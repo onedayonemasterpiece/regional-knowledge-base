@@ -172,7 +172,6 @@ class NativeSourceIntake:
                 or getattr(proof,'applied_sequence',None)!=scope['accepted_sequence']):
             return False
         from .control_spool import _command
-        from .disagreement_native import DEPENDENCIES
         from .source_history_verifier import INACTIVE_SOURCE_ROUTES
         with self.queue.connect(write=False) as db:
             rows=db.execute("SELECT * FROM rkb_control_operations WHERE outcome_state<>'DURABLE'").fetchall()
@@ -187,7 +186,11 @@ class NativeSourceIntake:
                         and pending['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
                         and pending['outcome_state']=='NOT_SENT'):
                     verified=self.spool._entry(pending)
-                    if (verified.command.route in DEPENDENCIES and verified.accepted is not None
+                    # An own ingestion cannot masquerade as another source.
+                    if (verified.command.route.startswith('source.') and
+                            json.loads(verified.command.payload).get('ingestion_id')==row['ingestion_id']):
+                        return False
+                    if (verified.accepted is not None
                             and verified.apply_receipt is not None
                             and (verified.apply_state,verified.apply_receipt.status) in (
                                 ('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition'))):
