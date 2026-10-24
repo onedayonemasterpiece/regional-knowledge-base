@@ -28,14 +28,18 @@ _LOG=logging.getLogger(__name__)
 
 
 class ExpertSlackIngress:
-    def __init__(self, control: TargetExpertRequestControl, *, signing_secret: str, clock=None):
+    def __init__(self, control: TargetExpertRequestControl, *, signing_secret: str | None,
+                 socket_only=False, clock=None):
         if (type(control) is not TargetExpertRequestControl
-                or type(signing_secret) is not str
-                or not 16<=len(signing_secret)<=256
-                or not signing_secret.isascii()
+                or type(socket_only) is not bool
+                or (socket_only and signing_secret is not None)
+                or (not socket_only and (type(signing_secret) is not str
+                    or not 16<=len(signing_secret)<=256
+                    or not signing_secret.isascii()))
                 or not callable(clock or time.time)):
-            raise ValueError('exact existing control and private Slack signing secret required')
+            raise ValueError('exact existing control and transport authority required')
         self.control=control
+        self.socket_only=socket_only
         self._signing_secret=signing_secret
         self._clock=clock or time.time
         # Bounded, deduplicated pending CAS tasks. They retain the existing
@@ -52,6 +56,9 @@ class ExpertSlackIngress:
         self._reply = reply
 
     async def __call__(self, request):
+        if self.socket_only:
+            return JSONResponse({'error':'socket_mode_only'},status_code=404,
+                                headers={'Cache-Control':'no-store'})
         try:
             async with asyncio.timeout(2.5):
                 raw=bytearray()
