@@ -54,6 +54,16 @@ post-termination JSON log fallback satisfies the same source/freshness checks;
 the controller does not normalize an ACK into a terminal result without logs.
 Missing/invalid/oversized evidence leaves UNKNOWN.
 
+An acknowledged cancellation **before any channel attachment** can return the
+completed-session JSON fallback `[]`, with no persisted log records.
+The observer accepts that array only with a persisted nonempty launch nonce,
+no incarnation, connection generation zero, no active/conflicting channel and
+heartbeat equal to creation time. The exact source/run/nonce still match before
+and after the stream. An attached or heartbeat-active session still requires
+nonempty native records. Empty EOF, running/queued status, live SSE and an ACK
+without the completed JSON stream remain UNKNOWN. This does not settle commands,
+writer state or Saved data.
+
 The adapter bounds logs to 256 KiB and each source response to 2 MiB (observation
 budgets, not book limits). It wraps only its fresh pinned SDK client's send
 boundary to bound response bytes **before SDK JSON decoding** and applies short
