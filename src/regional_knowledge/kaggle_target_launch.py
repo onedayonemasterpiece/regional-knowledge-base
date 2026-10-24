@@ -117,7 +117,7 @@ def compose_target(template,config,target,*,queue,repository):
     relative,files,code_entries = source_bundle(repository)
     root = Path(target.artifact_root)
     entries = [dict(e) for e in target.artifacts] + code_entries
-    if len({e['name'] for e in entries}) != len(entries) :
+    if len({e['name'] for e in entries}) != len(entries):
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
