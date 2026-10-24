@@ -147,7 +147,6 @@ async def test_wal_backup_contains_concurrent_commit_and_replays_tail_once(env):
                 )
             assert restored_seq == 2 and restored_seq > saved_seq
             assert restored_prefix == prefix
-
             # Ordinary authenticated accepted-command replay traverses the
             # journal tail (saved_seq, head] through the existing executor.
             # Seq2 is already in the physical snapshot: UNIQUE applied_ops

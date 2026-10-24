@@ -14,7 +14,7 @@ from test_kaggle_service_startup import service,target,auth
 
 
 @pytest.mark.asyncio
-async def test_dataset_ready_routes_without_opening_history(service):
+async def test_dataset_ready_routes_without_opening_history(service,monkeypatch):
     s=service;startup=s.startup;spool=s.config.spool
     # Model an already verified, empty Dataset. Actual queue/runtime/writer
     # binding and the canonical spool still come from the service fixture.
@@ -29,6 +29,13 @@ async def test_dataset_ready_routes_without_opening_history(service):
     assert startup.reads_current() and startup.imports_current()
     first=startup.coverage
     assert (first.accepted_sequence,first.applied_sequence)==(0,0)
+    # A failed/UNKNOWN accepted-tail resume cannot close a verified prefix.
+    async def unavailable_tail(*args,**kwargs):
+        raise SpoolConflict('synthetic_unresolved_tail')
+    with monkeypatch.context() as patch:
+        patch.setattr(startup.source_dispatch,'resume_pending',unavailable_tail)
+        assert await startup.refresh() and startup.reads_current()
+        assert startup.coverage.current() and startup.coverage.applied_sequence==0
     assert await startup.refresh() and startup.coverage is first
     assert not s.adapter.calls  # no restore(full), adopt or delta renewal
     # API-only reconnect has no retained physical-recovery capability. Its

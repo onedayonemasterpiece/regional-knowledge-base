@@ -316,6 +316,13 @@ class ControlSpool:
                     BEGIN SELECT RAISE(ABORT,'immutable canonical control intent'); END''')
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_receipts(
                     operation_key TEXT PRIMARY KEY,command_sha256 TEXT NOT NULL,receipt_bytes BLOB NOT NULL)''')
+                db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_delivery_receipts(
+                    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                    run_id TEXT NOT NULL,incarnation TEXT NOT NULL,claim TEXT NOT NULL,
+                    command_sha256 TEXT NOT NULL,PRIMARY KEY(job_id,claim))''')
+                db.execute("CREATE INDEX IF NOT EXISTS bge_source_done_runtime ON jobs("
+                    "run_id,json_extract(identity,'$.operation_key'),json_extract(identity,'$.command_sha256')) "
+                    "WHERE kind='source_command' AND state='done'")
                 # Compact heads derived from verified accepted commands. No book
                 # content, catalog or independent source permission is stored.
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_source_heads(
@@ -438,7 +445,7 @@ class ControlSpool:
         """Use the restored cursor; do not re-certify historical operations.
 
         Control is already read from the verified Dataset or physical restore.
-        Only its unsaved local suffix can advance the known applied floor.
+        Only suffix deliveries completed on this run advance its applied floor.
         A lost apply response remains pending until ordinary reconciliation.
         """
         self._active()
@@ -449,7 +456,7 @@ class ControlSpool:
             accepted=head.reference.last_sequence if head is not None else 0
             if accepted<base:raise SpoolConflict('Dataset cursor exceeds current journal')
             anchor=self._source_anchor
-            applied,pending,changes=await _database(self._dataset_cursor_suffix,control,accepted)
+            applied,pending,changes=await _database(self._dataset_cursor_suffix,control,accepted,binding)
             cursor=SourceCursor(binding.database_generation,binding,head,accepted,applied,pending,changes,current)
             if cursor!=anchor:
                 await self._write(self._replace_source_heads,changes)
@@ -458,11 +465,19 @@ class ControlSpool:
             self._source_covered_sequence=accepted
             return self._source_anchor
 
-    def _dataset_cursor_suffix(self,control,accepted):
+    def _dataset_cursor_suffix(self,control,accepted,binding):
         base=control['sequence'];applied=base;pending=[]
         changes={row[0]:SourceChange(row[0],row[1],row[2],bool(row[3]),bool(row[4]),bool(row[5]))
             for row in control['heads']}
         with self._db() as db:
+            # The existing writer restore record, not a new mode flag, proves
+            # that a local APPLIED receipt may belong to a previous PG run.
+            restored=False
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rkb_writer_restore_control'").fetchone():
+                owner=db.execute('SELECT state,identity_json FROM rkb_writer_restore_control WHERE id=1').fetchone()
+                if owner is not None and owner['state']=='active':
+                    identity=json.loads(owner['identity_json'])
+                    restored=(identity[0],identity[2])==(binding.run_id,binding.runtime_incarnation)
             for row in db.execute('SELECT sequence,seal_state,apply_state,command_bytes,outcome_bytes,'
                     'source_id,command_sha256,dependency_bytes,'
                     "json_extract(CAST(command_bytes AS TEXT),'$.route') AS route,"
@@ -470,6 +485,15 @@ class ControlSpool:
                     'FROM rkb_control_operations WHERE sequence>? AND sequence<=? ORDER BY sequence',
                     (base,accepted)):
                 known=row['seal_state']=='ACCEPTED' and row['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
+                # After a physical restore, an old native receipt says nothing
+                # about the successor PG. An exact completed job on this run
+                # must confirm that the suffix is actually installed. Ordinary
+                # (non-restore) receipts retain their established semantics.
+                if known and restored:
+                    known=db.execute("SELECT 1 FROM jobs WHERE kind='source_command' "
+                        "AND state='done' AND run_id=? AND json_extract(identity,'$.operation_key')=? "
+                        "AND json_extract(identity,'$.command_sha256')=? LIMIT 1",
+                        (binding.run_id,json.loads(row['command_bytes'])['operation_key'],row['command_sha256'])).fetchone() is not None
                 if row['sequence']==applied+1 and known:applied=row['sequence']
                 if not known:pending.append((bytes(row['command_bytes']),row['outcome_bytes'],False))
                 dependency=json.loads(row['dependency_bytes'])
@@ -794,7 +818,7 @@ class ControlSpool:
     async def mark_apply_sent(self,key):
         self._active();await self._write(self._apply_sent,key)
 
-    def _record_apply(self,key,receipt):
+    def _record_apply(self,key,receipt,delivery=None):
         if not isinstance(receipt,ApplyReceipt) or receipt.status not in {'applied','rejected_precondition'}:
             raise TypeError('exact native apply receipt required')
         if not isinstance(receipt.outcome,bytes) or len(receipt.outcome)>self.max_outcome_bytes or _hash(receipt.outcome)!=receipt.outcome_sha256:
@@ -807,12 +831,26 @@ class ControlSpool:
                 raise SpoolConflict('apply receipt does not bind the original accepted operation/database')
             if row['apply_bytes'] is not None and (bytes(row['apply_bytes'])!=data or bytes(row['outcome_bytes'])!=receipt.outcome):
                 raise SpoolConflict('exact committed outcome differs')
+            if delivery is not None:
+                job_id,run_id,incarnation,claim=delivery
+                job=db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
+                if (job is None or job['kind']!='source_command' or job['run_id']!=run_id
+                        or job['claim']!=claim or job['state'] not in ('claimed','done')
+                        or json.loads(job['identity'])['command_sha256']!=receipt.command_sha256):
+                    raise SpoolConflict('native receipt differs from current delivery')
+                prior=db.execute('SELECT run_id,incarnation,claim,command_sha256 '
+                    'FROM rkb_control_delivery_receipts WHERE job_id=? AND claim=?',(job_id,claim)).fetchone()
+                evidence=(run_id,incarnation,claim,receipt.command_sha256)
+                if prior is not None and tuple(prior)!=evidence:
+                    raise SpoolConflict('native delivery observation changed')
+                db.execute('INSERT OR IGNORE INTO rkb_control_delivery_receipts VALUES(?,?,?,?,?)',
+                    (job_id,*evidence))
             db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?
                 WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),key))
             if row['apply_state']=='SENT_UNKNOWN':db.execute('UPDATE rkb_control_spool_meta SET unknown_count=unknown_count-1 WHERE id=1')
 
-    async def record_apply(self,key,receipt):
-        self._active();await self._write(self._record_apply,key,receipt)
+    async def record_apply(self,key,receipt,*,delivery=None):
+        self._active();await self._write(self._record_apply,key,receipt,delivery)
 
     async def apply(self,key,connection,*,writer_generation):
         self._active()
