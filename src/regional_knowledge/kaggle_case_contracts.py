@@ -203,7 +203,7 @@ def validate_case_record(request,record):
                     raise ValueError('unexpected evidence payload fields')
                 exact_model(EvidenceAdd,{k:payload[k] for k in fields})
                 from .source_manifest import PAGE_KEYS,REGION_KEYS
-                if (set(payload['page_provenance'])!=PAGE_KEYS or set(payload['region_provenance'])!=REGION_KEYS
+                if (set(payload['page_provenance'])!=set(PAGE_KEYS.split()) or set(payload['region_provenance'])!=set(REGION_KEYS.split())
                         or payload['page_provenance']['page_id']!=payload['page_id']
                         or payload['region_provenance']['region_id']!=payload['region_id']
                         or payload['region_provenance']['page_id']!=payload['page_id']
