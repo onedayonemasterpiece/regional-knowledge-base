@@ -118,6 +118,23 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
         'This holds for contested or painful periods too: state established events '
         "(a pogrom, a siege, a deportation) directly, attribute only the author's judgment "
         'or explanation after the event, and never cite a footnote number in the body.') in server.instructions
+    assert ('During the same page review, record source-mentioned places in '
+        'book_ingest(stage).entity_candidates as poi_ref entities with exact_source_spelling '
+        'and source passage evidence. A new name for the same model-identified place '
+        'is an alias, not a new entity.') in server.instructions
+    assert ('Preserve source-supported German and other historical names in aliases; '
+        'set language, alias_type (such as historical, former or current) and time_scope '
+        'only when supported by the book or cited research_sources, '
+        'leaving unsupported values unset.') in server.instructions
+    assert ('Add a modern Russian name only when the book or cited research_sources '
+        '(URL and note) supports that alias; keep external research separate '
+        'from book evidence.') in server.instructions
+    assert ('Review all source-mentioned place classes: streets, squares, quarters, '
+        'buildings, churches, castles, fortifications, gates, bridges, islands, rivers, '
+        'villages and districts of the region.') in server.instructions
+    assert ('For lost or demolished sites, record the supported state in place_context; '
+        'do not guess dates, coordinates or modern addresses.') in server.instructions
+    assert 'site_state' not in server.instructions
     assert server._target_startup is startup
     assert startup.backend.worker_queue is s.target.queue is startup.config.spool.queue
     assert startup.admission is s.target.admission
