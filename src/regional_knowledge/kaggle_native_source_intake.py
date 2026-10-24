@@ -438,18 +438,12 @@ class NativeSourceIntake:
         return state
 
     async def applied_page_cursor(self, access, row):
-        """Resume after the latest APPLIED stage when research omits a cursor."""
-        await self._check(access,row)
-        state=await asyncio.to_thread(self._state,row)
-        if state is None or not state['batch_count']:
-            return '0'
-        previous={**state,'batch_count':state['batch_count']-1}
-        entry=await self._entry(self._stage_key(row,previous))
-        if (entry is None or digest(entry.command.payload)!=state['last_batch_sha256']
-                or entry.apply_receipt is None or entry.apply_receipt.status!='applied'):
-            raise _failure('native_research_accepted_frontier_missing')
-        pages=json.loads(entry.command.payload)['model_payload']['pages']
-        return str(max(page['physical_page_index'] for page in pages)+1)
+        with self.queue.connect(write=False) as db:
+            latest=db.execute("SELECT operation_key FROM rkb_control_operations WHERE source_id=? "
+                "AND operation_key LIKE ? AND apply_state='APPLIED' ORDER BY sequence DESC LIMIT 1",
+                (row['source_id'],f"source-stage:{row['ingestion_id']}:%")).fetchone()
+        entry=await self._entry(latest[0]) if latest else None
+        return str(max(p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages'])+1) if entry else None
 
     def _output(self, row, state):
         phase=state['phase']
