@@ -121,7 +121,7 @@ async def test_seed_large_journal_paginates_beyond_10000_and_uploads_exact_bytes
 
     class Store:
         bucket = 'fixture'
-        prefix = prefix
+        prefix = 'recovery/fixture/'
 
         def __init__(self):
             self.client = self

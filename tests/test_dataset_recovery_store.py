@@ -244,7 +244,7 @@ def test_control_journal_over_64_mib_and_10000_objects_restores_byte_for_byte(tm
     restored = DatasetRecoveryStore(restored_queue, checkpoint=checkpoint,
         manifest_ref=p.ref, publisher=Publisher(), writer_guard=p.guard, stream='stream')
     assert restored.export_control() == exported
-    assert restored.pending_control() == p.store.pending_control()
+    assert restored.pending_control() is None  # Saved objects are no longer pending.
     with restored_queue.connect(write=False) as db:
         row = db.execute('SELECT data,token,covered_version FROM rkb_dataset_recovery_objects '
             'WHERE storage=? AND key=?',
