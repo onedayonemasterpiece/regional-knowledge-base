@@ -802,11 +802,6 @@ class BgeQueue:
             run=self._authorize(db,run_id,token,self.clock())
             self._dispatch_authorize(run,generation)
             if run['runtime_incarnation']!=incarnation:raise StaleAttachment('resource incarnation mismatch')
-            owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
-            if owner['run_id'] is not None:
-                if (owner['run_id'],owner['incarnation'])!=(run_id,incarnation):
-                    raise StaleAttachment('prior compute resource remains unknown')
-                return
             current=db.execute('select current_run from control where id=1').fetchone()[0]
             if current!=run_id:raise StaleAttachment('resource baseline requires the owned current run')
             db.execute('update bge_shared_admission set run_id=?,incarnation=? where id=1',(run_id,incarnation))
@@ -1054,15 +1049,6 @@ class BgeQueue:
                 db.execute('update bge_provider_reconciliation set cursor=0,next_cycle=? where id=1',
                            (self.clock()+30,))
             return [dict(r) for r in rows]
-
-    def provider_reservation_retired(self, run_id, incarnation):
-        """Indexed receipt read only when admission changes runtime attachments."""
-        with self.connect(write=False) as db:
-            row=db.execute("""select r.launch_state,t.receipt_json from runs r
-                join bge_provider_terminal_receipts t on t.run_id=r.id where r.id=?""",(run_id,)).fetchone()
-            if row is None or row['launch_state']!='terminal':return False
-            identity=json.loads(row['receipt_json'])['identity']
-            return identity['id']==run_id and identity['runtime_incarnation']==incarnation
 
     def advance_provider_reconciliation(self, cursor):
         if type(cursor) is not int or cursor<1:raise ValueError('valid history cursor required')
