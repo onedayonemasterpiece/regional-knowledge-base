@@ -179,3 +179,109 @@ def test_same_owner_composition_is_inert_until_explicit_reply_bind(service):
     assert ingress._reply is reply
     # No new expert_executor_* route or service is automatically installed.
     assert reply.control.spool is s.config.spool
+
+
+@pytest.mark.asyncio
+async def test_reply_pipeline_never_posts_without_remote_result_and_send_receipts(service,monkeypatch):
+    """Orchestration-only fixture. Dataset proof is tested by existing delivery suites."""
+    from contextlib import asynccontextmanager
+    s=service
+    ctl, credentials, _link, ingress=_owned_ingress(s)
+    receiver=compose_expert_evidence_receiver(
+        target_startup=s.startup, expert_slack_ingress=ingress)
+    sender=SlackChatSender(token="xoxb-synthetic-token",app_id=ctl.app_id,
+        team_id=ctl.team_id,bot_user_id=ctl.bot_user_id)
+    reply=compose_expert_slack_search_reply(ingress=ingress,
+        evidence=receiver,credentials=credentials,sender=sender)
+    claim=dict(request_id="synthetic",generation=1,execution_token="synthetic-token")
+    calls=[]
+
+    @asynccontextmanager
+    async def synthetic_read(_claim):
+        assert _claim is claim
+        yield evidence([])
+    monkeypatch.setattr(reply,"_read_claim",synthetic_read)
+    monkeypatch.setattr(ctl,"_row",lambda _:{"state":"leased"})
+    def prepared(*args):
+        calls.append("prepare")
+    async def staged(*args):
+        calls.append("stage_result")
+    def pending(*args):
+        calls.append("confirm_result")
+        return {"remote_accepted":False}
+    async def forbidden(*args):
+        pytest.fail("uncovered result must not enter send or provider")
+    monkeypatch.setattr(reply.delivery,"prepare_result",prepared)
+    monkeypatch.setattr(reply.delivery,"stage_dataset_result",staged)
+    monkeypatch.setattr(reply.delivery,"confirm_dataset_result",pending)
+    monkeypatch.setattr(reply.delivery,"stage_dataset_send",forbidden)
+    monkeypatch.setattr(sender,"post_once",forbidden)
+    await reply._one(claim)
+    assert calls==["prepare","stage_result","confirm_result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_fails",[False,True])
+async def test_reply_pipeline_send_is_original_thread_and_unknown_never_replayed(
+        service,monkeypatch,send_fails):
+    from contextlib import asynccontextmanager
+    from regional_knowledge.expert_delivery_control import verified_native_slack_receipt
+    s=service
+    ctl,credentials,_link,ingress=_owned_ingress(s)
+    reader=compose_expert_evidence_receiver(target_startup=s.startup,
+        expert_slack_ingress=ingress)
+    sender=SlackChatSender(token="xoxb-synthetic-token",app_id=ctl.app_id,
+        team_id=ctl.team_id,bot_user_id=ctl.bot_user_id)
+    reply=compose_expert_slack_search_reply(ingress=ingress,
+        evidence=reader,credentials=credentials,sender=sender)
+    claim=dict(request_id="fixture-event-request",generation=1,
+               execution_token="fixture-lease")
+    permit={"request_id":claim["request_id"],"delivery_id":"fixture-one-shot",
+            "channel_id":"C111","thread_ts":"1792000000.100",
+            "text":answer_from_evidence(evidence([]))}
+    stages=[]
+    @asynccontextmanager
+    async def fixture_read(_claim):
+        yield evidence([])
+    monkeypatch.setattr(reply,"_read_claim",fixture_read)
+    monkeypatch.setattr(ctl,"_row",lambda _:{"state":"leased"})
+    monkeypatch.setattr(reply.delivery,"prepare_result",
+                        lambda *a:stages.append("prepared"))
+    async def stage_result(*a):stages.append("result_staged")
+    async def stage_send(*a):stages.append("send_staged")
+    async def stage_receipt(*a):stages.append("receipt_staged")
+    monkeypatch.setattr(reply.delivery,"stage_dataset_result",stage_result)
+    monkeypatch.setattr(reply.delivery,"confirm_dataset_result",
+                        lambda *a:stages.append("result_covered") or {"remote_accepted":True})
+    monkeypatch.setattr(reply.delivery,"stage_dataset_send",stage_send)
+    monkeypatch.setattr(reply.delivery,"confirm_dataset_send",
+                        lambda *a:stages.append("send_covered") or {"remote_accepted":True})
+    monkeypatch.setattr(reply.delivery,"claim_send_once",
+                        lambda *a:stages.append("one_permit") or permit)
+    async def post_once(p):
+        stages.append("post")
+        assert p is permit
+        if send_fails:raise RuntimeError("ambiguous provider outcome")
+        return verified_native_slack_receipt({
+           "app_id":"A111","user":"UBOT","channel":"C111",
+           "thread_ts":p["thread_ts"],"ts":"1792000005.200",
+           "client_msg_id":p["delivery_id"],"text":p["text"]},
+           app_id="A111",team_id="T111",bot_user_id="UBOT",
+           channel_id="C111",thread_ts=p["thread_ts"])
+    monkeypatch.setattr(sender,"post_once",post_once)
+    monkeypatch.setattr(reply.delivery,"stage_dataset_native_receipt",stage_receipt)
+    monkeypatch.setattr(reply.delivery,"confirm_dataset_native_receipt",
+                        lambda *a:stages.append("receipt_covered"))
+    monkeypatch.setattr(reply.delivery,"uncertain_delivery",
+                        lambda *a:stages.append("unknown"))
+    if send_fails:
+        with pytest.raises(RuntimeError,match="ambiguous"):
+            await reply._one(claim)
+        assert stages[-2:]==["post","unknown"]
+        assert "receipt_staged" not in stages
+    else:
+        await reply._one(claim)
+        assert stages[-3:]==["post","receipt_staged","receipt_covered"]
+    assert stages[:6]==["prepared","result_staged","result_covered",
+                       "send_staged","send_covered","one_permit"]
+    assert stages.count("post")==1
