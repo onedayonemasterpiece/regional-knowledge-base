@@ -295,7 +295,7 @@ async def test_delayed_old_result_snapshot_cannot_regress_current_attachment(sta
 
 
 @pytest.mark.asyncio
-async def test_restart_requires_same_owned_incarnation_baseline_and_recovers_busy_debt(state):
+async def test_restart_recovers_same_incarnation_then_owned_current_run_handover(state):
     s=state
     await begin(s,'lost-context')
     work=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(work)
@@ -312,16 +312,16 @@ async def test_restart_requires_same_owned_incarnation_baseline_and_recovers_bus
         await a.resource_released(s.run,s.token,generation,runtime_incarnation='incarnation-a',
             resource_kind='read',resource_id='lost-context',compute_claim=work.compute_claim,dispatch_generation=1)
         assert a.status()['state']=='idle'
-        # Persisted ownership survives an idle local controller too: switching
-        # the current run never turns an old resource's UNKNOWN into free.
+        # Existing current-run fencing authorizes a new baseline after handover;
+        # provider compute closure remains independent.
         with reopened.connect() as db:
             new_run=reopened._new_run(db,1000.)
             db.execute('update control set current_run=? where id=1',(new_run,))
         new_token=(reopened.path.parent/'bge-worker-credentials'/new_run).read_text()
         nonce=reopened.prepare_channel(new_run)
         g=reopened.attach_channel(new_run,new_token,nonce,'incarnation-new')['connection_generation']
-        with pytest.raises(StaleAttachment):
-            await a.resource_state(new_run,new_token,g,runtime_incarnation='incarnation-new',state='idle')
+        await a.resource_state(new_run,new_token,g,runtime_incarnation='incarnation-new',state='idle')
+        assert a.status()['state']=='idle'
     finally:a.close()
 
 
@@ -614,3 +614,35 @@ async def test_exact_native_terminal_required_to_change_owned_run(state):
     with s.q.connect(write=False) as db:
         assert db.execute('select run_id from bge_shared_admission').fetchone()[0] is None
         assert db.execute('select status from runs where id=?',(s.run,)).fetchone()[0]=='expired'
+
+
+@pytest.mark.asyncio
+async def test_noncurrent_successor_cannot_clear_ram_before_owned_baseline(state):
+    s=state
+    ticket=await begin(s,'owned-inflight')
+    work=await s.q.next_channel_work(s.run,s.token,1)
+    s.a.mark_work_sent(work)
+    attachment=s.a._attachment
+    slot=s.a._slot_version
+    with s.q.connect() as db:
+        successor=s.q._new_run(db,1000.)
+        db.execute('update control set successor=? where id=1',(successor,))
+    token=(s.q.path.parent/'bge-worker-credentials'/successor).read_text()
+    nonce=s.q.prepare_channel(successor)
+    generation=s.q.attach_channel(successor,token,nonce,'successor')['connection_generation']
+    with pytest.raises(StaleAttachment):
+        await s.a.resource_state(successor,token,generation,runtime_incarnation='successor',state='idle')
+    assert await s.q.next_channel_work(successor,token,generation) is None
+    assert s.a._work is work and s.a._sent
+    assert s.a._attachment==attachment and s.a._slot_version is slot
+    assert not ticket.result.done()
+    with s.q.connect() as db:
+        db.execute('update control set current_run=?,successor=null where id=1',(successor,))
+    assert await s.q.next_channel_work(successor,token,generation) is None
+    assert s.a._work is work and not ticket.result.done()
+    await s.a.resource_state(successor,token,generation,runtime_incarnation='successor',state='idle')
+    assert ticket.result.cancelled()
+    assert s.a._work is None and not s.a._sent
+    with s.q.connect(write=False) as db:
+        owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
+    assert tuple(owner)==(successor,'successor')
