@@ -27,20 +27,20 @@ def prepared(artifacts, entries):
         max_total_bytes=sum(e.requirement.size for e in entries))
 
 
-def test_194_actual_files_pass_both_inventory_and_hash_verification(artifacts, monkeypatch):
-    entries = complete(artifacts, 194)
+def test_195_actual_files_pass_both_inventory_and_hash_verification(artifacts, monkeypatch):
+    entries = complete(artifacts, 195)
     monkeypatch.setattr(stage0, 'TRUSTED_ROOT', artifacts.root)
     inventory = prepared(artifacts, entries)
-    assert stage0.MAX_PREPARED_FILES == boot.MAX_PREPARED_FILES == 194
+    assert stage0.MAX_PREPARED_FILES == boot.MAX_PREPARED_FILES == 195
     assert stage0.MAX_FILES == 128
-    assert len(stage0._inventory(inventory)) == 194
+    assert len(stage0._inventory(inventory)) == 195
     verified = boot.verify_artifacts(artifacts.root, entries,
                                      max_total_bytes=inventory['max_total_bytes'])
-    assert len(verified.observed) == 194
+    assert len(verified.observed) == 195
 
 
-def test_195_actual_files_refused_before_hash_io(artifacts, monkeypatch):
-    entries = complete(artifacts, 195)
+def test_196_actual_files_refused_before_hash_io(artifacts, monkeypatch):
+    entries = complete(artifacts, 196)
     monkeypatch.setattr(stage0, 'TRUSTED_ROOT', artifacts.root)
     inventory = prepared(artifacts, entries)
     with pytest.raises(ValueError, match='stage0_prepared_inventory_required'):
@@ -53,8 +53,8 @@ def test_195_actual_files_refused_before_hash_io(artifacts, monkeypatch):
 
 
 @pytest.mark.parametrize('failure', ['hash', 'bytes', 'missing', 'required_role'])
-def test_194_file_limit_keeps_integrity_byte_and_required_file_guards(artifacts, monkeypatch, failure):
-    entries = complete(artifacts, 194)
+def test_195_file_limit_keeps_integrity_byte_and_required_file_guards(artifacts, monkeypatch, failure):
+    entries = complete(artifacts, 195)
     monkeypatch.setattr(stage0, 'TRUSTED_ROOT', artifacts.root)
     inventory = prepared(artifacts, entries)
     budget = inventory['max_total_bytes']

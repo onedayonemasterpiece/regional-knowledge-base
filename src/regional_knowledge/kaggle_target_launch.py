@@ -44,7 +44,7 @@ def source_bundle(repository):
     # A short directory label avoids repeating the complete manifest digest in
     # every inventory path. Integrity still checks each file's full SHA-256;
     # a label collision fails that check instead of accepting different bytes.
-    relative = 'rkb-'+bundle_id[:16]
+    relative = 'r-'+bundle_id[:16]
     # Source members are UTF-8 Python/SQL. Compress their text directly; the
     # outer base64 still transports the compressed bytes in the notebook.
     encoded = {name:data.decode('utf-8') for name,data in sorted(files.items())}

@@ -32,6 +32,15 @@ origin atomically. Existing v1 command audit fields stay unchanged; the numbered
 SQL ledger supplies the schema version. This describes the source contract, not
 live import or Telegram mirror acceptance.
 
+Packet publication's SQL036 media-link lookup retains only the submitted chunk
+and POI-link keys while reading each accepted stage batch once. Exact page
+equality and invalidation before same-batch reinsertion are unchanged: repeating
+an identical page preserves links, but A → B → A does not resurrect links
+removed by B. Page/figure/caption/crop and referential checks remain intact.
+The historical whole-book SQL015 helper is unchanged. This bounds accumulated
+link-map work to the packet, not the amount of accepted payload history read;
+synthetic PG17 timings do not establish live import latency.
+
 SQL020 treats media hashes as representation identifiers. Refreshed media
 metadata uses upsert and retains its accepted source/page/figure geometry;
 different media hashes or JSON serialization do not reject it. Accepted source
