@@ -221,9 +221,9 @@ async def test_concurrent_channel_pollers_reserve_one_remote_publication(accepte
 
 
 @pytest.mark.asyncio
-async def test_source_receipt_rejects_forged_resource_and_exact_outcome(accepted):
+async def test_source_receipt_rejects_forged_durable_claim_and_exact_outcome(accepted):
     e=accepted;s=e.s;_,work,frame=await dispatch(e)
-    wrong=response(e,work,frame);wrong['compute_claim']='forged'
+    wrong=response(e,work,frame);wrong['claim']='forged'
     with pytest.raises(PermissionError):await e.bridge.receive(wrong,run_id=s.run,token=s.token,generation=s.generation)
     wrong=response(e,work,frame);wrong['receipt']['database_generation']='other-db'
     with pytest.raises(PermissionError):await e.bridge.receive(wrong,run_id=s.run,token=s.token,generation=s.generation)
@@ -657,14 +657,26 @@ async def test_source_release_allows_read_and_keeps_original_native_receipt(acce
     assert await s.a.finish_read(s.run,s.token,s.generation,answer(read))
     assert (await ticket.result).status=='ok'
     await release_read(s,read)
+    assert s.a._last_release==read.resource # QUERY overwrote source's transient release.
+    generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+    await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle')
+    late=response(e,native,frame);late['connection_generation']=generation
+    await e.bridge.receive(late,run_id=s.run,token=s.token,generation=generation)
+    assert (await e.spool.get(e.command.operation_key)).apply_state=='APPLIED'
+
+
+@pytest.mark.asyncio
+async def test_source_reconnect_before_first_release_retains_original_permit(accepted):
+    e=accepted;s=e.s;_,native,frame=await dispatch(e)
+    generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+    assert s.a.status()['state']=='busy'
     r=native.resource
-    assert await s.a.resource_released(s.run,s.token,s.generation,
-        runtime_incarnation=r.runtime_incarnation,resource_kind='document',resource_id=r.resource_id,
-        compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation) is False
-    s.a.require_durable_resource(s.run,r.runtime_incarnation,s.generation,job,r.compute_claim,r.dispatch_generation)
-    with pytest.raises(PermissionError):
-        s.a.require_durable_resource(s.run,r.runtime_incarnation,s.generation,job,'forged',r.dispatch_generation)
-    await e.bridge.receive(response(e,native,frame),run_id=s.run,token=s.token,generation=s.generation)
+    assert await s.a.resource_released(s.run,s.token,generation,
+        runtime_incarnation=r.runtime_incarnation,resource_kind=r.resource_kind,
+        resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle')
+    late=response(e,native,frame);late['connection_generation']=generation
+    await e.bridge.receive(late,run_id=s.run,token=s.token,generation=generation)
     assert (await e.spool.get(e.command.operation_key)).apply_state=='APPLIED'
 
 
@@ -695,9 +707,11 @@ async def test_worker_query_and_reconnect_do_not_wait_for_native_pg_work(monkeyp
         await peer.wait('RESOURCE_RELEASED',predicate=lambda x:x['resource_id']=='held-source')
         await peer.put(query(request='beside-source'))
         await peer.wait('QUERY_RESULT',predicate=lambda x:x['request_id']=='beside-source')
+        await peer.wait('RESOURCE_RELEASED',predicate=lambda x:x['resource_id']=='beside-source')
         assert not finish.is_set() and worker.job['id']=='held-source'
         await peer.disconnect()
-        await peer.wait('RESOURCE_RELEASED',generation=2,predicate=lambda x:x['resource_id']=='held-source')
+        await peer.wait('RESOURCE_RELEASED',generation=2,predicate=lambda x:x['resource_id']=='beside-source')
+        assert not any(x['resource_id']=='held-source' for x in peer.frames('RESOURCE_RELEASED',2))
         await peer.put(query(generation=2,request='after-reconnect',claim='second-query'))
         await peer.wait('QUERY_RESULT',generation=2,predicate=lambda x:x['request_id']=='after-reconnect')
         finish.set();receipt=await peer.wait('SOURCE_COMMAND_RESULT',generation=2)

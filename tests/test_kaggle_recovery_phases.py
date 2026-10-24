@@ -250,7 +250,7 @@ async def test_maintenance_before_ready_uses_actual_slot_and_durable_claim(state
         assert frame['kind']=='recovery_phase' and work.resource.resource_kind=='document'
         assert 'texts' not in frame and frame['writer_generation']==database().writer_generation
         assert await s.a.next_channel_work(s.run,s.token,s.generation) is None
-        wrong=response(s,frame,{'native':'readback'});wrong['compute_claim']='forged'
+        wrong=response(s,frame,{'native':'readback'});wrong['claim']='forged'
         with pytest.raises(PermissionError):await bridge.receive(wrong,run_id=s.run,token=s.token,generation=s.generation)
         receipt=response(s,frame,{'native':'readback'})
         settled=await bridge.receive(receipt,run_id=s.run,token=s.token,generation=s.generation)
@@ -712,7 +712,7 @@ async def test_upload_ticket_intent_survives_disconnect_without_second_capture(m
 
 
 @pytest.mark.asyncio
-async def test_ticket_issuance_requires_exact_capture_resource_and_urls_are_not_persisted(state):
+async def test_ticket_issuance_requires_exact_capture_claim_and_urls_are_not_persisted(state):
     s=state;issued=[]
     class Ticket:
         def wire(self):return {'url':'https://private-fixture.invalid/synthetic-signed-token'}
@@ -726,7 +726,7 @@ async def test_ticket_issuance_requires_exact_capture_resource_and_urls_are_not_
         intent=dict(job_id=frame['id'],claim=frame['claim'],operation_key=frame['operation_key'],size=123,sha256='a'*64,
             **{k:frame[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')})
         with pytest.raises(PermissionError):
-            await bridge.issue_upload(intent|{'compute_claim':'forged'},run_id=s.run,token=s.token,generation=s.generation)
+            await bridge.issue_upload(intent|{'claim':'forged'},run_id=s.run,token=s.token,generation=s.generation)
         assert not issued
         ticket=await bridge.issue_upload(intent,run_id=s.run,token=s.token,generation=s.generation)
         assert ticket['url'].endswith('synthetic-signed-token') and len(issued)==1
