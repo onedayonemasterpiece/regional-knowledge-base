@@ -102,6 +102,8 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     server=build_server(target_startup=startup)
     assert ('state plain dated facts directly. Place such attribution after the claim it qualifies, '
         'never as the opening words of a body.') in server.instructions
+    assert ('story_candidates holds at most 12 per stage; when the pages hold more episodes '
+        'and facts than that, stage fewer pages per packet instead of dropping or merging them.') in server.instructions
     assert server._target_startup is startup
     assert startup.backend.worker_queue is s.target.queue is startup.config.spool.queue
     assert startup.admission is s.target.admission
