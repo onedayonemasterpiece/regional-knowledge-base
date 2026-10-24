@@ -158,76 +158,33 @@ class PhysicalSnapshotRecovery:
                 blob=asdict(blob),control_bytes=control_bytes,expected_versions=expected_versions,
                 database=database.wire(),identity=identity)
             head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
-            heads={row[0]:row for row in control['heads']};receipts=[];replayed=[]
+            # Verify the accepted suffix now; execute it through the ordinary
+            # source-command queue after the saved prefix becomes readable.
             for command,seal in tail:
                 self._authority(binding)
-                handler=self.registry.resolve(command);dep=handler.dependency
-                # Same closed route/dependency classification as native history;
-                # independent Case/GEO commands keep their real resource IDs.
+                handler=self.registry.resolve(command)
                 classified,installed,_=self.history._classify(command.encode(),seal.manifest)
                 if classified.encode()!=command.encode() or installed.fingerprint!=handler.fingerprint:
                     raise SnapshotError('snapshot_replay_scope_unsupported')
                 if await self.journal.verify_accepted(seal,command)!=sha(command.encode()):
                     raise SnapshotError('snapshot_exact_acceptance_changed')
-                # Adapter reuses the existing claimed accepted-command DISPATCH;
-                # the worker receives this exact proof, never cloud credentials.
-                wire=await self.native.apply(binding,handle,command_bytes=command.encode(),
-                    accepted={'manifest':seal.manifest.wire(),'command_hashes':list(seal.command_hashes)},
-                    handler_sha256=handler.fingerprint,original_pg_writer=manifest['writer_generation'])
-                from .kaggle_source_commands import decode_receipt
-                receipt,_=decode_receipt(wire)
-                if ((receipt.database_generation,receipt.operation_key,receipt.sequence,receipt.command_sha256)
-                        !=(database.database_generation,command.operation_key,command.sequence,sha(command.encode()))):
-                    raise SnapshotError('snapshot_native_replay_receipt_changed')
-                try:
-                    remote=await self.journal.record_outcome(seal,command=command,database_generation=database.database_generation,
-                        outcome=receipt.outcome,writer_generation=database.writer_generation)
-                except Exception as exc:
-                    from .dataset_recovery_store import DatasetRecoveryStore
-                    from .recovery_journal import JournalUnknown
-                    if (type(self.journal.store) is not DatasetRecoveryStore or type(exc) is not JournalUnknown
-                            or exc.args!=('outcome_pending_dataset_checkpoint',)):raise
-                    remote=None  # Replayed locally; still pending until the next Dataset.
-                replayed.append((receipt,remote))
-                receipts.append((receipt.sequence,receipt.command_sha256,receipt.outcome_sha256))
-
-                if dep is not None and dep.scope_class=='public_source':
-                    source=command.ids['source_id'];old=heads.get(source)
-                    heads[source]=[source,command.sequence,sha(command.encode()),int(dep.restriction or old is not None and old[3]),0,0]
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_before_rollover')
-            sequence=manifest['applied_sequence']+len(tail)
+            sequence=manifest['applied_sequence']
             for legacy_field in ('catalog_sha256','acl_sha256','closure_transitions'):
                 control.pop(legacy_field,None)
-            control.update(sequence=sequence,journal_head=head.reference.wire() if head else None,
-                heads=[heads[k] for k in sorted(heads)],schema_version=expected_schema_version,
+            control.update(sequence=sequence,schema_version=expected_schema_version,
                 registry_sha256=self.history.registry_hash,routes=sorted(self.history.routes))
             final_control=encode(control)
             if len(final_control)>self.limits.max_control_bytes:raise SnapshotError('snapshot_final_control_byte_budget')
-            native_ref=await self.native.finish(binding,handle,expected_tail=tuple(receipts),
-                final_head=head.reference.wire() if head else None,control_bytes=final_control,
+            native_ref=await self.native.finish(binding,handle,expected_tail=(),
+                final_head=control['journal_head'],control_bytes=final_control,
                 expected_schema_version=expected_schema_version)
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_after_readiness')
             self._authority(binding)
             proof=ControllerRecoveryProof(self,native_ref,database,identity,manifest_ref,head,sequence,final_control,binding)
             self._proofs.add(proof)
             await self.verify_initialized(proof,database,identity)
-            # Recovered commands already have exact native and remote outcomes.
-            # Reconcile retained local jobs before ordinary dispatch can select
-            # their original writer identities on the new executor.
-            spool=self.history.spool
-            for receipt,remote in replayed:
-                with spool.queue.connect(write=False) as db:
-                    retained=db.execute('select 1 from rkb_control_operations where operation_key=?',
-                                        (receipt.operation_key,)).fetchone()
-                if retained is None:continue  # Compact history need not be recreated.
-                await spool.record_apply(receipt.operation_key,receipt)
-                if remote is None:continue
-                await spool._write(spool._durable,receipt.operation_key,remote)
-                jobs=await spool._write(spool._settle_recovered_jobs,receipt.operation_key)
-                for job_id in jobs:spool.queue._notify_result(job_id)
-                _LOG.info('snapshot_recovered_jobs_settled command_sha256=%s sequence=%s count=%s',
-                          receipt.command_sha256,receipt.sequence,len(jobs))
-            _LOG.info('snapshot_recovery_verified manifest_hash=%s operation_hash=%s cursor=%s replay_count=%s',
+            _LOG.info('snapshot_recovery_verified manifest_hash=%s operation_hash=%s cursor=%s pending_count=%s',
                 manifest_ref.sha256,sha(operation_key.encode()),sequence,len(tail))
             return proof
 
@@ -262,7 +219,7 @@ class PhysicalSnapshotRecovery:
         if await self.journal.head()!=proof.journal_head:raise SnapshotError('snapshot_pointer_tail_changed')
         data=encode({'codec':'rkb.verified-snapshot-pointer.v1','stream':self.journal.stream,
             'manifest':proof.manifest.wire(),'verified_cursor':proof.applied_sequence,
-            'verified_head':proof.journal_head.reference.wire() if proof.journal_head else None,
+            'verified_head':json.loads(proof.control)['journal_head'],
             'writer_generation':proof.database.writer_generation,'control_sha256':sha(proof.control)})
         key=self.journal.prefix+'/snapshots/current'
         existing=await self.journal._read(key,self.limits.max_control_bytes)

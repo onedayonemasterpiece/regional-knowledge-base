@@ -321,12 +321,49 @@ class AcceptedSourceDispatch:
         # Restore has already computed these exact outcomes. Dataset capture
         # must finish before old jobs settle; redispatching their old writer
         # identity would disconnect the healthy recovered worker.
+        cursor=self.spool._source_anchor
+        from .control_spool import SourceCursor
+        floor=cursor.applied_sequence if type(cursor) is SourceCursor and cursor.current() else None
         with self.queue.connect(write=False) as db:
             return db.execute("""SELECT 1 FROM jobs j JOIN rkb_control_operations o
                 ON o.operation_key=json_extract(j.identity,'$.operation_key')
                 WHERE j.kind='source_command' AND j.state IN ('pending','claimed')
                 AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION')
-                LIMIT 1""").fetchone() is not None
+                AND (? IS NULL OR o.sequence<=?)
+                LIMIT 1""",(floor,floor)).fetchone() is not None
+
+    def pending_job(self,db,actor,run,generation):
+        from .control_spool import SourceCursor
+        cursor=self.spool._source_anchor
+        if type(cursor) is not SourceCursor or not cursor.current():
+            return db.execute("SELECT * FROM jobs WHERE state='pending' AND kind='source_command' "
+                "AND actor=? ORDER BY created,id LIMIT 1",(actor,)).fetchone()
+        rows=db.execute("SELECT * FROM jobs WHERE state='pending' AND kind='source_command' "
+            "AND actor=? AND json_extract(identity,'$.sequence')=? ORDER BY created,id LIMIT 256",
+            (actor,cursor.applied_sequence+1))
+        for row in rows:
+            try:self._current(run,json.loads(row['identity']),generation)
+            except PermissionError:continue
+            return row
+        return None
+
+    async def resume_pending(self,cursor,*,writer_generation):
+        """Deliver only the next original accepted command on the ordinary queue."""
+        from .control_spool import SourceCursor
+        if (type(cursor) is not SourceCursor or cursor is not self.spool._source_anchor
+                or not cursor.current() or not cursor.pending):return None
+        command=decode_command(cursor.pending[0][0])
+        if command.sequence!=cursor.applied_sequence+1:
+            raise ValueError('restored accepted tail must be contiguous')
+        entry=await self.spool.get(command.operation_key)
+        if entry.command_bytes!=command.encode() or entry.accepted is None:
+            raise PermissionError('retained exact accepted command required')
+        actor=await self.queue.shared_reads.register_accepted_command(self,command,entry.accepted)
+        identity=dict(operation_key=command.operation_key,command_sha256=entry.command_sha256,
+            database_generation=entry.database_generation,writer_generation=writer_generation,sequence=command.sequence)
+        job=await asyncio.to_thread(self.queue._enqueue_source_command,self,actor,identity)
+        self.queue.shared_reads.wake()
+        return job
 
     async def enqueue(self,context,key,*,writer_generation):
         entry=await self.spool.get(key)
@@ -345,7 +382,9 @@ class AcceptedSourceDispatch:
         return job
 
     async def authorize_job(self,context,job):
-        entry,_=await self._entry(job,verify=False)
+        entry,_=await self._entry(job,verify=context is None)
+        if context is None:
+            return entry.command.person_id  # Original canonical acceptance, not a new request.
         return await self.spool.authorize_command(context,entry.command)
 
     async def _entry(self,job,*,verify=True):
@@ -395,7 +434,8 @@ class AcceptedSourceDispatch:
                 or outcome.get('before')!=[entry.command.schema_revision,entry.command.function_revision,entry.command.executor_revision]
                 or outcome.get('after')!=outcome.get('before')):
             raise PermissionError('source native receipt differs from accepted command')
-        await self.spool.record_apply(identity['operation_key'],receipt)
+        await self.spool.record_apply(identity['operation_key'],receipt,
+            delivery=(job['id'],run_id,run['runtime_incarnation'],job['claim']))
         _LOG.info('source_native_receipt_retained command_sha256=%s sequence=%s remote_outcome_durable=false',entry.command_sha256,entry.command.sequence)
         return await self.poll_settlement(run_id=run_id,token=token,generation=generation,job_id=job['id'])
 
@@ -411,6 +451,7 @@ class AcceptedSourceDispatch:
         except LookupError:return None
         if job['id'] in self._publications:return None
         entry,_=await self._entry(job,verify=False)
+        if not self._delivery_observed(job):return None
         if entry.apply_receipt is None or self._retry.get(job['id'],(0,0))[0]>self.clock():return None
         # The receiver and dispatcher can both pass the earlier check before
         # _entry yields. Reserve once after the last await; never overwrite the
@@ -432,6 +473,7 @@ class AcceptedSourceDispatch:
         if self._retry.get(job['id'],(0,0))[0]>now:return None
         entry,identity=await self._entry(job)
         self._current(run,identity,generation)
+        if not self._delivery_observed(job):return None
         if entry.apply_receipt is None:return None
         try:
             await self.spool.publish_outcome(identity['operation_key'],writer_generation=identity['writer_generation'])
@@ -460,6 +502,12 @@ class AcceptedSourceDispatch:
         self.queue.shared_reads.durable_result_settled(job['id'],job['claim'],result)
         _LOG.info('source_outcome_remote_durable command_sha256=%s sequence=%s status=%s',entry.command_sha256,entry.command.sequence,result)
         return dict(job_id=job['id'],claim=job['claim'],status=result)
+
+    def _delivery_observed(self,job):
+        with self.queue.connect(write=False) as db:
+            return db.execute('SELECT 1 FROM rkb_control_delivery_receipts '
+                'WHERE job_id=? AND run_id=? AND claim=? AND command_sha256=?',
+                (job['id'],job['run_id'],job['claim'],json.loads(job['identity'])['command_sha256'])).fetchone() is not None
 
     async def aclose(self):
         cancelled=False

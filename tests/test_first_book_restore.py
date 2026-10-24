@@ -235,19 +235,19 @@ async def scenario(e):
             events.append(('apply',command.sequence,self.schema_version))
             return receipt_wire(receipt)
         async def finish(self, b, handle, **args):
-            assert self.schema_version==database.schema_version and len(self.ledger)==24
+            assert self.schema_version==database.schema_version and len(self.ledger)==20
             assert all(self.ledger[n]==receipt for n,receipt in original_receipts.items())
             current=json.loads(args['control_bytes'])
             assert current['schema_version']==database.schema_version
             assert not {'catalog_sha256','acl_sha256','closure_transitions'} & current.keys()
             assert current['registry_sha256']==history.registry_hash
-            events.append(('finish',24,self.schema_version))
+            events.append(('finish',20,self.schema_version))
             self.finished = True
             return 'retained-native-capability'
         async def verify_initialized(self, b, reference):
             assert self.finished and reference == 'retained-native-capability'
             return dict(database=database.wire(), identity=['fixture-run', 'fixture-nonce', 'fixture-incarnation'],
-                        applied_sequence=24,schema_version=database.schema_version)
+                        applied_sequence=20,schema_version=database.schema_version)
     native = Native()
     physical = PhysicalSnapshotRecovery(journal, DatasetSnapshotTransport(store), native,
         registry=registry, history_verifier=history, maintenance_guard=guard,
@@ -264,15 +264,15 @@ def test_first_book_context_ships_actual_import_and_telegram_modules():
 
 
 @pytest.mark.asyncio
-async def test_dataset2_base20_ignores_old_closure_restores_outcomes_and_replays_only_data(env):
+async def test_dataset2_base20_ignores_old_closure_and_becomes_ready_before_tail(env):
     s = await scenario(env)
     proof = await s.physical.recover(s.manifest, s.binding, database=s.database,
         expected_versions=s.versions, expected_schema_version=s.database.schema_version,
         identity=('fixture-run', 'fixture-nonce', 'fixture-incarnation'), operation_key='first-context-restore')
-    assert proof.applied_sequence == 24
+    assert proof.applied_sequence == 20
     assert s.events[0] == ('prepare',20,11)
     assert s.events[-1][0] == 'finish'
-    assert [e[1] for e in s.events if e[0] == 'apply'] == list(range(21,25))
+    assert not [e for e in s.events if e[0] == 'apply']
     for command in s.originals:
         remote = await s.journal.remote_outcome(command.operation_key)
         assert remote is not None
@@ -412,6 +412,10 @@ async def test_dataset2_history_verifies_original_receipts_with_only_current_rou
     s=await scenario(env)
     await s.physical.recover(s.manifest,s.binding,database=s.database,expected_versions=s.versions,
         identity=('fixture-run','fixture-nonce','fixture-incarnation'),operation_key='current-registry-history')
+    for command,seal in await s.physical._tail(await s.journal.head(),
+            (await s.physical._manifest(s.manifest))[2],20):
+        await s.native.apply(s.binding,'retained-native-session',command_bytes=command.encode(),
+            handler_sha256=s.physical.registry.resolve(command).fingerprint)
     accepted={};ref=(await s.journal.head()).reference
     while ref is not None:
         previous,raws=await s.journal.read_segment(ref)

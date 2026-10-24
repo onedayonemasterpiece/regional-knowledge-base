@@ -52,12 +52,13 @@ class Native:
             command_sha256=sha(c.encode()),status='rejected_precondition',outcome_sha256=sha(body),
             duplicate=False,outcome_b64=base64.b64encode(body).decode())
     async def finish(self,b,handle,**kwargs):
-        assert self.e.journal.prefix+'/outcomes/'+sha(self.e.cmd.operation_key.encode()) in self.e.store.objects
+        assert kwargs['expected_tail']==() and kwargs['final_head'] is None
+        assert self.e.journal.prefix+'/outcomes/'+sha(self.e.cmd.operation_key.encode()) not in self.e.store.objects
         self.events.append('rollover-and-readiness');self.final=json.loads(kwargs['control_bytes'])
         return 'opaque-native-capability-reference'
     async def verify_initialized(self,b,reference):
         assert reference=='opaque-native-capability-reference'
-        return dict(database=self.database,identity=['run','nonce','inc'],applied_sequence=1,schema_version=self.database['schema_version'])
+        return dict(database=self.database,identity=['run','nonce','inc'],applied_sequence=0,schema_version=self.database['schema_version'])
 
 
 @asynccontextmanager
@@ -71,7 +72,7 @@ def decoder(wire):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,monkeypatch):
+async def test_snapshot_prefix_becomes_ready_before_pending_tail_and_keeps_original_claim(env,monkeypatch):
     pg=Pg();b=binding();history=verifier(env,pg,b,monkeypatch)
     await history.establish_genesis(b)
     blob=BlobRef(env.journal.prefix+'/snapshots/blobs/'+'a'*64,123,'a'*64,'"native-version-1"')
@@ -91,15 +92,14 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
     monkeypatch.setitem(sys.modules,'regional_knowledge.kaggle_source_commands',SimpleNamespace(decode_receipt=decoder))
     database=OwnedDatabase('VERIFIED_INITIALIZED', 'db-source', 'writer-2', '/kaggle/temp/restore/socket', 'rkb', ownership_evidence='synthetic-owned-restore')
     proof=await controller.recover(base, b, database=database, expected_versions=versions(), identity=('run', 'nonce', 'inc'), operation_key='recovery-1')
-    assert native.events==['capture','prepare','apply','rollover-and-readiness']
-    assert proof.applied_sequence==1 and json.loads(proof.control)['heads'][0][0]==SOURCE
+    assert native.events==['capture','prepare','rollover-and-readiness']
+    assert proof.applied_sequence==0 and json.loads(proof.control)['heads']==[]
     restored=await env.spool.get(env.cmd.operation_key)
-    assert restored.apply_state=='REJECTED_PRECONDITION' and restored.outcome_state=='DURABLE'
+    assert restored.apply_state=='SENT_UNKNOWN' and restored.outcome_state=='NOT_SENT'
     with env.q.connect(write=False) as db:
         job=db.execute("select state,result,identity from jobs where id='old-accepted-job'").fetchone()
-        assert job['state']=='done' and json.loads(job['result'])['remote_outcome_durable'] is True
+        assert job['state']=='pending' and job['result'] is None
         assert json.loads(job['identity'])==old_identity  # Original writer/actor/bytes remain audit evidence.
-    assert json.loads(proof.control)['heads'][0][3]==1
     assert len(transport.verifications)==2
     with pytest.raises(SnapshotError,match='proof_unknown'):
         await replace(proof).verify_for(database,'run','nonce','inc')
@@ -108,7 +108,8 @@ async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,
         await proof.verify_for(database,'run','nonce','inc')
     assert await controller.rebind(proof,new_binding) is proof
     pointer=await controller.promote(proof,new_binding,expected_token=None)
-    assert json.loads(pointer.data)['verified_cursor']==1
+    assert json.loads(pointer.data)['verified_cursor']==0
+    assert json.loads(pointer.data)['verified_head'] is None
     assert json.loads(pointer.data)['manifest']==base.wire()
 
 

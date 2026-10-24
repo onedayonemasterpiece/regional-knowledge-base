@@ -184,7 +184,8 @@ async def test_checkpoint_pending_releases_assignment_without_saved_and_promotes
 async def test_concurrent_channel_pollers_reserve_one_remote_publication(accepted):
     e=accepted;s=e.s;job,work,frame=await dispatch(e)
     await release(e,work)
-    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
+    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler),
+        delivery=(job,s.run,'incarnation-a',frame['claim']))
     original_entry=e.bridge._entry;original_reconcile=e.bridge.reconcile
     both_entered=asyncio.Event();finish_entry=asyncio.Event();finish_publication=asyncio.Event()
     entered=[];started=[]
@@ -410,10 +411,57 @@ async def test_restored_dataset_cursor_dispatches_pending_command_without_resett
     s.a.discard_unsent(work)
     with s.q.connect(write=False) as db:
         assert db.execute('SELECT state FROM jobs WHERE id=?',(job,)).fetchone()[0] in ('pending','claimed')
+
     # A lost cursor cannot grant a second dispatch just because the constructor
     # sentinel is still set; receipt/UNKNOWN checks remain on their old path.
     e.spool.invalidate_source_history()
     assert e.bridge.maintenance_blocks_dispatch()
+
+
+@pytest.mark.asyncio
+async def test_old_apply_receipt_replays_on_ordinary_queue_after_prefix_ready(accepted):
+    """Preserve old receipts, resume without a live client and bind new writer."""
+    e=accepted;s=e.s
+    old,work,frame=await dispatch(e)
+    await e.bridge.receive(response(e,work,frame),run_id=s.run,token=s.token,generation=s.generation)
+    await e.bridge.reconcile(run_id=s.run,token=s.token,generation=s.generation)
+    await release(e,work)
+    original=await e.spool.get(e.command.operation_key)
+    with s.q.connect() as db:
+        # Only the synthetic fixture changes execution identity. The canonical
+        # receipt/command and the old delivery itself remain retained.
+        db.execute("UPDATE jobs SET run_id='previous-owned-run' WHERE id=?",(old,))
+        retained=dict(db.execute('SELECT * FROM jobs WHERE id=?',(old,)).fetchone())
+    binding=SimpleNamespace(database_generation='synthetic-db',run_id=s.run)
+    current=lambda value:value is binding
+    cursor=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},current=current)
+    assert cursor.applied_sequence==0 and cursor.accepted_sequence==1 and len(cursor.pending)==1
+    assert (await e.spool.get(e.command.operation_key)).apply_receipt==original.apply_receipt
+    e.bridge.binding_current=lambda **v:(v['run_id'],v['writer_generation'])==(s.run,'writer-2')
+    s.a._commands.clear()  # API restart has no caller authority context in RAM.
+    new=await e.bridge.resume_pending(cursor,writer_generation='writer-2')
+    assert new!=old
+    assert await e.bridge.resume_pending(cursor,writer_generation='writer-2')==new
+    following=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert following.document_payload['id']==new
+    assert following.document_payload['writer_generation']=='writer-2'
+    assert base64.b64decode(following.document_payload['command_b64'])==e.command.encode()
+    s.a.mark_work_sent(following)
+    # A retained old apply must never settle this new delivery before PG replies.
+    assert await e.bridge.poll_settlement(run_id=s.run,token=s.token,generation=s.generation,job_id=new) is None
+    assert await e.bridge.reconcile(run_id=s.run,token=s.token,generation=s.generation,job_id=new) is None
+    assert s.q.result(s.auth.p.owner.subject,new)['state']=='claimed'
+    request=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+        **dict(following.document_payload),compute_claim=following.compute_claim,
+        dispatch_generation=following.dispatch_generation)
+    await e.bridge.receive(response(e,following,request),run_id=s.run,token=s.token,generation=s.generation)
+    await e.bridge.reconcile(run_id=s.run,token=s.token,generation=s.generation)
+    await release(e,following)
+    advanced=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},current=current)
+    assert advanced.applied_sequence==1 and advanced.pending==()
+    with s.q.connect(write=False) as db:
+        assert dict(db.execute('SELECT * FROM jobs WHERE id=?',(old,)).fetchone())==retained
+    assert (await e.spool.get(e.command.operation_key)).apply_receipt==original.apply_receipt
 
 
 @pytest.mark.asyncio
@@ -555,7 +603,9 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
     second=await e.bridge.enqueue(s.auth.p.admin,successor.operation_key,writer_generation='writer-1')
     assert s.q.result(s.auth.p.owner.subject,second)['state']=='pending'
     binding=SimpleNamespace(database_generation='synthetic-db',run_id=s.run)
-    cursor=await e.spool.dataset_cursor(binding,control={'sequence':0,'heads':[]},
+    # A verified physical prefix, not an old local receipt, proves PG presence.
+    cursor=await e.spool.dataset_cursor(binding,control={
+        'sequence':e.command.sequence if phase!='unknown' else 0,'heads':[]},
         current=lambda value:value is binding)
     assert cursor.accepted_sequence==successor.sequence
     assert cursor.applied_sequence==(e.command.sequence if phase!='unknown' else 0)

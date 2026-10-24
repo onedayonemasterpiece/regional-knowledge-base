@@ -359,8 +359,9 @@ class TargetServiceStartup:
     async def _dataset_coverage(self,binding):
         """READY restored Dataset + retained apply receipts is the cursor.
 
-        The physical restore already checked the archive and replayed its
-        suffix. API reconnect uses the same saved control and local receipts;
+        The physical restore checked the archive and upgraded the SQL ledger.
+        Its suffix drains through ordinary accepted-command dispatch after READY.
+        API reconnect uses the same saved control and current-run deliveries;
         neither path opens a lifetime source-history verification session.
         """
         from .recovery_journal import ObjectRef
@@ -503,7 +504,11 @@ class TargetServiceStartup:
                 # history/read coverage refreshing beside the same barrier.
                 self.schema_migrations.kick(self.binding)
                 return self.reads_current()
-            if dataset:await self._settle_restored_source_jobs(coverage)
+            if dataset:
+                await self._settle_restored_source_jobs(coverage)
+                if self.config.queue._source_commands is not None:
+                    await self.config.queue._source_commands.resume_pending(coverage,
+                        writer_generation=self.config.writer_generation)
             if self.dataset_checkpoints is not None:
                 # Kaggle Dataset can take minutes to become ready. Capture
                 # continues through the existing background owner, never
