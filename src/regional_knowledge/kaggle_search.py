@@ -278,7 +278,11 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                     if stage_timings is not None:
                         stage_timings["hydrate_ms"] = (loop.time() - began) * 1000
                     result = SearchResult(tuple(StorySearchEvidence(r[1]) if story else
-                                              SearchEvidence(str(r[0]), str(r[1]), *r[2:])
+                                              (SearchEvidence(str(r[0]), str(r[1]), *r[2:6],
+                                                  catalog_metadata=r[6], passage_language=r[7],
+                                                  physical_page_index=r[8], printed_page_number=r[9])
+                                               if catalog_titles else
+                                               SearchEvidence(str(r[0]), str(r[1]), *r[2:]))
                                               for r in rows if not story or r[1] is not None), limitation=(
                         "bounded_candidate_fusion_unverified" if source_ids is not None
                         else "bounded_ann_recall_unverified"), branch_ranks=ranks)
