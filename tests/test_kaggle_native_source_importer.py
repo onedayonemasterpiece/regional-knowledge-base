@@ -211,6 +211,35 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('authored_cursor',[None,'4'])
+async def test_status_after_pause_returns_next_unaccepted_physical_page(native_intake,authored_cursor):
+    s=native_intake
+    book=await start(s)
+    payload=batch(s,book,first=0,count=4)
+    if authored_cursor is None:
+        assert (await stage(s,book,payload)).next_action=='wait'
+    else:
+        from regional_knowledge.kaggle_import_contracts import TargetSourceImportInput
+        research=TargetSourceImportInput.model_validate({'research':dict(state='pending',
+            continuation=dict(tool='book_pages',arguments=dict(
+                ingestion_id=book.ingestion_id,cursor=authored_cursor,batch_size=1)))})
+        assert (await call(s,book,'stage',payload=payload,source_import=research)).next_action=='wait'
+    for component in ('stage','text','semantic'):
+        await finish(s,book)
+        status=await call(s,book,'status')
+    assert status.state=='staged' and status.next_action=='continue_pages'
+    assert status.next_cursor=='4'  # APPLIED physical 0–3; resumed book_pages starts at 4
+    count=operation_count(s)
+    # A later fresh status must recover the same continuation from durable
+    # stage/research data without stage replay or a new import.
+    resumed=await call(s,book,'status')
+    assert resumed.next_cursor=='4' and resumed.next_action=='continue_pages'
+    assert operation_count(s)==count
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    assert row['stage_json'] is None  # no second model payload table
+
+
+@pytest.mark.asyncio
 async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_vectors(native_intake):
     s = native_intake
     result = await start(s)
@@ -666,7 +695,8 @@ async def test_status_releases_verified_upload_and_current_file_dedup_survives_o
     row=s.importer._row(s.principal.subject,first.ingestion_id)
     # Crash seam: receipt was persisted before its acquiring -> staging save.
     s.importer._save(row,phase='acquiring')
-    assert (await call(s,first,'status')).source_archive_status=='verified'
+    initial=await call(s,first,'status')
+    assert initial.source_archive_status=='verified' and initial.next_cursor=='0'
     assert s.importer._row(s.principal.subject,first.ingestion_id)['phase']=='staging'
     second=await start(s,file_id='second-upload')
     assert second.ingestion_id!=first.ingestion_id
