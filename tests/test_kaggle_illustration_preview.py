@@ -34,6 +34,9 @@ from test_control_spool import handler,withdraw as withdraw_command
 @pytest.mark.parametrize('noisy',[False,True])
 async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,monkeypatch,withdraw,slow,noisy):
     s=service;s.adapter.available=True
+    s.startup.backend.read_telemetry=s.target.telemetry
+    product=[]
+    monkeypatch.setattr('regional_knowledge.product_telemetry.emit_product_event',product.append)
     withdrawal=handler()
     s.config.spool.registry=HandlerRegistry([
         *[h for h in current_registry().handlers.values() if h.route!=withdrawal.route],withdrawal])
@@ -74,6 +77,13 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
         assert await s.target.admission.finish_read(s.target.run,s.target.token,s.target.generation,result)
         data,wire=await pending
         await release(s.target,dispatched)
+    await asyncio.to_thread(s.target.telemetry._queue.join)
+    terminal=[r for r in s.target.records if r.get('event')=='read_attempt_terminal']
+    assert len(terminal)==1
+    assert (terminal[0]['status'],terminal[0]['reason'])== (
+        ('unavailable','evidence_withdrawn') if withdraw else ('ok',None))
+    projected=[r for r in product if r.get('event')=='read.terminal']
+    assert len(projected)==1 and projected[0]['status']==terminal[0]['status']
     if withdraw:
         assert b'"type":"image"' not in wire
     else:
