@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import psycopg
 from regional_knowledge.kaggle_owned_pg import configure_native_roles
 from regional_knowledge.kaggle_passage_illustrations import read_passage_illustrations
 from regional_knowledge.kaggle_source_read import SourceReadRequest,execute_source_read
@@ -66,10 +67,14 @@ async def test_accepted_figure_reader_and_same_page_negative(image_pg_sql18):
                 async with conn.cursor() as cursor:
                     descriptors=await read_passage_illustrations(cursor,cursor.execute,
                         source_id=SOURCE,passage_id=str(passage))
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                async with conn.transaction():
+                    await conn.execute('SELECT original_receipt FROM rkb_v4.source_stage_sessions')
         assert len(descriptors)==1 and descriptors[0]['illustration_id']==str(figure)
         result=await execute_source_read(request,acquire=lambda:role('rkb_reader'))
         assert result.status=='ok' and result.records[0]['physical_page_index']==0
         assert result.records[0]['illustration_id']==str(figure)
+        assert result.records[0]['ingestion_id']==doc['ingestion_id']
         assert 'crop_binding' not in result.records[0]
         async with connection.transaction():
             await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SOURCE,))

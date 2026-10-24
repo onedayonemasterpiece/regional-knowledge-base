@@ -1,8 +1,11 @@
 """Direct preview through real auth, admission, source issuer and MCP middleware."""
 import asyncio
+from contextlib import contextmanager
+from dataclasses import replace
 import base64
 from io import BytesIO
 import json
+import sqlite3
 from types import SimpleNamespace as N
 
 from PIL import Image,ImageDraw
@@ -48,6 +51,7 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
         dispatched=await work(s.target)
         assert dispatched.query.operation=='source_illustration'
         figure=dict(source_id=SOURCE,illustration_id=ILLUSTRATION,page_id=PAGE,
+            ingestion_id='internal-import-identity',
             source_region_id=REGION,physical_page_index=0,caption_text='Accepted caption',
             bbox=dict(left=100,top=200,right=300,bottom=500),display_rotation_degrees=90)
         result=SourceReadResult(request_id=dispatched.query.request_id,
@@ -72,3 +76,33 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
             red,green,blue=crop.getpixel((150,100))
             assert red>220 and green<40 and blue<40
         assert b'crop_binding' not in wire
+        assert b'internal-import-identity' not in wire
+
+
+@pytest.mark.asyncio
+async def test_preview_uses_exact_accepted_ingestion_when_source_has_stale_receipt(tmp_path):
+    from regional_knowledge.original_intake_controller import OriginalIntakeController
+    from test_source_stage import original
+    receipt=original();stale=replace(receipt,ingestion_id='90000000-0000-0000-0000-000000000009')
+    path=tmp_path/'originals.sqlite'
+    @contextmanager
+    def connect(**kwargs):
+        db=sqlite3.connect(path);db.row_factory=sqlite3.Row
+        try:
+            with db:yield db
+        finally:db.close()
+    with connect() as db:
+        db.execute('''CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,
+            spec_json TEXT,receipt_json TEXT,storage_sha256 TEXT,acquisition_json TEXT)''')
+        for item,handle in ((stale,'stale'),(receipt,'current')):
+            db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?,?,?,?)',(
+                item.ingestion_id,'import-owner',json.dumps(dict(source_id=item.source_id)),
+                json.dumps(item.wire()),'store',json.dumps(dict(handle=handle))))
+    owner=object.__new__(OriginalIntakeController)
+    owner.queue=N(connect=connect);owner._storage='store';owner.binding_current=lambda binding:True
+    async def render(binding,record,index,cursor,*,restore):
+        assert record['handle']=='current' and index==0
+        return record,{},b'only-internal-page-bytes'
+    owner._page_data=render
+    assert await owner.illustration_page(dict(source_id=receipt.source_id,
+        ingestion_id=receipt.ingestion_id,physical_page_index=0),object())==b'only-internal-page-bytes'

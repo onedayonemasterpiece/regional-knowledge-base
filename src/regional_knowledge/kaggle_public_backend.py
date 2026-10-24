@@ -538,7 +538,8 @@ class KaggleSourceBackend:
                             return CallToolResult(isError=True,content=[TextContent(type='text',
                                 text=json.dumps(dict(status=value.status,reason=value.reason)))])
                         return CallToolResult(content=[TextContent(type='text',text=json.dumps(
-                            dict(status='ready',metadata=value.records[0]),ensure_ascii=False)),
+                            dict(status='ready',metadata={k:v for k,v in value.records[0].items()
+                                if k!='ingestion_id'}),ensure_ascii=False)),
                             ImageContent(type='image',data=base64.b64encode(pixels).decode('ascii'),
                                 mimeType='image/jpeg')])
                     output=render(gated.result)

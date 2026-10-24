@@ -121,6 +121,7 @@ async def configure_native_roles(admin,*,selected_sql,dbname,create_roles=True):
             'ON rkb_v4.source_stage_pages TO rkb_reader')
     if len(selected_sql)>=37:
         await admin.execute('GRANT SELECT ON rkb_v4.source_illustrations TO rkb_reader')
+        await admin.execute('GRANT SELECT(source_id,ingestion_id) ON rkb_v4.source_stage_sessions TO rkb_reader')
         await admin.execute('GRANT SELECT(source_id,batch_index,component,manifest,media,figure_ids) '
             'ON rkb_v4.source_batch_publications TO rkb_reader')
     # Schema14 reuses the same accepted-source metadata/projection readers.

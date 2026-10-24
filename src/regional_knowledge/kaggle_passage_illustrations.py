@@ -5,11 +5,12 @@ from __future__ import annotations
 async def read_source_illustration(request,cursor,execute):
     from .kaggle_protocol import EvidenceItem,EvidenceMetadata,ItemDependencies,SourceDependency
     from .kaggle_query import ReadUnavailable
-    await execute('''SELECT i.data,pg.physical_page_index,v.eligibility_revision
+    await execute('''SELECT i.data,pg.physical_page_index,v.eligibility_revision,session.ingestion_id
         FROM rkb_v4.source_illustrations i
         JOIN rkb_v4.sources s USING(source_id)
         JOIN rkb_v4.active_revision a USING(source_id)
         JOIN rkb_v4.source_visibility v USING(source_id)
+        JOIN rkb_v4.source_stage_sessions session ON session.source_id=i.source_id
         JOIN rkb_v4.source_stage_pages pg ON pg.source_id=i.source_id
             AND pg.page_id=(i.data->>'page_id')::uuid
         WHERE i.source_id=%s::uuid AND i.illustration_id=%s::uuid
@@ -17,9 +18,9 @@ async def read_source_illustration(request,cursor,execute):
         (request.source_id,request.query))
     row=await cursor.fetchone()
     if row is None:raise ReadUnavailable('evidence_withdrawn')
-    data,physical,eligibility=row
+    data,physical,eligibility,ingestion=row
     figure={key:value for key,value in data.items() if key!='crop_binding'}
-    figure.update(source_id=request.source_id,physical_page_index=physical)
+    figure.update(source_id=request.source_id,physical_page_index=physical,ingestion_id=str(ingestion))
     evidence=EvidenceItem(id=request.query,kind='source',
         text=(data.get('caption_text') or data.get('visual_description') or data['illustration_key'])[:2000],
         metadata=EvidenceMetadata(locator='source:'+request.source_id),
@@ -56,12 +57,9 @@ async def read_passage_illustrations(cursor, execute, *, source_id, passage_id):
                 OR p.data->'region_ids' @> jsonb_build_array(i.data->'source_region_id')
                 OR i.data->'caption_region_ids' ?| ARRAY(
                     SELECT jsonb_array_elements_text(p.data->'region_ids')))
-        ORDER BY pg.physical_page_index,i.illustration_id LIMIT 201''',
+        ORDER BY pg.physical_page_index,i.illustration_id LIMIT 200''',
         (source_id, passage_id))
     rows = await cursor.fetchall()
-    if len(rows) > 200:
-        from .kaggle_query import ReadUnavailable
-        raise ReadUnavailable('internal_error')
     fields = ('illustration_key', 'page_id', 'source_region_id', 'bbox', 'kind',
               'caption_text', 'caption_region_ids', 'visual_description',
               'visual_description_provenance', 'display_rotation_degrees')

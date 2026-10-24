@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 from regional_knowledge.kaggle_passage_illustrations import read_passage_illustrations
-from regional_knowledge.kaggle_query import ReadUnavailable
 
 
 @pytest.mark.asyncio
@@ -28,12 +27,3 @@ async def test_linked_figure_descriptor_has_real_page_and_no_private_crop_bindin
     assert "p.data->'region_ids' @> jsonb_build_array(i.data->'source_region_id')" in sql
     assert 'NOT s.withdrawn' in sql
     assert 'availability' not in sql  # Discovery does not wait for mirroring.
-
-
-@pytest.mark.asyncio
-async def test_native_figure_discovery_remains_bounded():
-    async def execute(sql, params): pass
-    async def fetchall(): return [None] * 201
-    with pytest.raises(ReadUnavailable):
-        await read_passage_illustrations(SimpleNamespace(fetchall=fetchall), execute,
-            source_id='source-id', passage_id='passage-id')

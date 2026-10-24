@@ -429,8 +429,9 @@ class OriginalIntakeController:
         await recheck()
         with self.queue.connect(write=False) as db:
             row=db.execute('''SELECT * FROM rkb_original_intakes
-                WHERE json_extract(spec_json,'$.source_id')=? AND receipt_json IS NOT NULL
-                AND storage_sha256=? LIMIT 1''',(figure['source_id'],self._storage)).fetchone()
+                WHERE ingestion_id=? AND json_extract(spec_json,'$.source_id')=?
+                AND receipt_json IS NOT NULL AND storage_sha256=?''',
+                (figure['ingestion_id'],figure['source_id'],self._storage)).fetchone()
         if row is None:raise OriginalIntakeError('original_verified_receipt_required')
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
         record=json.loads(row['acquisition_json'])
