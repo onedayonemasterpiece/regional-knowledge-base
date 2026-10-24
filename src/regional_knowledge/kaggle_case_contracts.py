@@ -202,8 +202,7 @@ def validate_case_record(request,record):
                 if set(payload)!=fields|{'text_end','verification','visual_confirmation','physical_page_index','page_provenance','region_provenance'}:
                     raise ValueError('unexpected evidence payload fields')
                 exact_model(EvidenceAdd,{k:payload[k] for k in fields})
-                from .source_manifest import PAGE_KEYS,REGION_KEYS
-                if (set(payload['page_provenance'])!=set(PAGE_KEYS.split()) or set(payload['region_provenance'])!=set(REGION_KEYS.split())
+                if (type(payload['page_provenance']) is not dict or type(payload['region_provenance']) is not dict
                         or payload['page_provenance']['page_id']!=payload['page_id']
                         or payload['region_provenance']['region_id']!=payload['region_id']
                         or payload['region_provenance']['page_id']!=payload['page_id']
