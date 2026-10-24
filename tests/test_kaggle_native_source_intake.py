@@ -58,13 +58,16 @@ class Queue:
 class Spool:
     def __init__(self):
         self._lock=asyncio.Lock(); self.entries={}; self.seals=[]; self.sequence=0; self.accepted=0
-        self.unknown_once=False; self.journal_unknown_once=False; self.external_pending=False; self.journal=NS(head=self.head)
+        self.unknown_once=False; self.journal_unknown_once=False; self.external_pending=False; self.external_unknown=False
+        self.own_unknown=False; self.own_pending=False; self.journal=NS(head=self.head)
     async def head(self): return NS(reference=NS(last_sequence=self.accepted)) if self.accepted else None
     async def get(self,key):
         if key not in self.entries: raise SpoolError('control operation not found')
         return self.entries[key]
-    async def scope_state(self):
-        return dict(pending=self.external_pending,unknown=False,sequence=self.sequence,accepted_sequence=self.accepted)
+    async def scope_state(self,source_ids=None):
+        return dict(pending=self.external_pending if source_ids is None else self.own_pending,
+            unknown=self.external_unknown if source_ids is None else self.own_unknown,
+            sequence=self.sequence,accepted_sequence=self.accepted)
     def _validate(self,c,generation): return c,b'unit-exact-wire',None
     async def read_facts(self,scope):
         return NS(database_generation='db',scope_sequence=self.accepted,covered_sequence=self.accepted,pending=False,unknown=False)
@@ -398,9 +401,27 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError): await self.stage()
         self.assertFalse(self.spool.entries)
 
-    async def test_global_unresolved_operation_blocks_allocation(self):
-        self.spool.external_pending=True
-        with self.assertRaisesRegex(IntakeFailure,'prior_write_pending'): await self.stage()
+    async def test_foreign_accepted_unknown_does_not_block_another_book(self):
+        self.spool.external_pending=True;self.spool.external_unknown=True
+        self.spool.sequence=self.spool.accepted=1
+        await self.stage()
+        self.assertEqual(self.pending().command.sequence,2)
+
+    async def test_own_unknown_still_blocks_allocation(self):
+        self.spool.own_unknown=True
+        with self.assertRaisesRegex(IntakeFailure,'prior_write_pending'):await self.stage()
+        self.assertFalse(self.spool.entries)
+
+    async def test_foreign_unaccepted_sequence_cannot_be_reused(self):
+        self.spool.sequence=1;self.spool.accepted=0
+        with self.assertRaisesRegex(IntakeFailure,'prior_write_pending'):await self.stage()
+        self.assertFalse(self.spool.entries)
+
+    async def test_journal_head_must_match_global_accepted_sequence(self):
+        self.spool.sequence=self.spool.accepted=1
+        async def stale_head():return None
+        self.spool.journal.head=stale_head
+        with self.assertRaisesRegex(IntakeFailure,'source_history_unavailable'):await self.stage()
         self.assertFalse(self.spool.entries)
 
     async def test_validate_is_inactive_seal_not_finalized(self):
