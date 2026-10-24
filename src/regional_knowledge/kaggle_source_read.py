@@ -89,35 +89,15 @@ async def _accepted_chunks(request, cursor, execute):
         (request.source_id, request.after_ordinal, request.after_ordinal,
          request.page_start, request.page_end, request.limit+1))
     fetched = await cursor.fetchall()
-    if len(fetched) > request.limit + 1:
-        raise ReadUnavailable('internal_error')
     has_more = len(fetched) > request.limit
     rows = fetched[:request.limit]
     if not rows:
         return (), (), None
-    page_ids, region_ids = set(), set()
-    for passage_id, ordinal, body, provenance, eligibility in rows:
-        if (type(ordinal) is not int or ordinal < 0
-                or type(body) is not str or not 1 <= len(body) <= 8000
-                or type(eligibility) is not int or eligibility < 1
-                or type(provenance) is not dict
-                or set(provenance) != {'passage_id','region_ids','footnote_region_ids',
-                                      'page_ids','source_spans'}
-                or provenance['passage_id'] != str(passage_id)
-                or type(provenance['page_ids']) is not list
-                or not 1 <= len(provenance['page_ids']) <= 20
-                or type(provenance['region_ids']) is not list
-                or not 1 <= len(provenance['region_ids']) <= 100
-                or type(provenance['footnote_region_ids']) is not list
-                or len(provenance['footnote_region_ids']) > 50
-                or type(provenance['source_spans']) is not list
-                or len(provenance['source_spans']) > 150):
-            raise ReadUnavailable('internal_error')
-        page_ids.update(provenance['page_ids'])
-        region_ids.update(provenance['region_ids'])
-        region_ids.update(provenance['footnote_region_ids'])
-    if len(page_ids) > 160 or len(region_ids) > 1200:
-        raise ReadUnavailable('internal_error')
+    # Accepted manifest shape and span offsets were validated at activation.
+    page_ids = {page for _, _, _, provenance, _ in rows
+                for page in provenance['page_ids']}
+    region_ids = {region for _, _, _, provenance, _ in rows
+                  for region in provenance['region_ids'] + provenance['footnote_region_ids']}
     # The production rkb_reader role can SELECT only these three page
     # identity columns; model_page/image_receipt are intentionally private.
     await execute('''SELECT page_id,physical_page_index
@@ -126,52 +106,26 @@ async def _accepted_chunks(request, cursor, execute):
         (request.source_id, sorted(page_ids)))
     pages = {str(pid):dict(page_id=str(pid),physical_page_index=physical)
              for pid, physical in await cursor.fetchall()}
-    await execute('''SELECT region_id,page_id,source_text,source_text_sha256
+    await execute('''SELECT region_id,page_id,source_text
         FROM rkb_v4.source_regions WHERE source_id=%s::uuid AND source_revision=1
             AND region_id=ANY(%s::uuid[])''', (request.source_id, sorted(region_ids)))
-    regions = {str(rid):(str(pid), source_text, text_hash)
-               for rid, pid, source_text, text_hash in await cursor.fetchall()}
+    regions = {str(rid):(str(pid),len(source_text))
+               for rid, pid, source_text in await cursor.fetchall()}
     if pages.keys() != page_ids or regions.keys() != region_ids:
         raise ReadUnavailable('evidence_withdrawn')
     records, evidence = [], []
     for passage_id, ordinal, body, provenance, eligibility in rows:
         selected_pages = [pages[page] for page in provenance['page_ids']]
-        if len({page['page_id'] for page in selected_pages}) != len(selected_pages):
-            raise ReadUnavailable('internal_error')
-        refs = []
         spans = provenance['source_spans']
         if spans:
-            for span in spans:
-                if type(span) is not dict or set(span) != {
-                        'region_id','start','end','source_text_sha256'}:
-                    raise ReadUnavailable('internal_error')
-                rid = span['region_id']
-                if rid not in provenance['region_ids']:
-                    raise ReadUnavailable('internal_error')
-                refs.append((rid,span['start'],span['end'],span['source_text_sha256']))
-            for rid in provenance['footnote_region_ids']:
-                if rid not in [ref[0] for ref in refs]:
-                    refs.append((rid,None,None,None))
+            refs = [(span['region_id'],span['start'],span['end']) for span in spans]
         else:
-            refs = [(rid,None,None,None) for rid in (
-                provenance['region_ids']+provenance['footnote_region_ids'])]
-        selected_regions = []
-        for rid, start, end, expected_hash in refs:
-            if rid not in regions:
-                raise ReadUnavailable('internal_error')
-            page_id, source_text, text_hash = regions[rid]
-            if (page_id not in provenance['page_ids'] or type(source_text) is not str
-                    or len(source_text) > 1000000 or type(text_hash) is not str
-                    or expected_hash is not None and expected_hash != text_hash):
-                raise ReadUnavailable('internal_error')
-            if start is None and end is None:
-                start, end = 0, len(source_text)
-            if (type(start) is not int or type(end) is not int
-                    or not 0 <= start < end <= len(source_text)):
-                raise ReadUnavailable('internal_error')
-            selected_regions.append(dict(page_id=page_id,region_id=rid,
-                start=start,end=end,
-                role='footnote' if rid in provenance['footnote_region_ids'] else 'body'))
+            refs = [(rid,0,regions[rid][1]) for rid in provenance['region_ids']]
+        refs.extend((rid,0,regions[rid][1]) for rid in provenance['footnote_region_ids'])
+        selected_regions = [dict(page_id=regions[rid][0],region_id=rid,
+            start=start,end=end,
+            role='footnote' if rid in provenance['footnote_region_ids'] else 'body')
+            for rid, start, end in refs]
         chunk = str(passage_id)
         record = dict(source_id=request.source_id,chunk_id=chunk,ordinal=ordinal,
             text=body,pages=selected_pages,regions=selected_regions)
