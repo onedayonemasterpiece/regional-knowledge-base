@@ -137,6 +137,50 @@ def test_cancel_ack_with_exact_persisted_native_log_retires_only_that_session(en
     assert row()['launch_state']=='terminal'
 
 
+def test_canceled_before_attach_accepts_empty_completed_log_fallback(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
+    api=API(row());api.phase='CANCEL_ACKNOWLEDGED';api.log=Response([])
+    proof=observe(api,row,now)
+    assert proof is not None and proof.log_bytes==2 and proof.status=='CANCEL_ACKNOWLEDGED'
+    assert [call[0]for call in api.calls]==['source','status','stream','source']
+    assert q.retire_provider_reservation(proof)
+    assert row()['launch_state']=='terminal'
+
+
+@pytest.mark.parametrize('field,value', [
+    ('runtime_incarnation','previous-attachment'),('connection_generation',1),
+    ('channel_active',1),('heartbeat',1001.),('attachment_conflict',1),('launch_nonce',None),
+])
+def test_empty_canceled_log_cannot_close_previously_active_or_legacy_run(env,field,value):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
+        db.execute('UPDATE runs SET '+field+'=? WHERE id=?',(value,rid))
+    api=API(row());api.phase='CANCEL_ACKNOWLEDGED';api.log=Response([])
+    assert observe(api,row,now) is None
+    assert row()['launch_state']=='dispatched'
+
+
+@pytest.mark.parametrize('phase',['ERROR','COMPLETE','RUNNING','QUEUED','CANCEL_REQUESTED'])
+def test_empty_fallback_requires_canceled_status_even_before_attach(env,phase):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
+    api=API(row());api.phase=phase;api.log=Response([])
+    assert observe(api,row,now) is None
+
+
+def test_empty_canceled_fallback_still_checks_source_after_stream(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
+    api=API(row());api.phase='CANCEL_ACKNOWLEDGED';api.log=Response([])
+    api.on_log=lambda:setattr(api,'source_nonce','another-nonce')
+    assert observe(api,row,now) is None
+
+
 @pytest.mark.parametrize('phase',['ERROR','CANCEL_ACKNOWLEDGED'])
 @pytest.mark.parametrize('field,value', [('source_id', 'wrong-run'),
     ('source_ref', 'other-owner/stable-notebook'), ('source_nonce', 'wrong-nonce')])

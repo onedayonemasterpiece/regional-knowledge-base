@@ -23,7 +23,7 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_OBSERVATION_SECONDS = 12
 MAX_PROOF_AGE_SECONDS = 30
 PIN = ('2.2.4', '0.1.37')
-CONTRACT = 'kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1'
+CONTRACT = 'kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v2'
 _SNAPSHOT = ('id', 'provider_ref', 'provider_version', 'launch_state', 'status',
              'launch_nonce', 'runtime_incarnation', 'connection_generation',
              'channel_active', 'attachment_conflict', 'heartbeat', 'started')
@@ -191,7 +191,7 @@ def _source(response, run):
     return sha256(source.encode()).hexdigest()
 
 
-def _persisted_log(response, deadline, monotonic):
+def _persisted_log(response, deadline, monotonic, *, allow_empty=False):
     ctype = response.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
     if ctype != 'application/json':
         response.close()
@@ -200,7 +200,7 @@ def _persisted_log(response, deadline, monotonic):
     records = json.loads(body)
     # The completed-session stream fallback is an array of native log records,
     # not a JSON RPC/error envelope, ordinary output listing, or empty EOF.
-    if type(records) is not list or not records:
+    if type(records) is not list or (not records and not allow_empty):
         return None
     for record in records:
         if (type(record) is not dict or set(record) != {'stream_name', 'time', 'data'}
@@ -246,7 +246,16 @@ def observe_version_terminal(api, run, *, clock=time.time, monotonic=time.monoto
                 budget[0] = MAX_LOG_BYTES
                 response = native.get_kernel_session_logs_stream(
                     _request('ApiGetKernelSessionLogsStreamRequest', ref, number))
-                log = _persisted_log(response, deadline, monotonic)
+                # A canceled session can finish before Python emits a record.
+                # Require the provider's completed JSON fallback, source-bound
+                # nonce and no prior channel/heartbeat activity. An empty body,
+                # live SSE or cancellation ACK alone still proves nothing.
+                empty_canceled=(phase=='CANCEL_ACKNOWLEDGED'
+                    and isinstance(run['launch_nonce'],str) and bool(run['launch_nonce'])
+                    and run['runtime_incarnation'] is None
+                    and run['connection_generation']==0 and not run['channel_active']
+                    and not run['attachment_conflict'] and run['heartbeat']==run['started'])
+                log = _persisted_log(response, deadline, monotonic,allow_empty=empty_canceled)
                 if log is None: return None
                 budget[0] = MAX_SOURCE_BYTES
                 last = _source(native.get_kernel(_request('ApiGetKernelRequest', ref, number)), run)
