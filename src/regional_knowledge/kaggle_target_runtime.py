@@ -436,10 +436,10 @@ class TargetRuntime:
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
             compatibility=ReadHandlerCompatibility(database_generation=readiness.database_generation, model_sha256=readiness.hashes['model'], dependency_sha256=readiness.hashes['dependency'],schema_version=readiness.schema_version))
-        async def invoke(frame, *, encode):
+        async def invoke(frame, *, encode, lease_current=None):
             from .query_telemetry import ReadRuntime, bind_read_runtime
             with bind_read_runtime(ReadRuntime(run_id,runtime_incarnation)):
-                return await self.read_handler_slot(frame,encode=encode)
+                return await self.read_handler_slot(frame,encode=encode,lease_current=lease_current)
         source_handler=None;history_handler=None
         if self.target.get('registry_sha256'):
             from .kaggle_source_commands import WorkerSourceExecutor

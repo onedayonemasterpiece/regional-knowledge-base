@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import time
 from uuid import UUID
 
 import psycopg
+from psycopg.pq import TransactionStatus
 
 from .kaggle_apply import ApplyExecutionError, ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef
@@ -179,6 +181,18 @@ class ControllerAcceptedProof:
         return self._sha
 
 
+class _ObservedPrepareConnection:
+    def __init__(self,connection):self.connection,self.canceled=connection,False
+    def __getattr__(self,name):return getattr(self.connection,name)
+
+    async def execute(self,query,*args,**kwargs):
+        try:return await self.connection.execute(query,*args,**kwargs)
+        except psycopg.errors.QueryCanceled:
+            if type(query) is str and query.lstrip().startswith('SELECT rkb_v4.prepare_source_batch_v1('):
+                self.canceled=True
+            raise
+
+
 class WorkerSourceExecutor:
     def __init__(self,*,acquire,registry,database,run_id,launch_nonce,runtime_incarnation,materializer=None):
         self.acquire,self.registry,self.database=acquire,registry,database
@@ -214,23 +228,43 @@ class WorkerSourceExecutor:
             # candidate effects, then apply canonical outcome in its own tx.
             await proof.verify_accepted(seal,command)
             from .kaggle_source_materializer import SourceMaterializationRejected
-            try:
-                await self.materializer(command,acquire=self.acquire,database=self.database)
-            except SourceMaterializationRejected as error:
-                # Deterministic invalid model input produces an ordinary
-                # rejected-precondition receipt, not a fabricated completion.
-                reason=str(error)
-                if not 1<=len(reason)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in reason):
-                    reason='invalid_model_input'
-                _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
-                    command.route,command.sequence,reason)
-            except psycopg.OperationalError:
-                # Connection/commit uncertainty cannot become a refusal.
-                raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
-            except psycopg.Error as error:
-                reject_reason='native_source_sql_rolled_back'
-                _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s',
-                    command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None))
+            for attempt in range(2):
+                observed=[]
+                @asynccontextmanager
+                async def observed_acquire():
+                    async with self.acquire() as connection:
+                        proxy=_ObservedPrepareConnection(connection)
+                        observed.append(proxy)
+                        yield proxy
+                try:
+                    await self.materializer(command,acquire=(
+                        observed_acquire if command.route=='source.batch.v1' else self.acquire),
+                        database=self.database)
+                except SourceMaterializationRejected as error:
+                    reason=str(error)
+                    if not 1<=len(reason)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in reason):
+                        reason='invalid_model_input'
+                    _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
+                        command.route,command.sequence,reason)
+                    break
+                except psycopg.errors.QueryCanceled as error:
+                    if (command.route=='source.batch.v1' and error.sqlstate=='57014'
+                            and attempt==0 and observed and observed[-1].canceled
+                            and not observed[-1].connection.closed
+                            and observed[-1].connection.info.transaction_status==TransactionStatus.IDLE):
+                        _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
+                            command.route,command.sequence)
+                        continue
+                    raise ApplyUnknown('source prepare unresolved; preserve original operation') from None
+                except psycopg.OperationalError:
+                    raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
+                except psycopg.Error as error:
+                    reject_reason='native_source_sql_rolled_back'
+                    _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s',
+                        command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None))
+                    break
+                else:
+                    break
         async with self.acquire() as connection:
             options=dict(journal=proof,seal=seal,command=command,
                 database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
