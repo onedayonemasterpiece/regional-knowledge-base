@@ -223,9 +223,7 @@ async def scenario(e):
             events.append(('prepare',20,self.schema_version))
             self.schema_version=database.schema_version
             events.append(('auto-migrate',20,self.schema_version))
-            from regional_knowledge.kaggle_pg_snapshot_native import archive_suffix_hash
-            return dict(handle='retained-native-session',archived_sequence=20,
-                archive_suffix_sha256=archive_suffix_hash(()))
+            return dict(handle='retained-native-session',archived_sequence=20)
         async def apply(self, b, handle, **args):
             command = decode_command(args['command_bytes'])
             assert handle == 'retained-native-session' and command.sequence > 20
