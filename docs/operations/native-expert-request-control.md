@@ -244,3 +244,41 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   any new account permission. Tests are synthetic. Run live owner/nonowner
   acceptance separately after authorized install with Shkiper; Opus reviews
   and merges source only.
+
+## 2026-10-24: Socket Mode as a second ingress (source-only)
+
+Kaliningrad Base app A0C9VJE0DHD and bot U0C9VJE31QX were observed
+by the sole live operator using Slack Socket Mode, without an HTTP Events URL.
+This source change uses the official Slack SDK async SocketModeClient over
+the existing websockets dependency, inside the current RKB API lifespan.
+No new service, LLM, external Request URL, Dataset delivery stages or grants.
+
+**Shkiper/owner-only installation conditions (not executed here):**
+
+- The existing private RKB_EXPERT_SLACK_INGRESS_CONFIG path may select
+  codec=rkb.expert-slack-socket.v1 with exactly app_id, team_id,
+  bot_user_id and nonempty allowed_channels, using the verified
+  installation identities. No HTTP signing secret is required for that
+  authenticated Socket Mode connection. The previous HTTP codec and
+  HMAC-verified endpoint are unchanged and cannot use the socket-only mode.
+- The already installed environment must provide existing SLACK_APP_TOKEN
+  (xapp, for SDK connections.open) and SLACK_BOT_TOKEN (xoxb, for
+  existing SlackChatSender). No new secret file, token, permission,
+  manifest or application install is created by source. Do not enable
+  the separate HTTP reply config simultaneously in socket-only mode.
+- Inside the same target startup lifespan the authenticated SDK listener
+  accepts only events_api/app_mention. Its original Events payload passes
+  the existing _verified_slack_observation app/team/bot/subtype check and
+  the SAME TargetExpertRequestControl.accept with verified human link,
+  current public_search grant and channel allowlist. The socket envelope
+  is ACKed only after the existing event_id row is locally committed
+  as received; unrelated/bot events ACK without recording a question.
+- From there PR383's existing ExpertSlackSearchReply owns the native
+  search, source withdrawal/ACL and group-public read gate, source/page/
+  quote formatting, one bot chat.postMessage in the original thread with
+  client_msg_id=event_id and UNKNOWN-no-resend CAS. The socket envelope_id
+  never substitutes for the original event_id. There is no agent executor.
+
+Actual owner/nonowner live acceptance remains NOT RUN. The external Slack
+Socket Mode connection, runtime configuration and E2E replay require
+separate operator authorization; only Opus may review and merge this source.
