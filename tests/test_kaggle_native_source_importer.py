@@ -468,57 +468,115 @@ async def test_unknown_status_retains_current_owner_output_fence(native_intake):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case_phase',[
-    'applied','rejected_precondition','apply_unknown','outcome_unknown','unaccepted',
-])
-async def test_known_foreign_case_does_not_hold_ordinary_book_stage_before_saved(native_intake,case_phase):
-    from regional_knowledge.disagreement_native import CASE_EDIT,case_handler,resolved_case_command
-    from test_disagreement_native import CASE,create
-
-    s=native_intake
-    book=await start(s)
-    pages=batch(s,book,count=1)
+@pytest.mark.parametrize('domain',['case','story_access','source_import','geo_manifest'])
+@pytest.mark.parametrize('phase',['applied','rejected_precondition','apply_unknown','outcome_unknown','unaccepted'])
+async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stage(native_intake,domain,phase):
+    """Real exact receipt/seal/owner/history gate, never a synthetic success flag."""
+    s=native_intake;book=await start(s);pages=batch(s,book,count=1)
     actor=s.t.auth.p.owner.subject
-    s.spool.registry=HandlerRegistry([*s.spool.registry.handlers.values(),
-        case_handler(CASE_EDIT,check_sha256='c'*64,apply_sha256='d'*64)])
-    command=resolved_case_command(sequence=1,operation_key='case-foreign-before-book-stage',
-        request_id='case-foreign-request',person_id=actor,logical_time='2026-10-24T00:00:00Z',
-        case_id=CASE,object_id=CASE,action='create',command=create(),
-        source_dependencies=[],attribution=dict(person_id=actor,recorded_by=actor,
-            route='owner',link_id=None,link_revision=None,human_reading_confirmed=False))
+    foreign_source='00000000-0000-0000-0000-000000000005'
+    if domain=='case':
+        from regional_knowledge.disagreement_native import CASE_EDIT,case_handler,resolved_case_command
+        from test_disagreement_native import CASE,create
+        handler=case_handler(CASE_EDIT,check_sha256='c'*64,apply_sha256='d'*64)
+        command=resolved_case_command(sequence=1,operation_key='foreign-case-before-book-stage',
+            request_id='foreign-case-request',person_id=actor,logical_time='2026-10-24T00:00:00Z',
+            case_id=CASE,object_id=CASE,action='create',command=create(),
+            source_dependencies=[],attribution=dict(person_id=actor,recorded_by=actor,
+                route='owner',link_id=None,link_revision=None,human_reading_confirmed=False))
+    elif domain=='story_access':
+        from regional_knowledge.story_editorial import STORY_ACCESS,editorial_handler,resolved_story_access_command
+        handler=editorial_handler(route=STORY_ACCESS,check_sha256='c'*64,apply_sha256='d'*64)
+        command=resolved_story_access_command(sequence=1,operation_key='foreign-story-access-before-book-stage',
+            request_id='foreign-story-access-request',person_id=actor,logical_time='2026-10-24T00:00:00Z',
+            source_id=foreign_source,story_id='00000000-0000-0000-0000-000000000006',
+            expected_revision=1,source_revision=1,eligibility_revision=1,
+            grantee_user_id=actor,capability='viewer')
+    elif domain=='source_import':
+        from regional_knowledge.source_import import source_import_handler
+        from test_source_import import VERSIONS,resolved
+        handler=source_import_handler(revisions=VERSIONS,check_sha256='c'*64,apply_sha256='d'*64)
+        command=resolved(sequence=1,operation_key='foreign-import-before-book-stage',
+            request_id='foreign-import-request',person_id=actor,source_id=foreign_source)
+    else:
+        from regional_knowledge.geo_manifest_commands import GEO_REVISIONS,GEO_MANIFEST_INSTALL,geo_manifest_handler
+        from regional_knowledge.recovery_journal import ExactCommand
+        handler=geo_manifest_handler(revisions=GEO_REVISIONS,check_sha256='c'*64,apply_sha256='d'*64)
+        command=ExactCommand(sequence=1,operation_key='foreign-geo-before-book-stage',
+            request_id='foreign-geo-request',person_id=actor,route=GEO_MANIFEST_INSTALL,
+            logical_time='2026-10-24T00:00:00Z',
+            schema_revision=GEO_REVISIONS.schema,function_revision=GEO_REVISIONS.function,
+            executor_revision=GEO_REVISIONS.executor,
+            ids={'manifest_id':'a'*64},
+            expected_revisions=dict(manifest_state='staging',manifest_index_sha256='b'*64,
+                installer_person_id=actor),
+            payload=canonical(dict(codec='rkb.geo-manifest-command.v1',action='activate')))
+
+    s.spool.registry=HandlerRegistry([*s.spool.registry.handlers.values(),handler])
     frozen,data,handler=s.spool._validate(command,'synthetic-db')
+    assert s.spool._resource_key(command,handler.dependency)!=book.document_id
     await s.spool._write(s.spool._stage,frozen,data,handler,'synthetic-db')
-    if case_phase!='unaccepted':
+    if phase!='unaccepted':
         await s.spool.seal(s.t.auth.p.admin,command.operation_key,
             predecessor=None,writer_generation='writer-1')
-    if case_phase in ('applied','rejected_precondition','outcome_unknown'):
-        raw=canonical(dict(case_id=CASE,object_id=CASE))
+    if phase in ('applied','rejected_precondition','outcome_unknown'):
+        raw=canonical(dict(verified_domain=domain))
+        status='applied' if phase=='outcome_unknown' else phase
         receipt=ApplyReceipt('synthetic-db',command.operation_key,command.sequence,
-            digest(data),case_phase if case_phase!='outcome_unknown' else 'applied',
-            raw,digest(raw),False)
+            digest(data),status,raw,digest(raw),False)
         await s.spool.record_apply(command.operation_key,receipt)
-    elif case_phase=='apply_unknown':
+    elif phase=='apply_unknown':
         await s.spool.mark_apply_sent(command.operation_key)
-    if case_phase=='outcome_unknown':
+    if phase=='outcome_unknown':
         await s.spool._write(s.spool._outcome_sent,command.operation_key)
+
     binding=s.startup.binding
     s.startup.coverage=await s.spool.dataset_cursor(binding,control=dict(sequence=0,heads=[]),
         current=lambda candidate:candidate==binding)
     scope=await s.spool.scope_state()
-    entry=await s.spool.get(command.operation_key)
-    assert scope['pending'] and entry.outcome_state!='DURABLE' and entry.remote_outcome is None
-    if case_phase in ('applied','rejected_precondition'):
+    old=await s.spool.get(command.operation_key)
+    assert scope['pending'] and old.outcome_state!='DURABLE' and old.remote_outcome is None
+    if phase in ('applied','rejected_precondition'):
         assert scope['accepted_sequence']==s.startup.coverage.applied_sequence==1
-        assert entry.apply_receipt is not None
+        assert old.accepted is not None and old.apply_receipt is not None
+        assert old.command_bytes==command.encode()
         result=await stage(s,book,pages)
         assert result.state=='processing'
         next_entry=await pending(s,book)
         assert next_entry.command.sequence==2 and next_entry.command.route==STAGE_ROUTE
+        assert (await s.spool.get(command.operation_key)).command_bytes==command.encode()
         assert (await s.spool.get(command.operation_key)).outcome_state=='NOT_SENT'
     else:
         with pytest.raises(ToolError,match='prior_write_pending'):
             await stage(s,book,pages)
         assert operation_count(s)==1
+
+
+@pytest.mark.asyncio
+async def test_own_terminal_source_never_borrows_another_actor_or_ingestion(native_intake):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    assert (await stage(s,book,payload)).state=='processing'
+    own=await pending(s,book)
+    binding=s.startup.binding
+    access=SimpleNamespace(binding=binding)
+    native=s.importer.native_intake
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    s.startup.coverage=await s.spool.dataset_cursor(binding,control=dict(sequence=0,heads=[]),
+        current=lambda candidate:candidate==binding)
+    scope=await s.spool.scope_state()
+    assert not native._inactive_prefix_current(access,row,scope)  # unapplied, not a safe terminal
+    await finish(s,book,publish=False)
+    s.startup.coverage=await s.spool.dataset_cursor(binding,control=dict(sequence=0,heads=[]),
+        current=lambda candidate:candidate==binding)
+    scope=await s.spool.scope_state()
+    assert scope['accepted_sequence']==scope['sequence']==s.startup.coverage.applied_sequence==1
+    assert native._inactive_prefix_current(access,row,scope)  # unchanged owned ingestion
+    foreign_actor=dict(row,person_id='00000000-0000-0000-0000-000000000099')
+    other_ingestion=dict(row,ingestion_id='00000000-0000-0000-0000-000000000098')
+    assert not native._inactive_prefix_current(access,foreign_actor,scope)
+    assert not native._inactive_prefix_current(access,other_ingestion,scope)
+    assert (await s.spool.get(own.command.operation_key)).command_bytes==own.command_bytes
+    assert (await s.spool.get(own.command.operation_key)).outcome_state=='NOT_SENT'
 
 
 @pytest.mark.asyncio
