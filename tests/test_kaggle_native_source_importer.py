@@ -119,11 +119,11 @@ async def native_intake(target, tmp_path):
     spool.close()
 
 
-async def start(s, *, file_id='synthetic-174-djvu'):
+async def start(s, *, file_id='synthetic-174-djvu', metadata=None):
     return await s.importer.book_ingest(command='start',principal=s.principal,
         file=ChatFile(file_id=file_id,download_url='https://files.example.test/174.djvu?private=fixture',
             mime_type='image/vnd.djvu',file_name='synthetic-174.djvu'),
-        payload=dict(title='Synthetic 174-page scanned source',authors=['Synthetic author'],
+        payload=metadata or dict(title='Synthetic 174-page scanned source',authors=['Synthetic author'],
             publication_year=1901,language='de',catalog={'kind':'book','publisher':'Synthetic publisher'}),
         source_import=options())
 
@@ -208,6 +208,61 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
     if publish:
         await s.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
     return entry
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('kind','cover_kind'),[
+    ('article','title_page'),('journal_issue','issue_cover')])
+async def test_native_root_article_or_journal_start_stage_accepted_without_second_importer(
+        native_intake,kind,cover_kind):
+    # Ordinary owned original receipt, stage, and immutable accepted text
+    # semantics are the SAME as for book, not legacy component manager output.
+    s=native_intake
+    metadata=dict(title='Synthetic '+kind+' title',authors=['Synthetic author'],
+        publication_year=1901,language='de',catalog=dict(kind=kind,publisher='Publisher',
+            volume='IV',issue='2',cover_page=0,cover_kind=cover_kind))
+    first=await start(s,metadata=metadata)
+    assert first.state=='staged' and first.next_action=='continue_pages'
+    reviewed=batch(s,first,count=1)
+    assert (await stage(s,first,reviewed)).state=='processing'
+    accepted_stage=await pending(s,first)
+    doc=json.loads(accepted_stage.command.payload)
+    assert doc['source']['metadata']['catalog']['kind']==kind
+    assert doc['source']['metadata']['catalog']['cover_kind']==cover_kind
+    assert doc['source']['metadata']['catalog']['cover_page']==0
+    frozen=accepted_stage.command_bytes
+    await finish(s,first)
+    assert (await call(s,first,'status')).state=='processing'
+    assert (await pending(s,first)).command.route=='source.batch.v1'
+    await finish(s,first)
+    assert (await call(s,first,'status')).state=='processing'
+    assert (await pending(s,first)).command.route=='source.batch.v1'
+    await finish(s,first)
+    assert (await call(s,first,'status')).state=='staged'
+    # Retrying the same packet must not allocate another durable stage command.
+    assert (await stage(s,first,reviewed)).state=='staged'
+    assert (await s.spool.get(accepted_stage.command.operation_key)).command_bytes==frozen
+    assert operation_count(s)==3
+    assert len(s.originals.calls)==1
+    assert not s.token_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('catalog',[
+    dict(kind='article',parent_id='00000000-0000-0000-0000-000000000005'),
+    dict(kind='article',region_ids=['00000000-0000-0000-0000-000000000006']),
+    dict(kind='journal_issue',region_ids=['00000000-0000-0000-0000-000000000006']),
+    dict(kind='not_registered'),
+])
+async def test_native_start_refuses_fake_issue_component_or_unknown_kind_before_original(
+        native_intake,catalog):
+    s=native_intake
+    with pytest.raises(ToolError):
+        await start(s,metadata=dict(title='Unsupported component',catalog=catalog))
+    assert not s.originals.calls
+    assert operation_count(s)==0
 
 
 @pytest.mark.asyncio

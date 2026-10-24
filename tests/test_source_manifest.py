@@ -77,6 +77,27 @@ def test_catalogue_and_exact_physical_unicode_provenance_survive_command_replay(
     assert command(manifest_payload()).encode()==c.encode()
 
 
+
+
+@pytest.mark.parametrize(('kind','cover_kind'),[
+    ('article','title_page'),('journal_issue','issue_cover')])
+def test_exact_original_manifest_preserves_root_article_journal_card(kind,cover_kind):
+    from regional_knowledge.contracts import CatalogMetadata
+    doc,metadata,receipt,proof,graph=inputs()
+    metadata=metadata.model_copy(update={'catalog':CatalogMetadata(kind=kind,publisher='Verified imprint',
+        cover_page=0,cover_kind=cover_kind)})
+    m=build_source_manifest(metadata=metadata,receipt=receipt,proof=proof,
+        graph=graph,semantic=doc['semantic'],passages=doc['passages'])
+    assert m['metadata']['catalog']['kind']==kind
+    assert m['metadata']['catalog']['cover_kind']==cover_kind
+    assert validate_source_manifest(m,source_id=receipt.source_id,original=receipt.original,
+        semantic=doc['semantic'],passages=doc['passages'])==m
+    metadata.catalog.parent_id=SOURCE
+    with pytest.raises(ValueError):
+        build_source_manifest(metadata=metadata,receipt=receipt,proof=proof,
+            graph=graph,semantic=doc['semantic'],passages=doc['passages'])
+
+
 @pytest.mark.parametrize('kind',['missing','source','receipt','page_gap','page_order','region_missing','span',
     'bbox','nonfinite','bool_dimension','metadata','preview','component','codec','passage_map','passage_body'])
 def test_incomplete_forged_or_unbound_manifest_refuses_before_acceptance(kind):
