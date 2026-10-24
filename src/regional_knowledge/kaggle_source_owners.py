@@ -124,10 +124,16 @@ def configured_expert_slack_ingress(target_startup, config_path):
         return value
 
     value = json.loads(private_bytes(config_path, 4096), object_pairs_hook=unique)
-    required = {'codec', 'app_id', 'team_id', 'bot_user_id',
-                'allowed_channels', 'signing_secret_file'}
+    # The trusted Socket Mode SDK uses a preauthenticated WebSocket and does
+    # not need an HTTP signing secret. The original HTTP v1 schema is unchanged.
+    socket_only=(type(value) is dict
+                 and value.get('codec')=='rkb.expert-slack-socket.v1')
+    required = {'codec', 'app_id', 'team_id', 'bot_user_id', 'allowed_channels'}
+    if not socket_only:
+        required.add('signing_secret_file')
     if (type(value) is not dict or set(value) != required
-            or value['codec'] != 'rkb.expert-slack-ingress.v1'
+            or value['codec'] not in ('rkb.expert-slack-ingress.v1',
+                                      'rkb.expert-slack-socket.v1')
             or type(value['app_id']) is not str
             or re.fullmatch(r'A[A-Z0-9]+', value['app_id']) is None
             or type(value['team_id']) is not str
@@ -141,13 +147,17 @@ def configured_expert_slack_ingress(target_startup, config_path):
                    for channel in value['allowed_channels'])
             or len(set(value['allowed_channels'])) != len(value['allowed_channels'])):
         raise ValueError('exact Slack ingress config required')
-    signing_secret = private_bytes(value['signing_secret_file'], 257).decode('ascii').removesuffix('\n')
+    if socket_only and not value['allowed_channels']:
+        raise ValueError('explicit Socket Mode channel allowlist required')
+    signing_secret = (None if socket_only else
+        private_bytes(value['signing_secret_file'], 257).decode('ascii').removesuffix('\n'))
     control = TargetExpertRequestControl(
         target_startup.config.participants, target_startup.config.spool,
         app_id=value['app_id'], team_id=value['team_id'],
         bot_user_id=value['bot_user_id'],
         allowed_channels=tuple(value['allowed_channels']))
-    return ExpertSlackIngress(control, signing_secret=signing_secret)
+    return ExpertSlackIngress(control, signing_secret=signing_secret,
+                              socket_only=socket_only)
 
 
 def configured_source_service():
