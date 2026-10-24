@@ -24,6 +24,11 @@ MAX_OBSERVATION_SECONDS = 12
 MAX_PROOF_AGE_SECONDS = 30
 PIN = ('2.2.4', '0.1.37')
 CONTRACT = 'kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v2'
+# Already persisted v1 observations remain valid for lease transfer. New
+# observations and retirement CAS still require the current CONTRACT.
+PERSISTED_CONTRACTS = frozenset((
+    'kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1', CONTRACT,
+))
 _SNAPSHOT = ('id', 'provider_ref', 'provider_version', 'launch_state', 'status',
              'launch_nonce', 'runtime_incarnation', 'connection_generation',
              'channel_active', 'attachment_conflict', 'heartbeat', 'started')

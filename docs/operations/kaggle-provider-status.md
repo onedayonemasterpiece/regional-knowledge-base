@@ -55,7 +55,7 @@ the controller does not normalize an ACK into a terminal result without logs.
 Missing/invalid/oversized evidence leaves UNKNOWN.
 
 An acknowledged cancellation **before any channel attachment** can return the
-completed-session JSON fallback `[]`, because Python never emitted a log record.
+completed-session JSON fallback `[]`, with no persisted log records.
 Contract v2 accepts that array only with a persisted nonempty launch nonce,
 no incarnation, connection generation zero, no active/conflicting channel and
 heartbeat equal to creation time. The exact source/run/nonce still match before
@@ -63,6 +63,10 @@ and after the stream. An attached or heartbeat-active session still requires
 nonempty native records. Empty EOF, running/queued status, live SSE and an ACK
 without the completed JSON stream remain UNKNOWN. This does not settle commands,
 writer state or Saved data.
+
+Previously persisted v1 receipts remain valid for the exact Telegram lease
+transfer checks. Only the observer's current v2 contract can create a new
+retirement; an unknown receipt contract is rejected.
 
 The adapter bounds logs to 256 KiB and each source response to 2 MiB (observation
 budgets, not book limits). It wraps only its fresh pinned SDK client's send

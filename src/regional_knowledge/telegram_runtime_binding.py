@@ -94,10 +94,10 @@ class Rkb1Lease:
         try:
             # Dev-only validator: do not import the controller/provider SDK
             # when this module is shipped inside the Kaggle native bundle.
-            from .kaggle_provider_terminal import CONTRACT as terminal_contract
+            from .kaggle_provider_terminal import PERSISTED_CONTRACTS
             receipt = json.loads(row["receipt_json"])
             identity = receipt["identity"]
-            return (receipt["contract"] == terminal_contract
+            return (receipt["contract"] in PERSISTED_CONTRACTS
                     and identity["id"] == prior["run_id"]
                     and identity["runtime_incarnation"] == prior["incarnation"]
                     and identity["provider_ref"] == row["provider_ref"]
