@@ -292,7 +292,7 @@ class KaggleSourceBackend:
             return item.id
         if evidence:
             return EvidenceSearchOutput(evidence=[FetchOutput(id=fetch_id(item),
-                title=item.metadata.title or item.id, text=item.text, url=locator(item),
+                title=item.metadata.title or "Источник без названия", text=item.text, url=locator(item),
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
                     'text_form': item.text_form, 'continuation': item.continuation,
                     'source_continuation': item.source_continuation.model_dump(mode='json')
