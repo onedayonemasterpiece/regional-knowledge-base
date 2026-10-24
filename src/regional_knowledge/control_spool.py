@@ -745,20 +745,18 @@ class ControlSpool:
                 if prior is not None and bytes(prior)!=data:raise SpoolConflict('seal predecessor is immutable across retry')
             if row['seal_state']!='ACCEPTED':
                 db.execute("UPDATE rkb_control_operations SET seal_state='SENT_UNKNOWN',predecessor_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
-
             return self._entry(row),_head(data)
 
     def _accepted(self,key,seal):
         data=_json(_seal_wire(seal))
         if len(data)>8192:raise SpoolFull('seal exceeds reserved metadata budget')
         with self._db(write=True) as db:
-            row=db.execute('SELECT command_sha256,sequence,seal_bytes,seal_state FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+            row=db.execute('SELECT command_sha256,sequence,seal_bytes FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
             if seal.command_hashes!=(row['command_sha256'],) or seal.manifest.last_sequence!=row['sequence']:
                 raise SpoolConflict('seal does not bind the exact singleton command')
             if row['seal_bytes'] is not None and bytes(row['seal_bytes'])!=data:raise SpoolConflict('accepted seal identity differs')
             db.execute("UPDATE rkb_control_operations SET seal_state='ACCEPTED',seal_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
             db.execute('UPDATE rkb_control_spool_meta SET accepted_sequence=max(accepted_sequence,?) WHERE id=1',(row['sequence'],))
-
 
     async def seal(self,context,key,*,writer_generation,predecessor=_UNSET):
         self._active();_bounded(writer_generation,4096)
@@ -797,7 +795,6 @@ class ControlSpool:
             if row['apply_state'] in {'NOT_SENT','SENT_UNKNOWN'}:
                 db.execute("UPDATE rkb_control_operations SET apply_state='SENT_UNKNOWN',updated=? WHERE operation_key=?",(self.clock(),key))
 
-
     async def mark_apply_sent(self,key):
         self._active();await self._write(self._apply_sent,key)
 
@@ -816,7 +813,6 @@ class ControlSpool:
                 raise SpoolConflict('exact committed outcome differs')
             db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?
                 WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),key))
-
 
     async def record_apply(self,key,receipt):
         self._active();await self._write(self._record_apply,key,receipt)
@@ -841,7 +837,6 @@ class ControlSpool:
             if row['outcome_state']!='DURABLE':
                 db.execute("UPDATE rkb_control_operations SET outcome_state='SENT_UNKNOWN',updated=? WHERE operation_key=?",(self.clock(),key))
 
-
     def _durable(self,key,receipt):
         data=_json(receipt.__dict__)
         if len(data)>8192:raise SpoolFull('remote receipt exceeds reserved metadata budget')
@@ -853,7 +848,6 @@ class ControlSpool:
             if prior is not None and bytes(prior[0])!=data:raise SpoolConflict('compact terminal receipt differs')
             db.execute('INSERT OR IGNORE INTO rkb_control_receipts VALUES(?,?,?)',(key,row['command_sha256'],data))
             db.execute("UPDATE rkb_control_operations SET outcome_state='DURABLE',remote_receipt_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
-
 
     def _settle_recovered_jobs(self,key,covered=None):
         """Only an exact locally recorded apply + remote durable outcome settles jobs.
@@ -916,8 +910,8 @@ class ControlSpool:
                     if type(self.journal.store) is DatasetRecoveryStore:
                         def known_pending():
                             with self._db(write=True) as db:
-                                changed=db.execute("UPDATE rkb_control_operations SET outcome_state='NOT_SENT',updated=? "
-                                    "WHERE operation_key=? AND outcome_state='SENT_UNKNOWN'",(self.clock(),key)).rowcount
+                                db.execute("UPDATE rkb_control_operations SET outcome_state='NOT_SENT',updated=? "
+                                    "WHERE operation_key=? AND outcome_state='SENT_UNKNOWN'",(self.clock(),key))
 
                         await self._write(known_pending)
                 raise
@@ -966,11 +960,9 @@ class ControlSpool:
             if sources is None:
                 row=db.execute("""SELECT sequence,accepted_sequence,
                     (SELECT count(*) FROM rkb_control_operations) AS operation_count,
-                    (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_pending
-                        WHERE outcome_state<>'DURABLE') AS pending_count,
+                    (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_pending WHERE outcome_state<>'DURABLE') AS pending_count,
                     (SELECT count(*) FROM rkb_control_operations INDEXED BY rkb_control_unknown
-                        WHERE seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN'
-                            OR outcome_state='SENT_UNKNOWN') AS unknown_count
+                        WHERE seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN') AS unknown_count
                     FROM rkb_control_spool_meta WHERE id=1""").fetchone()
             elif not sources:
                 row={'sequence':0,'accepted_sequence':0,'operation_count':0,'pending_count':0,'unknown_count':0}
@@ -986,10 +978,7 @@ class ControlSpool:
                     'history_complete':False,'scope_complete':False,'scope_class':'public_source'}
 
     async def scope_state(self,source_ids=None):
-        """Query scope, including no-hit/zero-item results; never infer absence
-        from the top-K barrier list. Whole-scope counts scan existing indexes;
-        finite scope aggregates use the covering source/state index.
-        """
+        """Exact scope counts from SQLite indexes, not top-K results."""
         self._active()
         if source_ids is not None:
             if not isinstance(source_ids,(tuple,list)) or len(source_ids)>32 or len(set(source_ids))!=len(source_ids):
@@ -1018,10 +1007,9 @@ class ControlSpool:
                 return db.execute('SELECT '+columns+' FROM '+table+where,() if sources is None else sources).fetchone()
             if sources is None:
                 local=db.execute('SELECT sequence,pending_count,unknown_count FROM rkb_control_public_source_meta WHERE id=1').fetchone()
-                history=scope('rkb_control_source_heads','coalesce(max(sequence),0),coalesce(sum(pending),0),coalesce(sum(unknown),0)')
             else:
                 local=scope('rkb_control_operations',f"coalesce(max(sequence),0),coalesce(sum({_read_pending_sql()}),0),coalesce(sum({_read_unknown_sql()}),0)")
-                history=scope('rkb_control_source_heads','coalesce(max(sequence),0),coalesce(sum(pending),0),coalesce(sum(unknown),0)')
+            history=scope('rkb_control_source_heads','coalesce(max(sequence),0),coalesce(sum(pending),0),coalesce(sum(unknown),0)')
             changes=[]
             for source in items:
                 hist=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown FROM rkb_control_source_heads WHERE source_id=?',(source,)).fetchone()
