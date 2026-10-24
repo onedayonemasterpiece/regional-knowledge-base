@@ -77,6 +77,19 @@ async def test_bot_token_team_and_original_thread_verified_before_native_receipt
 
 
 @pytest.mark.asyncio
+async def test_slack_documented_reply_without_optional_echo_fields_is_accepted():
+    def documented(request):
+        if request.url.path.endswith("auth.test"):
+            return httpx.Response(200,json={"ok":True,"team_id":"T111","user_id":"UBOT"})
+        return httpx.Response(200,json={"ok":True,"channel":"C111","ts":"1792000010.201",
+            "message":{"text":"Source","bot_id":"B111","ts":"1792000010.201"}})
+    proof=await _sender(transport=httpx.MockTransport(documented)).post_once(
+        event_id="EvReply3",channel="C111",thread="1792000000.100",
+        text="Source",current=lambda:True)
+    assert proof["event_id"]=="EvReply3" and proof["thread_ts"]=="1792000000.100"
+
+
+@pytest.mark.asyncio
 async def test_wrong_bot_or_ambiguous_echo_does_not_generate_another_post():
     calls=[]
     def wrong(request):
@@ -93,7 +106,8 @@ async def test_wrong_bot_or_ambiguous_echo_does_not_generate_another_post():
         if request.url.path.endswith("auth.test"):
             return httpx.Response(200,json={"ok":True,"team_id":"T111","user_id":"UBOT"})
         return httpx.Response(200,json={"ok":True,"channel":"C111","ts":"1792000008.200",
-            "message":{"user":"UBOT","text":"Source","thread_ts":"1792000000.100"}})
+            "message":{"user":"UBOT","text":"Source","thread_ts":"1792000000.100",
+                       "client_msg_id":"wrong-id"}})
     with pytest.raises(RuntimeError,match="echo"):
         await _sender(transport=httpx.MockTransport(no_marker)).post_once(
             event_id="Ev2",channel="C111",thread="1792000000.100",
