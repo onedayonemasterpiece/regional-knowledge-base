@@ -156,8 +156,9 @@ async def call(s, result, command, **kwargs):
 
 
 async def stage(s, result, payload):
-    return await call(s,result,'stage',payload=payload,
-        source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending'))
+    source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending')
+    source_import.research.continuation['arguments']['cursor']=str(payload['pages'][-1]['physical_page_index']+1)
+    return await call(s,result,'stage',payload=payload,source_import=source_import)
 
 
 def state(s, result):
@@ -238,8 +239,7 @@ async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_v
         assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
         await finish(s,result)
         progress=await call(s,result,'status')
-        assert progress.state == 'staged' and progress.next_action == 'continue_pages'
-        assert progress.next_cursor == str(first+len(payload['pages']))
+        assert (progress.state,progress.next_action,progress.next_cursor)==('staged','continue_pages',str(first+len(payload['pages'])))
         # An exact post-durability retry must not allocate batch ordinal+1.
         assert (await stage(s,result,payload)).state == 'staged'
         assert operation_count(s) == (ordinal+1)*3
