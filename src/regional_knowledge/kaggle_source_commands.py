@@ -181,38 +181,15 @@ class ControllerAcceptedProof:
         return self._sha
 
 
-class _PrepareRollbackWitness:
-    def __init__(self):self.confirmed=False
-
-    @asynccontextmanager
-    async def acquire(self,original):
-        async with original() as connection:
-            yield _ObservedPrepareConnection(connection,self)
-
-
 class _ObservedPrepareConnection:
-    def __init__(self,connection,witness):
-        self._connection,self._witness=connection,witness
-        self._prepare_canceled=False
-
-    def __getattr__(self,name):return getattr(self._connection,name)
+    def __init__(self,connection):self.connection,self.canceled=connection,False
+    def __getattr__(self,name):return getattr(self.connection,name)
 
     async def execute(self,query,*args,**kwargs):
-        try:return await self._connection.execute(query,*args,**kwargs)
-        except psycopg.errors.QueryCanceled as error:
-            if (getattr(error,'sqlstate',None)=='57014' and type(query) is str
-                    and query.lstrip().startswith('SELECT rkb_v4.prepare_source_batch_v1(')):
-                self._prepare_canceled=True
-            raise
-
-    @asynccontextmanager
-    async def transaction(self,*args,**kwargs):
-        try:
-            async with self._connection.transaction(*args,**kwargs) as tx:yield tx
+        try:return await self.connection.execute(query,*args,**kwargs)
         except psycopg.errors.QueryCanceled:
-            if (self._prepare_canceled and not self._connection.closed
-                    and self._connection.info.transaction_status==TransactionStatus.IDLE):
-                self._witness.confirmed=True
+            if type(query) is str and query.lstrip().startswith('SELECT rkb_v4.prepare_source_batch_v1('):
+                self.canceled=True
             raise
 
 
@@ -254,11 +231,13 @@ class WorkerSourceExecutor:
             # Re-run only the same accepted packet after a positively observed
             # isolated prepare rollback; no new command/claim/ACK is created.
             for attempt in range(2):
-                witness=_PrepareRollbackWitness()
+                observed=[]
                 @asynccontextmanager
                 async def observed_acquire():
-                    async with witness.acquire(self.acquire) as connection:
-                        yield connection
+                    async with self.acquire() as connection:
+                        proxy=_ObservedPrepareConnection(connection)
+                        observed.append(proxy)
+                        yield proxy
                 try:
                     await self.materializer(command,acquire=(
                         observed_acquire if command.route=='source.batch.v1' else self.acquire),
@@ -272,7 +251,9 @@ class WorkerSourceExecutor:
                     break
                 except psycopg.errors.QueryCanceled as error:
                     if (command.route=='source.batch.v1' and error.sqlstate=='57014'
-                            and witness.confirmed and attempt==0):
+                            and attempt==0 and observed and observed[-1].canceled
+                            and not observed[-1].connection.closed
+                            and observed[-1].connection.info.transaction_status==TransactionStatus.IDLE):
                         _LOG.warning('native_source_preparation state=retry_after_confirmed_rollback route=%s sequence=%s',
                             command.route,command.sequence)
                         continue
