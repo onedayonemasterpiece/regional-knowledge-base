@@ -186,6 +186,10 @@ class NativeSourceIntake:
                         and pending['apply_state'] in ('APPLIED','REJECTED_PRECONDITION')
                         and pending['outcome_state']=='NOT_SENT'):
                     verified=self.spool._entry(pending)
+                    # An own ingestion cannot masquerade as another source.
+                    if (verified.command.route.startswith('source.') and
+                            json.loads(verified.command.payload).get('ingestion_id')==row['ingestion_id']):
+                        return False
                     if (verified.accepted is not None
                             and verified.apply_receipt is not None
                             and (verified.apply_state,verified.apply_receipt.status) in (
