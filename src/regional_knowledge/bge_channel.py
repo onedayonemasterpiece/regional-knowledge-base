@@ -549,7 +549,6 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         settled=await source_dispatch.receive_not_applied(frame,
                             run_id=run_id,token=token,generation=generation)
                         shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
-                        # The queue decision is durably persisted before this ACK.
                         await send('RESULT_ACK',**settled)
                     elif frame['type']=='SOURCE_COMMAND_RESULT':
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
