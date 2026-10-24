@@ -33,7 +33,8 @@ class API:
         self.source_id = run['id']
         self.source_ref = run['provider_ref']
         self.source_nonce = run['launch_nonce']
-        self.on_log = lambda: None
+        self.on_status = lambda: None
+        self.phases = {}
         self.http = SimpleNamespace(_init_session=lambda: None,
             _session=SimpleNamespace(send=lambda *a, **k: None))
     @contextlib.contextmanager
@@ -47,10 +48,12 @@ class API:
                 {'run_id': self.source_id, 'launch_nonce': self.source_nonce})))
     def get_kernel_session_status(self, request):
         self.calls.append(('status', request.version_label, request.user_name, request.kernel_slug))
-        return SimpleNamespace(status=self.phase)
+        self.on_status()
+        phase = self.phases.get((request.user_name, request.kernel_slug, request.version_label), self.phase)
+        return SimpleNamespace(status=phase)
     def get_kernel_session_logs_stream(self, request):
         self.calls.append(('stream', request.version_label, request.user_name, request.kernel_slug))
-        self.on_log()
+        raise AssertionError("terminal observation must not request logs")
         return self.log
 
 
@@ -64,7 +67,6 @@ def sdk(monkeypatch):
                  'ApiGetKernelSessionLogsStreamRequest'):
         setattr(module, name, Request)
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setattr(native, '_installed_versions', lambda: ('2.2.4', '0.1.37'))
 
 
 @pytest.fixture
@@ -101,99 +103,28 @@ def test_exact_version_retirement_no_incarnation_idempotent_restart(env):
         assert db.execute('select count(*) from bge_provider_terminal_receipts').fetchone()[0] == 1
 
 
-@pytest.mark.parametrize('phase',['ERROR','CANCEL_ACKNOWLEDGED'])
-@pytest.mark.parametrize('body,ctype', [
-    ({'error': 'denied'}, 'application/json'),
-    ({'code': 500, 'message': 'failed'}, 'application/json'),
-    ({'log': []}, 'application/json'),
-    ([], 'application/json'),
-    ([{'data': 'not a native log record'}], 'application/json'),
-    ([{'stream_name': 'stdout', 'time': 1, 'data': 'END_OF_LOG'}], 'text/event-stream'),
-])
-def test_non_terminal_json_sse_and_empty_are_not_proof(env, body, ctype, phase):
-    q, now, _, row = env
-    api = API(row()); api.phase=phase; api.log = Response(body, ctype)
-    assert observe(api, row, now) is None
-    assert row()['launch_state'] == 'dispatched'
-    assert api.log.closed
 
 
 @pytest.mark.parametrize('phase', ['RUNNING', 'QUEUED', 'CANCEL_REQUESTED'])
-def test_phase_alone_and_cancel_ack_not_terminal(env, phase):
+def test_nonterminal_phase_preserves_unknown(env, phase):
     _, now, _, row = env
     api = API(row()); api.phase = phase
     assert observe(api, row, now) is None
     assert not any(c[0] == 'stream' for c in api.calls)
 
 
-def test_cancel_ack_with_exact_persisted_native_log_retires_only_that_session(env):
-    q,now,rid,row=env
-    api=API(row());api.phase='CANCEL_ACKNOWLEDGED'
-    proof=observe(api,row,now)
-    assert proof is not None and proof.status=='CANCEL_ACKNOWLEDGED'
-    assert [call[0]for call in api.calls]==['source','status','stream','source']
-    assert all(call[1]=='v93'for call in api.calls)
-    assert q.retire_provider_reservation(proof)
-    assert row()['launch_state']=='terminal'
 
 
-def test_canceled_before_attach_accepts_empty_completed_log_fallback(env):
-    q,now,rid,row=env
-    with q.connect() as db:
-        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
-    api=API(row());api.phase='CANCEL_ACKNOWLEDGED';api.log=Response([])
-    proof=observe(api,row,now)
-    assert proof is not None and proof.log_bytes==2 and proof.status=='CANCEL_ACKNOWLEDGED'
-    assert [call[0]for call in api.calls]==['source','status','stream','source']
-    assert q.retire_provider_reservation(proof)
-    assert row()['launch_state']=='terminal'
 
 
-@pytest.mark.parametrize('field,value', [
-    ('runtime_incarnation','previous-attachment'),('connection_generation',1),
-    ('channel_active',1),('heartbeat',1001.),('attachment_conflict',1),('launch_nonce',None),
-])
-def test_empty_canceled_log_cannot_close_previously_active_or_legacy_run(env,field,value):
-    q,now,rid,row=env
-    with q.connect() as db:
-        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
-        db.execute('UPDATE runs SET '+field+'=? WHERE id=?',(value,rid))
-    api=API(row());api.phase='CANCEL_ACKNOWLEDGED';api.log=Response([])
-    assert observe(api,row,now) is None
-    assert row()['launch_state']=='dispatched'
 
 
-@pytest.mark.parametrize('phase',['ERROR','COMPLETE','RUNNING','QUEUED','CANCEL_REQUESTED'])
-def test_empty_fallback_requires_canceled_status_even_before_attach(env,phase):
-    q,now,rid,row=env
-    with q.connect() as db:
-        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
-    api=API(row());api.phase=phase;api.log=Response([])
-    assert observe(api,row,now) is None
 
 
-def test_empty_canceled_fallback_still_checks_source_after_stream(env):
-    q,now,rid,row=env
-    with q.connect() as db:
-        db.execute('UPDATE runs SET launch_nonce=? WHERE id=?',('fixture-persisted-wss-nonce',rid))
-    api=API(row());api.phase='CANCEL_ACKNOWLEDGED';api.log=Response([])
-    api.on_log=lambda:setattr(api,'source_nonce','another-nonce')
-    assert observe(api,row,now) is None
 
 
-@pytest.mark.parametrize('phase',['ERROR','CANCEL_ACKNOWLEDGED'])
-@pytest.mark.parametrize('field,value', [('source_id', 'wrong-run'),
-    ('source_ref', 'other-owner/stable-notebook'), ('source_nonce', 'wrong-nonce')])
-def test_wrong_version_or_source_binding(env, field, value, phase):
-    _, now, _, row = env
-    api = API(row());api.phase=phase; setattr(api, field, value)
-    assert observe(api, row, now) is None
 
 
-def test_source_changed_between_reads(env):
-    _, now, _, row = env
-    api = API(row()); api.on_log = lambda: setattr(api, 'source_id', 'another-run')
-    assert observe(api, row, now) is None
 
 
 def test_stale_or_changed_heartbeat_proof_cannot_retire(env):
@@ -224,12 +155,6 @@ def test_retire_preserves_other_shared_owner_jobs_writer_and_demand(env):
         assert job['run_id'] == rid and job['claim'] == 'claim' and job['state'] == 'claimed'
 
 
-def test_bounded_stream_invalid_json_and_oversize(env):
-    _, now, _, row = env
-    for body in (b'{', b' '*(native.MAX_LOG_BYTES+1)):
-        api = API(row()); api.log.body = body
-        assert observe(api, row, now) is None
-        assert api.log.closed
 
 
 def test_unmapped_10893_never_queries_or_gets_retired(env):
@@ -275,6 +200,7 @@ def test_mixed_history_known_terminal_unmapped_and_different_ref(env):
         db.execute("update runs set status='expired',launch_state='dispatching',provider_ref=? where id=?", (REF, unknown))
         db.execute("update runs set status='expired',launch_state='dispatched',provider_ref=?,provider_version=7 where id=?", ('another-owner/notebook', different))
     api = API(row())
+    api.phases[('another-owner', 'notebook', 'v7')] = 'RUNNING'
     assert controller().reconcile_provider_history(api, q, limit=3) == 1
     with q.connect(write=False) as db:
         assert db.execute('select launch_state from runs where id=?', (unknown,)).fetchone()[0] == 'dispatching'
@@ -330,14 +256,6 @@ def test_same_shared_owner_cleared_only_after_native_proof(env):
         assert db.execute('select run_id from bge_shared_admission').fetchone()[0] is None
 
 
-def test_package_pin_and_non200_fail_closed(env, monkeypatch):
-    _, now, _, row = env
-    api = API(row())
-    monkeypatch.setattr(native, '_installed_versions', lambda: ('2.2.5', '0.1.37'))
-    assert observe(api, row, now) is None and not api.calls
-    monkeypatch.setattr(native, '_installed_versions', lambda: native.PIN)
-    api.log.status_code = 403
-    assert observe(api, row, now) is None and api.log.closed
 
 
 def test_observation_deadline_and_heartbeat_during_probe(env):
@@ -348,7 +266,7 @@ def test_observation_deadline_and_heartbeat_during_probe(env):
     def heartbeat():
         with q.connect() as db:
             db.execute('update runs set heartbeat=? where id=?', (now[0], rid))
-    api = API(row()); api.on_log = heartbeat
+    api = API(row()); api.on_status = heartbeat
     proof = observe(api, row, now)
     assert proof is not None
     assert not q.retire_provider_reservation(proof)
@@ -454,10 +372,9 @@ def test_real_requests_response_cache_remains_readable_after_bounded_close():
     http = SimpleNamespace(_init_session=lambda: None, _session=session, _verbose=True)
     with native._bounded_transport(SimpleNamespace(_http_client=http), 12, lambda: 0) as budget:
         assert not http._verbose
-        budget[0] = native.MAX_LOG_BYTES
+        budget[0] = native.MAX_STATUS_BYTES
         actual = session.send(SimpleNamespace(url='https://fixture.invalid'))
         assert actual.json()[0]['stream_name'] == 'stderr'
-        assert native._persisted_log(actual, 12, lambda: 0) is not None
     assert http._verbose and session.send is original
 
 
@@ -603,3 +520,48 @@ def test_live_current_owner_with_fresh_lease_is_not_probed(env):
         db.execute('update control set current_run=? where id=1', (rid,))
     api = API(row())
     assert module.reconcile_provider_history(api, q, current_only=True) == 0 and not api.calls
+
+
+@pytest.mark.parametrize('phase', ['ERROR', 'COMPLETE', 'CANCEL_ACKNOWLEDGED'])
+def test_exact_version_terminal_status_needs_no_source_or_logs(env, phase):
+    q, now, rid, row = env
+    api = API(row()); api.phase = phase
+    # Source/log endpoints may be unavailable or unrelated; neither is queried.
+    api.source_id = 'unavailable'; api.log.status_code = 400
+    proof = observe(api, row, now)
+    assert proof is not None and proof.status == phase
+    assert api.calls == [('status', 'v93', 'fixture-owner', 'stable-notebook')]
+    assert q.retire_provider_reservation(proof)
+    assert row()['launch_state'] == 'terminal'
+    assert not any(k in proof.receipt() for k in ('source_sha256', 'log_sha256', 'log_bytes'))
+
+
+def test_sdk_without_version_selector_does_not_fall_back_to_latest(env, monkeypatch):
+    _, now, _, row = env
+    module = sys.modules['kagglesdk.kernels.types.kernels_api_service']
+    monkeypatch.setattr(module, 'ApiGetKernelSessionStatusRequest', lambda: SimpleNamespace())
+    api = API(row())
+    assert observe(api, row, now) is None and api.calls == []
+
+
+@pytest.mark.parametrize('failure', [PermissionError, TimeoutError, ValueError])
+def test_status_transport_failure_preserves_unknown(env, failure):
+    _, now, _, row = env
+    api = API(row())
+    def fail(): raise failure('private provider response must not escape')
+    api.on_status = fail
+    assert observe(api, row, now) is None
+    assert row()['launch_state'] == 'dispatched'
+
+
+@pytest.mark.parametrize('field,value', [
+    ('provider_ref', 'different-owner/notebook'), ('provider_version', 94),
+    ('launch_nonce', 'changed-nonce'), ('runtime_incarnation', 'changed-instance'),
+    ('connection_generation', 2), ('channel_active', 1),
+])
+def test_changed_execution_identity_cannot_retire(env, field, value):
+    q, now, rid, row = env
+    proof = observe(API(row()), row, now)
+    with q.connect() as db:
+        db.execute('update runs set '+field+'=? where id=?', (value, rid))
+    assert not q.retire_provider_reservation(proof)
