@@ -70,6 +70,23 @@ async def accept(e,cmd=None,predecessor=None):
     return await e.spool.seal(e.p.admin,cmd.operation_key,predecessor=predecessor,writer_generation='writer-1')
 
 
+@pytest.mark.asyncio
+async def test_legacy_derived_counters_migrate_without_losing_sequence(env):
+    e=env;await stage(e);e.spool.close()
+    with e.q.connect() as db:
+        for name in ('operation_count','pending_count','unknown_count'):
+            db.execute(f'ALTER TABLE rkb_control_spool_meta ADD COLUMN {name} INTEGER NOT NULL DEFAULT 99')
+        db.execute('CREATE TABLE rkb_control_source_head_meta(id INTEGER PRIMARY KEY,sequence INTEGER,pending_count INTEGER,unknown_count INTEGER)')
+        db.execute('INSERT INTO rkb_control_source_head_meta VALUES(1,99,99,99)')
+    e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry)
+    with e.spool._db() as db:
+        cols={r[1] for r in db.execute('PRAGMA table_info(rkb_control_spool_meta)')}
+        assert not cols.intersection({'operation_count','pending_count','unknown_count'})
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_control_source_head_meta'").fetchone() is None
+    scope=await e.spool.scope_state()
+    assert (scope['sequence'],scope['operation_count'],scope['pending_count'],scope['unknown_count'])==(1,1,1,0)
+
+
 def test_static_dependency_frozen_and_legacy_fingerprint_unchanged():
     legacy=handler(None)
     expected={'key':legacy.key,'check':(legacy.check.name,legacy.check.definition_sha256),
