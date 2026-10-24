@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import time
 from uuid import UUID
 
 import psycopg
+from psycopg.pq import TransactionStatus
 
 from .kaggle_apply import ApplyExecutionError, ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef
@@ -179,6 +181,56 @@ class ControllerAcceptedProof:
         return self._sha
 
 
+class SourcePrepareNotApplied(RuntimeError):
+    """Only an exact timed-out prepare SQL with a completed PG rollback."""
+
+
+class _PrepareRollbackWitness:
+    """Observe the existing prepare TX without changing accepted materializer bytes."""
+
+    def __init__(self):
+        self.confirmed = False
+
+    @asynccontextmanager
+    async def acquire(self, original):
+        async with original() as connection:
+            yield _ObservedPrepareConnection(connection, self)
+
+
+class _ObservedPrepareConnection:
+    def __init__(self, connection, witness):
+        self._connection, self._witness = connection, witness
+        self._prepare_canceled = False
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    async def execute(self, query, *args, **kwargs):
+        try:
+            return await self._connection.execute(query, *args, **kwargs)
+        except psycopg.errors.QueryCanceled as error:
+            # Do not classify timeouts from the initial context, vector install,
+            # an outer transaction or any other native SQL as known prepare rollback.
+            if (getattr(error, 'sqlstate', None) == '57014'
+                    and type(query) is str
+                    and query.lstrip().startswith('SELECT rkb_v4.prepare_source_batch_v1(')):
+                self._prepare_canceled = True
+            raise
+
+    @asynccontextmanager
+    async def transaction(self, *args, **kwargs):
+        try:
+            async with self._connection.transaction(*args, **kwargs) as tx:
+                yield tx
+        except psycopg.errors.QueryCanceled:
+            # This executes only AFTER psycopg transaction.__aexit__ succeeded.
+            # A lost connection, failed rollback, or missing IDLE proof fails closed.
+            if (self._prepare_canceled and not self._connection.closed
+                    and self._connection.info.transaction_status == TransactionStatus.IDLE):
+                self._witness.confirmed = True
+            raise
+
+
 class WorkerSourceExecutor:
     def __init__(self,*,acquire,registry,database,run_id,launch_nonce,runtime_incarnation,materializer=None):
         self.acquire,self.registry,self.database=acquire,registry,database
@@ -214,8 +266,13 @@ class WorkerSourceExecutor:
             # candidate effects, then apply canonical outcome in its own tx.
             await proof.verify_accepted(seal,command)
             from .kaggle_source_materializer import SourceMaterializationRejected
+            witness = _PrepareRollbackWitness()
+            @asynccontextmanager
+            async def observed_acquire():
+                async with witness.acquire(self.acquire) as connection:
+                    yield connection
             try:
-                await self.materializer(command,acquire=self.acquire,database=self.database)
+                await self.materializer(command,acquire=observed_acquire,database=self.database)
             except SourceMaterializationRejected as error:
                 # Deterministic invalid model input produces an ordinary
                 # rejected-precondition receipt, not a fabricated completion.
@@ -224,6 +281,14 @@ class WorkerSourceExecutor:
                     reason='invalid_model_input'
                 _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
                     command.route,command.sequence,reason)
+            except psycopg.errors.QueryCanceled as error:
+                if (command.route == 'source.batch.v1'
+                        and getattr(error, 'sqlstate', None) == '57014'
+                        and witness.confirmed):
+                    _LOG.warning('native_source_preparation state=retryable_not_applied route=%s sequence=%s sqlstate=57014',
+                        command.route, command.sequence)
+                    raise SourcePrepareNotApplied('prepare_timeout_57014') from None
+                raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
             except psycopg.OperationalError:
                 # Connection/commit uncertainty cannot become a refusal.
                 raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
@@ -332,6 +397,27 @@ class AcceptedSourceDispatch:
             database_generation=identity['database_generation'],writer_generation=identity['writer_generation'],
             command_sha256=entry.command_sha256,handler_sha256=entry.handler_sha256,
             command_b64=base64.b64encode(entry.command_bytes).decode(),accepted=seal_wire(entry.accepted))
+
+    async def receive_not_applied(self, frame, *, run_id, token, generation):
+        # A typed native *attempt* result, not an apply receipt or a domain terminal.
+        run,job=await asyncio.to_thread(self.queue._source_claim,self,run_id,token,generation,
+            frame['job_id'],known_retry=True)
+        entry,identity=await self._entry(job)
+        self._current(run,identity,generation)
+        self.queue.shared_reads.require_durable_resource(run_id,run['runtime_incarnation'],generation,
+            job['id'],frame['compute_claim'],frame['dispatch_generation'])
+        if (frame['claim']!=job['claim'] and job['state']=='claimed'
+                or frame['run_id']!=run_id or frame['launch_nonce']!=run['launch_nonce']
+                or frame['runtime_incarnation']!=run['runtime_incarnation']
+                or frame['command_sha256']!=entry.command_sha256
+                or frame['reason']!='prepare_timeout_57014'
+                or entry.apply_receipt is not None):
+            raise PermissionError('source retry attempt does not match exact accepted assignment')
+        status=await asyncio.to_thread(self.queue._record_source_not_applied,self,run_id,token,generation,
+            job['id'],frame['claim'],entry.command_sha256,run['runtime_incarnation'])
+        _LOG.info('source_prepare_attempt_recorded sequence=%s command_sha256=%s status=%s',
+            entry.command.sequence,entry.command_sha256,status)
+        return dict(job_id=job['id'],claim=frame['claim'],status=status)
 
     async def receive(self,frame,*,run_id,token,generation):
         run,job=await asyncio.to_thread(self.queue._source_claim,self,run_id,token,generation,frame['job_id'])
