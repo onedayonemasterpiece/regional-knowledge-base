@@ -79,6 +79,11 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
+                if self._reply is not None:
+                    # Read-only search: existing event_id row is the at-most-once
+                    # boundary; no Dataset checkpoint/agent job is necessary.
+                    self._reply.notify(outcome['request_id'])
+                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 if self.control.dataset_records is not None:
                     # A signed request is staged only by the existing fenced
                     # Dataset CAS. Local staging never earns Slack HTTP 200.
@@ -117,10 +122,6 @@ class ExpertSlackIngress:
                     # received row that could vanish with the DevCoveer disk.
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
-                if self._reply is not None:
-                    # The signed human event already has remote-covered intake.
-                    # This bounded local wakeup never changes HTTP ACK semantics.
-                    self._reply.notify(outcome['request_id'])
                 return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
