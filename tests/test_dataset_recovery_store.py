@@ -156,7 +156,6 @@ async def test_control_inventory_revision_is_exact_and_excludes_other_namespaces
 @pytest.mark.asyncio
 async def test_export_is_canonical_and_bounded_across_pages(tmp_path,monkeypatch):
     import regional_knowledge.dataset_recovery_store as module
-    from regional_knowledge.recovery_journal import JournalLimit
     p=prepared(tmp_path);store=p.store
     monkeypatch.setattr(module,'CONTROL_PAGE_SIZE',2)
     for n in range(5):
@@ -167,12 +166,6 @@ async def test_export_is_canonical_and_bounded_across_pages(tmp_path,monkeypatch
     assert not any('/snapshots/' in item['key'] for item in value['objects'])
     assert len([item for item in value['objects'] if '/control/' in item['key']])==5
     assert store.pending_control() is not None
-    monkeypatch.setattr(module,'MAX_CONTROL_OBJECTS',4)
-    with pytest.raises(JournalLimit,match='inventory_budget'):store.export_control()
-    with pytest.raises(JournalLimit,match='inventory_budget'):store.pending_control()
-    monkeypatch.setattr(module,'MAX_CONTROL_OBJECTS',10000)
-    monkeypatch.setattr(module,'MAX_CONTROL_BYTES',len(raw)-1)
-    with pytest.raises(JournalLimit,match='control_budget'):store.export_control()
 
 
 @pytest.mark.asyncio
@@ -209,3 +202,53 @@ async def test_promotion_fences_writer_retirement_and_competing_pointer_after_re
     with pytest.raises(JournalConflict,match='promotion_predecessor'):
         store.promote(checkpoint,native,manifest_ref=p.ref,current=lambda:state['current'])
     assert store.latest_checkpoint.dataset_version==3 and not store.remote_durable(key,b'pending')
+
+
+def test_control_journal_over_64_mib_and_10000_objects_restores_byte_for_byte(tmp_path):
+    """Pure SQLite/publisher fixture: no Dataset, PG, or remote effects."""
+    from dataclasses import replace
+    from test_kaggle_dataset_tickets import Queue
+
+    p = prepared(tmp_path)
+    data = b'journal payload-' + b'x' * 6000
+    with p.q.connect() as db:
+        db.executemany(
+            'INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,NULL)',
+            ((p.store.storage_identity, p.prefix + f'control/bulk/{n:05d}',
+              data + n.to_bytes(2, 'big'), f'original-token-{n}')
+             for n in range(10001)),
+        )
+    exported = p.store.export_control()
+    assert len(exported) > 64 * 1024**2
+    assert len(json.loads(exported)['objects']) > 10000
+    assert p.store.pending_control() is not None
+
+    pin = DatasetFile('journal-control.json', len(exported), sha(exported))
+    checkpoint = replace(p.checkpoint, journal=pin)
+    assert DatasetCheckpoint.from_wire(checkpoint.wire()) == checkpoint
+
+    class Publisher:
+        ref = p.publisher.ref
+
+        def read_control(self, file, *, version):
+            assert version == checkpoint.dataset_version
+            raw = exported if file.name == 'journal-control.json' else (
+                p.publisher.read_control(file, version=version))
+            assert (len(raw), sha(raw)) == (file.size, file.sha256)
+            return raw
+
+    restored_queue = Queue(tmp_path / 'restored.sqlite')
+    with restored_queue.connect() as db:
+        db.execute('CREATE TABLE rkb_writer_control(id INTEGER PRIMARY KEY,storage_sha256 TEXT)')
+        db.execute("INSERT INTO rkb_writer_control VALUES(1,'original-s3-authority')")
+    restored = DatasetRecoveryStore(restored_queue, checkpoint=checkpoint,
+        manifest_ref=p.ref, publisher=Publisher(), writer_guard=p.guard, stream='stream')
+    assert restored.export_control() == exported
+    assert restored.pending_control() == p.store.pending_control()
+    with restored_queue.connect(write=False) as db:
+        row = db.execute('SELECT data,token,covered_version FROM rkb_dataset_recovery_objects '
+            'WHERE storage=? AND key=?',
+            (restored.storage_identity, p.prefix + 'control/bulk/10000')).fetchone()
+    assert bytes(row['data']) == data + (10000).to_bytes(2, 'big')
+    assert row['token'] == 'original-token-10000'
+    assert row['covered_version'] == checkpoint.dataset_version

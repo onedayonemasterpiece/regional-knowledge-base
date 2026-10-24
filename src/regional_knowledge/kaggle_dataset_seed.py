@@ -17,7 +17,6 @@ from .kaggle_dataset_tickets import DatasetSnapshotTicketIssuer
 from .kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha, validate_versions
 
 _LOG = logging.getLogger(__name__)
-MAX_JOURNAL_CONTROL_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -39,8 +38,7 @@ class DatasetSeedConfig:
 
 
 def _put_control(grant, data):
-    limit=MAX_JOURNAL_CONTROL_BYTES if grant.name=='journal-control.json' else 1024*1024
-    if len(data) > limit or (len(data), sha(data)) != (grant.size, grant.sha256):
+    if (len(data), sha(data)) != (grant.size, grant.sha256):
         raise DatasetPublicationError('dataset_control_upload_bytes_changed')
     parsed = urlsplit(grant.url)
     connection = http.client.HTTPSConnection(parsed.hostname, timeout=30)
@@ -106,11 +104,11 @@ class SourceDatasetSeed:
         return await physical.native.capture(binding,versions=dict(self.config.versions),expected_sequence=sequence)
 
     async def _journal_control(self):
-        """One-time bounded legacy recovery metadata, excluding physical blobs."""
+        """One-time legacy recovery metadata, excluding physical blobs."""
         store=self.startup.config.spool.journal.store
         def keys():
             result=[];cursor=None
-            for _ in range(10):
+            while True:
                 options=dict(Bucket=store.bucket,Prefix=store.prefix,MaxKeys=1000)
                 if cursor:options['ContinuationToken']=cursor
                 page=store.client.list_objects_v2(**options)
@@ -121,16 +119,12 @@ class SourceDatasetSeed:
                         result.append(key)
                 if not page.get('IsTruncated'):return sorted(result)
                 cursor=page['NextContinuationToken']
-            raise SnapshotError('dataset_seed_journal_inventory_budget')
-        records=[];used=0
+        records=[]
         for key in await asyncio.to_thread(keys):
             obj=await store.read(key,max_bytes=1024*1024)
             if obj is None:raise SnapshotError('dataset_seed_journal_object_missing')
-            used+=len(obj.data)
-            if used>12*1024*1024:raise SnapshotError('dataset_seed_journal_control_budget')
             records.append(dict(key=key,token=obj.token,data_b64=base64.b64encode(obj.data).decode()))
         data=encode(dict(codec='rkb.dataset-journal.v1',objects=records))
-        if len(data)>MAX_JOURNAL_CONTROL_BYTES:raise SnapshotError('dataset_seed_journal_control_budget')
         return data
 
     async def capture_once(self, binding):
