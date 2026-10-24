@@ -381,11 +381,6 @@ class BgeQueue:
 
     def _record_source_not_applied(self,owner,run_id,token,generation,job_id,claim,
                                    command_hash,incarnation):
-        """Atomic same-key retry decision, only for a witnessed prepare rollback.
-
-        The canonical command and PG apply cursor are untouched. A retained
-        attempt receipt also permits a lost transport ACK to be replayed.
-        """
         if owner is None or owner is not self._source_commands:
             raise PermissionError('canonical source retry authority required')
         with self.connect() as db:
@@ -407,14 +402,12 @@ class BgeQueue:
             for recorded in attempts:
                 if (recorded['claim_sha256']==claim_hash and recorded['run_id']==run_id
                         and recorded['incarnation']==incarnation):
-                    return recorded['status']  # Lost ACK; never consumes attempt 2.
+                    return recorded['status']
             if job['state']!='claimed' or job['claim']!=claim or job['attempt'] not in (1,2):
                 raise StaleClaim('source retry attempt is not current')
             status='retry_scheduled' if job['attempt']==1 else 'retry_exhausted'
             attempts.append(dict(attempt=job['attempt'],claim_sha256=claim_hash,
                 run_id=run_id,incarnation=incarnation,status=status))
-            # The same idempotency, operation key, sequence and exact bytes
-            # remain in the original jobs/accepted spool rows.
             result=json.dumps(dict(command_sha256=command_hash,not_applied_attempts=attempts),
                 sort_keys=True,separators=(',',':'))
             db.execute("update jobs set state=?,result=?,lease_until=NULL,updated=? where id=?",
