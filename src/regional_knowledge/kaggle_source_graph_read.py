@@ -23,7 +23,7 @@ def _source_evidence(data,action):
     if action in ('entity','list'):
         return (data.get('mention') or data['mentions'][0])['evidence']
     if action=='relations':return data['evidence'][0]
-    if action in ('mentions','aliases'):return data['evidence']
+    if action in ('mentions','aliases','geo_queue'):return data['evidence']
     return None
 
 
@@ -42,7 +42,7 @@ class SourceGraphReadRequest(ReadIdentity):
     protocol_version:Literal[2]=2
     operation:Literal['source_graph_read']='source_graph_read'
     operation_version:Literal[1]=1
-    action:Literal['entity','list','mentions','aliases','relations','poi_facts']='entity'
+    action:Literal['entity','list','mentions','aliases','relations','poi_facts','geo_queue']='entity'
     entity_id:str|None=None
     source_id:str|None=None
     # Existing entity_list selectors; only a single accepted source is allowed.
@@ -50,7 +50,7 @@ class SourceGraphReadRequest(ReadIdentity):
         default=None,min_length=1,max_length=5)
     query:Annotated[str,Field(max_length=200)]=''
     cursor:Annotated[str,Field(max_length=1600)]|None=None
-    limit:Annotated[int,Field(ge=1,le=3)]=3
+    limit:Annotated[int,Field(ge=1,le=5)]=3
     actor:TrustedActorContext
     min_data_seq:Nonnegative
     deadline_ms:Annotated[int,Field(gt=0)]
@@ -60,11 +60,16 @@ class SourceGraphReadRequest(ReadIdentity):
     def exact_scope(self):
         for value in (self.entity_id,self.source_id):
             if value is not None:exact_uuid(value)
-        if self.action in ('list','poi_facts'):
+        if self.action=='geo_queue':
+            if (self.entity_id is not None or self.source_id is not None or self.kinds is not None
+                    or self.query or self.cursor or self.limit>5):
+                raise ValueError('bounded unscoped accepted GEO queue only')
+        elif self.action in ('list','poi_facts'):
             if self.source_id is None or self.entity_id is not None:raise ValueError('exact accepted source scope required')
         elif self.entity_id is None:raise ValueError('exact source entity UUID required')
         if self.action!='list' and (self.kinds is not None or self.query):
             raise ValueError('entity selectors require a source-scoped list')
+        if self.action!='geo_queue' and self.limit>3:raise ValueError('existing graph reads remain <=3')
         if self.kinds is not None and len(set(self.kinds))!=len(self.kinds):
             raise ValueError('duplicate entity kinds')
         if self.query and (not self.query.strip() or len(self.query.encode('utf-8'))>512):
@@ -76,8 +81,8 @@ class SourceGraphReadResult(ReadIdentity):
     type:Literal['SOURCE_GRAPH_READ_RESULT']='SOURCE_GRAPH_READ_RESULT'
     protocol_version:Literal[2]=2
     status:Literal['ok','unavailable','invalid_query','denied','cancelled']
-    evidence:tuple[EvidenceItem,...]=Field(default=(),max_length=3)
-    records:tuple[dict,...]=Field(default=(),max_length=3)
+    evidence:tuple[EvidenceItem,...]=Field(default=(),max_length=5)
+    records:tuple[dict,...]=Field(default=(),max_length=5)
     next_cursor:Annotated[str,Field(max_length=1600)]|None=None
     observed_data_seq:Nonnegative|None
     observed_projection_seq:Nonnegative|None
@@ -94,9 +99,11 @@ class SourceGraphReadResult(ReadIdentity):
             raise ValueError('exact source graph frontier required')
         if self.status!='ok' and (self.records or self.evidence or self.next_cursor):raise ValueError('failed graph result cannot carry data')
         if len(self.records)!=len(self.evidence):raise ValueError('every graph record requires actual source dependencies')
+        if len(self.records)>3 and any(record.get('action')!='geo_queue' for record in self.records):
+            raise ValueError('existing graph result size cannot grow')
         for record,item in zip(self.records,self.evidence):
             if (set(record)!={'id','source_id','source_revision','entity_id','action','data','semantic_status'} or record['id']!=item.id
-                    or item.kind!=('geo' if record['action']=='poi_facts' else 'entity')
+                    or item.kind!=('geo' if record['action'] in ('poi_facts','geo_queue') else 'entity')
                     or record['semantic_status']!='model_authored_source_claim_not_verified_identity_or_geometry'
                     or item.dependencies.source_ids!=(record['source_id'],) or len(item.dependencies.source_revisions)!=1
                     or item.dependencies.source_revisions[0].content_revision!=record['source_revision']
@@ -113,8 +120,8 @@ class SourceGraphReadResult(ReadIdentity):
                     key=data['key']
                     if data['entity_id']!=record['entity_id'] or data['kind'] not in ('person','organization','event','historical_thread','poi_ref'):
                         raise ValueError('source entity identity differs')
-                elif action in ('mentions','aliases','relations'):
-                    field={'mentions':'mention_id','aliases':'alias_id','relations':'relation_id'}[action]
+                elif action in ('mentions','aliases','relations','geo_queue'):
+                    field={'mentions':'mention_id','aliases':'alias_id','relations':'relation_id','geo_queue':'mention_id'}[action]
                     key=data[field];exact_uuid(key)
                 elif action=='poi_facts':
                     key=data['candidate_id'];exact_uuid(key);quote=data['text']
@@ -170,10 +177,11 @@ def _after(raw,scope):
 
 def _record(row,request):
     source,revision,eligibility,key,data,text,bibliography=row;source=str(source);exact_uuid(source)
-    if (revision!=1 or type(eligibility) is not int or eligibility<1 or type(key) is not str or not 1<=len(key)<=100
+    if (type(revision) is not int or revision<1 or (revision!=1 and request.action!='geo_queue')
+            or type(eligibility) is not int or eligibility<1 or type(key) is not str or not 1<=len(key)<=100
             or type(data) is not dict or len(canonical(data))>96*1024 or type(text) is not str or not 1<=len(text)<=2000):
         raise ReadUnavailable('internal_error')
-    entity=data['entity_id'] if request.action in ('entity','list') else request.entity_id
+    entity=data['entity_id'] if request.action in ('entity','list','geo_queue') else request.entity_id
     if entity is not None:exact_uuid(entity)
     if request.entity_id is not None and entity!=request.entity_id:raise ReadUnavailable('internal_error')
     if request.source_id is not None and source!=request.source_id:raise ReadUnavailable('internal_error')
@@ -185,7 +193,7 @@ def _record(row,request):
     ident=source+':'+key
     record=dict(id=ident,source_id=source,source_revision=revision,entity_id=entity,action=request.action,data=data,
         semantic_status='model_authored_source_claim_not_verified_identity_or_geometry')
-    evidence=EvidenceItem(id=ident,kind='geo' if request.action=='poi_facts' else 'entity',text=text,
+    evidence=EvidenceItem(id=ident,kind='geo' if request.action in ('poi_facts','geo_queue') else 'entity',text=text,
         metadata=EvidenceMetadata(citation=bibliography[:1024],locator='source-graph:'+key),
         dependencies=ItemDependencies(source_ids=(source,),source_revisions=(SourceDependency(source_id=source,
             content_revision=revision,eligibility_revision=eligibility),),variant_refs=(),grant_refs=()))
@@ -214,6 +222,25 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                         installed=await cursor.fetchone()
                         if not installed or type(installed[0]) is not int or installed[0]<11:
                             raise ReadUnavailable('not_ready')
+                        if request.action=='geo_queue':
+                            if installed[0]<35:raise ReadUnavailable('not_ready')
+                            # Exact single native SELECT; no source graph discovery,
+                            # visibility invention, extra actor fields or stored queue.
+                            await execute('SELECT * FROM rkb_v4.read_geo_queue_v1(%s)',(request.limit,))
+                            rows=await cursor.fetchall()
+                            if len(rows)>request.limit:raise ReadUnavailable('internal_error')
+                            records=[];evidence=[];used=0
+                            for row in rows:
+                                record,item,_=_record(row,request)
+                                size=len(canonical(record))+len(canonical(item.model_dump(mode='json')))
+                                used+=size
+                                if used>240*1024:raise ReadUnavailable('internal_error')
+                                records.append(record);evidence.append(item)
+                            return SourceGraphReadResult(**_identity(request),status='ok',
+                                records=tuple(records),evidence=tuple(evidence),next_cursor=None,
+                                observed_data_seq=observed['data'],observed_projection_seq=observed['projection'],
+                                observed_visibility_epoch=observed['visibility'],
+                                observed_database_generation=observed['database'])
                         scope=_scope(request,observed);after=(None,None)
                         if request.cursor:
                             try:after=_after(request.cursor,scope)

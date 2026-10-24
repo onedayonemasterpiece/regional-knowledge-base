@@ -101,7 +101,7 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     config = next(ast.literal_eval(node.value) for node in ast.parse(source).body
         if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets))
     expected_files=len(target.artifacts)+len(source_bundle(ROOT)[2])
-    assert len(config['prepared_model']['entries']) == expected_files <= 192
+    assert len(config['prepared_model']['entries']) == expected_files <= 194
     assert len(Stage0Spec.from_wire(config['stage0']).wheels) == 55
     assert len(canonical(config)) <= MAX_LAUNCH_CONFIG_BYTES == 64*1024
     assert 'command_handlers' not in config['target_runtime']

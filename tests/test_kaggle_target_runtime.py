@@ -151,7 +151,7 @@ def test_generated_entrypoint_executes_lifecycle_with_stubs(tmp_path,monkeypatch
     # whose final hash is persisted above retains its actual Kaggle paths.
     class Redirect(ast.NodeTransformer):
         def visit_Constant(self,node):
-            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/rkb-tgt-'):
+            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/rkb-'):
                 return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
             return node
     exec(compile(ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[]))),
