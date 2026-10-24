@@ -182,52 +182,42 @@ class ControllerAcceptedProof:
 
 
 class SourcePrepareNotApplied(RuntimeError):
-    """Only an exact timed-out prepare SQL with a completed PG rollback."""
+    """Exact timed-out prepare SQL with completed PG rollback only."""
 
 
 class _PrepareRollbackWitness:
-    """Observe the existing prepare TX without changing accepted materializer bytes."""
-
-    def __init__(self):
-        self.confirmed = False
+    def __init__(self):self.confirmed=False
 
     @asynccontextmanager
-    async def acquire(self, original):
+    async def acquire(self,original):
         async with original() as connection:
-            yield _ObservedPrepareConnection(connection, self)
+            yield _ObservedPrepareConnection(connection,self)
 
 
 class _ObservedPrepareConnection:
-    def __init__(self, connection, witness):
-        self._connection, self._witness = connection, witness
-        self._prepare_canceled = False
+    def __init__(self,connection,witness):
+        self._connection,self._witness=connection,witness
+        self._prepare_canceled=False
 
-    def __getattr__(self, name):
-        return getattr(self._connection, name)
+    def __getattr__(self,name):return getattr(self._connection,name)
 
-    async def execute(self, query, *args, **kwargs):
-        try:
-            return await self._connection.execute(query, *args, **kwargs)
+    async def execute(self,query,*args,**kwargs):
+        try:return await self._connection.execute(query,*args,**kwargs)
         except psycopg.errors.QueryCanceled as error:
-            # Do not classify timeouts from the initial context, vector install,
-            # an outer transaction or any other native SQL as known prepare rollback.
-            if (getattr(error, 'sqlstate', None) == '57014'
-                    and type(query) is str
+            if (getattr(error,'sqlstate',None)=='57014' and type(query) is str
                     and query.lstrip().startswith('SELECT rkb_v4.prepare_source_batch_v1(')):
-                self._prepare_canceled = True
+                self._prepare_canceled=True
             raise
 
     @asynccontextmanager
-    async def transaction(self, *args, **kwargs):
+    async def transaction(self,*args,**kwargs):
         try:
-            async with self._connection.transaction(*args, **kwargs) as tx:
-                yield tx
+            async with self._connection.transaction(*args,**kwargs) as tx:yield tx
         except psycopg.errors.QueryCanceled:
-            # This executes only AFTER psycopg transaction.__aexit__ succeeded.
-            # A lost connection, failed rollback, or missing IDLE proof fails closed.
+            # The transaction exited; IDLE proves no retained aborted TX.
             if (self._prepare_canceled and not self._connection.closed
-                    and self._connection.info.transaction_status == TransactionStatus.IDLE):
-                self._witness.confirmed = True
+                    and self._connection.info.transaction_status==TransactionStatus.IDLE):
+                self._witness.confirmed=True
             raise
 
 
