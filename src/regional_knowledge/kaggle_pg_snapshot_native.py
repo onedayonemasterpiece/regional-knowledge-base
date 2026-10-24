@@ -274,6 +274,46 @@ async def applied_prefix(connection,sequence,limits):
     return h.hexdigest()
 
 
+def archive_suffix_hash(rows):
+    """Bounded fingerprint of applied-op identities also known to the journal.
+
+    The native ledger contributes verified committed identities, not a new
+    write pathway or an assertion that their remote outcomes are Saved.
+    """
+    h=hashlib.sha256(b'rkb.archive-applied-suffix.v1')
+    for row in rows:
+        encoded=encode(tuple(row))
+        if len(encoded)>8192:raise SnapshotError('snapshot_receipt_metadata_bound')
+        h.update(len(encoded).to_bytes(4,'big'));h.update(encoded)
+    return h.hexdigest()
+
+
+async def archived_applied_suffix(connection,base,actual,database_generation,writer_generation,limits):
+    if (type(actual) is not int or actual<base or actual-base>limits.max_tail_commands
+            or actual>limits.max_receipts):
+        raise SnapshotError('native_restore_archive_cursor_budget')
+    rows=[]
+    async with connection.cursor(name='rkb_snapshot_archive_suffix') as cursor:
+        await cursor.execute('SELECT sequence,operation_key,command_sha256,handler_sha256,'
+            'accepted_manifest_sha256,status,outcome_sha256,database_generation,writer_generation '
+            'FROM rkb_v4.applied_ops WHERE sequence>%s AND sequence<=%s ORDER BY sequence LIMIT %s',
+            (base,actual,limits.max_tail_commands+1))
+        while (record:=await cursor.fetchone()) is not None:
+            sequence,key,command_hash,handler_hash,seal_hash,status,outcome_hash,db,writer=record
+            if (sequence!=base+len(rows)+1 or type(key) is not str or not 1<=len(key.encode())<=4096
+                    or db!=database_generation or writer!=writer_generation
+                    or status not in ('applied','rejected_precondition')):
+                raise SnapshotError('native_restore_archive_receipt_identity')
+            for value in (command_hash,handler_hash,seal_hash,outcome_hash):
+                try:_hash(value)
+                except ValueError:raise SnapshotError('native_restore_archive_receipt_hash') from None
+            rows.append((sequence,key,command_hash,handler_hash,seal_hash,db,writer))
+            if len(rows)>limits.max_tail_commands:
+                raise SnapshotError('native_restore_archive_cursor_budget')
+    if len(rows)!=actual-base:raise SnapshotError('native_restore_archive_receipt_gap')
+    return archive_suffix_hash(rows)
+
+
 class _CandidatePg:
     def __init__(self,process,database,connect):self.process,self.database,self.connect=process,database,connect
     @asynccontextmanager
@@ -295,6 +335,8 @@ class _NativeSession:
     binding: object
     executor: object
     receipts: list
+    archived_sequence: int | None = None
+    archive_suffix_sha256: str | None = None
 
 
 class NativeSnapshotFactory:
@@ -519,10 +561,22 @@ class NativeSnapshotFactory:
                             or restored_cursor<m['applied_sequence']):
                         raise SnapshotError('native_restore_internal_cursor')
             await self._upgrade_restored(candidate,m)
+            # WAL may contain commits AFTER the manifest's verified lower
+            # bound. Attest both the saved hash and every native ledger identity
+            # in that ahead suffix before allowing READY/hand-over.
+            _,ready=await self.probe(acquire=candidate.acquire)
+            if (ready['applied_seq']!=restored_cursor or ready['projection_seq']!=restored_cursor):
+                raise SnapshotError('native_restore_archive_frontier_changed')
+            async with candidate.acquire() as connection:
+                async with connection.transaction():
+                    if await applied_prefix(connection,m['applied_sequence'],self.limits)!=m['applied_prefix_sha256']:
+                        raise SnapshotError('native_restore_saved_prefix_hash')
+                    archive_hash=await archived_applied_suffix(connection,m['applied_sequence'],restored_cursor,
+                        self.database.database_generation,m['writer_generation'],self.limits)
             original=replace(self.database,writer_generation=m['writer_generation'])
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
                 run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2])
-            session=_NativeSession(candidate,m,control_bytes,binding,executor,[])
+            session=_NativeSession(candidate,m,control_bytes,binding,executor,[],restored_cursor,archive_hash)
             self._sessions.add(session);self._current(binding)
             return session
         except BaseException:
@@ -556,7 +610,7 @@ class NativeSnapshotFactory:
         self._current(session.binding)
         receipt=await session.executor(frame)
         item=(receipt['sequence'],receipt['command_sha256'],receipt['outcome_sha256'])
-        expected=session.manifest['applied_sequence']+len(session.receipts)+1
+        expected=(session.archived_sequence if session.archived_sequence is not None else session.manifest['applied_sequence'])+len(session.receipts)+1
         if item[0]<expected:
             if item not in session.receipts:raise SnapshotError('native_restore_duplicate_receipt_changed')
         elif item[0]==expected:session.receipts.append(item)
@@ -587,7 +641,7 @@ class NativeSnapshotFactory:
         if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')
         self._current(session.binding)
         if tuple(expected_tail)!=tuple(session.receipts):raise SnapshotError('native_restore_tail_receipts_differ')
-        final_sequence=session.manifest['applied_sequence']+len(session.receipts)
+        final_sequence=(session.archived_sequence if session.archived_sequence is not None else session.manifest['applied_sequence'])+len(session.receipts)
         control=json.loads(control_bytes)
         if (encode(control)!=control_bytes or control.get('database_generation')!=self.database.database_generation
                 or control.get('sequence')!=final_sequence or control.get('journal_head')!=final_head
