@@ -200,7 +200,7 @@ class NativeSourceHistoryVerifier:
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.')
                 or command.route in INACTIVE_SOURCE_ROUTES|{'source.activate.v1','source.batch.v1','source.finish.v1'} else
-                {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
+                {'source.withdraw.v1':'source.withdraw','source.catalog.v1':'source.catalog','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
             if expected_route not in self.routes or dep.scope_owner!='shared' or 'source_id' not in dep.resource_keys:
                 raise SpoolConflict('unclassified accepted source dependency')
             _uuid(command.ids['source_id'])
