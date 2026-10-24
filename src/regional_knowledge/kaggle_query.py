@@ -108,15 +108,14 @@ def _source_label(hit: SearchEvidence):
     year = meta.get("publication_year")
     if type(year) is not int or not 1 <= year <= 3000:
         year = None
-    # For accepted older sources lacking a typed card, display their saved
-    # bibliography as a fallback; never expose a passage UUID as the title.
+    # Legacy SQL001-only fixtures have no authenticated typed catalogue.
+    # Do not inject untrusted, potentially control-heavy raw bibliography into
+    # the bounded metadata/title field or mislabel it as a verified source card.
     if not title and not authors:
-        fallback = clean(hit.bibliography, 400)
-        pieces = [fallback or "Источник без установленной библиографии"]
-    else:
-        pieces = [v for v in (authors, title) if v]
-        if year is not None:
-            pieces.append(str(year))
+        return None, None, None, None
+    pieces = [v for v in (authors, title) if v]
+    if year is not None:
+        pieces.append(str(year))
     label = ". ".join(pieces)
     printed = clean(hit.printed_page_number, 60)
     if printed:
