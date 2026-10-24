@@ -46,7 +46,7 @@ def target_launch_from_wire(value):
     return TargetLaunchSpec(**options)
 
 
-def load_target_launch(path):
+def read_target_launch(path):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     try:
         before=os.fstat(fd)
@@ -63,4 +63,46 @@ def load_target_launch(path):
     finally:os.close(fd)
     value=json.loads(data,object_pairs_hook=_object,
         parse_constant=lambda _:(_ for _ in ()).throw(ValueError('nonfinite target configuration')))
-    return target_launch_from_wire(value)
+    return value
+
+
+def load_target_launch(path):
+    return target_launch_from_wire(read_target_launch(path))
+
+
+def successor_target(queue, value, run_id):
+    """Freeze the verified Saved and current run in its existing launch folder.
+
+    A restart reuses these exact pins; a later Saved cannot change a submitted
+    restore. This is launch metadata, not a second recovery pointer.
+    """
+    from .kaggle_current_registry import registry_sha256
+    from .kaggle_schema_migrate import latest_schema_version
+    folder=queue.path.parent/'bge-launches'/run_id
+    path=folder/'target.json'
+    if path.exists():return load_target_launch(path)
+    value=json.loads(json.dumps(value))
+    if value['database']['mode']!='VERIFIED_INITIALIZED' or value.get('dataset_checkpoint') is None:
+        return target_launch_from_wire(value)
+    with queue.connect(write=False) as db:
+        run=db.execute('SELECT current_run,successor FROM control WHERE id=1').fetchone()
+        if run is None or run_id not in tuple(run):raise ValueError('current successor required')
+        rows=db.execute('SELECT checkpoint_json,latest_json FROM rkb_dataset_recovery_store').fetchall()
+    if len(rows)!=1:raise ValueError('one verified Dataset recovery store required')
+    checkpoint=json.loads(rows[0]['latest_json'] or rows[0]['checkpoint_json'])
+    previous=value['dataset_checkpoint']
+    if (checkpoint['database_generation']!=value['database']['database_generation']
+            or checkpoint['base_sequence']<previous['base_sequence']
+            or (checkpoint['owner_slug'],checkpoint['dataset_slug'])!=(previous['owner_slug'],previous['dataset_slug'])):
+        raise ValueError('verified Saved must extend the same restore base')
+    value['database'].update(writer_generation=run_id,schema_version=latest_schema_version())
+    value.update(dataset_checkpoint=checkpoint,min_data_seq=checkpoint['base_sequence'],registry_sha256=registry_sha256())
+    target=target_launch_from_wire(value)
+    folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+    # Controller is the only producer. Atomic visibility also covers an API
+    # restart while notebook composition is still in progress.
+    temporary=path.with_suffix('.pending')
+    with open(temporary,'w',opener=lambda name,flags:os.open(name,flags,0o600)) as handle:
+        json.dump(target.wire(),handle,sort_keys=True,separators=(',',':'))
+    temporary.replace(path)
+    return target

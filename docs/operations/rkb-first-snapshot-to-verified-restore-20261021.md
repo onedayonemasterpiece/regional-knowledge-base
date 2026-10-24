@@ -1,5 +1,28 @@
 # RKB A — переход после первого snapshot: genesis → verified restore
 
+## Dataset rotations after the initial verified restore (2026-10-24)
+
+The installed target/source-service files are templates for the same logical
+database. The controller freezes the latest **verified** Dataset checkpoint,
+current release registry/schema and writer generation equal to the new run ID
+in the existing private `bge-launches/<run>/target.json` before composition/push.
+Retries reuse that exact file, even if a later Saved becomes available. Dataset
+readiness preflight still precedes provider submission; the slug stays stable.
+
+When the queue's current run changes and its frozen launch expectation is
+available, API maintenance requests graceful ASGI shutdown. After shutdown the
+process exits with status 75, so the existing systemd `Restart=on-failure`
+restarts it. Ordinary startup reads the frozen target and launch expectation,
+then composes its owners through the same path as any server restart. The
+existing `begin_restore` and native restore/verification still own writer
+activation and readiness; no live objects are rebound.
+
+Ordinary rotations require no manual `mint_restore_successor`, configuration
+installation or operator stop/start. A short API reconnect during rotation is
+expected. Installing a new main release remains a separate deployment; this
+description does not claim a live rotation passed.
+The dated first-transition evidence and original genesis requirements follow.
+
 Status 2026-10-21: **actual installed prelaunch failure confirmed by authorized
 operator; source/fixture transition verified; real restore/production read NOT RUN.**
 

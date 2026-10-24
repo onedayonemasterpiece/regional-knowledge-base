@@ -199,6 +199,7 @@ class TargetServiceStartup:
         self.authority,self.admission=authority,admission
         self.binding=self.coverage=None
         self.running=False;self.closed=False;self._maintenance=None
+        self.restart_requested=False
         self.gate=SourceReadGate(authority,config.spool,binding_current=self.binding_current)
         self.backend=_SourceBackend(worker_queue=config.queue,read_authority=authority,
             source_gate=self.gate,destination_ref=config.destination_ref)
@@ -452,6 +453,23 @@ class TargetServiceStartup:
         """Maintenance only; public reads use the PG binding independently."""
         if not self.running or self.closed:return False
         try:
+            if (self.dataset_checkpoints is not None and self.config.writer_owner is not None
+                    and not self.restart_requested):
+                with self.config.queue.connect(write=False) as db:
+                    run_id=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+                    runtime=self.config.queue._runtime_row(db,run_id) if run_id else None
+                if (run_id and run_id!=self.config.writer_owner.run_id and runtime is not None
+                        and runtime['expected_json'] and (self.config.queue.path.parent/'bge-launches'/run_id/'target.json').is_file()):
+                    # Graceful ASGI shutdown, then a nonzero process exit lets
+                    # the existing systemd Restart=on-failure rebuild normally.
+                    import os,signal
+                    self.restart_requested=True
+                    _LOG.info('target_source_rotation state=restart run_id=%s',run_id)
+                    # Uvicorn re-raises captured signals after cleanup. SIGINT
+                    # returns through its KeyboardInterrupt handler, allowing
+                    # main to select the systemd restart exit status below.
+                    os.kill(os.getpid(),signal.SIGINT)
+                    return False
             owner=self.config.writer_owner
             if owner is not None:
                 # Read back an owned UNKNOWN publication even if its worker

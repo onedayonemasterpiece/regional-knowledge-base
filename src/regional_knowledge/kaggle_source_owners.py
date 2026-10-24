@@ -193,14 +193,32 @@ def configured_source_service():
     from .supabase_backend import _object_store_from_env
     from .object_store import S3ObjectStore
     from .kaggle_owned_pg import OwnedDatabase
-    from .kaggle_current_registry import current_registry,registry_sha256
+    from .kaggle_current_registry import current_registry
+    from .kaggle_source_history_native import observer_fingerprint
     from .source_history_wss import WssNativeHistoryProofAdapter
     provider,_owner=_runtime()
     people=provider.personal_policy.participants
     object_store=_object_store_from_env()
     if type(object_store) is not S3ObjectStore:raise ValueError('existing configured native S3 authority required')
-    database=OwnedDatabase(**value['database'])
     queue=BgeQueue(queue_path)
+    with queue.connect(write=False) as db:
+        run_id=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+        runtime=queue._runtime_row(db,run_id) if run_id else None
+    target_path=queue.path.parent/'bge-launches'/str(run_id)/'target.json'
+    if (run_id and runtime is not None and runtime['expected_json'] and target_path.is_file()
+            and value.get('source_restore',{}).get('dataset_checkpoint') is not None):
+        from .kaggle_launch_config import load_target_launch
+        target=load_target_launch(target_path)
+        checkpoint=target.dataset_checkpoint.wire()
+        value['run_id']=run_id;value['database']=target.database.wire()
+        restore=value['source_restore'];manifest=checkpoint['manifest']
+        restore.update(dataset_checkpoint=checkpoint,operation_key='rkb-restore-'+run_id,
+            launch_config_sha256=queue._runtime_expected(runtime).hashes['launch_config'],
+            manifest=dict(key=restore['manifest']['key'].rsplit('/',1)[0]+'/'+manifest['sha256'],
+                last_sequence=checkpoint['base_sequence'],length=manifest['size'],sha256=manifest['sha256']))
+        if 'source_import' in value:
+            value['source_import']['launch_config_sha256']=restore['launch_config_sha256']
+    database=OwnedDatabase(**value['database'])
     with queue.connect(write=False) as db:
         runtime=queue._runtime_row(db,value['run_id'])
         observed=json.loads(runtime['observed_json']) if runtime is not None and runtime['observed_json'] else None
@@ -208,8 +226,9 @@ def configured_source_service():
         from dataclasses import replace
         database=replace(database,schema_version=observed.get('schema_version',database.schema_version))
     registry=current_registry()
-    if value['registry_sha256']!=registry_sha256(registry):raise ValueError('current code registry hash required')
-    history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=value['observer_sha256'],
+    # Code pins belong to the installed main release, not a former run's
+    # template. Native observations still prove the actual loaded code.
+    history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=observer_fingerprint(),
         geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
     import_owners=None
     if 'source_import' in value:
