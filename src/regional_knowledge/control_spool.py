@@ -240,11 +240,13 @@ class ControlSpool:
             fcntl.flock(self._fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
             with self._db(write=True) as db:
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_spool_meta(
-                    id INTEGER PRIMARY KEY CHECK(id=1),stream TEXT NOT NULL,used_bytes INTEGER NOT NULL,
+                    id INTEGER PRIMARY KEY CHECK(id=1),stream TEXT NOT NULL,
                     sequence INTEGER NOT NULL,accepted_sequence INTEGER NOT NULL,
                     operation_count INTEGER NOT NULL,pending_count INTEGER NOT NULL CHECK(pending_count>=0),
                     unknown_count INTEGER NOT NULL CHECK(unknown_count>=0))''')
-                db.execute('INSERT OR IGNORE INTO rkb_control_spool_meta VALUES(1,?,0,0,0,0,0,0)',(journal.stream,))
+                if 'used_bytes' in {r[1] for r in db.execute('PRAGMA table_info(rkb_control_spool_meta)')}:
+                    db.execute('ALTER TABLE rkb_control_spool_meta DROP COLUMN used_bytes')
+                db.execute('INSERT OR IGNORE INTO rkb_control_spool_meta VALUES(1,?,0,0,0,0,0)',(journal.stream,))
                 if db.execute('SELECT stream FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]!=journal.stream:
                     raise SpoolConflict('control database belongs to another ordered stream')
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_operations(
@@ -597,6 +599,16 @@ class ControlSpool:
             return 'geo:'+_uuid(command.person_id)+':'+value
         raise SpoolDenied('independent domain scope unavailable')
 
+    @staticmethod
+    def _used_bytes(db):
+        # Unknown outcomes keep the promised maximum; known outcomes have an
+        # exact retained size. No second, independently mutable byte ledger.
+        return db.execute('''SELECT
+            (SELECT coalesce(sum(CASE WHEN apply_bytes IS NULL THEN reserved_bytes ELSE
+                length(command_bytes)+length(dependency_bytes)+length(outcome_bytes)+32768 END),0)
+                FROM rkb_control_operations)+
+            (SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads)''').fetchone()[0]
+
     def _stage(self,command,data,handler,database_generation):
         dependency=_json(None if handler.dependency is None else handler.dependency.wire())
         # Reserve post-acceptance outcome and bounded native receipt/head/seal
@@ -609,7 +621,7 @@ class ControlSpool:
                         or bytes(prior['dependency_bytes'])!=dependency):
                     raise SpoolConflict('operation key has different exact command/scope/database bytes')
                 return self._entry(prior)
-            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
+            used=self._used_bytes(db)
             if used+reserved>self.max_bytes:raise SpoolFull('control spool budget exhausted before remote acceptance')
             if db.execute('SELECT 1 FROM rkb_control_operations WHERE sequence=?',(command.sequence,)).fetchone():
                 raise SpoolConflict('another canonical local operation occupies this sequence')
@@ -619,8 +631,8 @@ class ControlSpool:
                 seal_state,apply_state,outcome_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'NOT_SENT','NOT_SENT','NOT_SENT')''',
                 (command.operation_key,data,_hash(data),command.sequence,self._resource_key(command,handler.dependency),command.person_id,
                  database_generation,dependency,handler.fingerprint,reserved,now,now))
-            db.execute('''UPDATE rkb_control_spool_meta SET used_bytes=used_bytes+?,sequence=max(sequence,?),
-                operation_count=operation_count+1,pending_count=pending_count+1 WHERE id=1''',(reserved,command.sequence))
+            db.execute('''UPDATE rkb_control_spool_meta SET sequence=max(sequence,?),
+                operation_count=operation_count+1,pending_count=pending_count+1 WHERE id=1''',(command.sequence,))
             return self._entry(db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone())
 
     async def stage_source_withdraw(self,context,command,*,database_generation):
@@ -989,13 +1001,12 @@ class ControlSpool:
         with self._db(write=True) as db:
             old=db.execute('SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads').fetchone()[0]
             sizes=[256+len(c.source_id.encode()) for c in changes]
-            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
+            used=self._used_bytes(db)
             if used-old+sum(sizes)>self.max_bytes:raise SpoolFull('verified source tail exceeds control budget; checkpoint required')
             db.execute('DELETE FROM rkb_control_source_heads')
             db.executemany('INSERT INTO rkb_control_source_heads VALUES(?,?,?,?,?,?,?)',
                 [(c.source_id,c.sequence,c.command_sha256,int(c.restriction),int(c.pending),int(c.unknown),n)
                  for c,n in zip(changes,sizes)])
-            db.execute('UPDATE rkb_control_spool_meta SET used_bytes=used_bytes-?+? WHERE id=1',(old,sum(sizes)))
             db.execute('''UPDATE rkb_control_source_head_meta SET
                 sequence=(SELECT coalesce(max(sequence),0) FROM rkb_control_source_heads),
                 pending_count=(SELECT coalesce(sum(pending),0) FROM rkb_control_source_heads),

@@ -151,6 +151,45 @@ async def test_budget_reserves_outcome_before_remote_acceptance_and_never_ttl_de
 
 
 @pytest.mark.asyncio
+async def test_known_outcome_releases_reserve_and_legacy_byte_counter_is_removed(env):
+    e=env
+    await accept(e)
+    with e.spool._db() as db:
+        reserved=e.spool._used_bytes(db)
+        assert 'used_bytes' not in {r[1] for r in db.execute('PRAGMA table_info(rkb_control_spool_meta)')}
+    capacity=2*reserved-100
+    e.spool.max_bytes=capacity
+    next_command=withdraw(e.p.owner.subject,2)
+    with pytest.raises(SpoolFull):await stage(e,next_command)
+    applied=receipt(e.cmd)
+    await e.spool.record_apply(e.cmd.operation_key,applied)
+    with e.spool._db() as db:
+        actual=e.spool._used_bytes(db)
+    assert actual==reserved-e.spool.max_outcome_bytes+len(applied.outcome)
+    await e.spool.record_apply(e.cmd.operation_key,applied)
+    with e.spool._db() as db:
+        assert e.spool._used_bytes(db)==actual
+    # A stale old ledger must neither survive nor block admission on upgrade.
+    with e.spool._db(write=True) as db:
+        db.execute('ALTER TABLE rkb_control_spool_meta ADD COLUMN used_bytes INTEGER NOT NULL DEFAULT 536200848')
+    e.spool.close()
+    e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry,max_bytes=capacity)
+    with e.spool._db() as db:
+        assert e.spool._used_bytes(db)==actual
+        assert 'used_bytes' not in {r[1] for r in db.execute('PRAGMA table_info(rkb_control_spool_meta)')}
+    # The unchanged capacity now admits work because the first outcome is known.
+    await stage(e,next_command)
+    before=await e.spool.get(e.cmd.operation_key)
+    assert before.apply_receipt.outcome==applied.outcome and before.command.encode()==e.cmd.encode()
+    with e.spool._db() as db:
+        total=e.spool._used_bytes(db)
+    e.spool.close()
+    e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry)
+    with e.spool._db() as db:
+        assert e.spool._used_bytes(db)==total
+
+
+@pytest.mark.asyncio
 async def test_seal_unknown_preserves_exact_predecessor_provisional_barrier_and_retry(env):
     e=env
     await stage(e)
