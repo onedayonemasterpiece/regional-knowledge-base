@@ -67,7 +67,7 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('native_status',['applied','rejected_precondition'])
-async def test_verified_case_apply_requests_early_dataset_saved_only_for_success(
+async def test_verified_case_terminal_requests_early_dataset_saved_after_native_receipt(
         env,auth,monkeypatch,native_status):
     import base64
     import hashlib
@@ -109,10 +109,11 @@ async def test_verified_case_apply_requests_early_dataset_saved_only_for_success
     await env.spool.record_apply(command.operation_key,receipt)
     applied=await env.spool.get(command.operation_key)
     assert applied.outcome_state=='NOT_SENT' and applied.remote_outcome is None
+    assert applied.apply_state==('APPLIED' if native_status=='applied' else 'REJECTED_PRECONDITION')
     assert (await cursor()).applied_sequence==command.sequence
     TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
-    assert calls[-1]==(binding,native_status=='applied')
-    # Even with an APPLIED Case, the history-only path keeps its old cadence.
+    assert calls[-1]==(binding,True)  # terminal APPLIED or REJECTED_PRECONDITION
+    # Even with a terminal Case, the history-only path keeps its old cadence.
     TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=False)
     assert calls[-1]==(binding,False)
     await env.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
