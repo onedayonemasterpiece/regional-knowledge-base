@@ -117,3 +117,18 @@ new executor. Native terminal logs diagnose channel closure; a generic
 `revoked_run` channel reason is not evidence that the bearer token was revoked.
 
 The owner policy dated 2026-10-23 starts the existing successor warmup at 8 h 15 min, with handover and confirmed native stop required before nine hours. This threshold schedules warmup; actual handover continuity, writer pause duration and predecessor stop time require a live receipt. STOP remains the existing planned-handover work, not an additional cancellation mechanism.
+
+## Startup evidence before ATTACH
+
+The generated worker emits flushed `worker_bootstrap` events with run ID,
+UTC epoch timestamp and a fixed stage before bundle extraction, after extraction,
+around recovery import/construction, and before WSS startup. The transport logs
+its aiohttp import, each connect attempt, actual DNS start/end callbacks,
+connection completion, environment observation, ATTACH and WELCOME. Failures
+include only the exception class and numeric HTTP status, never exception text,
+headers, tokens, URLs or frame contents.
+
+The native connection handshake has a 15-second total and 10-second connect/socket
+budget. The existing reconnect grace and the established worker's lifetime remain
+separate. Diagnose the last observed stage in the exact version's logs; RUNNING
+alone is not proof that control attached or that PostgreSQL/model startup began.

@@ -92,8 +92,11 @@ async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
         assert worker.pending is None and worker.job['id']=='unresolved-job'
         assert peer.sessions==1 and not task.done()
         assert not peer.frames('RESULT') and not peer.frames('SOURCE_COMMAND_RESULT')
-        events=[json.loads(line) for line in capsys.readouterr().out.splitlines()
+        output=capsys.readouterr().out
+        assert secret not in output
+        events=[json.loads(line) for line in output.splitlines()
                 if line.startswith('{"event":')]
+        events=[event for event in events if event['event']!='worker_bootstrap']
         assert events==[dict(event='native_job_outcome_unresolved',
             job_id='unresolved-job',kind=kind,phase=None,
             error_class='ValueError' if kind=='document' else 'ModuleNotFoundError')]

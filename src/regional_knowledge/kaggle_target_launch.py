@@ -145,8 +145,13 @@ def compose_target(template,config,target,*,queue,repository):
     # before control; model imports, pool creation and initdb occur after ATTACH.
     entry = '''
 if __name__ == '__main__':
-    import base64 as _b64, hashlib as _hashlib, sys as _sys, json as _json, zlib as _zlib
+    import base64 as _b64, hashlib as _hashlib, sys as _sys, json as _json, zlib as _zlib, time as _time
     from pathlib import Path as _Path
+    def _rkb_stage(stage):
+        print(_json.dumps(dict(event='worker_bootstrap',run_id=RUN_CONFIG.get('run_id'),
+            stage=stage,timestamp=_time.time())),flush=True)
+    _rkb_stage('python_start')
+    _rkb_stage('bundle_unpack_start')
     _decoder = _zlib.decompressobj()
     _raw = _decoder.decompress(_b64.b64decode(BUNDLE_PACKED, validate=True), BUNDLE_LIMIT + 1)
     if len(_raw) > BUNDLE_LIMIT or not _decoder.eof or _decoder.unused_data or _decoder.unconsumed_tail:
@@ -175,6 +180,7 @@ if __name__ == '__main__':
                 or _hashlib.sha256(_file.read_bytes()).digest() != _hashlib.sha256(_data).digest()):
             raise RuntimeError('target_bundle_bytes_mismatch')
     _sys.path.insert(0, str(_root))
+    _rkb_stage('bundle_unpack_complete')
     class _DeferredTargetRuntime:
         def __init__(self):
             self.instance = None
@@ -189,12 +195,18 @@ if __name__ == '__main__':
             if self.instance is not None:
                 await self.instance.aclose()
     if RUN_CONFIG['target_runtime'].get('recovery') is not None:
+        _rkb_stage('recovery_import_start')
         from regional_knowledge.kaggle_recovery_composition import DeferredRecoveryRuntime
+        _rkb_stage('recovery_import_complete')
+        _rkb_stage('recovery_construct_start')
         runtime = DeferredRecoveryRuntime(RUN_CONFIG, executed_source=str(_Path(__file__).resolve()))
+        _rkb_stage('recovery_construct_complete')
+        _rkb_stage('wss_worker_start')
         main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose,
              recovery_handler=runtime, snapshot_channel=runtime.ticket_channel)
     else:
         runtime = _DeferredTargetRuntime()
+        _rkb_stage('wss_worker_start')
         main(prepare_runtime=runtime.prepare, close_runtime=runtime.aclose)
 '''.replace('BUNDLE_PACKED',repr(base64.b64encode(zlib.compress(canonical(files),9)).decode()))\
     .replace('BUNDLE_LIMIT',str(MAX_BUNDLE_JSON_BYTES)).replace('BUNDLE_ROOT',repr(str(root/relative)))
