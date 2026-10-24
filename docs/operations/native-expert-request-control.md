@@ -200,3 +200,47 @@ delivery/echo, PG evidence and product acceptance are still NOT RUN.
 `tests/test_expert_slack_ingress.py` exercises signed HTTP challenges, initial 503,
 remote-accepted retry 200, duplicate/tampered events, revocation, forged HMAC,
 wrong app/team and disabled-by-default route, all on synthetic fixtures.
+
+
+## 2026-10-24: bounded read-only Slack search reply (source-only, OFF)
+
+Per Opus 1792800345, **ordinary read-only search must not pass through
+expert-agent executor or three Dataset result/send/receipt checkpoints**.
+They remain mandatory for their own accepted provider-effect workflows.
+This opt-in path keeps the *existing* signed Slack ingress and verified
+Participants/source gate, but uses its existing unique event_id/request row
+only for local at-most-once Slack delivery. This is not a new service or queue.
+
+- Set existing RKB_EXPERT_SLACK_INGRESS_CONFIG only after Shkiper verifies
+  the real Slack app, signing secret, team/bot IDs and explicit allowed_channels.
+  Configure Slack Events app_mention/DM subscription to route through the
+  existing external ingress to /internal/rkb/expert-slack-events. As of the
+  source handoff, live ingress is OFF and the external callback URL is unknown.
+- Optional RKB_EXPERT_SLACK_REPLY_CONFIG points to a private regular file:
+  {"codec":"rkb.expert-slack-search-reply.v1",
+   "bot_token_file":"/absolute/owner-private/bot-token"}
+  The bot_token_file must have owner-only permissions, contain a bot xoxb-
+  token, and remain unchanged while in use. **Only Shkiper/owner** can install
+  config/token/grants/Slack app settings; no secrets are shipped in source.
+- Each signed non-bot event is checked for replay, exact app/team/channel,
+  current verified Slack human link and public_search grant. In reply mode
+  the existing ingress record is locally inserted once by event_id and
+  acknowledged (HTTP 200), with no Dataset checkpoint needed for a read-only
+  message. A duplicate event never acquires a second send permit.
+- The reply uses the already-composed ExpertEvidenceReceiver and its current
+  canonical ReadAuthority/SourceReadGate under **the original human**, with
+  group-public output only. It quotes actual returned source title, citation,
+  page locator (unknown if absent) and excerpt. No LLM, owner impersonation,
+  unsupported web link or original-scan proof is introduced.
+- The existing event row makes exactly one transition searching→sending before
+  chat.postMessage. The bot token is checked against Slack auth.test for the
+  original workspace and bot user; client_msg_id is the exact Slack event_id,
+  thread_ts is the originating signed thread. A verified matching native
+  provider echo records delivered. Any uncertain send becomes UNKNOWN and
+  must **never** trigger an automatic second post. Source/person/channel
+  eligibility is rechecked before sending.
+- This does not install a callback, do a live Slack E2E, impersonate a nonowner,
+  guarantee recovery after process crash during an acknowledged read, or grant
+  any new account permission. Tests are synthetic. Run live owner/nonowner
+  acceptance separately after authorized install with Shkiper; Opus reviews
+  and merges source only.

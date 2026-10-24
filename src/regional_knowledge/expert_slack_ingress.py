@@ -42,6 +42,14 @@ class ExpertSlackIngress:
         # writer fence if Slack's 2.5s HTTP timeout elapses during SQLite lock
         # contention. The next verified event retry reads the original bytes.
         self._staging_tasks={}
+        self._reply = None
+
+    def bind_search_reply(self, reply):
+        """One opt-in same-owner responder; no automatic provider sender."""
+        if (self._reply is not None or reply.control is not self.control
+                or reply.ingress is not self or not callable(getattr(reply, "notify", None))):
+            raise ValueError("exact existing Slack reply composition required")
+        self._reply = reply
 
     async def __call__(self, request):
         try:
@@ -71,6 +79,11 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
+                if self._reply is not None:
+                    # Read-only search: existing event_id row is the at-most-once
+                    # boundary; no Dataset checkpoint/agent job is necessary.
+                    self._reply.notify(outcome['request_id'])
+                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 if self.control.dataset_records is not None:
                     # A signed request is staged only by the existing fenced
                     # Dataset CAS. Local staging never earns Slack HTTP 200.
