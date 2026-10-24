@@ -153,10 +153,17 @@ class PhysicalSnapshotRecovery:
                 'operation_key':operation_key,'manifest':manifest_ref.wire(),'database':database.wire(),'identity':identity})
             await self.journal._fenced_exact(self.journal.prefix+'/snapshots/recovery-intents/'+sha(operation_key.encode()),
                 intent,expected_token=None,writer_generation=database.writer_generation,limit=self.limits.max_control_bytes)
-            handle=await self.native.prepare(binding,operation_key=operation_key,
+            prepared=await self.native.prepare(binding,operation_key=operation_key,
                 manifest_bytes=encode(manifest),manifest_ref=manifest_ref.wire(),
                 blob=asdict(blob),control_bytes=control_bytes,expected_versions=expected_versions,
                 database=database.wire(),identity=identity)
+            if (type(prepared) is not dict or set(prepared)!={'handle','archived_sequence','archive_suffix_sha256'}
+                    or type(prepared['handle']) is not str or not prepared['handle']
+                    or type(prepared['archived_sequence']) is not int):
+                raise SnapshotError('snapshot_archive_attestation_invalid')
+            from .kaggle_pg_snapshot_native import archive_suffix_hash
+            _hash(prepared['archive_suffix_sha256'])
+            handle=prepared['handle']
             head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
             # Verify the accepted suffix now; execute it through the ordinary
             # source-command queue after the saved prefix becomes readable.
@@ -168,11 +175,39 @@ class PhysicalSnapshotRecovery:
                     raise SnapshotError('snapshot_replay_scope_unsupported')
                 if await self.journal.verify_accepted(seal,command)!=sha(command.encode()):
                     raise SnapshotError('snapshot_exact_acceptance_changed')
+            # The WAL-consistent archive can include an already committed
+            # prefix of this exact accepted tail. Its bounded native ledger
+            # fingerprint must match immutable journal identities/handler pins.
+            base_sequence=manifest['applied_sequence']
+            sequence=prepared['archived_sequence']
+            if not base_sequence<=sequence<=base_sequence+len(tail):
+                raise SnapshotError('snapshot_archive_cursor_outside_accepted_tail')
+            archived=tail[:sequence-base_sequence]
+            expected=archive_suffix_hash((command.sequence,command.operation_key,sha(command.encode()),
+                self.registry.resolve(command).fingerprint,seal.manifest.sha256,
+                database.database_generation,manifest['writer_generation']) for command,seal in archived)
+            if expected!=prepared['archive_suffix_sha256']:
+                raise SnapshotError('snapshot_archive_ahead_identity_changed')
+            heads={row[0]:list(row) for row in control['heads']}
+            for command,seal in archived:
+                dependency=self.registry.resolve(command).dependency
+                if dependency is None or dependency.scope_class!='public_source':continue
+                source=command.ids['source_id'];old=heads.get(source)
+                heads[source]=[source,command.sequence,sha(command.encode()),
+                    int(bool(dependency.restriction or old is not None and old[3])),0,0]
+            # A verified journal boundary must identify exactly the PG prefix,
+            # never a seal whose final command still awaits ordinary dispatch.
+            archive_head=manifest['journal_head']
+            if archived:
+                last_seal=archived[-1][1].manifest
+                if last_seal.last_sequence!=sequence:
+                    raise SnapshotError('snapshot_archive_head_not_exact')
+                archive_head=last_seal.wire()
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_before_rollover')
-            sequence=manifest['applied_sequence']
             for legacy_field in ('catalog_sha256','acl_sha256','closure_transitions'):
                 control.pop(legacy_field,None)
-            control.update(sequence=sequence,schema_version=expected_schema_version,
+            control.update(sequence=sequence,journal_head=archive_head,
+                heads=[heads[k] for k in sorted(heads)],schema_version=expected_schema_version,
                 registry_sha256=self.history.registry_hash,routes=sorted(self.history.routes))
             final_control=encode(control)
             if len(final_control)>self.limits.max_control_bytes:raise SnapshotError('snapshot_final_control_byte_budget')
@@ -184,8 +219,8 @@ class PhysicalSnapshotRecovery:
             proof=ControllerRecoveryProof(self,native_ref,database,identity,manifest_ref,head,sequence,final_control,binding)
             self._proofs.add(proof)
             await self.verify_initialized(proof,database,identity)
-            _LOG.info('snapshot_recovery_verified manifest_hash=%s operation_hash=%s cursor=%s pending_count=%s',
-                manifest_ref.sha256,sha(operation_key.encode()),sequence,len(tail))
+            _LOG.info('snapshot_recovery_verified manifest_hash=%s operation_hash=%s cursor=%s archive_count=%s pending_count=%s',
+                manifest_ref.sha256,sha(operation_key.encode()),sequence,len(archived),len(tail)-len(archived))
             return proof
 
     async def verify_initialized(self,proof,database,identity):
