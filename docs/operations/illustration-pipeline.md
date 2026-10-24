@@ -66,11 +66,15 @@ original renderer as `book_pages`, then returns only the accepted figure crop
 as actual JPEG ImageContent. The complete page stays internal. Ordinary source
 authorization and withdrawal checks apply through the existing read issuer.
 The image path does not require a Telegram mirror, registration, media hash or
-archive availability state. Original acquisition/storage integrity remains the
-existing `book_pages` contract. `fetch.metadata.illustrations[]` contains exact
+archive availability state. Original acquisition/storage integrity remains separate from derivative-media
+hash identifiers; page readback does not repeat a derivative SHA comparison. `fetch.metadata.illustrations[]` contains exact
 accepted passage links or shared figure/caption evidence, excluding unrelated
 pictures on the same page. Figure metadata includes the zero-based physical
-page. This public preview is independent of archival mirror work.
+page. Discovery uses compact descriptors outside the text metadata budget;
+`illustrations_has_more` explicitly marks a bounded partial gallery. Preview
+encoding fits the existing whole MCP response ceiling. The ordinary output
+issuer rechecks authorization after page rendering without extending other read
+tickets. This public preview is independent of archival mirror work.
 
 ## Source-proof and locator contract
 

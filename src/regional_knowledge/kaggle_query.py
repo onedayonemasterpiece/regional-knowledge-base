@@ -319,6 +319,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                                 or observed["visibility"] != locator.visibility_epoch):
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
+                        illustrations, illustrations_has_more = (), False
                         if source_provenance:
                             await execute('SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([locator.passage_id],))
                             metadata=await cursor.fetchone()
@@ -327,7 +328,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                             provenance = dict(metadata[0])
                             if public_illustrations:
                                 from .kaggle_passage_illustrations import read_passage_illustrations
-                                provenance['illustrations'] = await read_passage_illustrations(
+                                illustrations, illustrations_has_more = await read_passage_illustrations(
                                     cursor, execute, source_id=locator.source.source_id,
                                     passage_id=locator.passage_id)
                             from dataclasses import replace
@@ -343,6 +344,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                                       database_generation=observed["database"],
                                       text_offset=text_start, bibliography_offset=locator.bibliography_offset)
                         result = PassageRead(**_identity(query), status="ok",
+                            illustrations=illustrations, illustrations_has_more=illustrations_has_more,
                             evidence=(entry,), observed_data_seq=observed["data"],
                             observed_projection_seq=observed["projection"], observed_visibility_epoch=observed["visibility"],
                             observed_database_generation=observed["database"])

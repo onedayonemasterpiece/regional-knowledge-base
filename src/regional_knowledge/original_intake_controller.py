@@ -328,7 +328,7 @@ class OriginalIntakeController:
                 if result.get('ContentLength')!=page['image_size'] or page['image_size']>256*1024:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 data=body.read(page['image_size']+1)
-                if len(data)!=page['image_size'] or digest(data)!=page['image_sha256']:
+                if len(data)!=page['image_size']:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 return data
             finally:body.close()

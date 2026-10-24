@@ -65,12 +65,12 @@ async def test_accepted_figure_reader_and_same_page_negative(image_pg_sql18):
         async with role('rkb_reader') as conn:
             async with conn.transaction():
                 async with conn.cursor() as cursor:
-                    descriptors=await read_passage_illustrations(cursor,cursor.execute,
+                    descriptors,more=await read_passage_illustrations(cursor,cursor.execute,
                         source_id=SOURCE,passage_id=str(passage))
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 async with conn.transaction():
                     await conn.execute('SELECT original_receipt FROM rkb_v4.source_stage_sessions')
-        assert len(descriptors)==1 and descriptors[0]['illustration_id']==str(figure)
+        assert len(descriptors)==1 and descriptors[0]['id'].endswith(':'+str(figure)) and not more
         result=await execute_source_read(request,acquire=lambda:role('rkb_reader'))
         assert result.status=='ok' and result.records[0]['physical_page_index']==0
         assert result.records[0]['illustration_id']==str(figure)

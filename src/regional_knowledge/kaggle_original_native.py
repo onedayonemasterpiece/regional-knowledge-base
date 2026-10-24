@@ -322,7 +322,7 @@ class NativeOriginalIntake:
                 result=await self._parse_selected(record['path'],'page',index,
                     parser_sha256=record['parser_sha256'])
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
-                if not 1<=len(image)<=256*1024 or digest(image)!=result['image_sha256']:
+                if not 1<=len(image)<=256*1024:
                     raise OriginalIntakeError('original_page_render_invalid')
                 page_path=record['path'].parent/f'page-{index}.jpg'
                 with page_path.open('xb') as stream:stream.write(image)

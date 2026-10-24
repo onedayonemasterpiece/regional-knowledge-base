@@ -326,7 +326,8 @@ class KaggleSourceBackend:
         return FetchOutput(text=item.text, metadata={
             'citation': item.metadata.citation, 'locator': item.metadata.locator,
             'source_provenance':item.metadata.source_provenance,
-            'illustrations':(item.metadata.source_provenance or {}).get('illustrations',[]),
+            'illustrations':list(result.illustrations),
+            'illustrations_has_more':result.illustrations_has_more,
             'text_form': item.text_form, 'bounded_passage': True,
             'text_offset': item.source_continuation.text_offset - len(item.text)
                 if item.source_continuation else locator.text_offset,
@@ -419,8 +420,8 @@ class KaggleSourceBackend:
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
         # One budget includes auth, admission, network, native execution and gate.
         illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
-        deadline = (time.monotonic()+120 if illustration else
-            min(time.monotonic()+2,trusted['deadline']) if trusted is not None else time.monotonic()+2)
+        deadline = (min(time.monotonic()+2,trusted['deadline'])
+            if trusted is not None else time.monotonic()+2)
         telemetry = self.read_telemetry
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
@@ -443,7 +444,7 @@ class KaggleSourceBackend:
             telemetry.finish_attempt(attempt,status=final_status,reason=final_reason,
                 executed_branches=branches,controller_stages_ms=values)
         try:
-            async with asyncio.timeout_at(deadline):
+            async with asyncio.timeout_at(None if illustration else deadline):
                 try:
                     filters = QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
                         kinds=kinds)
@@ -494,8 +495,7 @@ class KaggleSourceBackend:
                         min_data_seq=max(binding.min_data_seq,trusted['min_data_seq']) if trusted else binding.min_data_seq,
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                        deadline_ms=max(1,int((deadline-time.monotonic())*1000)) if illustration else
-                            min(2000,max(1,int((deadline-time.monotonic())*1000))))
+                        deadline_ms=min(2000,max(1,int((deadline-time.monotonic())*1000))))
                     request = (SourceGraphReadRequest(**graph_request,**identity) if graph_request is not None else
                         SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
@@ -532,7 +532,9 @@ class KaggleSourceBackend:
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = None if illustration else render(gated.result)
                 if illustration:
-                    pixels=await self.illustration_renderer(gated.result.records[0],binding)
+                    from .read_issuance import MAX_RESPONSE_BYTES
+                    from .kaggle_protocol import QUERY_MAX_BYTES
+                    pixels=b''
                     def render(value):
                         if value.status!='ok':
                             return CallToolResult(isError=True,content=[TextContent(type='text',
@@ -542,6 +544,20 @@ class KaggleSourceBackend:
                                 if k!='ingestion_id'}),ensure_ascii=False)),
                             ImageContent(type='image',data=base64.b64encode(pixels).decode('ascii'),
                                 mimeType='image/jpeg')])
+                    empty=render(gated.result).model_dump(mode='json',by_alias=True,exclude_none=True)
+                    overhead=len(json.dumps(empty,ensure_ascii=False,separators=(',',':')).encode())
+                    # Existing response ceiling includes base64 and metadata.
+                    # Existing control-frame bound reserves the RPC envelope.
+                    budget=((MAX_RESPONSE_BYTES-overhead-QUERY_MAX_BYTES)//4)*3
+                    accepted=gated.result
+                    self.source_gate.release(gated.ticket)
+                    pixels=await self.illustration_renderer(accepted.records[0],binding,max_bytes=budget)
+                    # Rendering may outlive a metadata ticket. Issue through the
+                    # ordinary gate after I/O, rechecking actor, binding and
+                    # withdrawal; final middleware still refreshes it.
+                    permit=await self.source_gate.dispatch(authority,request,binding)
+                    gated=await self.source_gate.finish(permit,accepted)
+                    permit=None
                     output=render(gated.result)
                 if not retain_read_output(self.source_gate, gated, render,
                         on_release=lambda: self.read_authority.release(authority),

@@ -383,7 +383,8 @@ class SourceReadGate:
                 {'mode': None, 'continuation': None} if type(result) is QueryResult else
                 {'record':None} if type(result) in (StoryReadResult,EditorialReadResult) else
                 {'records':(),'next_cursor':None} if type(result) in (FactReadResult,SourceGraphReadResult) else
-                {'records':(),'next_after_ordinal':None} if type(result) is SourceReadResult else {}),
+                {'records':(),'next_after_ordinal':None} if type(result) is SourceReadResult else
+                {'illustrations':(),'illustrations_has_more':False} if type(result) is PassageReadResult else {}),
             'reason': reason, 'evidence': (),
             'prior_write_pending': reason == 'prior_write_pending'})
 

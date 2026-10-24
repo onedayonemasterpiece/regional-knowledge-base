@@ -57,15 +57,12 @@ async def read_passage_illustrations(cursor, execute, *, source_id, passage_id):
                 OR p.data->'region_ids' @> jsonb_build_array(i.data->'source_region_id')
                 OR i.data->'caption_region_ids' ?| ARRAY(
                     SELECT jsonb_array_elements_text(p.data->'region_ids')))
-        ORDER BY pg.physical_page_index,i.illustration_id LIMIT 200''',
+        ORDER BY pg.physical_page_index,i.illustration_id LIMIT 201''',
         (source_id, passage_id))
     rows = await cursor.fetchall()
-    fields = ('illustration_key', 'page_id', 'source_region_id', 'bbox', 'kind',
-              'caption_text', 'caption_region_ids', 'visual_description',
-              'visual_description_provenance', 'display_rotation_degrees')
-    return [dict(id=f'rkb:illustration:v1:{source_id}:{illustration_id}',
-                 illustration_id=str(illustration_id), source_id=source_id,
-                 association_basis=basis,
-                 physical_page_index=physical,
-                 **{key: data[key] for key in fields if key in data})
-            for illustration_id, data, physical, basis in rows]
+    # Discovery must not consume the text item's 12 KiB metadata budget.
+    # Caption, description and geometry are returned by illustration_fetch.
+    return tuple(dict(id=f'rkb:illustration:v1:{source_id}:{illustration_id}',
+                      page_id=data['page_id'], physical_page_index=physical,
+                      association_basis=basis)
+                 for illustration_id, data, physical, basis in rows[:200]), len(rows)>200
