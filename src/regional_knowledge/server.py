@@ -1253,14 +1253,35 @@ def build_server(
         description=(
             "Fetch evidence for an ID returned by search, including source provenance. "
             "A bounded source passage includes explicit offsets and next_id when more text "
-            "or bibliography remains; fetch next_id until continuation_complete."
+            "or bibliography remains; fetch next_id until continuation_complete. "
+            "For native accepted chunk review, omit id and provide source_id, page_start, page_end "
+            "(inclusive zero-based physical page indexes; maximum four pages). Returns ordered "
+            "chunk_id, text, pages, regions with exact Unicode offsets and next_after_ordinal "
+            "for continuation. The same fetch authorization applies."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def fetch(id: str) -> FetchOutput:
-        # Whole authorized fetch including principal resolution; no payload
-        # enters telemetry and the DTO/ACL path is unchanged.
+    async def fetch(
+        id: str | None = None,
+        source_id: str | None = None,
+        page_start: Annotated[int | None, Field(ge=0, le=2499)] = None,
+        page_end: Annotated[int | None, Field(ge=0, le=2499)] = None,
+        after_ordinal: Annotated[int | None, Field(ge=0)] = None,
+        limit: Annotated[int, Field(ge=1, le=8)] = 8,
+    ) -> FetchOutput | dict[str,Any]:
+        # Both read modes resolve the same principal and use the same final
+        # authorized output-issuance boundary. No legacy cross-backend fallback.
         from .product_telemetry import observe_async
+        if source_id is not None:
+            if id is not None or page_start is None or page_end is None:
+                raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
+            if selected != 'kaggle_source':
+                raise ToolError('{"status":"unavailable","reason":"native_chunks_unavailable"}')
+            return await observe_async("fetch", lambda: backend.fetch_chunks(
+                _principal(),source_id=source_id,page_start=page_start,page_end=page_end,
+                after_ordinal=after_ordinal,limit=limit))
+        if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
+            raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))

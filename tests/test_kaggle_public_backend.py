@@ -372,3 +372,64 @@ async def test_current_story_get_uses_paired_editorial_read_and_keeps_exact_save
         calls[0].release()
     finally:
         if not task.done():task.cancel()
+
+
+
+@pytest.mark.asyncio
+async def test_accepted_chunk_fetch_uses_existing_oauth_gate_admission_and_issuance(target):
+    from regional_knowledge.kaggle_source_read import SourceReadRequest,SourceReadResult
+    from regional_knowledge.kaggle_protocol import (
+        EvidenceItem,ItemDependencies,SourceDependency)
+    s=target
+    source='00000000-0000-0000-0000-000000000001'
+    chunk='60000000-0000-0000-0000-000000000001'
+    page='40000000-0000-0000-0000-000000000001'
+    region='50000000-0000-0000-0000-000000000001'
+
+    async def read():
+        with capture_read_output() as calls:
+            value=await s.backend.fetch_chunks(s.principal,source_id=source,
+                page_start=1,page_end=2,limit=1)
+        return value,calls
+
+    task=asyncio.create_task(read())
+    dispatched=await work(s)
+    assert type(dispatched.query) is SourceReadRequest
+    assert dispatched.query.operation=='accepted_chunks'
+    assert (dispatched.query.source_id,dispatched.query.page_start,
+            dispatched.query.page_end,dispatched.query.limit)==(source,1,2,1)
+    assert dispatched.query.actor.person_id==s.auth.p.other.subject
+    dependency=SourceDependency(source_id=source,content_revision=1,eligibility_revision=7)
+    result=SourceReadResult(request_id=dispatched.query.request_id,
+        connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
+        operation='accepted_chunks',status='ok',
+        records=(dict(source_id=source,chunk_id=chunk,ordinal=0,text='Accepted chunk',
+            pages=[dict(page_id=page,physical_page_index=1)],
+            regions=[dict(page_id=page,region_id=region,start=0,end=12,role='body')]),),
+        evidence=(EvidenceItem(id=chunk,kind='source',text='Accepted chunk',
+            dependencies=ItemDependencies(source_ids=(source,),variant_refs=(),grant_refs=(),
+                source_revisions=(dependency,))),),
+        next_after_ordinal=0,observed_data_seq=5,observed_projection_seq=5,
+        observed_visibility_epoch=4,observed_database_generation='db-source')
+    assert await s.admission.finish_read(s.run,s.token,s.generation,result)
+    output,calls=await task
+    assert output['status']=='ok' and output['source_id']==source
+    assert output['page_start']==1 and output['page_end']==2
+    assert output['chunks'][0]['chunk_id']==chunk
+    assert output['next_after_ordinal']==0 and output['has_more']
+    assert len(calls)==1
+    calls[0].release()
+    await release(s,dispatched)
+
+
+@pytest.mark.asyncio
+async def test_accepted_chunk_fetch_rejects_invalid_source_or_page_range_before_queue(target):
+    s=target
+    with pytest.raises(ToolError,match='invalid_input'):
+        await s.backend.fetch_chunks(s.principal,source_id='not-uuid',
+            page_start=1,page_end=2)
+    with pytest.raises(ToolError,match='invalid_input'):
+        await s.backend.fetch_chunks(s.principal,
+            source_id='00000000-0000-0000-0000-000000000001',
+            page_start=1,page_end=5)
+    assert not s.gate.permits

@@ -269,7 +269,7 @@ class SourceReadGate:
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
-        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else None if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else ((q.source_id,) if q.operation=='accepted_chunks' else None) if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
         guard_sources=set(sources)
         if scope is not None:guard_sources.update(scope)
@@ -283,8 +283,16 @@ class SourceReadGate:
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
                 or q.entity_id is not None and record['entity_id']!=q.entity_id for record in result.records)):
             raise SourceGateDenied('exact source graph selector differs')
-        if catalog and (not self.catalog_supported() or len(result.records)>q.limit):
-            raise SourceGateDenied('exact bounded source catalogue required')
+        if catalog and (not self.catalog_supported() or len(result.records)>q.limit
+                or result.operation!=q.operation):
+            raise SourceGateDenied('exact native source read operation differs')
+        if catalog and q.operation=='accepted_chunks' and any(
+                record['source_id']!=q.source_id
+                or q.after_ordinal is not None and record['ordinal']<=q.after_ordinal
+                or not any(q.page_start <= page['physical_page_index'] <= q.page_end
+                           for page in record['pages'])
+                for record in result.records):
+            raise SourceGateDenied('accepted chunk/source/page scope differs')
         if fact and (not self.facts_supported() or len(result.records)>q.limit or
                 any(record.get('kind')!=('observations' if q.action=='observation_compare' else q.action) for record in result.records) or
                 q.source_id is not None and any(source!=q.source_id for source in sources)):
@@ -375,7 +383,7 @@ class SourceReadGate:
                 {'mode': None, 'continuation': None} if type(result) is QueryResult else
                 {'record':None} if type(result) in (StoryReadResult,EditorialReadResult) else
                 {'records':(),'next_cursor':None} if type(result) in (FactReadResult,SourceGraphReadResult) else
-                {'records':()} if type(result) is SourceReadResult else {}),
+                {'records':(),'next_after_ordinal':None} if type(result) is SourceReadResult else {}),
             'reason': reason, 'evidence': (),
             'prior_write_pending': reason == 'prior_write_pending'})
 

@@ -368,6 +368,19 @@ class KaggleSourceBackend:
         return output
 
     @staticmethod
+    def _render_chunks(result, *, attempt, request):
+        # The native result is already bounded and source-provenance gated.
+        return dict(source_id=request['source_id'],page_start=request['page_start'],
+            page_end=request['page_end'],chunks=list(result.records),
+            next_after_ordinal=result.next_after_ordinal,
+            has_more=result.next_after_ordinal is not None,
+            status=result.status,reason=result.reason,
+            observed_data_seq=result.observed_data_seq,
+            observed_projection_seq=result.observed_projection_seq,
+            read_trace=ReadTrace(**attempt.correlation(),
+                backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'))
+
+    @staticmethod
     def _render_graph(result,*,attempt):
         return dict(status=result.status,reason=result.reason,items=list(result.records),
             next_cursor=result.next_cursor,has_more=result.next_cursor is not None,
@@ -500,7 +513,7 @@ class KaggleSourceBackend:
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     raise ToolError(json.dumps({'status': status, 'reason': reason}))
-                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:BookFindOutput(
+                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:self._render_chunks(value,attempt=attempt,request=catalog_request)) if catalog_request is not None and catalog_request.get('operation')=='accepted_chunks' else (lambda value:BookFindOutput(
                     query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt,comparison=fact_request['action']=='observation_compare')) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = render(gated.result)
@@ -628,6 +641,13 @@ class KaggleSourceBackend:
         if main_job_id:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_search_option"}')
         return await self._search(query, principal, evidence=True, source_ids=document_ids, limit=max_evidence)
+
+    async def fetch_chunks(self, principal, *, source_id, page_start, page_end,
+                           after_ordinal=None, limit=8):
+        # Reuse fetch's exact OAuth / public_search / source gate / final issuance.
+        return await self._search(None,principal,evidence=True,catalog_request=dict(
+            operation='accepted_chunks',source_id=source_id,page_start=page_start,
+            page_end=page_end,after_ordinal=after_ordinal,limit=limit))
 
     async def fetch(self, id, principal):
         try:
