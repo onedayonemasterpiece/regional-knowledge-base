@@ -88,6 +88,12 @@ async def large_projection():
         entities=[], references=[], relations=[],
         poi_facts=poi_facts, finding_entities=finding_entities,
     ))
+    graph["image_manifest"] = dict(passages=[dict(
+        passage_id=passage["passage_id"],
+        page_ids=[regions[ordinal % len(regions)]["page_id"]],
+        region_ids=[regions[ordinal % len(regions)]["region_id"]],
+        footnote_region_ids=[],
+    ) for ordinal, passage in enumerate(passages)])
     return graph, canonical(semantic), canonical(base), findings[-1]["evidence"][0]
 
 
@@ -107,11 +113,11 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
     async with conn.transaction():
         await conn.execute("SET LOCAL statement_timeout = '25000ms'")
         await conn.execute(
-            "CREATE TEMP TABLE rkb_sql032_profile (doc jsonb, semantic bytea, base bytea, evidence jsonb) ON COMMIT DROP",
+            "CREATE TEMP TABLE rkb_sql032_profile (doc jsonb, semantic bytea, base bytea, evidence jsonb, graph_bytes bytea) ON COMMIT DROP",
         )
         await conn.execute(
-            "INSERT INTO pg_temp.rkb_sql032_profile VALUES (%s,%s,%s,%s)",
-            (Jsonb(graph), semantic, base, Jsonb(evidence)),
+            "INSERT INTO pg_temp.rkb_sql032_profile VALUES (%s,%s,%s,%s,%s)",
+            (Jsonb(graph), semantic, base, Jsonb(evidence), canonical(graph)),
         )
 
         statements = (
@@ -135,8 +141,11 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
                 jsonb_set(jsonb_set(x.doc,'{source_graph,poi_facts}','[]'::jsonb),
                   '{source_graph,finding_entities}','[]'::jsonb),%s::uuid,89)
                 FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
-            ("sql028_graph", """SELECT rkb_v4.check_source_batch_graph_v1(
+            ("sql028_graph_stored", """SELECT rkb_v4.check_source_batch_graph_v1(
                 x.doc,%s::uuid,89) FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
+            ("sql028_graph_prepare_input", """SELECT rkb_v4.check_source_batch_graph_v1(
+                convert_from(x.graph_bytes,'UTF8')::jsonb,%s::uuid,89)
+                FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
             ("sql026_conflicts", """SELECT rkb_v4.source_batch_conflicts_v1(
                 %s::uuid,x.doc) FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), False),
         )
@@ -153,7 +162,9 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
         # Exact negative branches of the existing SQL028 graph contract.
         # Mutations never enter the accepted journal or a live/Dev database.
         for case in ("poi_missing_region","poi_wrong_page","finding_unknown",
-                     "finding_wrong_keys","duplicate_proof_region","duplicate_proof_passage"):
+                     "finding_wrong_keys","duplicate_proof_region","duplicate_proof_passage",
+                     "missing_manifest_passage","wrong_manifest_page","wrong_manifest_region",
+                     "duplicate_manifest_passage"):
             changed = copy.deepcopy(graph)
             if case == "poi_missing_region":
                 changed["source_graph"]["poi_facts"][0]["evidence"][0]["region_id"] = ident("absent-region", 0)
@@ -165,8 +176,17 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
                 changed["source_graph"]["finding_entities"][0]["entity_keys"] = ["foreign-unbound-key"]
             elif case == "duplicate_proof_region":
                 changed["semantic"]["regions"].append(copy.deepcopy(changed["semantic"]["regions"][0]))
-            else:
+            elif case == "duplicate_proof_passage":
                 changed["passages"].append(copy.deepcopy(changed["passages"][0]))
+            elif case == "missing_manifest_passage":
+                changed["image_manifest"]["passages"].pop(0)
+            elif case == "wrong_manifest_page":
+                changed["image_manifest"]["passages"][0]["page_ids"] = [ident("absent-page", 0)]
+            elif case == "wrong_manifest_region":
+                changed["image_manifest"]["passages"][0]["region_ids"] = [ident("absent-region", 0)]
+            else:
+                changed["image_manifest"]["passages"].append(
+                    copy.deepcopy(changed["image_manifest"]["passages"][0]))
             got = (await (await conn.execute(
                 "SELECT rkb_v4.check_source_batch_graph_v1(%s::jsonb,%s::uuid,89)",
                 (Jsonb(changed),SOURCE))).fetchone())[0]
@@ -177,4 +197,7 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
     warnings.warn(f"RKB_SQL032_AFTER disposable_pg17 synthetic "
         f"passages=1600 regions=700 findings=800 timings_ms={measurements}",
         UserWarning, stacklevel=1)
-    assert measurements["sql028_graph"] < 1500, measurements
+    # SQL026 decodes knowledge_bytes before calling the graph validator.
+    # Retain stored-JSONB measurements, but gate the real input form with
+    # coherent manifest links at the unchanged 1500ms bound.
+    assert measurements["sql028_graph_prepare_input"] < 1500, measurements
