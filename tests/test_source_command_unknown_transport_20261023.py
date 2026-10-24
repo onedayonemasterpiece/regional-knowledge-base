@@ -153,6 +153,7 @@ async def test_prepare_not_applied_lost_ack_same_key_one_retry_then_exhausted_op
 
     class Original:
         def attached(self, generation):pass
+        def detached(self, generation):pass
         async def __call__(self,frame):
             pages.append((frame['id'],frame['phase']))
             return {'native':'bounded-original-pages'}
