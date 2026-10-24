@@ -10,6 +10,27 @@ from .native_snapshot_transfer import SnapshotTicket
 
 LOG=logging.getLogger(__name__)
 
+# Only exact SnapshotError literals emitted by kaggle_pg_snapshot_native may be
+# classified. Never log exception text, arguments or substrings of a message.
+_SNAPSHOT_FAILURE_CODES={
+    'snapshot_exact_runtime_versions_required':'versions',
+    'snapshot_native_version_mismatch':'versions',
+    'snapshot_resident_model_tokenizer_changed':'versions',
+    'native_snapshot_binary_version':'versions',
+    'native_backup_current_prefix':'prefix',
+    'snapshot_applied_prefix_gap':'prefix',
+    'snapshot_applied_cursor_differs':'prefix',
+    'snapshot_disk_budget':'disk',
+    'snapshot_archive_byte_budget':'archive',
+    'snapshot_required_native_members_missing':'archive',
+    'snapshot_native_inventory_differs':'archive',
+    'snapshot_tar_header_budget':'archive',
+    'snapshot_tar_metadata_budget':'archive',
+    'snapshot_unsafe_archive_member':'archive',
+    'snapshot_native_command_failed':'subprocess',
+    'snapshot_native_output_bound':'subprocess',
+}
+
 
 @dataclass
 class _Operation:
@@ -19,6 +40,7 @@ class _Operation:
     upload: object = None
     upload_result: object = None
     upload_task: object = None
+    failure_logged: bool = False
 
 
 class SnapshotIo:
@@ -80,7 +102,12 @@ class SnapshotIo:
         if operation.task.done():
             try:return dict(status='complete',value=operation.task.result())
             except Exception as error:
-                LOG.warning('snapshot_io failed error_type=%s',type(error).__name__)
+                if not operation.failure_logged:
+                    operation.failure_logged=True
+                    literal=(error.args[0] if type(error) is SnapshotError and len(error.args)==1
+                             and type(error.args[0]) is str else None)
+                    LOG.warning('snapshot_io failed code=%s',
+                                _SNAPSHOT_FAILURE_CODES.get(literal,'unclassified'))
                 raise SnapshotError('snapshot_io_failed') from None
         return dict(status='upload_required' if operation.upload and operation.upload_task is None else 'pending',
                     handle=handle)
