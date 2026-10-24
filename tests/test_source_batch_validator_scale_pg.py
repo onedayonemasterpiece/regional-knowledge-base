@@ -123,6 +123,18 @@ async def test_pure_sql026_028_029_helpers_at_observed_book_scale(image_pg_sql18
             ("sql028_semantic", """SELECT rkb_v4.check_source_batch_semantic_v1(
                 x.semantic,%s::jsonb,%s::jsonb,%s) FROM pg_temp.rkb_sql032_profile x""",
              (ids, expected, TIME), True),
+            ("sql028_graph_no_source_graph", """SELECT rkb_v4.check_source_batch_graph_v1(
+                x.doc-'source_graph',%s::uuid,89) FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
+            ("sql028_graph_no_poi_facts", """SELECT rkb_v4.check_source_batch_graph_v1(
+                jsonb_set(x.doc,'{source_graph,poi_facts}','[]'::jsonb),%s::uuid,89)
+                FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
+            ("sql028_graph_no_finding_entities", """SELECT rkb_v4.check_source_batch_graph_v1(
+                jsonb_set(x.doc,'{source_graph,finding_entities}','[]'::jsonb),%s::uuid,89)
+                FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
+            ("sql028_graph_only_finding_evidence", """SELECT rkb_v4.check_source_batch_graph_v1(
+                jsonb_set(jsonb_set(x.doc,'{source_graph,poi_facts}','[]'::jsonb),
+                  '{source_graph,finding_entities}','[]'::jsonb),%s::uuid,89)
+                FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
             ("sql028_graph", """SELECT rkb_v4.check_source_batch_graph_v1(
                 x.doc,%s::uuid,89) FROM pg_temp.rkb_sql032_profile x""", (SOURCE,), True),
             ("sql026_conflicts", """SELECT rkb_v4.source_batch_conflicts_v1(
