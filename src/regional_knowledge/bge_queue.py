@@ -243,6 +243,13 @@ class BgeQueue:
             db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
             return {'startup_ref':ref,'not_sent_runs':[r['id'] for r in recent]}
 
+    def record_request_activity(self):
+        """User intent renews useful-idle time; liveness and max age stay fenced."""
+        with self.connect() as db:
+            row=db.execute("UPDATE runs SET useful=? WHERE id=(SELECT current_run FROM control WHERE id=1) "
+                "AND status IN ('starting','ready','draining')",(self.clock(),))
+            return row.rowcount==1
+
     def request_startup(self):
         """One persisted cold demand, independent of a particular run's TTL.
 

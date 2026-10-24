@@ -123,3 +123,17 @@ def test_supabase_configuration_never_enables_mcp_auth(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Supabase is only the data plane"):
         build_server()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name',['search','fetch','book_ingest','book_pages'])
+async def test_rejected_request_still_records_idle_activity(name):
+    from regional_knowledge.server import KnowledgeMCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
+    server=KnowledgeMCPServer('request-activity-test')
+    server._target_source_profile=True
+    calls=[]
+    server._bge_request_activity=lambda:calls.append(name)
+    with pytest.raises((ToolError,ValueError)):
+        await server.call_tool(name,{})
+    assert calls==[name]

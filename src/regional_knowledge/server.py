@@ -297,6 +297,14 @@ class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
     async def call_tool(self, name, arguments, context=None):
+        activity=getattr(self,'_bge_request_activity',None)
+        if activity is not None and name in {
+                'search','knowledge_search','fetch','book_ingest','book_pages',
+                'book_find','story_search','story_get','story_observation_search'}:
+            try:
+                await asyncio.to_thread(activity)
+            except Exception:
+                logging.getLogger(__name__).warning('bge_request_activity state=unavailable tool=%s',name)
         allowed = {'search','fetch','knowledge_search','profile'}
         if getattr(self,'_target_story_available',False):
             allowed.update({'story_search','story_get','story_history','story_variants'})
@@ -610,6 +618,7 @@ def build_server(
             if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
+        mcp._bge_request_activity=worker_queue.record_request_activity
         # PR301 adds this optional native route argument. Both merge orders
         # keep one bounded product sink and leave legacy channels unchanged.
         from inspect import signature

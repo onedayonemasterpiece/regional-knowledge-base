@@ -360,3 +360,17 @@ def test_exact_authenticated_stop_eligibility_old_new_and_nine_hours(tmp_path):
         db.execute('UPDATE runs SET useful=?,heartbeat=? WHERE id=?',
             (now[0],now[0],new))
     assert q.stop_eligible(new,new_token,new_generation)
+
+
+def test_request_activity_renews_idle_but_never_worker_heartbeat(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    queue.enqueue('actor','one',['query']);run,token=run_details(queue)
+    queue.heartbeat(run,token,ready=True)
+    for _ in range(21):
+        now[0]+=90
+        assert queue.record_request_activity()
+        queue.heartbeat(run,token)
+    assert queue.status()['lease_remaining_seconds']==IDLE_SECONDS
+    now[0]+=121
+    assert queue.record_request_activity()
+    with pytest.raises(PermissionError):queue.heartbeat(run,token)
