@@ -272,7 +272,7 @@ class WorkerSourceExecutor:
                 async with witness.acquire(self.acquire) as connection:
                     yield connection
             try:
-                await self.materializer(command,acquire=observed_acquire,database=self.database)
+                await self.materializer(command,acquire=(observed_acquire if command.route=='source.batch.v1' else self.acquire),database=self.database)
             except SourceMaterializationRejected as error:
                 # Deterministic invalid model input produces an ordinary
                 # rejected-precondition receipt, not a fabricated completion.
