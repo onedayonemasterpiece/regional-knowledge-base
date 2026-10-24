@@ -14,22 +14,6 @@ from psycopg.rows import tuple_row
 from .kaggle_protocol import ReadIdentity, TrustedActorContext, Nonnegative, Identifier
 from .kaggle_protocol import EvidenceItem, EvidenceMetadata, ItemDependencies, SourceDependency
 from .kaggle_query import ReadUnavailable, _frontier, _identity
-from .contracts import CatalogMetadata
-
-
-
-
-def _root_catalog_card(value):
-    """Validate the existing bounded typed card; no new catalog or IAM store."""
-    if type(value) is not dict or len(json.dumps(value,ensure_ascii=False).encode()) > 16384:
-        return False
-    try:
-        catalog = CatalogMetadata.model_validate(value)
-    except ValueError:
-        return False
-    return (set(value) <= set(CatalogMetadata.model_fields)
-        and catalog.kind in ('book','journal_issue','article')
-        and catalog.parent_id is None and not catalog.region_ids)
 
 
 class SourceReadRequest(ReadIdentity):
@@ -101,9 +85,8 @@ class SourceReadResult(ReadIdentity):
                 raise ValueError('catalogue cannot return a chunk continuation')
             seen = set()
             for record, item in zip(self.records, self.evidence):
-                if (set(record) - {'catalog'} != {'document_id','title','authors','publication_year',
+                if (set(record) != {'document_id','title','authors','publication_year',
                                    'active_revision','source_format','source_archive_status'}
-                        or ('catalog' in record and not _root_catalog_card(record['catalog']))
                         or item.kind != 'source' or record['document_id'] != item.id or item.id in seen
                         or item.dependencies.source_ids != (item.id,)
                         or len(item.dependencies.source_revisions) != 1
@@ -331,8 +314,6 @@ async def execute_source_read(request, *, acquire):
                                     authors=metadata['authors'],publication_year=metadata['publication_year'],
                                     active_revision=revision,source_format='pdf',
                                     source_archive_status='verified')
-                                if metadata.get('catalog') is not None:
-                                    record['catalog'] = metadata['catalog']
                                 item = EvidenceItem(id=source,kind='source',text=record['title'],
                                     metadata=EvidenceMetadata(title=record['title'],locator='source:'+source),
                                     dependencies=ItemDependencies(source_ids=(source,),variant_refs=(),
