@@ -33,7 +33,7 @@ def register_participant_tools(mcp, startup, principal):
         title='Owner administration of existing RKB participants',
         description='Owner-personal only. Read/get/list/audit or change current participant '
             'categories with ParticipantUpsert, and explicitly grant/revoke only '
-            'scan_proof_read with ParticipantGrant, or begin/confirm an owner-attested '
+            'scan_proof_read/public_search with ParticipantGrant, or begin/confirm an owner-attested '
             'Slack account with existing AccountBegin/AccountConfirm. Changes use existing '
             'revision compare-and-set, audit events and idempotent operation_key. '
             'operation_status retrieves the same owner operation after an uncertain reply. '
@@ -102,7 +102,7 @@ def register_participant_tools(mcp, startup, principal):
                     raise ToolError('invalid_participants_change')
                 if (type(command) not in (ParticipantUpsert, ParticipantGrant, AccountBegin, AccountConfirm)
                         or isinstance(command, ParticipantGrant)
-                        and command.capability != 'scan_proof_read'
+                        and command.capability not in ('scan_proof_read','public_search')
                         or isinstance(command, AccountBegin)
                         and command.provider != 'slack'
                         or isinstance(command, AccountConfirm)
