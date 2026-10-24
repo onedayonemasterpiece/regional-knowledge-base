@@ -125,14 +125,12 @@ class SourceReadResult(ReadIdentity):
                 pages = set()
                 for page in record['pages']:
                     if (type(page) is not dict
-                            or set(page) != {'page_id','physical_page_index','printed_page_number'}
+                            or set(page) != {'page_id','physical_page_index'}
                             or str(UUID(page['page_id'])) != page['page_id']
                             or page['page_id'] in pages
                             or type(page['physical_page_index']) is not int
                             or not 0 <= page['physical_page_index'] <= 2499
-                            or (page['printed_page_number'] is not None and
-                                (type(page['printed_page_number']) is not str
-                                 or len(page['printed_page_number']) > 80))):
+):
                         raise ValueError('accepted chunk page binding required')
                     pages.add(page['page_id'])
                 for region in record['regions']:
@@ -202,13 +200,14 @@ async def _accepted_chunks(request, cursor, execute):
         region_ids.update(provenance['footnote_region_ids'])
     if len(page_ids) > 160 or len(region_ids) > 1200:
         raise ReadUnavailable('internal_error')
-    await execute('''SELECT page_id,physical_page_index,model_page->>'printed_page_number'
+    # The production rkb_reader role can SELECT only these three page
+    # identity columns; model_page/image_receipt are intentionally private.
+    await execute('''SELECT page_id,physical_page_index
         FROM rkb_v4.source_stage_pages
         WHERE source_id=%s::uuid AND page_id=ANY(%s::uuid[])''',
         (request.source_id, sorted(page_ids)))
-    pages = {str(pid):dict(page_id=str(pid),physical_page_index=physical,
-                           printed_page_number=printed)
-             for pid, physical, printed in await cursor.fetchall()}
+    pages = {str(pid):dict(page_id=str(pid),physical_page_index=physical)
+             for pid, physical in await cursor.fetchall()}
     await execute('''SELECT region_id,page_id,source_text,source_text_sha256
         FROM rkb_v4.source_regions WHERE source_id=%s::uuid AND source_revision=1
             AND region_id=ANY(%s::uuid[])''', (request.source_id, sorted(region_ids)))
