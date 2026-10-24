@@ -437,6 +437,20 @@ class NativeSourceIntake:
         await self._check(access)
         return state
 
+    async def applied_page_cursor(self, access, row):
+        """Resume after the latest APPLIED stage when research omits a cursor."""
+        await self._check(access,row)
+        state=await asyncio.to_thread(self._state,row)
+        if state is None or not state['batch_count']:
+            return '0'
+        previous={**state,'batch_count':state['batch_count']-1}
+        entry=await self._entry(self._stage_key(row,previous))
+        if (entry is None or entry.command_sha256!=state['last_batch_sha256']
+                or entry.apply_receipt is None or entry.apply_receipt.status!='applied'):
+            raise _failure('native_research_accepted_frontier_missing')
+        pages=json.loads(entry.command.payload)['model_payload']['pages']
+        return str(max(page['physical_page_index'] for page in pages)+1)
+
     def _output(self, row, state):
         phase=state['phase']
         if phase=='failed': return self.importer._output(row,'failed','Native command rejected; no successful source activation','blocker')
