@@ -62,12 +62,13 @@ CHUNK_B = '60000000-0000-0000-0000-000000000002'
 
 
 def chunk_request(**changes):
-    return SourceReadRequest.model_validate(dict(
-        request_id='chunks-1',connection_generation=2,turn_generation=0,
+    values=dict(request_id='chunks-1',connection_generation=2,turn_generation=0,
         operation='accepted_chunks',source_id=SOURCE,page_start=1,page_end=2,
         actor=dict(person_id='verified-person',audience='personal',auth_epoch=3,
             visibility_epoch=0,context_ref='trusted-context'),
-        min_data_seq=9,deadline_ms=2000,**changes))
+        min_data_seq=9,deadline_ms=2000)
+    values.update(changes)
+    return SourceReadRequest.model_validate(values)
 
 
 def provenance(chunk, pages, regions, spans):
@@ -162,12 +163,11 @@ async def test_chunk_pages_exclude_unmatched_pages_and_never_return_pending_mate
     {'page_start':-1}, {'page_start':2,'page_end':1},
     {'page_start':0,'page_end':4}, {'page_end':2500},
     {'page_start':True}, {'limit':9}, {'after_ordinal':-1},
+    {'page_start':None}, {'page_end':None},
 ])
 def test_accepted_chunks_reject_unbounded_or_noncanonical_selector(kwargs):
-    values=dict(operation='accepted_chunks',source_id=SOURCE,page_start=1,page_end=2)
-    values.update(kwargs)
     with pytest.raises(ValueError):
-        request(**values)
+        chunk_request(**kwargs)
 
 
 @pytest.mark.asyncio
