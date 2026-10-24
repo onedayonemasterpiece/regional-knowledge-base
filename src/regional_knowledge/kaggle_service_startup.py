@@ -404,7 +404,10 @@ class TargetServiceStartup:
             settled.extend(await self.config.spool._write(
                 self.config.spool._settle_recovered_jobs,row['operation_key'],coverage))
         for job in settled:self.config.queue._notify_result(job)
-        if settled:self.config.queue.shared_reads.wake()
+        if settled:
+            self.config.queue.shared_reads.wake()
+            _LOG.info('source_recovered_queue_settled run_id=%s applied_seq=%s count=%s remote_outcome_durable=false',
+                coverage.binding.run_id,coverage.applied_sequence,len(settled))
         return tuple(settled)
 
     def _kick_dataset_checkpoint(self,binding,*,dataset):
