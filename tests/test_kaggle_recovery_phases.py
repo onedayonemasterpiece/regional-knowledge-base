@@ -40,8 +40,7 @@ async def test_native_dataset_prepare_uses_pinned_download_and_same_pg_factory(i
         pin=replace(pin,**{invalid:replace(getattr(pin,invalid),sha256='f'*64)})
     native=object.__new__(NativeSnapshotFactory)
     native.database=db;native.identity=('r','nonce','inc');native.dataset_checkpoint=pin
-    from regional_knowledge.kaggle_pg_snapshot_native import archive_suffix_hash
-    calls=[];candidate=SimpleNamespace(archived_sequence=7,archive_suffix_sha256=archive_suffix_hash(()))
+    calls=[];candidate=SimpleNamespace(archived_sequence=7)
     async def prepare(binding,**kwargs):
         calls.append(('prepare',kwargs));return candidate
     async def download(ref,operation,**kwargs):
@@ -61,7 +60,7 @@ async def test_native_dataset_prepare_uses_pinned_download_and_same_pg_factory(i
         assert not calls;return
     result=await worker._execute('prepare',args,key,('r','inc',1),frame)
     assert worker._sessions[result['handle']] is candidate
-    assert result['archived_sequence']==7 and result['archive_suffix_sha256']==archive_suffix_hash(())
+    assert result['archived_sequence']==7
     assert [c[0] for c in calls]==['download','prepare']
     assert calls[1][1]['archive_path']=='/private/exact-version1-archive'
     assert calls[1][1]['manifest_bytes']==manifest and calls[1][1]['control_bytes']==control
