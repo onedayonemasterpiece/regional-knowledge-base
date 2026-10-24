@@ -688,7 +688,8 @@ async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intak
         await finish(s,book)
         assert (await call(s,book,'status')).state=='processing'
     rejected=await finish(s,book,status='rejected_precondition')
-    assert (await call(s,book,'status')).state=='staged'
+    rejected_status=await call(s,book,'status')
+    assert rejected_status.state=='staged' and rejected_status.next_cursor is None
     assert state(s,book)['rejected_batch_index']==0
     before=operation_count(s)
     # Identical model input now asks for a real retry, not the old rejection.
