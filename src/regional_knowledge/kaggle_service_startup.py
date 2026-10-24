@@ -443,6 +443,78 @@ class TargetServiceStartup:
                 and spool._source_anchor is c
                 and c.applied_sequence==c.accepted_sequence==spool._source_covered_sequence)
 
+    async def follow_current_run(self):
+        """Rebind the existing service to the controller's frozen restore target.
+
+        Public backend/auth/queue/spool stay alive. Old writer capabilities are
+        closed, never retargeted, so retained old operations cannot acquire the
+        successor's authority. begin_restore still owns persisted activation.
+        """
+        from dataclasses import replace
+        from .kaggle_launch_config import load_target_launch
+        from .kaggle_restore_startup import SourceRestoreCoordinator
+        from .kaggle_dataset_checkpoint import SourceDatasetCheckpoints
+        from .queue_writer import QueueWriterAuthority
+        from .recovery_journal import ObjectRef
+        from .source_history_wss import WssNativeHistoryProofAdapter
+        config=self.config;owner=config.writer_owner;spool=config.spool
+        if owner is None or self.dataset_checkpoints is None:return
+        with config.queue.connect(write=False) as db:
+            run_id=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+            if not run_id or run_id==owner.run_id:return
+            runtime=config.queue._runtime_row(db,run_id)
+            if runtime is None or not runtime['expected_json']:return
+            expected=config.queue._runtime_expected(runtime)
+            prior=db.execute('SELECT run_id,writer_generation,active,publication_json FROM rkb_writer_control WHERE id=1').fetchone()
+        path=config.queue.path.parent/'bge-launches'/run_id/'target.json'
+        if not path.exists():return
+        target=load_target_launch(path)
+        database=target.database;checkpoint=target.dataset_checkpoint
+        if (checkpoint is None or database.database_generation!=owner.database_generation
+                or database.writer_generation!=run_id
+                or expected.database_generation!=database.database_generation
+                or expected.min_data_seq!=target.min_data_seq
+                or expected.schema_version!=database.schema_version):
+            raise ValueError('successor restore target differs from current launch')
+        restarting=(prior['run_id'],prior['writer_generation'])==(run_id,database.writer_generation)
+        if (prior['active'] and not restarting) or prior['publication_json'] is not None:
+            raise ValueError('previous writer must be retired and settled')
+        # Finish the original checkpoint before replacing its scoped owners.
+        task=self.dataset_checkpoints._task
+        if task is not None and not task.done():await task
+        await self.schema_migrations.aclose()
+        await self.restorer.aclose()
+        async with spool._lock:
+            writer=QueueWriterAuthority(config.queue,run_id=run_id,database_generation=owner.database_generation,
+                writer_generation=database.writer_generation,stream=owner.stream)
+            store=spool.journal.store
+            writer.bind_store(store)
+            manifest=ObjectRef(key=config.source_restore.manifest.key.rsplit('/',1)[0]+'/'+checkpoint.manifest.sha256,
+                last_sequence=checkpoint.base_sequence,length=checkpoint.manifest.size,sha256=checkpoint.manifest.sha256)
+            restore=replace(config.source_restore,manifest=manifest,dataset_checkpoint=checkpoint,
+                launch_config_sha256=expected.hashes['launch_config'],operation_key='rkb-restore-'+run_id)
+            store.writer_guard=writer;store.checkpoint=checkpoint
+            previous=config.history_adapter
+            adapter=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=previous.observer,
+                coverage_seconds=previous.coverage_seconds,timeout_seconds=previous.timeout,
+                max_commands=previous.max_commands,max_history_bytes=previous.max_bytes,
+                geo_bootstrap_operation_keys=previous.geo_bootstrap_operation_keys)
+            self.config=replace(config,writer_owner=writer,writer_generation=database.writer_generation,
+                writer_current=writer.current,source_restore=restore,history_adapter=adapter,
+                import_launch_config_sha256=expected.hashes['launch_config'] if self.importer is not None else None)
+            self.history=adapter.bind(spool=spool,routes=self.routes,
+                binding_current=self.binding_current,writer_generation=database.writer_generation)
+            self.binding=self.coverage=None
+            self.gate.invalidate();self.case_gate.invalidate()
+            if self.geo_gate is not None:self.geo_gate.invalidate()
+            if self.importer is not None:
+                self.importer.launch_config_sha256=expected.hashes['launch_config']
+                config.import_originals.binding_current=self.binding_current
+            self.restorer=SourceRestoreCoordinator(self,restore)
+            self.dataset_checkpoints=SourceDatasetCheckpoints(self)
+            owner.close()
+        _LOG.info('target_source_rotation state=bound run_id=%s base_sequence=%s',run_id,checkpoint.base_sequence)
+
     async def refresh(self):
         if self.dataset_seed is not None and self.dataset_seed.published():
             # The one-time seed is finished. Do not keep polling S3 as a live
@@ -452,6 +524,7 @@ class TargetServiceStartup:
         """Maintenance only; public reads use the PG binding independently."""
         if not self.running or self.closed:return False
         try:
+            await self.follow_current_run()
             owner=self.config.writer_owner
             if owner is not None:
                 # Read back an owned UNKNOWN publication even if its worker

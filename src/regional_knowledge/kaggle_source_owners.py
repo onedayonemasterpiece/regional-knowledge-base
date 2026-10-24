@@ -193,7 +193,8 @@ def configured_source_service():
     from .supabase_backend import _object_store_from_env
     from .object_store import S3ObjectStore
     from .kaggle_owned_pg import OwnedDatabase
-    from .kaggle_current_registry import current_registry,registry_sha256
+    from .kaggle_current_registry import current_registry
+    from .kaggle_source_history_native import observer_fingerprint
     from .source_history_wss import WssNativeHistoryProofAdapter
     provider,_owner=_runtime()
     people=provider.personal_policy.participants
@@ -208,8 +209,9 @@ def configured_source_service():
         from dataclasses import replace
         database=replace(database,schema_version=observed.get('schema_version',database.schema_version))
     registry=current_registry()
-    if value['registry_sha256']!=registry_sha256(registry):raise ValueError('current code registry hash required')
-    history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=value['observer_sha256'],
+    # Code pins belong to the installed main release, not a former run's
+    # template. Native observations still prove the actual loaded code.
+    history=WssNativeHistoryProofAdapter(database=database,expected_observer_sha256=observer_fingerprint(),
         geo_bootstrap_operation_keys=tuple(value.get('geo_manifest_operation_keys',())))
     import_owners=None
     if 'source_import' in value:

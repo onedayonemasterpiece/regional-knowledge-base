@@ -263,8 +263,14 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     if target_config_path:
         if target_spec is not None:
             raise ValueError('one explicit target launch configuration required')
-        from regional_knowledge.kaggle_launch_config import load_target_launch
-        target_spec=load_target_launch(target_config_path)
+        from regional_knowledge.kaggle_launch_config import read_target_launch,target_launch_from_wire
+        target_wire=read_target_launch(target_config_path)
+        # The installed file is a stable template. Current code pins are owned
+        # by this main release; run/Saved pins are frozen at launch below.
+        if target_wire.get('dataset_checkpoint') is not None:
+            from regional_knowledge.kaggle_current_registry import registry_sha256
+            target_wire['registry_sha256']=registry_sha256()
+        target_spec=target_launch_from_wire(target_wire)
     if target_spec is not None:
         from regional_knowledge.kaggle_target_runtime import TargetLaunchSpec
         from regional_knowledge.recovery_journal import RecoveryJournal
@@ -303,6 +309,9 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
             preparation_step='not_started'  # Fixed, low-cardinality diagnostic only.
             try:
                 if run['status']=='starting' and run['launch_state']=='pending':
+                    if target_spec is not None and target_spec.dataset_checkpoint is not None:
+                        from regional_knowledge.kaggle_launch_config import successor_target
+                        target_spec=successor_target(queue,target_spec.wire(),run_id)
                     dataset_sources=(target_spec.stage0.dataset_sources
                         if target_spec is not None and target_spec.stage0 is not None else ())
                     if dataset_sources:

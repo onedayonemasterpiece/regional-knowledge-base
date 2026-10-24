@@ -187,6 +187,66 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 page_task.cancel()
                 await asyncio.gather(page_task,return_exceptions=True)
         await restarted.aclose()
+        if dataset_input:
+            # A real current_run rollover retires the old writer via the queue
+            # trigger. API/backend/spool and accepted journal stay in place.
+            from test_kaggle_run_rotation import restore_target
+            from regional_knowledge.kaggle_launch_config import successor_target
+            from regional_knowledge.kaggle_readiness import SearchRuntimeExpectation
+            old_writer=startup.config.writer_owner
+            old_binding=current_binding(e.q)
+            stable=(startup.backend,startup.config.spool,startup.admission,startup.authority)
+            with e.q.connect() as db:
+                successor=e.q._new_run(db,e.q.clock())
+                db.execute('UPDATE control SET current_run=? WHERE id=1',(successor,))
+            pins=SearchRuntimeExpectation(dict(e.expected.hashes),'synthetic-db',checkpoint.base_sequence)
+            e.q.expect_search_runtime(successor,pins)
+            pinned=successor_target(e.q,restore_target(checkpoint).wire(),successor)
+            await startup.follow_current_run()
+            assert stable==(startup.backend,startup.config.spool,startup.admission,startup.authority)
+            assert old_writer.closed and startup.config.writer_owner is not old_writer
+            assert startup.config.writer_owner.run_id==successor
+            assert startup.config.writer_generation==pinned.database.writer_generation==successor
+            assert startup.config.source_restore.dataset_checkpoint==checkpoint
+            assert startup.restorer.writer is startup.config.writer_owner
+            assert startup.history.database==pinned.database
+            assert startup.config.spool.journal.store.writer_guard is startup.config.writer_owner
+            assert startup.importer.launch_config_sha256==pins.hashes['launch_config']
+            assert not startup.binding_current(old_binding) and not startup.reads_current()
+            current_owner=startup.config.writer_owner
+            await startup.follow_current_run()
+            assert startup.config.writer_owner is current_owner
+            nonce=e.q.prepare_channel(successor)
+            token=e.q.launch_claim(successor)
+            e.q.launch_record(successor,'owner/stable-slug',provider_version=90)
+            generation=e.q.attach_channel(successor,token,nonce,'next-restored-incarnation')['connection_generation']
+            await startup.admission.resource_state(successor,token,generation,
+                runtime_incarnation='next-restored-incarnation',state='idle')
+            binding,_=startup.restorer._observe()
+            await current_owner.begin_restore(startup.config.spool.journal,binding,plan=startup.config.source_restore)
+            # Rebuild exactly as an API process restart with the unchanged old
+            # source-service template. The persisted new writer is now active
+            # for recovery, so this must resume its SAME plan, not refuse it.
+            await startup.source_dispatch.aclose()
+            startup.config.spool.close();current_owner.close();startup.admission.close()
+            from regional_knowledge.bge_queue import BgeQueue
+            queue=BgeQueue(e.q.path,clock=e.q.clock)
+            restarted_service=compose_source_service(queue=queue,oauth_provider=e.old.auth.provider,
+                participants=e.old.auth.p.registry,object_store=SimpleNamespace(client=e.old.c,bucket=e.s.bucket),
+                stream=e.j.stream,registry=registry,history_adapter=WssNativeHistoryProofAdapter(
+                    database=database,expected_observer_sha256='c'*64),run_id=e.run,
+                database_generation='synthetic-db',writer_generation='writer-2',source_restore=plan,source_import=imports)
+            try:
+                await restarted_service.follow_current_run()
+                resumed,_=restarted_service.restorer._observe()
+                assert resumed==binding
+                assert restarted_service.config.source_restore==startup.config.source_restore
+                await restarted_service.config.writer_owner.begin_restore(restarted_service.config.spool.journal,
+                    resumed,plan=restarted_service.config.source_restore)
+            finally:
+                await restarted_service.restorer.aclose();await restarted_service.source_dispatch.aclose()
+                restarted_service.config.spool.close();restarted_service.config.writer_owner.close()
+                restarted_service.admission.close()
     finally:
         if not task.done():task.cancel()
         await asyncio.gather(task,return_exceptions=True)
