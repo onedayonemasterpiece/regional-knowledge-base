@@ -346,10 +346,6 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                                         read_type=payload.pop('type')
                                         payload.pop('protocol_version')
                                         await send(read_type, priority=1, work=work, **payload)
-                                    elif work.native_request is not None:
-                                        await send('ENCODE_GRANT',priority=1,work=work,
-                                            **dict(work.native_request),compute_claim=work.compute_claim,
-                                            dispatch_generation=work.dispatch_generation)
                                     else:
                                         await send('DISPATCH', priority=1, work=work,
                                             **dict(work.document_payload),
@@ -420,10 +416,6 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             # challenge issued before it cannot establish idle.
                             probe_nonce = await shared.begin_resource_probe(run_id, token, generation)
                             await send('RESOURCE_PROBE', probe_nonce=probe_nonce)
-                    elif shared is not None and frame['type']=='ENCODE_REQUEST':
-                        _fields(frame,(*common,'job_id','claim','request_id'))
-                        await shared.request_native_forward(run_id,token,generation,
-                            job_id=frame['job_id'],claim=frame['claim'],request_id=frame['request_id'])
                     elif shared is not None and frame['type'] in ('QUERY_RESULT','SQL_HEALTH_RESULT','PASSAGE_READ_RESULT','STORY_READ_RESULT','FACT_READ_RESULT','SOURCE_READ_RESULT','CASE_READ_RESULT','GEO_READ_RESULT','EDITORIAL_READ_RESULT','SOURCE_GRAPH_READ_RESULT','ACCEPTANCE_READ_RESULT'):
                         events=frame.pop('read_events',None)
                         result = decode_envelope(json.dumps(frame, allow_nan=False,
