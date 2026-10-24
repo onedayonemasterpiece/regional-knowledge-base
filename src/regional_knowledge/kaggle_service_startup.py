@@ -384,6 +384,32 @@ class TargetServiceStartup:
                 binding.run_id,checkpoint.dataset_version,cursor.accepted_sequence,cursor.applied_sequence,len(cursor.pending))
         return cursor
 
+    async def _settle_restored_source_jobs(self,coverage):
+        if self.config.queue._source_commands is None:return
+        with self.config.queue.connect(write=False) as db:
+            recovered=db.execute(
+                "SELECT o.operation_key FROM jobs j INDEXED BY bge_pending "
+                "JOIN rkb_control_operations o ON o.operation_key=json_extract(j.identity,'$.operation_key') "
+                "WHERE j.state='pending' AND j.kind='source_command' AND j.attempt>=1 AND j.result IS NULL "
+                "AND j.actor=o.person_id AND j.idempotency='source-command:'||o.operation_key "
+                "AND json_extract(j.identity,'$.command_sha256')=o.command_sha256 "
+                "AND json_extract(j.identity,'$.database_generation')=o.database_generation "
+                "AND json_extract(j.identity,'$.sequence')=o.sequence "
+                "AND o.database_generation=? AND o.sequence<=? "
+                "AND o.seal_state='ACCEPTED' AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
+                "AND o.outcome_state='NOT_SENT' ORDER BY j.created,j.id LIMIT 16",
+                (coverage.database_generation,coverage.applied_sequence)).fetchall()
+        settled=[]
+        for row in recovered:
+            settled.extend(await self.config.spool._write(
+                self.config.spool._settle_recovered_jobs,row['operation_key'],coverage))
+        for job in settled:self.config.queue._notify_result(job)
+        if settled:
+            self.config.queue.shared_reads.wake()
+            _LOG.info('source_recovered_queue_settled run_id=%s applied_seq=%s count=%s remote_outcome_durable=false',
+                coverage.binding.run_id,coverage.applied_sequence,len(settled))
+        return tuple(settled)
+
     def _kick_dataset_checkpoint(self,binding,*,dataset):
         # A terminal native Case APPLIED or REJECTED_PRECONDITION after the
         # restored Dataset cursor blocks the next book packet until Saved.
@@ -477,6 +503,7 @@ class TargetServiceStartup:
                 # history/read coverage refreshing beside the same barrier.
                 self.schema_migrations.kick(self.binding)
                 return self.reads_current()
+            if dataset:await self._settle_restored_source_jobs(coverage)
             if self.dataset_checkpoints is not None:
                 # Kaggle Dataset can take minutes to become ready. Capture
                 # continues through the existing background owner, never
