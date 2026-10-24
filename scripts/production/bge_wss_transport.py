@@ -80,6 +80,9 @@ class BgeWssTransport:
         self.encoder = None
         self.loading = None
         self.encoding = None
+        self.native_job_resource=None
+        self.native_forward_request=None
+        self.native_forward_grant=None
         self.job = None
         self.waiting_job = None
         self.pending = None
@@ -169,7 +172,8 @@ class BgeWssTransport:
             raise ValueError('encode consumer no longer owns resource')
         async def actual():
             async with self.forward_lock:
-                return await asyncio.to_thread(self.encoder, text)
+                invoke=getattr(self.encoder,'encode_admitted',self.encoder)
+                return await asyncio.to_thread(invoke, text)
         # The Task, not its consumer, owns the lock until the real sync forward
         # returns. No consumer/session cancellation is passed to this Task.
         task = asyncio.create_task(actual())
@@ -182,6 +186,25 @@ class BgeWssTransport:
             self.changed.set()
         task.add_done_callback(finished)
         return await asyncio.shield(task)
+
+    async def _native_forward(self,text):
+        """Borrow existing fair admission for one vector, not the SQL handler."""
+        job=self.job
+        if (job is None or job['kind'] not in ('source_command','recovery_phase')
+                or self.native_forward_request is not None):
+            raise ValueError('one admitted native job/forward required')
+        request=dict(job_id=job['id'],claim=job['claim'],request_id=secrets.token_urlsafe(24))
+        granted=asyncio.get_running_loop().create_future()
+        self.native_forward_request=request;self.native_forward_grant=granted;self.changed.set()
+        resource=None
+        try:
+            frame=await granted
+            resource=self._claim_resource(dict(id=request['request_id'],**frame),'document')
+            return await self._forward(text,resource)
+        finally:
+            if resource is not None and self.resource is resource:
+                self.last_released,self.resource=resource,None
+            self.native_forward_request=None;self.native_forward_grant=None;self.changed.set()
 
     def _cancel_read(self):
         self.read_discard = True
@@ -321,6 +344,8 @@ class BgeWssTransport:
 
     async def _load(self):
         self.encoder = await asyncio.to_thread(self.load_encoder)
+        bind=getattr(self.encoder,'bind_source_admission',None)
+        if bind is not None:bind(asyncio.get_running_loop(),self._native_forward)
         if self.prepare_runtime is not None:
             prepared = await self.prepare_runtime(self.encoder, run_id=self.config['run_id'],
                 launch_nonce=self.config['launch_nonce'], runtime_incarnation=self.incarnation)
@@ -418,6 +443,12 @@ class BgeWssTransport:
         if self.shared_reads:
             self._claim_resource(job, 'document')
         self.job = job
+        if self.shared_reads and job['kind'] in ('source_command','recovery_phase'):
+            # The durable assignment remains retained independently. Native
+            # encode requests acquire a fresh ordinary compute reservation.
+            self.native_job_resource=self.resource
+            self.last_released,self.resource=self.resource,None
+            self.changed.set()
         self.encoding = asyncio.create_task(self._encode(job))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
@@ -462,6 +493,8 @@ class BgeWssTransport:
         attachment_release = attachment_state = None
         if self.shared_reads:
             self._maybe_release()
+            if self.native_job_resource is not None and self.native_job_resource!=self.last_released:
+                await send({'type':'RESOURCE_RELEASED','connection_generation':generation,**self.native_job_resource})
             attachment_release = self.last_released
             if attachment_release is not None:
                 await send({'type': 'RESOURCE_RELEASED', 'connection_generation': generation, **attachment_release})
@@ -533,6 +566,7 @@ class BgeWssTransport:
             intent_sent = None
             released_sent = attachment_release
             state_sent = attachment_state
+            native_sent=None
             self.changed.set()
             while True:
                 await self.changed.wait()
@@ -555,6 +589,9 @@ class BgeWssTransport:
                     if state != state_sent:
                         await put(state)
                         state_sent = state
+                    request=self.native_forward_request
+                    if request is not None and request is not native_sent:
+                        await put({'type':'ENCODE_REQUEST',**request});native_sent=request
                 if (self.encoder is not None and not ready_sent
                         and (self.prepare_runtime is None or self.prepared_runtime is not None)):
                     frame = {'type': 'READY', 'space': SPACE, 'model_revision': REVISION}
@@ -594,6 +631,18 @@ class BgeWssTransport:
                     if (self.read_frame is not None
                             and self._read_identity(frame) == self._read_identity(self.read_frame)):
                         self._cancel_read()
+                elif self.shared_reads and kind=='ENCODE_GRANT':
+                    request=self.native_forward_request
+                    if (set(frame)!={'type','protocol_version','connection_generation',
+                            'job_id','claim','request_id','compute_claim','dispatch_generation'}
+                            or request is None or self.native_forward_grant is None
+                            or self.native_forward_grant.done()
+                            or any(frame.get(k)!=v for k,v in request.items())
+                            or not self._identifier(frame.get('compute_claim'))
+                            or type(frame.get('dispatch_generation')) is not int
+                            or frame.get('dispatch_generation')!=generation):
+                        raise ValueError('exact pending native forward grant required')
+                    self.native_forward_grant.set_result(frame)
                 elif self.shared_reads and kind in ('QUERY','SQL_HEALTH','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
                     self._validate_query(frame)
                     if (self.read_frame is not None
@@ -683,6 +732,7 @@ class BgeWssTransport:
                     if frame['status']=='checkpoint_pending' and self.job['kind']!='source_command':
                         raise ValueError('unexpected pending checkpoint acknowledgment')
                     self.acknowledged = (self.pending['job_id'], self.pending['claim'])
+                    self.native_job_resource=None
                     self.pending, self.job = None, None
                     if not self.shared_reads or (self.encoding is not None and self.encoding.done()):
                         self.encoding = None
@@ -879,6 +929,8 @@ class BgeWssTransport:
         finally:
             # Thread cancellation is not forward completion. Drain any started
             # load/encode before relinquishing this worker's inference ownership.
+            if self.native_forward_grant is not None and not self.native_forward_grant.done():
+                self.native_forward_grant.set_exception(BgeChannelStopped('native forward channel stopped'))
             cancelled = False
             async def drain(task):
                 nonlocal cancelled

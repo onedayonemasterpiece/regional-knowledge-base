@@ -252,6 +252,7 @@ class ResidentEncoder:
     model_load_count: int
     tokenizer_fingerprint: str = field(init=False)
     _tokenizer_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
+    _source_admission: object = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if type(self.artifacts) is not VerifiedArtifacts:
@@ -272,6 +273,23 @@ class ResidentEncoder:
             raise BootstrapUnavailable('loaded_tokenizer_settings_mismatch') from None
 
     def __call__(self, text):
+        admission=getattr(self,'_source_admission',None)
+        if admission is not None:
+            loop,forward=admission
+            try:current_loop=asyncio.get_running_loop()
+            except RuntimeError:current_loop=None
+            if current_loop is loop:
+                raise RuntimeError('native encode requires worker thread')
+            return asyncio.run_coroutine_threadsafe(forward(text),loop).result()
+        return self.encode_admitted(text)
+
+    def bind_source_admission(self,loop,forward):
+        """Keep native materialization on the existing worker admission."""
+        if getattr(self,'_source_admission',None) is not None or not callable(forward):
+            raise ValueError('one resident source admission required')
+        object.__setattr__(self,'_source_admission',(loop,forward))
+
+    def encode_admitted(self,text):
         # Fast tokenizer calls can change backend padding/truncation settings.
         # Count and actual inference use the same resident handle serially.
         with self._tokenizer_lock:

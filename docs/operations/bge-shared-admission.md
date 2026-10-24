@@ -22,6 +22,24 @@ would serialize each QUERY behind a queue writer; the ASGI regression holds a
 real SQLite writer while busy/result/release frames still complete. The first
 owned-run baseline remains an explicit startup write.
 
+Native source/recovery handlers retain their original durable job and claim
+while doing PostgreSQL/Python work. They release the initial compute reservation;
+it remains the authority for the eventual native receipt, including a lost ACK.
+For each vector the same resident encoder sends a metadata-only `ENCODE_REQUEST`
+(job ID, original claim, request ID). The existing admission checks that retained
+job and grants one ordinary document resource with `ENCODE_GRANT`. No source text
+or vector travels through the controller. The existing worker forward lock and
+ResidentEncoder tokenizer lock cover the real inference and its cancellation drain.
+Only after that forward completes does the worker send `RESOURCE_RELEASED`.
+
+Pending QUERY work takes priority between native vectors, with the existing
+`max_read_streak` still guaranteeing native progress. PostgreSQL work and result
+durability do not occupy the inference slot. Actual forward debt survives read
+expiry, lost grants and controller/socket reconnects; a fresh ordered idle probe
+can regrant an unreceived request, never an already completed vector. The original
+accepted command, durable claim, actor checks, writer fence and UNKNOWN outcome
+remain unchanged. This uses the same idle/reserved/busy/unknown lifecycle.
+
 ## Controller calls
 
 All async/sync consumer methods run on one controller event loop. SQLite and
