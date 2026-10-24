@@ -82,6 +82,16 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
 
 
 
+def test_answer_contract_is_shared_with_kaggle_mcp_profile():
+    # Native target requires a real typed installed TargetServiceStartup; its
+    # source-only wiring must not silently miss the answer-first instructions.
+    import inspect
+    code = inspect.getsource(build_server)
+    assert code.count("_answer_instructions +") == 2
+    assert ") if selected!='kaggle_source' else (" in code
+    assert code.count("For a factual question") == 1
+
+
 def test_auth_uses_application_issuer_not_supabase(monkeypatch):
     import regional_knowledge.server as server_module
 
