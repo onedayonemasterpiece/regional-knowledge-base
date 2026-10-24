@@ -42,7 +42,7 @@ BEGIN
  IF NOT rkb_v4.check_source_catalog_v1(p,ids,expected,logical_time) THEN
   RAISE EXCEPTION 'accepted catalog source integrity precondition required';END IF;
  d:=convert_from(p,'UTF8')::jsonb;source:=(ids->>'source_id')::uuid;
- patch:=d->'catalog_update'-'expected_revision';
+ patch:=(d->'catalog_update') - 'expected_revision';
  SELECT metadata INTO previous FROM rkb_v4.source_catalog_corrections
  WHERE source_id=source ORDER BY accepted_sequence DESC LIMIT 1;
  IF previous IS NULL THEN
@@ -53,7 +53,7 @@ BEGIN
  IF jsonb_typeof(patch->'catalog')='object' THEN
   merged:=jsonb_set(merged,'{catalog}',
    (CASE WHEN jsonb_typeof(previous->'catalog')='object' THEN previous->'catalog'
-         ELSE '{}'::jsonb END)||patch->'catalog',true);
+         ELSE '{}'::jsonb END)||(patch->'catalog'),true);
  END IF;
  INSERT INTO rkb_v4.source_catalog_corrections(source_id,accepted_sequence,owner_person_id,metadata)
  VALUES(source,seq,(d->>'owner_person_id')::uuid,merged);
