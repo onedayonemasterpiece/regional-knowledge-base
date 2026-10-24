@@ -111,11 +111,12 @@ async def test_unknown_apply_never_requests_a_rejected_receipt(monkeypatch):
 
 @PG
 @pytest.mark.asyncio
-async def test_real_prepare_statement_timeout_rolls_back_then_same_accepted_key_applies_once(image_pg_sql18):
-    """PG17 57014 from the exact isolated prepare SQL, no fake terminal receipt."""
+@pytest.mark.parametrize('timeouts',[1,2])
+async def test_real_prepare_57014_rollback_retries_locally_once_same_key(image_pg_sql18,timeouts):
+    """True PG17 timed cancellation is contained before any apply/cursor write."""
     import psycopg
     from psycopg.pq import TransactionStatus
-    from regional_knowledge.kaggle_source_commands import SourcePrepareNotApplied
+    from regional_knowledge.kaggle_apply import ApplyUnknown
     env=image_pg_sql18;connection=env['connection'];doc=exact_batch(count=1)
     assert (await accepted(env,stage_command(doc,1))).status=='applied'
     async with connection.transaction():
@@ -135,64 +136,76 @@ async def test_real_prepare_statement_timeout_rolls_back_then_same_accepted_key_
             END $$;
         """,prepare=False)
     @asynccontextmanager
-    async def acquire():
-        yield connection
+    async def acquire():yield connection
     async def count(text):return len(text.split())+2
     async def encode(text):return [1.]+[0.]*1023
+    native=NativeSourceMaterializer(count=count,encode=encode,current=lambda:True)
+    calls=[]
+    async def materializer(command,*,acquire,database):
+        calls.append(command.encode())
+        try:return await native(command,acquire=acquire,database=database)
+        except psycopg.errors.QueryCanceled:
+            # Test the *first* rollback before the executor catches it.
+            assert connection.info.transaction_status==TransactionStatus.IDLE
+            async with connection.transaction():
+                assert await (await connection.execute(
+                    'SELECT count(*) FROM rkb_v4.fixture_prepare_attempt_marker')).fetchone()==(0,)
+                assert await (await connection.execute(
+                    'SELECT count(*) FROM rkb_v4.applied_ops WHERE sequence=2')).fetchone()==(0,)
+                assert await (await connection.execute(
+                    'SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(1,)
+            if timeouts==1:
+                async with connection.transaction():
+                    await connection.execute("""
+                        DROP FUNCTION rkb_v4.prepare_source_batch_v1(bytea,bytea,jsonb,text,text);
+                        ALTER FUNCTION rkb_v4.fixture_prepare_source_batch(bytea,bytea,jsonb,text,text)
+                            RENAME TO prepare_source_batch_v1;
+                    """,prepare=False)
+            raise
     worker=WorkerSourceExecutor(acquire=acquire,registry=env['registry'],
         database=SimpleNamespace(database_generation=DB,writer_generation=WRITER),
         run_id='same-run',launch_nonce='same-nonce',runtime_incarnation='same-incarnation',
-        materializer=NativeSourceMaterializer(count=count,encode=encode,current=lambda:True))
-    command=packet(env,doc);handler=env['registry'].resolve(command)
-    seal=await env['journal'].seal([command],predecessor=await env['journal'].head(),
-        writer_generation=WRITER)
-    request=frame(command,seal,handler)
-    try:
-        with pytest.raises(SourcePrepareNotApplied,match='prepare_timeout_57014'):
+        materializer=materializer)
+    cmd=packet(env,doc);handler=env['registry'].resolve(cmd)
+    seal=await env['journal'].seal([cmd],predecessor=await env['journal'].head(),writer_generation=WRITER)
+    request=frame(cmd,seal,handler)
+    if timeouts==2:
+        with pytest.raises(ApplyUnknown):
             await worker(request)
-        assert connection.info.transaction_status==TransactionStatus.IDLE
+        assert len(calls)==2 and calls==[cmd.encode()]*2
         async with connection.transaction():
             assert await (await connection.execute(
-                'SELECT count(*) FROM rkb_v4.fixture_prepare_attempt_marker')).fetchone()==(0,)
+                'SELECT count(*) FROM rkb_v4.applied_ops WHERE sequence=2')).fetchone()==(0,)
             assert await (await connection.execute(
                 'SELECT count(*) FROM rkb_v4.source_batch_prepared WHERE command_sha256=%s',
-                (digest(command.encode()),))).fetchone()==(0,)
+                (digest(cmd.encode()),))).fetchone()==(0,)
             assert await (await connection.execute(
-                'SELECT count(*) FROM rkb_v4.applied_ops WHERE operation_key=%s',
-                (command.operation_key,))).fetchone()==(0,)
-            assert await (await connection.execute(
-                'SELECT applied_seq FROM rkb_v4.recovery_state WHERE singleton')).fetchone()==(1,)
-        # Only the *disposable fixture function* is restored. The accepted
-        # command, operation key, sequence and pinned materializer remain same.
-        async with connection.transaction():
-            await connection.execute("""
-                DROP FUNCTION rkb_v4.prepare_source_batch_v1(bytea,bytea,jsonb,text,text);
-                ALTER FUNCTION rkb_v4.fixture_prepare_source_batch(bytea,bytea,jsonb,text,text)
-                    RENAME TO prepare_source_batch_v1;
-            """,prepare=False)
+                'SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(1,)
+    else:
         receipt,_=decode_receipt(await worker(request))
         assert receipt.status=='applied' and not receipt.duplicate
+        assert len(calls)==2 and calls==[cmd.encode()]*2
         duplicate,_=decode_receipt(await worker(request))
         assert duplicate.duplicate and duplicate.outcome==receipt.outcome
         async with connection.transaction():
-            assert await (await connection.execute('SELECT count(*) FROM rkb_v4.applied_ops WHERE operation_key=%s',
-                (command.operation_key,))).fetchone()==(1,)
-            assert await (await connection.execute('SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(2,)
-            assert await (await connection.execute('SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(1,)
-    finally:
-        assert connection.info.transaction_status==TransactionStatus.IDLE
+            assert await (await connection.execute(
+                'SELECT count(*) FROM rkb_v4.applied_ops WHERE operation_key=%s',
+                (cmd.operation_key,))).fetchone()==(1,)
+            assert await (await connection.execute(
+                'SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(2,)
+            assert await (await connection.execute(
+                'SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(1,)
+    assert connection.info.transaction_status==TransactionStatus.IDLE
 
 
 @pytest.mark.asyncio
-async def test_bare_query_canceled_or_failed_rollback_cannot_claim_prepare_success(monkeypatch):
-    """Without an observed successful isolated prepare rollback, remain UNKNOWN."""
+async def test_query_canceled_outside_observed_prepare_cannot_retry_or_reject(monkeypatch):
     import psycopg
     from regional_knowledge.kaggle_apply import ApplyUnknown
-    from regional_knowledge.kaggle_source_commands import SourcePrepareNotApplied
     from test_native_source_worker_wiring import worker_fixture
     from regional_knowledge.source_stage import SEAL_ROUTE
     value=await worker_fixture(SEAL_ROUTE,monkeypatch,
         materializer_error=psycopg.errors.QueryCanceled('synthetic outside prepare SQL'))
     with pytest.raises(ApplyUnknown):
         await value.worker(value.frame)
-    assert value.calls==[]  # Never minted a terminal reject/apply receipt.
+    assert value.events.count('prehook')==1 and value.calls==[]
