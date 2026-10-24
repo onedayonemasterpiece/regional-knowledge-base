@@ -329,8 +329,8 @@ class AcceptedSourceDispatch:
                 ON o.operation_key=json_extract(j.identity,'$.operation_key')
                 WHERE j.kind='source_command' AND j.state IN ('pending','claimed')
                 AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION')
-                AND (? IS NULL OR o.sequence<=?)
-                LIMIT 1""",(floor,floor)).fetchone() is not None
+                AND (? IS NULL OR (o.sequence<=? AND j.run_id=?))
+                LIMIT 1""",(floor,floor,cursor.binding.run_id if floor is not None else None)).fetchone() is not None
 
     def pending_job(self,db,actor,run,generation):
         from .control_spool import SourceCursor
