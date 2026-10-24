@@ -155,3 +155,5 @@ outcome bytes, function drift, set-returning function rejection, result caps and
 cancellation cleanup. Fresh-generation replay is a fixture proof of semantic
 equality; it does not resolve an original-generation live UNKNOWN by itself.
 No real GEO, product Saved inputs, BGE, external provider or deployment is used.
+
+The native source executor reconciles an uncertain apply once on a fresh PostgreSQL connection, using the same accepted command, sequence and original operation key. Existing `applied_ops` duplicate lookup returns a committed receipt; model/vector preparation is not repeated. A second uncertain result remains UNKNOWN. A previously confirmed rollback rejection stays a rejection during reconciliation.

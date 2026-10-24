@@ -279,20 +279,31 @@ class WorkerSourceExecutor:
                     break
                 else:
                     break
-        async with self.acquire() as connection:
-            options=dict(journal=proof,seal=seal,command=command,
-                database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
-                registry=self.registry,max_outcome_bytes=8192)
+        for apply_attempt in range(2):
             try:
-                receipt=await apply_accepted(connection,**options,
-                    **({'reject_reason':reject_reason} if reject_reason is not None else {}))
-            except ApplyExecutionError:
-                # apply_accepted has exited its failed PG transaction. A new
-                # transaction records an actual no-effect receipt, never a
-                # Python-fabricated result. An uncertain commit is ApplyUnknown
-                # and cannot enter this branch. Duplicate lookup wins a race.
-                receipt=await apply_accepted(connection,**options,reject_reason='native_source_sql_rolled_back')
-                _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
+                async with self.acquire() as connection:
+                    options=dict(journal=proof,seal=seal,command=command,
+                        database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
+                        registry=self.registry,max_outcome_bytes=8192)
+                    try:
+                        receipt=await apply_accepted(connection,**options,
+                            **({'reject_reason':reject_reason} if reject_reason is not None else {}))
+                    except ApplyExecutionError:
+                        # apply_accepted has exited its failed PG transaction. A new
+                        # transaction records an actual no-effect receipt, never a
+                        # Python-fabricated result. An uncertain commit is ApplyUnknown
+                        # and cannot enter this branch. Duplicate lookup wins a race.
+                        reject_reason='native_source_sql_rolled_back'
+                        receipt=await apply_accepted(connection,**options,reject_reason=reject_reason)
+                        _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
+                            command.route,command.sequence)
+                break
+            except ApplyUnknown:
+                if apply_attempt:
+                    raise
+                # Reuse the accepted command and native duplicate lookup on a
+                # fresh connection. Never rerun model/vector preparation.
+                _LOG.warning('native_source_apply state=reconcile_same_operation route=%s sequence=%s',
                     command.route,command.sequence)
         return receipt_wire(receipt)
 

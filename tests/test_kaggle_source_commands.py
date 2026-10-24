@@ -596,3 +596,50 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
         assert s.q.result(s.auth.p.owner.subject,first)['state']=='pending'
         assert (await e.spool.get(e.command.operation_key)).remote_outcome is None
         assert s.q.result(s.auth.p.owner.subject,second)['state']=='pending'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recover',[True,False])
+async def test_worker_reconciles_lost_apply_ack_once_on_fresh_connection(accepted,monkeypatch,recover):
+    from regional_knowledge.kaggle_apply import ApplyUnknown
+    e=accepted;_,_,frame=await dispatch(e);connections=[];commands=[]
+    @asynccontextmanager
+    async def acquire():
+        connection=object();connections.append(connection);yield connection
+    async def apply(connection,**options):
+        commands.append(options['command'].encode())
+        assert connection is connections[-1]
+        assert await options['journal'].verify_accepted(options['seal'],options['command'])==digest(e.command.encode())
+        if len(commands)==1 or not recover:
+            raise ApplyUnknown('lost commit ACK')
+        return native_receipt(e.command,e.handler,duplicate=True)
+    monkeypatch.setattr('regional_knowledge.kaggle_source_commands.apply_accepted',apply)
+    executor=WorkerSourceExecutor(acquire=acquire,registry=e.registry,database=spec().database,
+        run_id=e.s.run,launch_nonce=e.s.nonce,runtime_incarnation='incarnation-a')
+    if recover:
+        receipt,_=decode_receipt(await executor(frame))
+        assert receipt.duplicate is True
+    else:
+        with pytest.raises(ApplyUnknown):await executor(frame)
+    assert len(connections)==2 and connections[0] is not connections[1]
+    assert commands==[e.command.encode(),e.command.encode()]
+
+
+@pytest.mark.asyncio
+async def test_lost_rejection_ack_cannot_retry_as_effect(accepted,monkeypatch):
+    from regional_knowledge.kaggle_apply import ApplyUnknown,ApplyExecutionError
+    e=accepted;_,_,frame=await dispatch(e);reasons=[];connections=[]
+    @asynccontextmanager
+    async def acquire():
+        connection=object();connections.append(connection);yield connection
+    async def apply(connection,**options):
+        reasons.append(options.get('reject_reason'))
+        if len(reasons)==1:raise ApplyExecutionError('rolled back')
+        if len(reasons)==2:raise ApplyUnknown('lost rejection ACK')
+        return native_receipt(e.command,e.handler,duplicate=True)
+    monkeypatch.setattr('regional_knowledge.kaggle_source_commands.apply_accepted',apply)
+    executor=WorkerSourceExecutor(acquire=acquire,registry=e.registry,database=spec().database,
+        run_id=e.s.run,launch_nonce=e.s.nonce,runtime_incarnation='incarnation-a')
+    await executor(frame)
+    assert reasons==[None,'native_source_sql_rolled_back','native_source_sql_rolled_back']
+    assert len(connections)==2
