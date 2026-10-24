@@ -1,338 +1,205 @@
-"""Opt-in same-process Slack search reply using the existing expert authorities.
-
-No model, second service, impersonation, provider scheduler or direct PG access.
-An HTTP Slack ACK is earned by the existing remotely covered ingress, not by
-this opportunistic search wakeup. Sending uses one durable Dataset send permit;
-a lost Slack acknowledgment is UNKNOWN and MUST NOT trigger another post.
-"""
+"""Opt-in read-only Kaliningrad Base reply; one signed event, at most one Slack post."""
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import html
 import json
 import logging
-from pathlib import Path
 import re
 import time
 
 import httpx
 
-from .expert_delivery_control import (
-    TargetExpertDeliveryControl, verified_native_slack_receipt,
-)
 from .expert_evidence_receiver import ExpertEvidenceReceiver, _RequestFence
-from .expert_request_control import ExecutorCredentials, TargetExpertRequestControl
 from .expert_slack_ingress import ExpertSlackIngress
 from .projects_hub_reader import PrivateInput, ReadContext, render as render_evidence
 from .read_issuance import capture_read_output
-
+from . import request_order
 
 _LOG = logging.getLogger(__name__)
-_SLACK_API = "https://slack.com/api/"
-_PAGE = re.compile(r"(?i)(?:\bpage\b|\bp\.\s*\d|\bseite\b|\bs\.\s*\d|стр(?:аница|\.)|лист|physical_page)")
+_PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
 
 
-def _plain(value, maximum=600):
-    if type(value) is not str:
-        return ""
-    return html.escape(" ".join(value.split())[:maximum], quote=False)
-
-
-def answer_from_evidence(response):
-    """No synthesis: only an authorized current evidence pack becomes Slack text."""
-    if (type(response) is not dict or response.get("context_gap") is not False
-            or response.get("status") not in ("ok", "degraded")
-            or response.get("mode") != "hybrid"
-            or response.get("prior_write_pending")
-            or type(response.get("evidence")) is not list):
-        raise ValueError("search evidence was not issued")
-    if not response["evidence"]:
+def answer_from_evidence(result):
+    if (result.get("context_gap") is not False or result.get("status") not in ("ok","degraded")
+            or result.get("mode") != "hybrid" or result.get("prior_write_pending")):
+        raise PermissionError("verified source evidence required")
+    if not result.get("evidence"):
         return "В доступных источниках подтверждений не найдено. Источник и страница не установлены."
-    parts = []
-    for item in response["evidence"][:3]:
-        if type(item) is not dict or type(item.get("text")) is not str or not item["text"]:
-            raise ValueError("exact evidence text required")
-        metadata = item.get("metadata") or {}
-        if type(metadata) is not dict:
-            raise ValueError("exact evidence metadata required")
-        title = _plain(item.get("title"), 250) or "Название источника не указано"
-        citation = _plain(metadata.get("citation"), 350)
-        locator = _plain(metadata.get("locator"), 160)
-        page = locator if locator and _PAGE.search(locator) else "не указана"
-        fragment = _plain(item["text"], 480)
-        # A locator or internal URN is not a public hyperlink or proof scan.
-        parts.append(
-            f"*Источник:* {title}\n"
-            f"*Страница:* {page}\n"
-            + (f"*Библиография:* {citation}\n" if citation else "")
-            + (f"*Локатор:* {locator}\n" if locator and page == "не указана" else "")
-            + f"*Фрагмент текста:* «{fragment}»"
-        )
-    text = "\n\n".join(parts)
-    if len(text.encode("utf-8")) > 12000:
-        raise ValueError("bounded reply required")
+    clean=lambda s,n:html.escape(" ".join(s.split())[:n],quote=False) if type(s) is str else ""
+    lines=[]
+    for item in result["evidence"][:3]:
+        meta=item.get("metadata") or {}
+        if type(meta) is not dict or not item.get("text"):
+            raise PermissionError("exact source text required")
+        locator=clean(meta.get("locator"),160)
+        lines.append("*Источник:* "+(clean(item.get("title"),250) or "не указан")
+            + "\n*Страница:* "+(locator if _PAGE.search(locator) else "не указана")
+            + ("\n*Библиография:* "+clean(meta.get("citation"),350) if meta.get("citation") else "")
+            + "\n*Цитата (фрагмент):* «"+clean(item["text"],480)+"»")
+    text="\n\n".join(lines)
+    if len(text.encode())>12000:raise ValueError("bounded reply required")
     return text
 
 
 class SlackChatSender:
-    """Bot-token-bound native chat.postMessage; never retry an ambiguous send."""
+    """Original event_id is the native client_msg_id; ambiguous post is never retried."""
     def __init__(self, *, token, app_id, team_id, bot_user_id, current=lambda: True,
                  transport=None):
         if (type(token) is not str or not token.startswith("xoxb-")
-                or any(type(v) is not str or not v for v in (app_id, team_id, bot_user_id))
+                or any(type(x) is not str or not x for x in (app_id,team_id,bot_user_id))
                 or not callable(current)):
-            raise ValueError("configured Slack bot identity required")
-        self._token = token
-        self.app_id, self.team_id, self.bot_user_id = app_id, team_id, bot_user_id
-        self.current = current
-        self.transport = transport
+            raise ValueError("explicit Slack bot credential required")
+        self.token,self.app_id,self.team_id,self.bot_user_id=token,app_id,team_id,bot_user_id
+        self.current,self.transport=current,transport
 
-    async def post_once(self, permit):
-        if (not self.current() or type(permit) is not dict
-                or set(permit) != {"request_id", "delivery_id", "channel_id", "thread_ts", "text"}
-                or not all(type(permit[k]) is str and permit[k]
-                           for k in ("delivery_id", "channel_id", "thread_ts", "text"))):
-            raise PermissionError("Slack send config or permit invalid")
-        headers = {"Authorization": "Bearer " + self._token}
-        async with httpx.AsyncClient(transport=self.transport, timeout=8.0) as client:
-            # Verify that the installed bot token, not the owner's account, is
-            # the transport principal for this exact Slack workspace.
-            identity = await client.post(_SLACK_API + "auth.test", headers=headers)
-            data = identity.json()
-            if (identity.status_code != 200 or data.get("ok") is not True
-                    or data.get("team_id") != self.team_id
-                    or data.get("user_id") != self.bot_user_id):
-                raise PermissionError("Slack bot token identity differs")
-            if not self.current():
-                raise PermissionError("Slack send configuration changed")
-            posted = await client.post(_SLACK_API + "chat.postMessage",
-                headers=headers, json={
-                    "channel": permit["channel_id"],
-                    "thread_ts": permit["thread_ts"],
-                    "text": permit["text"],
-                    "client_msg_id": permit["delivery_id"],
-                    "unfurl_links": False, "unfurl_media": False,
-                })
-            body = posted.json()
-            if posted.status_code != 200 or body.get("ok") is not True:
-                raise RuntimeError("Slack send outcome unverified")
-        message = body.get("message")
-        if (type(message) is not dict
-                or message.get("user") != self.bot_user_id
-                or message.get("text") != permit["text"]
-                or message.get("thread_ts") != permit["thread_ts"]
-                or message.get("client_msg_id") != permit["delivery_id"]
-                or body.get("channel") != permit["channel_id"]
-                or type(body.get("ts")) is not str):
-            # A post may have succeeded: the existing control records UNKNOWN.
-            raise RuntimeError("Slack native echo unverified")
-        return verified_native_slack_receipt({
-            "app_id": self.app_id, "user": message["user"],
-            "channel": body["channel"], "thread_ts": message["thread_ts"],
-            "ts": body["ts"], "client_msg_id": message["client_msg_id"],
-            "text": message["text"],
-        }, app_id=self.app_id, team_id=self.team_id,
-            bot_user_id=self.bot_user_id,
-            channel_id=permit["channel_id"], thread_ts=permit["thread_ts"])
-
-
-class _BoundSearchGate:
-    """Exactly one in-flight retained native read, not a global allow-all."""
-    def __init__(self):
-        self.active = None
-
-    def __call__(self, row, origin):
-        if self.active is None:
-            return False
-        request_id, person_id, expected_origin, issued, current = self.active
-        try:
-            return (row["id"] == request_id and row["person_id"] == person_id
-                    and origin == expected_origin and current()
-                    and issued.gate.issuance_current(issued.gated.ticket))
-        except Exception:
-            return False
+    async def post_once(self, *, event_id, channel, thread, text, current):
+        if not self.current() or not current():raise PermissionError("current Slack scope required")
+        headers={"Authorization":"Bearer "+self.token}
+        async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
+            auth=(await http.post("https://slack.com/api/auth.test",headers=headers)).json()
+            if (auth.get("ok") is not True or auth.get("team_id")!=self.team_id
+                    or auth.get("user_id")!=self.bot_user_id or not self.current()
+                    or not current()):
+                raise PermissionError("Slack bot identity or evidence changed")
+            response=await http.post("https://slack.com/api/chat.postMessage",headers=headers,
+                json={"channel":channel,"thread_ts":thread,"text":text,
+                      "client_msg_id":event_id,"unfurl_links":False,"unfurl_media":False})
+            data=response.json()
+        message=data.get("message") or {}
+        if (response.status_code!=200 or data.get("ok") is not True or data.get("channel")!=channel
+                or message.get("user")!=self.bot_user_id or message.get("text")!=text
+                or message.get("thread_ts")!=thread or message.get("client_msg_id")!=event_id
+                or not re.fullmatch(r"[0-9]+\.[0-9]+",str(data.get("ts","")))):
+            raise RuntimeError("Slack native provider echo unverified")
+        return {"event_id":event_id,"channel":channel,"thread_ts":thread,
+                "ts":data["ts"],"bot_user_id":self.bot_user_id}
 
 
 class ExpertSlackSearchReply:
-    """In-process continuation of remotely accepted Slack events, no LLM."""
-    def __init__(self, *, ingress, evidence, delivery, credentials, sender, search_gate):
-        if (type(ingress) is not ExpertSlackIngress
-                or type(evidence) is not ExpertEvidenceReceiver
-                or type(delivery) is not TargetExpertDeliveryControl
-                or type(credentials) is not ExecutorCredentials
-                or type(sender) is not SlackChatSender
-                or type(search_gate) is not _BoundSearchGate
-                or evidence.control is not ingress.control
-                or delivery.control is not ingress.control
-                or delivery.source_gate is not search_gate
-                or (sender.app_id, sender.team_id, sender.bot_user_id) !=
-                   (ingress.control.app_id, ingress.control.team_id, ingress.control.bot_user_id)):
-            raise ValueError("one existing ingress, human actor, source and delivery control required")
-        self.ingress, self.evidence, self.delivery = ingress, evidence, delivery
-        self.control = ingress.control
-        self.credentials, self.sender, self.source_gate = credentials, sender, search_gate
-        self._pending = set()
-        self._worker = None
+    def __init__(self, *, ingress, evidence, sender):
+        if (type(ingress) is not ExpertSlackIngress or type(evidence) is not ExpertEvidenceReceiver
+                or type(sender) is not SlackChatSender or evidence.control is not ingress.control
+                or (sender.app_id,sender.team_id,sender.bot_user_id) !=
+                    (ingress.control.app_id,ingress.control.team_id,ingress.control.bot_user_id)):
+            raise ValueError("one signed ingress, human read and Slack bot authority required")
+        self.ingress,self.evidence,self.sender=ingress,evidence,sender
+        self.control=ingress.control
+        self._tasks={}
 
     def notify(self, request_id):
-        """Only the signed ingress calls this after durable coverage/ACK."""
-        if type(request_id) is not str or len(request_id) > 128:
-            raise ValueError("exact remotely accepted request required")
-        if len(self._pending) >= 64 and request_id not in self._pending:
-            raise RuntimeError("bounded Slack reply wake capacity exceeded")
-        self._pending.add(request_id)
-        if self._worker is None or self._worker.done():
-            self._worker = asyncio.create_task(self._drain())
-        # Work deliberately does not delay the Slack Events HTTP response.
+        if request_id in self._tasks:return
+        if len(self._tasks)>=16:raise RuntimeError("bounded Slack event wake capacity")
+        task=asyncio.create_task(self._answer(request_id))
+        self._tasks[request_id]=task
+        def finish(t):
+            self._tasks.pop(request_id,None)
+            try:t.result()
+            except asyncio.CancelledError:pass
+            except Exception as exc:_LOG.warning("rkb_slack_search_pending error_type=%s",
+                                                type(exc).__name__)
+        task.add_done_callback(finish)
 
-    def _claim_current(self, claim, origin, person_id):
-        try:
-            context = self.control.claim_context(self.credentials, claim["request_id"],
-                claim["generation"], claim["execution_token"])
-            return context["origin"] == origin and context["person_id"] == person_id
-        except Exception:
-            return False
+    def _verified(self, db, row):
+        origin=json.loads(row["origin"])
+        self.control._destination_allowed(origin)
+        from .contracts import Principal
+        ctx=self.control.people.resolve_external(provider="slack",tenant=origin["team_id"],
+            provider_subject=origin["user_id"],connection=db,
+            principal_factory=lambda who:Principal(subject=who,issuer="slack",
+                client_id="rkb-trusted-slack",access_token=""))
+        if (ctx.principal.subject!=row["person_id"] or ctx.link_id!=row["link_id"]
+                or ctx.link_revision!=row["link_revision"]):
+            raise PermissionError("original Slack actor changed")
+        self.control.people.require(ctx,"public_search",connection=db)
+        return origin
 
-    @asynccontextmanager
-    async def _read_claim(self, claim):
-        context = await asyncio.to_thread(self.control.claim_context, self.credentials,
-            claim["request_id"], claim["generation"], claim["execution_token"])
-        origin = context["origin"]
-        verified = self.evidence._destination(origin, context["person_id"], claim["request_id"])
-        authority = await self.evidence.authority.resolve_adapter(
-            provider="slack", tenant=origin["team_id"],
-            provider_subject=origin["user_id"], destination=verified)
-        retained = False
-        calls = []
+    def _row(self, request_id, states, *, begin=False):
+        with self.control.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE" if begin else "BEGIN")
+            row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
+            if row is None or row["state"] not in states:return None
+            origin=self._verified(db,row)
+            if begin and row["state"]=="received":
+                db.execute("UPDATE rkb_expert_requests SET state='searching',updated_at=? WHERE id=?",
+                    (self.control.clock(),request_id))
+            return dict(row,origin=json.dumps(origin))
+
+    def _claim_post(self, request_id):
+        with self.control.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
+            if row is None or row["state"]!="searching":return None
+            origin=self._verified(db,row)
+            marker=row["event_id"]
+            db.execute("UPDATE rkb_expert_requests SET state='sending',delivery_id=?,"
+                       "delivery_attempt=delivery_attempt+1,updated_at=? WHERE id=?",
+                       (marker,self.control.clock(),request_id))
+            return dict(event_id=marker,channel=origin["channel_id"],thread=origin["thread_ts"])
+
+    def _finish(self, request_id, expected, state, receipt=None):
+        with self.control.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
+            if row is None or row["state"]!=expected:return False
+            db.execute("UPDATE rkb_expert_requests SET state=?,delivery_receipt=?,updated_at=? WHERE id=?",
+                       (state,json.dumps(receipt) if receipt else None,self.control.clock(),request_id))
+            if state=="delivered":request_order.advance(db,row["dialog_id"])
+            return True
+
+    async def _answer(self, request_id):
+        row=await asyncio.to_thread(self._row,request_id,("received","searching"),begin=True)
+        if row is None:return
+        origin=json.loads(row["origin"])
+        current=lambda:self._row(request_id,("searching","sending")) is not None
+        destination=self.evidence._destination(origin,row["person_id"],request_id)
+        authority=await self.evidence.authority.resolve_adapter(
+            provider="slack",tenant=origin["team_id"],provider_subject=origin["user_id"],
+            destination=destination)
+        calls=[]
         try:
-            row = await asyncio.to_thread(self.control._row, claim["request_id"])
-            if (authority.person_id != context["person_id"]
-                    or authority.link_id != row["link_id"]
-                    or authority.link_revision != row["link_revision"]):
-                raise PermissionError("verified Slack actor changed")
-            query = re.sub(r"<@" + re.escape(self.control.bot_user_id) + r"(?:\|[^>]+)?>",
-                "", context["input_text"]).strip()
-            if not 1 <= len(query) <= 1000:
-                raise ValueError("bounded human query required")
-            deadline = time.monotonic() + 10.0
-            ctx = ReadContext(claim["request_id"], claim["generation"], 0, deadline)
+            if (authority.person_id!=row["person_id"] or authority.link_id!=row["link_id"]
+                    or authority.link_revision!=row["link_revision"]):
+                raise PermissionError("verified Slack binding changed")
+            query=re.sub(r"<@"+re.escape(self.control.bot_user_id)+r"(?:\|[^>]+)?>",
+                         "",row["input_text"]).strip()
+            if not 1<=len(query)<=1000:raise ValueError("bounded query required")
+            ctx=ReadContext(request_id,0,0,time.monotonic()+10)
             with capture_read_output() as calls:
-                await self.evidence.backend.search_adapter(
-                    query, authority=authority, request_id=ctx.request_id,
-                    turn_generation=ctx.turn_generation, min_data_seq=ctx.min_data_seq,
-                    deadline_monotonic=deadline, destination=verified, limit=3)
-            if len(calls) != 1:
-                raise PermissionError("retained native output required")
-            retained = True
-            issued = calls[0]
-            current = lambda: self._claim_current(claim, origin, context["person_id"])
-            issued.gate = _RequestFence(issued.gate, current)
-            issued.gated = await issued.gate.refresh(issued.gated)
+                await self.evidence.backend.search_adapter(query,authority=authority,
+                    request_id=request_id,turn_generation=0,min_data_seq=0,
+                    deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
+            if len(calls)!=1:raise PermissionError("retained source gate required")
+            issued=calls[0]
+            issued.gate=_RequestFence(issued.gate,current)
+            issued.gated=await issued.gate.refresh(issued.gated)
             if not issued.gate.issuance_current(issued.gated.ticket):
-                raise PermissionError("source or actor was revoked")
-            rendered = render_evidence(issued.render(issued.gated.result), ctx)
-            if rendered.get("context_gap"):
-                raise PermissionError("fresh accepted source read unavailable")
-            self.source_gate.active = (ctx.request_id, context["person_id"], origin, issued, current)
+                raise PermissionError("source access revoked")
+            text=answer_from_evidence(render_evidence(issued.render(issued.gated.result),ctx))
+            permit=await asyncio.to_thread(self._claim_post,request_id)
+            if permit is None:return
             try:
-                yield rendered
-            finally:
-                self.source_gate.active = None
-        finally:
-            if calls:
-                calls[0].release()
-            elif not retained:
-                self.evidence.authority.release(authority)
-
-    async def _one(self, claim):
-        args = (self.credentials, claim["request_id"],
-                claim["generation"], claim["execution_token"])
-        async with self._read_claim(claim) as evidence:
-            text = answer_from_evidence(evidence)
-            row = await asyncio.to_thread(self.control._row, claim["request_id"])
-            if row["state"] in ("leased", "result_unsealed"):
-                await asyncio.to_thread(self.delivery.prepare_result, *args, text)
-            elif row["state"] in ("result_ready", "send_intent_ready"):
-                # A recoverable result keeps its ORIGINAL bytes, not a new answer.
-                if json.loads(row["result_json"])["text"] != text:
-                    raise PermissionError("original result differs after restart")
-            else:
-                raise PermissionError("request cannot be resumed safely")
-            if row["state"] != "send_intent_ready":
-                await self.delivery.stage_dataset_result(*args)
-                confirmed = await asyncio.to_thread(self.delivery.confirm_dataset_result, *args)
-                if confirmed.get("remote_accepted") is not True:
-                    return
-            await self.delivery.stage_dataset_send(*args)
-            confirmed = await asyncio.to_thread(self.delivery.confirm_dataset_send, *args)
-            if confirmed.get("remote_accepted") is not True:
-                return
-            permit = await asyncio.to_thread(self.delivery.claim_send_once, *args)
-            # From here onward any exception is UNKNOWN; never post again.
-            try:
-                proof = await self.sender.post_once(permit)
-                await self.delivery.stage_dataset_native_receipt(self.credentials,
-                    claim["request_id"], proof)
-                await asyncio.to_thread(self.delivery.confirm_dataset_native_receipt,
-                    self.credentials, claim["request_id"], proof)
+                receipt=await self.sender.post_once(**permit,text=text,
+                    current=lambda:current() and issued.gate.issuance_current(issued.gated.ticket))
             except BaseException:
-                await asyncio.to_thread(self.delivery.uncertain_delivery,
-                    self.credentials, claim["request_id"], permit["delivery_id"])
+                await asyncio.to_thread(self._finish,request_id,"sending","unknown")
                 raise
-
-    async def _drain(self):
-        try:
-            while self._pending:
-                self._pending.clear()
-                while True:
-                    claim = await asyncio.to_thread(self.control.claim, self.credentials)
-                    if claim.get("state") != "leased":
-                        break
-                    try:
-                        await self._one(claim)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        # No secret, question text, Slack token, actor ID or
-                        # source passage in log output.
-                        _LOG.warning("rkb_slack_search_reply_pending reason=%s",
-                                     type(exc).__name__)
-                        return
+            await asyncio.to_thread(self._finish,request_id,"sending","delivered",receipt)
         finally:
-            self._worker = None
-            # A signed retry may arrive while the previous drain is finishing.
-            if self._pending:
-                self._worker = asyncio.create_task(self._drain())
+            if calls:calls[0].release()
+            else:self.evidence.authority.release(authority)
 
 
-def compose_expert_slack_search_reply(*, ingress, evidence, credentials, sender):
-    """Reuse the existing signed ingress, evidence receiver and Dataset control."""
-    gate = _BoundSearchGate()
-    delivery = TargetExpertDeliveryControl(ingress.control, source_gate=gate)
-    reply = ExpertSlackSearchReply(ingress=ingress, evidence=evidence,
-        delivery=delivery, credentials=credentials, sender=sender, search_gate=gate)
-    return reply
-
-
-def configured_expert_slack_search_reply(ingress, evidence, path):
-    """Opt-in private operator config. No service provision or grants are minted."""
-    from .expert_request_control import ExecutorCredentials
-    config = PrivateInput(path, 4096)
-    value = json.loads(config.value)
-    if (type(value) is not dict
-            or set(value) != {"codec", "service_id", "service_token_file", "bot_token_file"}
-            or value["codec"] != "rkb.expert-slack-search-reply.v1"
-            or not re.fullmatch(r"[A-Za-z0-9._-]{8,160}", value["service_id"])):
-        raise ValueError("exact private Slack search reply configuration required")
-    service = PrivateInput(value["service_token_file"], 512)
-    bot = PrivateInput(value["bot_token_file"], 512)
-    credentials = ExecutorCredentials(value["service_id"], service.value.decode("ascii").strip())
-    with ingress.control.corpus.connect() as db:
-        ingress.control._service(db, credentials)
-    sender = SlackChatSender(token=bot.value.decode("ascii").strip(),
-        app_id=ingress.control.app_id, team_id=ingress.control.team_id,
+def configured_expert_slack_search_reply(ingress,evidence,path):
+    """Operator supplies private files and the existing Slack installation."""
+    config=PrivateInput(path,2048)
+    value=json.loads(config.value)
+    if (type(value) is not dict or set(value)!={"codec","bot_token_file"}
+            or value["codec"]!="rkb.expert-slack-search-reply.v1"):
+        raise ValueError("exact private Slack reply config required")
+    token=PrivateInput(value["bot_token_file"],512)
+    sender=SlackChatSender(token=token.value.decode("ascii").strip(),
+        app_id=ingress.control.app_id,team_id=ingress.control.team_id,
         bot_user_id=ingress.control.bot_user_id,
-        current=lambda:config.current() and service.current() and bot.current())
-    return compose_expert_slack_search_reply(ingress=ingress, evidence=evidence,
-        credentials=credentials, sender=sender)
+        current=lambda:config.current() and token.current())
+    return ExpertSlackSearchReply(ingress=ingress,evidence=evidence,sender=sender)
