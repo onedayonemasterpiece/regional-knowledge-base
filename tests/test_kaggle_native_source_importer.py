@@ -239,6 +239,22 @@ async def test_status_after_pause_returns_next_unaccepted_physical_page(native_i
     assert row['stage_json'] is None  # no second model payload table
 
 
+
+@pytest.mark.asyncio
+async def test_resume_cursor_ignores_newer_stage_not_yet_applied(native_intake):
+    s=native_intake
+    book=await start(s)
+    assert (await stage(s,book,batch(s,book,first=0,count=4))).state=='processing'
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    assert (await call(s,book,'status')).next_cursor=='4'
+    assert (await stage(s,book,batch(s,book,first=4,count=2))).state=='processing'
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    assert await s.importer.native_intake.applied_page_cursor(None,row)=='4'
+    assert (await call(s,book,'status')).next_action=='wait'
+
+
 @pytest.mark.asyncio
 async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_vectors(native_intake):
     s = native_intake
@@ -696,7 +712,7 @@ async def test_status_releases_verified_upload_and_current_file_dedup_survives_o
     # Crash seam: receipt was persisted before its acquiring -> staging save.
     s.importer._save(row,phase='acquiring')
     initial=await call(s,first,'status')
-    assert initial.source_archive_status=='verified' and initial.next_cursor=='0'
+    assert initial.source_archive_status=='verified' and initial.next_cursor is None
     assert s.importer._row(s.principal.subject,first.ingestion_id)['phase']=='staging'
     second=await start(s,file_id='second-upload')
     assert second.ingestion_id!=first.ingestion_id
