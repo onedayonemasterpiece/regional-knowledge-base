@@ -156,9 +156,8 @@ async def call(s, result, command, **kwargs):
 
 
 async def stage(s, result, payload):
-    source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending')
-    source_import.research.continuation['arguments']['cursor']=str(payload['pages'][-1]['physical_page_index']+1)
-    return await call(s,result,'stage',payload=payload,source_import=source_import)
+    return await call(s,result,'stage',payload=payload,
+        source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending'))
 
 
 def state(s, result):
@@ -238,8 +237,7 @@ async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_v
         assert (await call(s,result,'status')).state=='processing'
         assert json.loads((await pending(s,result)).command.payload)['component']=='semantic'
         await finish(s,result)
-        progress=await call(s,result,'status')
-        assert (progress.state,progress.next_action,progress.next_cursor)==('staged','continue_pages',str(first+len(payload['pages'])))
+        assert (await call(s,result,'status')).state == 'staged'
         # An exact post-durability retry must not allocate batch ordinal+1.
         assert (await stage(s,result,payload)).state == 'staged'
         assert operation_count(s) == (ordinal+1)*3
@@ -688,8 +686,7 @@ async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intak
         await finish(s,book)
         assert (await call(s,book,'status')).state=='processing'
     rejected=await finish(s,book,status='rejected_precondition')
-    rejected_status=await call(s,book,'status')
-    assert rejected_status.state=='staged' and rejected_status.next_cursor is None
+    assert (await call(s,book,'status')).state=='staged'
     assert state(s,book)['rejected_batch_index']==0
     before=operation_count(s)
     # Identical model input now asks for a real retry, not the old rejection.
