@@ -84,6 +84,87 @@ async def test_owner_mcp_uses_existing_participants_get_list_audit_change_and_id
     assert registry.get(s.t.auth.p.admin,person)['revision']==profile['revision']
 
 
+
+@pytest.mark.asyncio
+async def test_owner_mcp_slack_account_begin_confirm_reuses_original_cas_and_audit(
+        native_intake, monkeypatch):
+    s=native_intake
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    server=build_server(target_startup=s.startup)
+    tools={tool.name:tool for tool in await server.list_tools()}
+    assert 'participants_manage' in tools
+    registry=s.t.auth.p.registry
+    person=s.t.auth.p.other.subject
+    before=registry.get(s.t.auth.p.admin,person)
+    key_begin='test-expert-slack-link-begin-20261024'
+    key_confirm='test-expert-slack-link-confirm-20261024'
+
+    async def call(**kwargs):
+        return await server.call_tool('participants_manage',kwargs,_context())
+
+    result=await call(action='change',person_id=person,
+        expected_revision=before['revision'],operation_key=key_begin,
+        command={'provider':'slack','tenant':'T111','provider_subject':'U777',
+                 'reason':'Synthetic owner-approved test expert identity'})
+    assert 'applied' in str(result)
+    pending=registry.get(s.t.auth.p.admin,person)
+    assert pending['revision']==before['revision']+1
+    links=[row for row in pending['accounts'] if row['provider']=='slack'
+           and row['provider_subject']=='U777']
+    assert len(links)==1
+    link=links[0]
+    assert link['state']=='pending' and link['revision']==1
+    assert link['tenant']=='T111' and link['person_id']==person
+
+    with pytest.raises(ToolError,match='revision_conflict'):
+        await call(action='change',person_id=person,
+            expected_revision=pending['revision'],operation_key='test-wrong-link-revision',
+            command={'link_id':link['id'],'expected_link_revision':2,
+                     'method':'owner_confirmed_slack','reason':'wrong CAS'})
+    assert registry.get(s.t.auth.p.admin,person)==pending
+
+    await call(action='change',person_id=person,
+        expected_revision=pending['revision'],operation_key=key_confirm,
+        command={'link_id':link['id'],'expected_link_revision':1,
+                 'method':'owner_confirmed_slack','reason':'Exact synthetic Slack account tuple'})
+    after=registry.get(s.t.auth.p.admin,person)
+    assert after['revision']==pending['revision']+1
+    verified=[row for row in after['accounts'] if row['id']==link['id']]
+    assert len(verified)==1 and verified[0]['state']=='verified'
+    assert verified[0]['revision']==2
+    assert verified[0]['method']=='owner_confirmed_slack'
+    assert 'AccountBegin' in str(await call(action='audit',person_id=person))
+    assert 'AccountConfirm' in str(await call(action='audit',person_id=person))
+    assert 'applied' in str(await call(action='operation_status',operation_key=key_begin))
+    assert 'applied' in str(await call(action='operation_status',operation_key=key_confirm))
+
+    # Same keys and exact original arguments must return identical receipts,
+    # not create another Slack link or advance a participant revision.
+    await call(action='change',person_id=person,expected_revision=before['revision'],
+        operation_key=key_begin,command={'provider':'slack','tenant':'T111',
+        'provider_subject':'U777','reason':'Synthetic owner-approved test expert identity'})
+    await call(action='change',person_id=person,expected_revision=pending['revision'],
+        operation_key=key_confirm,command={'link_id':link['id'],
+        'expected_link_revision':1,'method':'owner_confirmed_slack',
+        'reason':'Exact synthetic Slack account tuple'})
+    assert registry.get(s.t.auth.p.admin,person)==after
+
+    # New MCP surface is for owner-attested Slack links only: the other provider
+    # observation methods and public_search grant remain outside this slice.
+    for command in (
+        {'provider':'vk','tenant':'community','provider_subject':'123',
+         'reason':'wrong provider'},
+        {'link_id':link['id'],'expected_link_revision':2,
+         'method':'provider_observation','reason':'wrong proof method'},
+        {'capability':'public_search','granted':True,'reason':'not this source scope'},
+    ):
+        with pytest.raises(ToolError,match='participants_change_out_of_scope'):
+            await call(action='change',person_id=person,
+                expected_revision=after['revision'],
+                operation_key='out-of-scope-'+str(len(str(command))),command=command)
+    assert registry.get(s.t.auth.p.admin,person)==after
+
+
 @pytest.mark.asyncio
 async def test_nonowner_cannot_read_list_audit_or_change_and_cannot_forge_owner(
         native_intake, monkeypatch):
@@ -101,6 +182,14 @@ async def test_nonowner_cannot_read_list_audit_or_change_and_cannot_forge_owner(
         {'action':'change','person_id':person,'expected_revision':before['revision'],
          'operation_key':'fixture-forged-revoke-20261023',
          'command':{'capability':'scan_proof_read','granted':False,'reason':'forged'}},
+        {'action':'change','person_id':person,'expected_revision':before['revision'],
+         'operation_key':'fixture-forged-slack-begin-20261024',
+         'command':{'provider':'slack','tenant':'T111','provider_subject':'U777',
+                    'reason':'nonowner cannot link'}},
+        {'action':'change','person_id':person,'expected_revision':before['revision'],
+         'operation_key':'fixture-forged-slack-confirm-20261024',
+         'command':{'link_id':str(UUID(int=1)),'expected_link_revision':1,
+                    'method':'owner_confirmed_slack','reason':'nonowner cannot confirm'}},
     )
     for kwargs in args:
         with pytest.raises(ToolError,match='participants_owner_required'):
