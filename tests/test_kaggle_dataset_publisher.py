@@ -28,7 +28,7 @@ class FakeApi:
             exc = RuntimeError('not found')
             exc.status_code = 404
             raise exc
-        return NS(current_version_number=self.version, is_private=self.private)
+        return NS(current_version_number=self.version, is_private=self.private, versions=getattr(self,"versions",[]))
 
     def get_dataset_metadata(self, request):
         return NS(info=NS(description=self.description))
@@ -129,3 +129,16 @@ def test_403_requires_independent_owned_inventory_absence():
     with pytest.raises(DatasetPublicationError, match='metadata_denied'):
         p.observe()
     assert api.mutations == ['reserve']
+
+
+def test_saved_time_uses_exact_verified_version_and_native_naive_utc():
+    from datetime import datetime, timezone
+    api, publisher, _ = setup()
+    api.version = 3
+    api.private = False  # Clock metadata does not duplicate visibility policy.
+    api.versions = [NS(version_number=3, creation_date=datetime(2026, 10, 24, 12)),
+                    NS(version_number=2, creation_date=datetime(2026, 10, 24, 11))]
+    assert publisher.version_created_at(2) == datetime(2026, 10, 24, 11, tzinfo=timezone.utc).timestamp()
+    assert not api.mutations[1:]
+    with pytest.raises(DatasetPublicationError, match='dataset_saved_version_time_unavailable'):
+        publisher.version_created_at(1)

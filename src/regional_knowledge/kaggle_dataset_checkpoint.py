@@ -152,12 +152,13 @@ class _SchemaCycleCapture(_WorkCycleCapture):
 
 
 class SourceDatasetCheckpoints:
-    def __init__(self,startup,*,interval_seconds=1800,quiet_seconds=900,clock=time.monotonic):
+    def __init__(self,startup,*,interval_seconds=1800,quiet_seconds=900,clock=time.monotonic,wall_clock=time.time):
         self.startup=startup;self.store=startup.config.spool.journal.store
         if (type(self.store) is not DatasetRecoveryStore or not 1<=interval_seconds<=3600
                 or type(quiet_seconds) is not int or not 1<=quiet_seconds<=3600):
             raise TypeError('existing Dataset journal and bounded checkpoint interval required')
         self.interval,self.quiet,self.clock=interval_seconds,quiet_seconds,clock
+        self.wall_clock=wall_clock
         self.dirty_since=None;self.last_sequence=None;self.last_change=self.clock()
         self.last_control=None;self._refresh_lock=asyncio.Lock()
         self._task=None;self._task_binding=None;self._force_after=False
@@ -326,7 +327,22 @@ class SourceDatasetCheckpoints:
                     or proof.applied_sequence==latest.base_sequence and not (late_outcomes or control)):
                 self.dirty_since=None;self.last_control=None;return False
             if self.dirty_since is None:
-                self.dirty_since=self.clock();self.last_change=self.clock()
+                # API restarts must not grant another full interval. The
+                # verified Dataset pointer supplies the version; provider
+                # history supplies its existing timestamp, with no new ledger.
+                if planned_stop:
+                    age=self.interval
+                else:
+                    try:
+                        saved_at=await asyncio.to_thread(self.store.publisher.version_created_at,
+                            latest.dataset_version)
+                    except Exception as exc:
+                        age=self.interval
+                        _LOG.warning('dataset_checkpoint_clock_unavailable version=%s action=capture_now error_type=%s',
+                            latest.dataset_version,type(exc).__name__)
+                    else:
+                        age=max(0,self.wall_clock()-saved_at)
+                self.dirty_since=self.clock()-age;self.last_change=self.clock()
             if self.last_sequence!=proof.applied_sequence or self.last_control!=control:
                 self.last_sequence=proof.applied_sequence;self.last_control=control;self.last_change=self.clock()
             batch_complete=(meta is not None and meta['sequence']==proof.applied_sequence
