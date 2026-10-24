@@ -19,7 +19,7 @@ from regional_knowledge.participant_contracts import AccountUnlink
 from test_expert_request_control import _event, _prepare, _observation
 from test_expert_slack_ingress import signed
 from test_expert_slack_composition import _owned_ingress
-from test_participants import change
+from test_participants import people, change
 from test_control_spool import env
 from test_kaggle_service_startup import service
 from test_read_authority import auth
