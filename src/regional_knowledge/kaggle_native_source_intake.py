@@ -609,7 +609,8 @@ class NativeSourceIntake:
             model_payload=payload,research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']),'research')),
                 **research.model_dump(mode='json')))
         validate_stage_payload(canonical(doc),source_id=row['source_id'])
-        if self._request_hash(doc)==state['last_request_sha256']:
+        if (self._request_hash(doc)==state['last_request_sha256']
+                and state.get('rejected_batch_index') is None):
             return self._output(row,await self._packet_progress(access,row,state))
         builder=lambda **values: resolved_native_stage_command(route=STAGE_ROUTE,**values)
         await self._stage_exact(access,row,kind='stage',key=self._stage_key(row,state),

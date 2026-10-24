@@ -673,3 +673,36 @@ async def test_status_releases_verified_upload_and_current_file_dedup_survives_o
     repeated=await start(s,file_id='first-upload')
     assert (repeated.ingestion_id,repeated.document_id)==(first.ingestion_id,first.document_id)
     assert s.importer._row(s.principal.subject,second.ingestion_id)['phase']=='staging'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('component',['text','semantic'])
+async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intake,component):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    assert (await stage(s,book,payload)).state=='processing'
+    await finish(s,book)
+    assert (await call(s,book,'status')).state=='processing'
+    if component=='semantic':
+        await finish(s,book)
+        assert (await call(s,book,'status')).state=='processing'
+    rejected=await finish(s,book,status='rejected_precondition')
+    assert (await call(s,book,'status')).state=='staged'
+    assert state(s,book)['rejected_batch_index']==0
+    before=operation_count(s)
+    # Identical model input now asks for a real retry, not the old rejection.
+    assert (await stage(s,book,payload)).state=='processing'
+    retry=await pending(s,book)
+    assert retry.command.route==STAGE_ROUTE
+    assert retry.command.sequence==rejected.command.sequence+1
+    assert retry.command.operation_key!=rejected.command.operation_key
+    assert json.loads(retry.command.payload)['model_payload']==payload
+    assert operation_count(s)==before+1
+    old=await s.spool.get(rejected.command.operation_key)
+    assert old.command_bytes==rejected.command_bytes and old.apply_state=='REJECTED_PRECONDITION'
+    for _ in range(3):
+        await finish(s,book)
+        result=await call(s,book,'status')
+    assert result.state=='staged' and state(s,book)['rejected_batch_index'] is None
+    after=operation_count(s)
+    assert (await stage(s,book,payload)).state=='staged'
+    assert operation_count(s)==after  # Success/lost-ACK retries still deduplicate.
