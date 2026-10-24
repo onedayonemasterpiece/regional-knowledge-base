@@ -43,6 +43,12 @@ A new message, state field, table, mode, flag or retry is accepted only if:
 2. the addition removes more code than it adds.
 
 Otherwise the verdict is "do not merge" plus the existing mechanism to use instead.
+
+Exception: a direct fix of a **measured** defect (a failing query plan, a timeout, a wrong
+result) may add code, provided it introduces **no new state, mode, gate, protocol message
+or persisted contract**. Review such a fix for equivalence with the old behaviour and for
+meta-tricks (for example generating code by text-patching other code at runtime). Do not
+review it for its line count.
 Finding *a* scenario the addition handles is not enough; ask whether an existing lock,
 ledger or lease already handles the same scenario.
 
