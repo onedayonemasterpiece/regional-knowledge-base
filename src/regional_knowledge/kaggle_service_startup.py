@@ -385,20 +385,19 @@ class TargetServiceStartup:
         return cursor
 
     def _kick_dataset_checkpoint(self,binding,*,dataset):
-        # An accepted Case APPLIED after the restored Dataset cursor blocks the
-        # next book packet until Saved. Request the existing planned-stop capture
-        # only once the verified cursor covers that exact successful apply.
-        # Failed, UNKNOWN and already durable Case outcomes keep the normal
-        # periodic work-cycle policy; checkpoint readback remains authoritative.
+        # A terminal native Case APPLIED or REJECTED_PRECONDITION after the
+        # restored Dataset cursor blocks the next book packet until Saved.
+        # Request the existing planned-stop capture only for a verified cursor;
+        # UNKNOWN, incomplete and durable outcomes retain the normal policy.
         if dataset:
             with self.config.queue.connect(write=False) as db:
-                case_applied=db.execute(
+                case_terminal=db.execute(
                     "SELECT 1 FROM rkb_control_operations INDEXED BY rkb_control_pending "
                     "WHERE outcome_state<>'DURABLE' AND sequence<=? "
-                    "AND seal_state='ACCEPTED' AND apply_state='APPLIED' AND outcome_state='NOT_SENT' "
+                    "AND seal_state='ACCEPTED' AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') AND outcome_state='NOT_SENT' "
                     "AND json_extract(CAST(command_bytes AS TEXT),'$.route') LIKE 'disagreement.%' LIMIT 1",
                     (self.coverage.applied_sequence,)).fetchone() is not None
-            if case_applied:
+            if case_terminal:
                 self.dataset_checkpoints.kick(binding,planned_stop=True)
                 return
         self.dataset_checkpoints.kick(binding)
