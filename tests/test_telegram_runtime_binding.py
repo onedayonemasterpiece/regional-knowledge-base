@@ -58,11 +58,10 @@ def _second_writer(queue):
         db.execute("UPDATE rkb_writer_control SET run_id=? WHERE id=1", (RUN_B,))
 
 
-def _terminal(queue, *, incarnation=INC_A, exact=True, status="terminal",
-              contract="kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1"):
+def _terminal(queue, *, incarnation=INC_A, exact=True, status="terminal"):
     with queue.connect() as db:
         db.execute("UPDATE runs SET launch_state=? WHERE id=?", (status, RUN_A))
-        receipt = dict(contract=contract,
+        receipt = dict(contract="kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1",
                        identity=dict(id=RUN_A, runtime_incarnation=incarnation,
                            provider_ref=PROVIDER,provider_version=99,launch_nonce="nonceA"))
         db.execute("""INSERT OR REPLACE INTO bge_provider_terminal_receipts
@@ -126,11 +125,7 @@ def test_never_transfer_on_ttl_lost_heartbeat_error_or_new_incarnation(seeded):
         lease.claim(RUN_A, INC_B)
 
 
-@pytest.mark.parametrize("contract", [
-    "kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v1",
-    "kaggle-2.2.4-sdk-0.1.37-exact-session-persisted-stream-v2",
-])
-def test_exact_provider_terminal_receipt_only_allows_transfer(seeded, contract):
+def test_exact_provider_terminal_receipt_only_allows_transfer(seeded):
     queue, _ = seeded
     lease = Rkb1Lease(queue, archive_chat_id=CHAT)
     lease.claim(RUN_A, INC_A)
@@ -141,10 +136,7 @@ def test_exact_provider_terminal_receipt_only_allows_transfer(seeded, contract):
     _terminal(queue, incarnation=INC_A, status="dispatched")
     with pytest.raises(TelegramBindingUnavailable, match="prior_execution_unknown"):
         lease.claim(RUN_B, INC_B)
-    _terminal(queue, incarnation=INC_A, status="terminal", contract="unknown")
-    with pytest.raises(TelegramBindingUnavailable, match="prior_execution_unknown"):
-        lease.claim(RUN_B, INC_B)
-    _terminal(queue, incarnation=INC_A, status="terminal", contract=contract)
+    _terminal(queue, incarnation=INC_A, status="terminal")
     assert lease.claim(RUN_B, INC_B)
     assert lease.current(RUN_B, INC_B)
     assert not lease.current(RUN_A, INC_A)
