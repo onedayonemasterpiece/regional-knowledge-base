@@ -228,8 +228,6 @@ class WorkerSourceExecutor:
             # candidate effects, then apply canonical outcome in its own tx.
             await proof.verify_accepted(seal,command)
             from .kaggle_source_materializer import SourceMaterializationRejected
-            # Re-run only the same accepted packet after a positively observed
-            # isolated prepare rollback; no new command/claim/ACK is created.
             for attempt in range(2):
                 observed=[]
                 @asynccontextmanager
@@ -257,8 +255,6 @@ class WorkerSourceExecutor:
                         _LOG.warning('native_source_preparation state=retry_after_confirmed_rollback route=%s sequence=%s',
                             command.route,command.sequence)
                         continue
-                    # A second timeout, or a failed/unproven rollback, retains
-                    # the original claimed job as UNKNOWN for reconciliation.
                     raise ApplyUnknown('native source preparation outcome unresolved; original key retained') from None
                 except psycopg.OperationalError:
                     raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
