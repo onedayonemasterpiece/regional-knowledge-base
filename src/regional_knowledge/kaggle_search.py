@@ -34,6 +34,10 @@ class SearchEvidence:
     body: str
     bibliography: str
     source_provenance: dict | None = None
+    catalog_metadata: dict | None = None
+    passage_language: str | None = None
+    physical_page_index: int | None = None
+    printed_page_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,11 +73,12 @@ async def fused_search(connection, query: str, *,
                        timeout_seconds: float = 2.0,
                        filters: QueryFilters | None = None,
                        snapshot_guard=None, snapshot_finish=None,
-                       stage_timings: dict[str, float] | None = None) -> SearchResult:
+                       stage_timings: dict[str, float] | None = None,
+                       catalog_titles: bool = False) -> SearchResult:
     return await _search(connection, query, encode=encode, top_k=top_k,
         candidate_budget=candidate_budget, timeout_seconds=timeout_seconds,
         filters=filters, snapshot_guard=snapshot_guard, snapshot_finish=snapshot_finish,
-        stage_timings=stage_timings, observe=False)
+        stage_timings=stage_timings, observe=False, catalog_titles=catalog_titles)
 
 
 async def acceptance_search(connection, query: str, *, encode, filters,
@@ -90,12 +95,12 @@ async def acceptance_search(connection, query: str, *, encode, filters,
     return await _search(connection, query, encode=encode, top_k=3,
         candidate_budget=100, timeout_seconds=timeout_seconds, filters=filters,
         snapshot_guard=snapshot_guard, snapshot_finish=snapshot_finish,
-        stage_timings=stage_timings, observe=True)
+        stage_timings=stage_timings, observe=True, catalog_titles=False)
 
 
 async def _search(connection, query, *, encode, top_k, candidate_budget,
                   timeout_seconds, filters, snapshot_guard, snapshot_finish,
-                  stage_timings, observe):
+                  stage_timings, observe, catalog_titles):
     """Execute on an exclusively checked-out idle async psycopg connection.
 
     Encoder adapter contract: cancellation discards this consumer; the adapter
@@ -228,6 +233,40 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                     if story:
                         await execute("SELECT * FROM rkb_v4.editorial_hydrate_v1(%s::uuid[],%s::uuid[])" if editorial else
                                       "SELECT * FROM rkb_v4.story_hydrate_v1(%s::uuid[],%s::uuid[])", (ids,source_ids))
+                    elif catalog_titles:
+                        # Enrich the EXISTING hydrate operation in one SQL statement / roundtrip.
+                        # Only enabled by a verified SQL034+ runtime (old SQL001 fixtures stay unchanged).
+                        # RKB ACL/active-revision fences remain inside hydrate[_scoped].
+                        hydrate = ("rkb_v4.hydrate(%s::uuid[])" if source_ids is None
+                                   else "rkb_v4.hydrate_scoped(%s::uuid[],%s::uuid[])")
+                        statement = """SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
+                             coalesce(correction.metadata,catalog.metadata) AS catalog_metadata,
+                             p.language,page.physical_page_index,page.printed_page_number
+                           FROM """ + hydrate + """ h
+                           JOIN rkb_v4.passage_search p ON p.passage_id=h.passage_id
+                           LEFT JOIN rkb_v4.source_catalog catalog ON
+                             catalog.source_id=h.source_id AND catalog.source_revision=h.revision
+                           LEFT JOIN LATERAL (
+                             SELECT metadata FROM rkb_v4.source_catalog_corrections c
+                             WHERE c.source_id=h.source_id
+                             ORDER BY c.accepted_sequence DESC LIMIT 1
+                           ) correction ON true
+                           LEFT JOIN rkb_v4.source_passage_provenance prov ON
+                             prov.source_id=h.source_id AND prov.source_revision=h.revision
+                             AND prov.passage_id=h.passage_id
+                           LEFT JOIN LATERAL (
+                             SELECT pg.physical_page_index,
+                                    pg.model_page->>'printed_page_number' AS printed_page_number
+                             FROM jsonb_array_elements_text(coalesce(prov.data->'region_ids','[]'::jsonb)) r(region_id)
+                             JOIN rkb_v4.source_regions region ON
+                               region.source_id=h.source_id AND region.region_id=r.region_id::uuid
+                             JOIN rkb_v4.source_stage_pages pg ON
+                               pg.source_id=h.source_id AND pg.page_id=region.page_id
+                             ORDER BY pg.physical_page_index LIMIT 1
+                           ) page ON true
+                           ORDER BY array_position(%s::uuid[],h.passage_id)"""
+                        params = (ids, ids) if source_ids is None else (ids, source_ids, ids)
+                        await execute(statement, params)
                     elif source_ids is None:
                         await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
                     else:
