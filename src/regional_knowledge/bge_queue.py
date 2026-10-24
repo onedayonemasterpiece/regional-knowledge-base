@@ -1219,7 +1219,7 @@ class BgeQueue:
                 return None
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
-            db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?) where id=?",(provider_ref,run_id))
+            db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?),started=? where id=?",(provider_ref,self.clock(),run_id))
             token=(self.path.parent/'bge-worker-credentials'/run_id).read_text()
             return token
 
