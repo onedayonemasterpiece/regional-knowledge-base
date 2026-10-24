@@ -427,6 +427,12 @@ class OriginalIntakeController:
         if not self.binding_current(binding):
             raise OriginalIntakeError('original_current_binding_required')
         with self.queue.connect(write=False) as db:
+            runtime=self.queue._runtime_row(db,binding.run_id)
+            expected=json.loads(runtime['expected_json']) if runtime and runtime['expected_json'] else {}
+            if expected.get('schema_version',0)<37:
+                # Do not dispatch a new native operation during an API-first
+                # rolling install while the old worker still owns this run.
+                raise OriginalIntakeError('public_illustration_runtime_unavailable')
             rows=db.execute('''SELECT * FROM rkb_original_intakes
                 WHERE json_extract(spec_json,'$.source_id')=? AND receipt_json IS NOT NULL
                 AND storage_sha256=? LIMIT 2''',(source_id,self._storage)).fetchall()

@@ -8,10 +8,12 @@ import pytest
 
 from regional_knowledge.kaggle_read_binding import TargetReadBinding
 from regional_knowledge.original_intake_controller import OriginalIntakeController
+from regional_knowledge.original_intake import OriginalIntakeError
 from test_source_stage import original, SOURCE
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('schema_version',[36,37])
 @pytest.mark.parametrize('database,state,known,expected',[
     ('foreign-db','claimed',False,None),
     ('foreign-db','done',True,None),
@@ -19,7 +21,7 @@ from test_source_stage import original, SOURCE
     ('current-db','done',True,{'status':'ready','binding':{'source_id':SOURCE},'photo':{'kind':'photo'}}),
 ])
 async def test_public_crop_recovery_does_not_reuse_foreign_database_receipt(
-        tmp_path,database,state,known,expected):
+        tmp_path,database,state,known,expected,schema_version):
     path=tmp_path/'control.sqlite'
     @contextmanager
     def connect(**kwargs):
@@ -46,7 +48,9 @@ async def test_public_crop_recovery_does_not_reuse_foreign_database_receipt(
             state,json.dumps(result) if result else None))
     binding=TargetReadBinding('run','inc',1,'current-db',0,'fixture:1')
     owner=object.__new__(OriginalIntakeController)
-    owner.queue=N(connect=connect);owner._storage='same-storage'
+    owner.queue=N(connect=connect,_runtime_row=lambda db,run:{
+        'expected_json':json.dumps({'schema_version':schema_version})})
+    owner._storage='same-storage'
     owner.binding_current=lambda value:value is binding
     calls=[]
     async def phase(current,phase,args):
@@ -54,6 +58,11 @@ async def test_public_crop_recovery_does_not_reuse_foreign_database_receipt(
         assert phase=='original_illustration' and current is binding
         return {'snapshot':'synthetic-native-result'}
     owner._phase=phase
+    if schema_version<37:
+        with pytest.raises(OriginalIntakeError,match='runtime_unavailable'):
+            await owner.public_illustration(SOURCE,figure,reader,binding)
+        assert not calls
+        return
     await owner.public_illustration(SOURCE,figure,reader,binding)
     assert len(calls)==1 and calls[0]['recovery']==expected
     assert calls[0]['actor_id']==reader and calls[0]['actor_id']!=importer
