@@ -222,7 +222,10 @@ def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
     queue.launch_claim(run,provider_ref='owner/stable-slug')
     queue.launch_record(run,'owner/stable-slug',failed=True)
     assert queue.startup_status(first['startup_ref'])['reason']=='startup_retry_exhausted'
-    # A new authorized search reopens a *new* budget, not the exhausted locator.
+    # A distinct import must close the exhausted search locator too.
+    fresh=queue.enqueue('indexer','new-import',['new passage'],kind='document')
+    assert queue.result('indexer',fresh)['state']=='pending'
+    assert queue.startup_status(first['startup_ref'])['reason']=='startup_ref_stale'
     renewed=queue.request_startup()
     assert renewed['status']=='pending'
     assert renewed['startup_ref']!=first['startup_ref']
