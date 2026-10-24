@@ -252,10 +252,10 @@ class WorkerSourceExecutor:
                             and attempt==0 and observed and observed[-1].canceled
                             and not observed[-1].connection.closed
                             and observed[-1].connection.info.transaction_status==TransactionStatus.IDLE):
-                        _LOG.warning('native_source_preparation state=retry_after_confirmed_rollback route=%s sequence=%s',
+                        _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
                             command.route,command.sequence)
                         continue
-                    raise ApplyUnknown('native source preparation outcome unresolved; original key retained') from None
+                    raise ApplyUnknown('source prepare unresolved; preserve original operation') from None
                 except psycopg.OperationalError:
                     raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
                 except psycopg.Error as error:
