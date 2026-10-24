@@ -553,3 +553,35 @@ async def test_prepare_retry_queue_is_same_job_bounded_persisted_and_not_termina
         row=db.execute('SELECT attempt,state FROM jobs WHERE id=?',(job,)).fetchone()
         assert (row['attempt'],row['state'])==(2,'held')
     assert (await e.spool.get(original_key)).apply_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_one_retry_then_actual_native_receipt_keeps_attempt_proof_through_dataset_settlement(accepted):
+    """Retry evidence stays bound to the same durable job after a real receipt."""
+    e=accepted;s=e.s;job,work,frame=await dispatch(e)
+    await release(e,work)
+    first=s.q._record_source_not_applied(e.bridge,s.run,s.token,s.generation,
+        job,frame['claim'],digest(e.command.encode()),'incarnation-a')
+    assert first=='retry_scheduled'
+    s.a.durable_result_settled(job,frame['claim'],first)
+    successor=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert successor is not None and successor.document_payload['id']==job
+    s.a.mark_work_sent(successor)
+    await release(e,successor)
+    assert successor.document_payload['claim']!=frame['claim']
+    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
+    status=s.q._complete_source_command(e.bridge,s.run,s.token,s.generation,
+        job,successor.document_payload['claim'],digest(e.command.encode()),
+        remote_outcome_durable=False)
+    assert status=='checkpoint_pending'
+    pending=s.q.result(s.auth.p.owner.subject,job)
+    assert pending['state']=='done' and pending['result']['remote_outcome_durable'] is False
+    attempts=pending['result']['not_applied_attempts']
+    assert len(attempts)==1 and attempts[0]['attempt']==1
+    await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
+    assert e.spool._settle_recovered_jobs(e.command.operation_key)==[job]
+    saved=s.q.result(s.auth.p.owner.subject,job)
+    assert saved['state']=='done' and saved['result']['remote_outcome_durable'] is True
+    assert saved['result']['not_applied_attempts']==attempts
+    assert (await e.spool.get(e.command.operation_key)).outcome_state=='DURABLE'
+    assert s.q.lookup(s.auth.p.owner.subject,'source-command:'+e.command.operation_key)['id']==job
