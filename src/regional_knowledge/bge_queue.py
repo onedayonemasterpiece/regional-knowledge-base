@@ -289,7 +289,7 @@ class BgeQueue:
                 return previous['id']
             if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise RuntimeError('BGE queue full')
-            db.execute('update control set startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
+            db.execute('update control set startup_ref=null,startup_state=null,startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                        (job_id,actor,idempotency,kind,json.dumps(texts),json.dumps(identity),'pending',now,now))
@@ -314,7 +314,7 @@ class BgeQueue:
                 return prior['id']
             if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise RuntimeError('BGE queue full')
-            db.execute('update control set startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
+            db.execute('update control set startup_ref=null,startup_state=null,startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
                 (job_id,actor,key,'source_command','[]',encoded,'pending',now,now))
