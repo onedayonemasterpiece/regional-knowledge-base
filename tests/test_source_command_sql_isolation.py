@@ -106,7 +106,7 @@ async def test_unknown_apply_never_requests_a_rejected_receipt(monkeypatch):
         raise ApplyUnknown('synthetic unknown commit')
     monkeypatch.setattr('regional_knowledge.kaggle_source_commands.apply_accepted',unknown)
     with pytest.raises(ApplyUnknown):await value.worker(value.frame)
-    assert len(calls)==1 and 'reject_reason' not in calls[0]
+    assert len(calls)==2 and all('reject_reason' not in call for call in calls)
 
 
 @PG
