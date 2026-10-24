@@ -132,3 +132,11 @@ The native connection handshake has a 15-second total and 10-second connect/sock
 budget. The existing reconnect grace and the established worker's lifetime remain
 separate. Diagnose the last observed stage in the exact version's logs; RUNNING
 alone is not proof that control attached or that PostgreSQL/model startup began.
+
+`wss_connect_failed` identifies failure before the WebSocket opens;
+`wss_session_failed` identifies failure after it opens, including validation or
+an attachment disconnect. `wss_session_closed` records only the numeric close
+code. The authenticated server's 4403 authority rejection terminates the worker
+without reconnecting. Other disconnects retain the existing bounded reconnect
+and exact pending result. Cleanup drains started native work; worker exit does
+not itself prove provider terminal state or a Saved Dataset checkpoint.

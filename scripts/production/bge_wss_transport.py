@@ -806,6 +806,7 @@ class BgeWssTransport:
                 async with client.ws_connect(self.config['channel'],
                         headers={'Authorization': 'Bearer ' + self.config['token']},
                         max_msg_size=4*1024*1024, heartbeat=30) as socket:
+                    bootstrap_event=self._bootstrap_event
                     class Adapter:
                         async def send(self, raw):
                             await socket.send_str(raw)
@@ -814,10 +815,16 @@ class BgeWssTransport:
                             message = await socket.receive()
                             if message.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                                 return message.data
-                            # A close ends this attachment, not the owned run.
-                            # Reauthentication and all dispatch fences run on
-                            # reconnect; the existing outage/lifetime bounds
-                            # still terminate an unrecoverable or revoked run.
+                            code=(message.data if message.type==aiohttp.WSMsgType.CLOSE
+                                  else getattr(socket,'close_code',None))
+                            code=code if type(code) is int and 1000<=code<=4999 else None
+                            bootstrap_event('wss_session_closed',close_code=code)
+                            # The authenticated server uses 4403 when this run's
+                            # authority is revoked. Retrying cannot restore it.
+                            if code==4403:
+                                raise BgeChannelStopped('server revoked worker authority')
+                            # Other closes end this attachment; reconnect the
+                            # same owned runtime with its exact pending result.
                             raise ConnectionError('channel disconnected')
                     yield Adapter()
 
@@ -832,9 +839,11 @@ class BgeWssTransport:
                 while not self.stop.is_set():
                     self._failure(self.loading)
                     self._failure(self.encoding)
+                    connected=False
                     try:
                         self._bootstrap_event('wss_connect_start',attempt=self._reconnect_attempt+1)
                         async with (self.connector() if self.connector else native_connect()) as socket:
+                            connected=True
                             self._bootstrap_event('wss_connect_complete')
                             try:
                                 await self._session(socket)
@@ -845,7 +854,7 @@ class BgeWssTransport:
                     except BgeChannelStopped:
                         raise
                     except (ConnectionError, OSError, TimeoutError, aiohttp.ClientError) as error:
-                        self._bootstrap_event('wss_connect_failed',error_type=type(error).__name__,
+                        self._bootstrap_event('wss_session_failed' if connected else 'wss_connect_failed',error_type=type(error).__name__,
                             http_status=getattr(error,'status',None))
                         self._reconnect_attempt += 1
                         now = self._retry_clock()
