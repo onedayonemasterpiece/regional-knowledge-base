@@ -305,7 +305,7 @@ def chunk_read_result(*, source=SOURCE, physical_page=1, page=None):
     return SourceReadResult(request_id='chunks',connection_generation=1,turn_generation=1,
         operation='accepted_chunks',status='ok',
         records=(dict(source_id=source,chunk_id=chunk,ordinal=0,text='synthetic evidence',
-            pages=[dict(page_id=page,physical_page_index=physical_page,printed_page_number=None)],
+            pages=[dict(page_id=page,physical_page_index=physical_page)],
             regions=[dict(page_id=page,region_id=region,start=0,end=9,role='body')]),),
         evidence=(proof,),observed_data_seq=0,observed_projection_seq=0,
         observed_visibility_epoch=0,observed_database_generation='db-source')
