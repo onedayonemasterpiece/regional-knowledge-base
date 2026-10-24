@@ -468,6 +468,60 @@ async def test_unknown_status_retains_current_owner_output_fence(native_intake):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('case_phase',[
+    'applied','rejected_precondition','apply_unknown','outcome_unknown','unaccepted',
+])
+async def test_known_foreign_case_does_not_hold_ordinary_book_stage_before_saved(native_intake,case_phase):
+    from regional_knowledge.disagreement_native import CASE_EDIT,case_handler,resolved_case_command
+    from test_disagreement_native import CASE,create
+
+    s=native_intake
+    book=await start(s)
+    pages=batch(s,book,count=1)
+    actor=s.t.auth.p.owner.subject
+    s.spool.registry=HandlerRegistry([*s.spool.registry.handlers.values(),
+        case_handler(CASE_EDIT,check_sha256='c'*64,apply_sha256='d'*64)])
+    command=resolved_case_command(sequence=1,operation_key='case-foreign-before-book-stage',
+        request_id='case-foreign-request',person_id=actor,logical_time='2026-10-24T00:00:00Z',
+        case_id=CASE,object_id=CASE,action='create',command=create(),
+        source_dependencies=[],attribution=dict(person_id=actor,recorded_by=actor,
+            route='owner',link_id=None,link_revision=None,human_reading_confirmed=False))
+    frozen,data,handler=s.spool._validate(command,'synthetic-db')
+    await s.spool._write(s.spool._stage,frozen,data,handler,'synthetic-db')
+    if case_phase!='unaccepted':
+        await s.spool.seal(s.t.auth.p.admin,command.operation_key,
+            predecessor=None,writer_generation='writer-1')
+    if case_phase in ('applied','rejected_precondition','outcome_unknown'):
+        raw=canonical(dict(case_id=CASE,object_id=CASE))
+        receipt=ApplyReceipt('synthetic-db',command.operation_key,command.sequence,
+            digest(data),case_phase if case_phase!='outcome_unknown' else 'applied',
+            raw,digest(raw),False)
+        await s.spool.record_apply(command.operation_key,receipt)
+    elif case_phase=='apply_unknown':
+        await s.spool.mark_apply_sent(command.operation_key)
+    if case_phase=='outcome_unknown':
+        await s.spool._write(s.spool._outcome_sent,command.operation_key)
+    binding=s.startup.binding
+    s.startup.coverage=await s.spool.dataset_cursor(binding,control=dict(sequence=0,heads=[]),
+        current=lambda candidate:candidate==binding)
+    scope=await s.spool.scope_state()
+    entry=await s.spool.get(command.operation_key)
+    assert scope['pending'] and entry.outcome_state!='DURABLE' and entry.remote_outcome is None
+    if case_phase in ('applied','rejected_precondition'):
+        assert scope['accepted_sequence']==s.startup.coverage.applied_sequence==1
+        assert entry.apply_receipt is not None
+        result=await stage(s,book,pages)
+        assert result.state=='processing'
+        next_entry=await pending(s,book)
+        assert next_entry.command.sequence==2 and next_entry.command.route==STAGE_ROUTE
+        assert (await s.spool.get(command.operation_key)).outcome_state=='NOT_SENT'
+    else:
+        with pytest.raises(ToolError,match='prior_write_pending'):
+            await stage(s,book,pages)
+        assert operation_count(s)==1
+
+
+@pytest.mark.asyncio
 async def test_history_or_geo_loss_prevents_new_batch_without_rewriting_pending(native_intake):
     s = native_intake; result = await start(s); payload = batch(s,result,count=1)
     s.geo_state['current'] = False
