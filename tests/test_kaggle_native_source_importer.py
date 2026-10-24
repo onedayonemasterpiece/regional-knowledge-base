@@ -238,6 +238,30 @@ async def test_status_after_pause_returns_next_unaccepted_physical_page(native_i
     row=s.importer._row(s.principal.subject,book.ingestion_id)
     assert row['stage_json'] is None  # no second model payload table
 
+@pytest.mark.asyncio
+async def test_applied_page_status_needs_no_second_original_head(native_intake, monkeypatch):
+    s=native_intake
+    book=await start(s)
+    assert (await stage(s,book,batch(s,book,first=0,count=4))).next_action=='wait'
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+
+    verified_calls=[]
+    async def unavailable_original_head(context, ingestion_id):
+        verified_calls.append(ingestion_id)
+        raise OriginalIntakeError('object_storage_head_unavailable')
+    monkeypatch.setattr(s.originals,'verified',unavailable_original_head)
+    before=operation_count(s)
+    resumed=await call(s,book,'status')
+    assert resumed.state=='staged' and resumed.next_action=='continue_pages'
+    assert resumed.next_cursor=='4' and verified_calls==[]
+    assert operation_count(s)==before
+    # The actual page read must still prove the archived original.
+    with pytest.raises(ToolError,match='native_original_page_unavailable'):
+        await s.importer.book_pages(principal=s.principal,ingestion_id=book.ingestion_id,cursor='4')
+    assert verified_calls==[book.ingestion_id]
+
 
 
 @pytest.mark.asyncio
