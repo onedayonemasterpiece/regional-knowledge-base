@@ -418,6 +418,11 @@ class BgeWssTransport:
         if self.shared_reads:
             self._claim_resource(job, 'document')
         self.job = job
+        if self.shared_reads and job['kind']=='source_command':
+            # Accepted native work keeps its durable job/claim. Its BGE calls
+            # share ResidentEncoder's lock with QUERY, so PG/Python work must
+            # not reserve the channel's only read permit for the whole job.
+            self.last_released,self.resource=self.resource,None
         self.encoding = asyncio.create_task(self._encode(job))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
@@ -462,6 +467,13 @@ class BgeWssTransport:
         attachment_release = attachment_state = None
         if self.shared_reads:
             self._maybe_release()
+            if self.job is not None and self.job['kind']=='source_command':
+                # Rebuild the original durable permit before later QUERY
+                # releases; a reconnect never reexecutes the accepted job.
+                await send({'type':'RESOURCE_RELEASED','connection_generation':generation,
+                    'resource_kind':'document','resource_id':self.job['id'],
+                    'compute_claim':self.job['compute_claim'],
+                    'dispatch_generation':self.job['dispatch_generation']})
             attachment_release = self.last_released
             if attachment_release is not None:
                 await send({'type': 'RESOURCE_RELEASED', 'connection_generation': generation, **attachment_release})

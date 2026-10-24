@@ -180,3 +180,5 @@ This is local synthetic integration, not a Kaggle/model or public MCP acceptance
 Server public admission/output gates and restoration of durable accepted-intake
 authority remain pending. No provider, model, production database, grant, or
 runtime changes were performed.
+
+A native `source_command` retains its accepted durable job and original result claim while releasing the channel read permit at dispatch. Existing QUERY messages can run beside its PG/Python work; source and query BGE calls share the existing ResidentEncoder lock. Plain document-vector jobs retain exclusive channel admission. Reconnect replays the original native release before later query releases, without repeating the accepted source effect.
