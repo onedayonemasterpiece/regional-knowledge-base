@@ -562,7 +562,16 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
     assert cursor.accepted_sequence>cursor.applied_sequence
 
     startup=SimpleNamespace(config=SimpleNamespace(queue=s.q,spool=e.spool))
-    settled=await TargetServiceStartup._settle_restored_source_jobs(startup,cursor)
+    import logging
+    with caplog.at_level(logging.INFO,logger='regional_knowledge.kaggle_service_startup'):
+        settled=await TargetServiceStartup._settle_restored_source_jobs(startup,cursor)
+    observed=[record.getMessage() for record in caplog.records
+        if record.name=='regional_knowledge.kaggle_service_startup'
+        and record.message.startswith('source_recovered_queue_settled')]
+    assert len(observed)==int(phase in ('applied','rejected_precondition'))
+    if observed:
+        assert 'remote_outcome_durable=false' in observed[0] and 'count=1' in observed[0]
+        assert 'operation_key' not in observed[0] and 'command_b64' not in observed[0]
     if phase in ('applied','rejected_precondition'):
         assert settled==(first,)
         old=s.q.result(s.auth.p.owner.subject,first)
