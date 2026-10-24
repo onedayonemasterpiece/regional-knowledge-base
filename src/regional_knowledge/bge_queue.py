@@ -191,6 +191,8 @@ class BgeQueue:
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
         db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<=?",(now,))
+        self._finalize_provider_terminal_pointers(db)
+
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)
         control = db.execute('select * from control where id=1').fetchone()
@@ -1085,6 +1087,7 @@ class BgeQueue:
                                 (run['id'],)).fetchone()
             if previous is not None:
                 matched=run['launch_state']=='terminal' and previous['receipt_json']==encoded
+                if matched:self._finalize_provider_terminal_pointers(db)
                 return matched
             if (not validate_proof(proof,run,self.clock()) or run['attachment_conflict']
                     or run['status'] not in ('starting','ready','draining','expired')):return False
@@ -1103,7 +1106,26 @@ class BgeQueue:
                 db.execute("""update bge_shared_admission set run_id=null,incarnation=null
                     where id=1 and run_id=? and incarnation is ?""",
                     (run['id'],run['runtime_incarnation']))
+            self._finalize_provider_terminal_pointers(db)
             return True
+
+    def _finalize_provider_terminal_pointers(self, db):
+        """Revisit at most current/successor after legitimate domain settlement.
+
+        Compute closure cannot settle claims or publications. When the existing
+        lease/recovery machinery clears those guards, durable demand may advance
+        without resubmitting the provider read or replaying an accepted effect.
+        """
+        from .queue_writer import pending
+        pointers=db.execute('select current_run,successor from control where id=1').fetchone()
+        for run_id in set(pointers):
+            if run_id is None:continue
+            if pending(db,run_id):continue
+            claimed=db.execute("""select 1 from jobs where run_id=? and state='claimed'
+                and kind in ('source_command','recovery_phase') limit 1""",(run_id,)).fetchone()
+            if claimed:continue
+            db.execute('update control set current_run=null where current_run=?',(run_id,))
+            db.execute('update control set successor=null where successor=?',(run_id,))
 
     def needs_dispatched_terminal_probe(self, run_id):
         """Only an exact owner with a lost ready connection needs terminal lookup.
