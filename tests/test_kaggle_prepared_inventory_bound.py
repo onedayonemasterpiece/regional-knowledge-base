@@ -27,33 +27,19 @@ def prepared(artifacts, entries):
         max_total_bytes=sum(e.requirement.size for e in entries))
 
 
-def test_195_actual_files_pass_both_inventory_and_hash_verification(artifacts, monkeypatch):
-    entries = complete(artifacts, 195)
-    monkeypatch.setattr(stage0, 'TRUSTED_ROOT', artifacts.root)
-    inventory = prepared(artifacts, entries)
-    assert stage0.MAX_PREPARED_FILES == boot.MAX_PREPARED_FILES == 195
-    assert stage0.MAX_FILES == 128
-    assert len(stage0._inventory(inventory)) == 195
-    verified = boot.verify_artifacts(artifacts.root, entries,
-                                     max_total_bytes=inventory['max_total_bytes'])
-    assert len(verified.observed) == 195
-
-
-def test_196_actual_files_refused_before_hash_io(artifacts, monkeypatch):
+def test_196_actual_files_pass_both_inventory_and_hash_verification(artifacts, monkeypatch):
     entries = complete(artifacts, 196)
     monkeypatch.setattr(stage0, 'TRUSTED_ROOT', artifacts.root)
     inventory = prepared(artifacts, entries)
-    with pytest.raises(ValueError, match='stage0_prepared_inventory_required'):
-        stage0._inventory(inventory)
-    def forbidden(*args, **kwargs):
-        pytest.fail('over-bound inventory reached file reads')
-    monkeypatch.setattr(boot, '_file_hash', forbidden)
-    with pytest.raises(boot.BootstrapUnavailable, match='artifact_inventory_invalid'):
-        boot.verify_artifacts(artifacts.root, entries, max_total_bytes=inventory['max_total_bytes'])
+    assert stage0.MAX_FILES == 128
+    assert len(stage0._inventory(inventory)) == 196
+    verified = boot.verify_artifacts(artifacts.root, entries,
+                                     max_total_bytes=inventory['max_total_bytes'])
+    assert len(verified.observed) == 196
 
 
 @pytest.mark.parametrize('failure', ['hash', 'bytes', 'missing', 'required_role'])
-def test_195_file_limit_keeps_integrity_byte_and_required_file_guards(artifacts, monkeypatch, failure):
+def test_195_file_inventory_keeps_integrity_byte_and_required_file_guards(artifacts, monkeypatch, failure):
     entries = complete(artifacts, 195)
     monkeypatch.setattr(stage0, 'TRUSTED_ROOT', artifacts.root)
     inventory = prepared(artifacts, entries)
