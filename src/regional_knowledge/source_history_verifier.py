@@ -382,7 +382,7 @@ class NativeSourceHistoryVerifier:
         """Bounded affected-head update in the existing spool, not a second view."""
         s=self.spool
         with s._db(write=True) as db:
-            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
+            used=s._used_bytes(db)
             pending_delta=unknown_delta=0;maximum=0
             for c in changes:
                 old=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown,reserved_bytes '
@@ -399,7 +399,6 @@ class NativeSourceHistoryVerifier:
                     'ON CONFLICT(source_id) DO UPDATE SET sequence=excluded.sequence,command_sha256=excluded.command_sha256,'
                     'restriction=excluded.restriction,pending=excluded.pending,unknown=excluded.unknown',
                     (c.source_id,seq,ch,int(restriction),int(c.pending),int(c.unknown),size))
-            db.execute('UPDATE rkb_control_spool_meta SET used_bytes=? WHERE id=1',(used,))
             db.execute('UPDATE rkb_control_source_head_meta SET sequence=max(sequence,?),'
                 'pending_count=pending_count+?,unknown_count=unknown_count+? WHERE id=1',
                 (maximum,pending_delta,unknown_delta))

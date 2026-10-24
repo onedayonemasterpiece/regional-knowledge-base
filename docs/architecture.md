@@ -45,7 +45,7 @@ NEW уже содержит S3 transport и части immutable journal/CAS. Э
 
 DevCoveer raw spool: стартовый горизонт 4 часа, hard byte cap 512 MiB, с проверкой реального envelope до cutover. Компактные UNKNOWN/request/receipt metadata живут до reconciliation, а не до spool TTL. Local GC требует remotely sealed payloads и verified metadata; недельная backup не задерживает local GC после доказанного внешнего покрытия, а более свежий непокрытый хвост остаётся pending. Remote-tail GC, напротив, сохраняет всё необходимое designated retained verified baselines и unfinished consumers.
 
-До получения apply receipt spool резервирует максимальный размер outcome; после точного APPLIED или REJECTED_PRECONDITION учитывает сохранённый размер outcome и освобождает неиспользованную часть резерва. При старте этот счётчик восстанавливается из существующих записей. Исходные команды, receipts и полный резерв ещё неизвестных исходов сохраняются.
+До получения apply receipt spool резервирует максимальный размер outcome; после точного APPLIED или REJECTED_PRECONDITION учитывает сохранённый размер outcome. Admission вычисляет занятый объём из существующих записей в той же транзакции, без отдельного хранимого счётчика `used_bytes`; старая колонка удаляется при открытии очереди. Исходные команды, receipts и полный резерв ещё неизвестных исходов сохраняются.
 
 Изменившаяся PG base создаётся каждые 4 часа, раньше при replay/byte pressure или плановой передаче writer. Без изменений полная копия не создаётся. Control checkpoint — каждые 15 минут; это не задержка фиксации новых grants, accepted commands или receipts. Подробности и failure domains: [storage](storage.md).
 
