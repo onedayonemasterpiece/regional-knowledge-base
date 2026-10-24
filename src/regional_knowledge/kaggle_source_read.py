@@ -121,8 +121,7 @@ async def _accepted_chunks(request, cursor, execute):
             refs = [(span['region_id'],span['start'],span['end']) for span in spans]
         else:
             refs = [(rid,0,regions[rid][1]) for rid in provenance['region_ids']]
-        refs.extend((rid,0,regions[rid][1]) for rid in provenance['footnote_region_ids']
-                    if rid not in [ref[0] for ref in refs])
+        refs.extend((rid,0,regions[rid][1]) for rid in provenance['footnote_region_ids'])
         selected_regions = [dict(page_id=regions[rid][0],region_id=rid,
             start=start,end=end,
             role='footnote' if rid in provenance['footnote_region_ids'] else 'body')
