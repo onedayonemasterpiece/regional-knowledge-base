@@ -120,11 +120,6 @@ def reconcile_launch_due(api,queue,run,ref,probed,*,now):
 def reconcile_dispatched_terminal(api, queue, run, ref):
     """Observe the exact owned version; never infer death from lost heartbeat.
 
-    A READY worker can disappear after its last heartbeat. We retain that
-    run's remote ownership until this native version-qualified terminal check;
-    after terminal confirmation the durable cold demand can resume via the
-    existing queue maintenance, without another user search. Unknown source,
-    mismatched version or provider errors leave the original effect fenced.
     """
     if run.get('launch_state')!='dispatched' or not queue.needs_dispatched_terminal_probe(run['id']):
         return None
@@ -137,11 +132,6 @@ def reconcile_dispatched_terminal(api, queue, run, ref):
     logging.info(json.dumps({'event':'bge_exact_version_phase','run_id':run['id'],
         'provider_version':version,'phase':phase}))
     if phase in ('ERROR','FAILED','CANCELED','CANCELLED','COMPLETE'):
-        # Kaggle's version label is NOT the execution/session identity. A
-        # terminal-looking version response, even with matching source, does
-        # not prove this exact worker/its descendants stopped. Keep the
-        # UNKNOWN run and capacity fenced; request_startup/startup_status
-        # report provider_execution_unknown rather than blindly pushing.
         logging.warning(json.dumps({'event':'bge_provider_version_terminal_unverified',
             'run_id':run['id'],'provider_version':version,'phase':phase,
             'remote_compute_terminal_proof':'unavailable'}))
@@ -154,12 +144,6 @@ LEASE_TERMINAL_PROBE_SECONDS=30
 
 
 def lease_terminal_probe_due(queue, run, *, now=None):
-    """An owned run whose lease elapsed may be retired only by exact proof.
-
-    _expire keeps a dispatched run's status while its provider outcome is
-    unknown, so status alone would never request that proof and every dead
-    run would need a manual retire. Probe at most every 30 s per run.
-    """
     if run['status']=='expired':return True
     if run['status'] not in ('starting','ready','draining') or not queue._run_expired(run,queue.clock()):
         return False

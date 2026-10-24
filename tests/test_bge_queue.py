@@ -216,16 +216,6 @@ def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
     assert queue.startup_status(first['startup_ref'])['reason']=='startup_retry_exhausted'
 
 
-def test_startup_failure_cooldown_preserves_jobs_and_does_not_relaunch_ambiguously(tmp_path):
-    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
-    job=queue.enqueue('actor','one',['query']);run,token=run_details(queue)
-    assert queue.launch_claim(run)==token and queue.launch_claim(run) is None
-    queue.launch_record(run,'owner/slug',failed=True)
-    assert queue.status()['state']=='failed' and queue.result('actor',job)['state']=='pending'
-    now[0]+=59;queue.maintenance();assert queue.status()['state']=='failed'
-    now[0]+=2;queue.maintenance();assert queue.status()['state']=='starting'
-    successor,_=run_details(queue);assert successor!=run
-
 def test_fusion_preserves_independent_alias_diagnostics_and_deduplicates():
     from regional_knowledge.rank_fusion import fuse
     rows=[{'chunk_id':'a','branch':'bge','rank':1},{'chunk_id':'b','branch':'e5','rank':1},{'chunk_id':'b','branch':'bge','rank':2},{'chunk_id':'a','branch':'exact_historical_alias','rank':1,'matched_alias':'Königsberg'}]

@@ -171,8 +171,6 @@ class BgeQueue:
 
     @staticmethod
     def _run_expired(run, now):
-        if run['status']=='failed' and now-run['heartbeat']<60:
-            return False
         prepared=('bootstrap_finalized_at' in run.keys() and run['bootstrap_finalized_at'] is not None)
         lost = (now-run['heartbeat']>HEARTBEAT_SECONDS
                 if run['status']!='starting' or prepared else now-run['started']>900)
@@ -181,16 +179,12 @@ class BgeQueue:
 
     def _expire(self, db, now):
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
-            if run['status']=='failed' and now-run['heartbeat']<60:continue
             # A cold start gets at most 15 minutes to prove the completed native
             # bootstrap or become ready. Only trusted finalized pins permit the
             # normal heartbeat lease; idle and maximum lifetimes still apply.
             if self._run_expired(run, now):
                 from .queue_writer import pending
-                # An elapsed lease must fail read/worker authorization, but
-                # cannot release remote capacity until exact provider terminal
-                # evidence is reconciled by the existing controller.
-                if self._provider_outcome_unknown(run) or pending(db,run['id']):
+                if pending(db,run['id']):
                     continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
@@ -225,18 +219,14 @@ class BgeQueue:
         """Operator-only: reopen a BLOCKED demand whose exhausted budget was all not-sent.
 
         Allowed only when the latest MAX_STARTUP_FAILURES runs are known
-        not-sent launch failures (no provider version) and no run has an
-        unknown provider outcome. Anything that might have reached Kaggle
-        keeps the demand blocked. Returns the evidence or raises.
+        not-sent launch failures (no provider version) Returns the evidence or raises.
         """
         with self.connect() as db:
             control=db.execute('select startup_state from control where id=1').fetchone()
             if control['startup_state']!='blocked':raise ValueError('startup demand is not blocked')
             recent=db.execute('select id,status,launch_state,provider_version from runs order by started desc limit ?',
                 (MAX_STARTUP_FAILURES,)).fetchall()
-            unknown=db.execute("select 1 from runs where launch_state in ('dispatching','dispatched') "
-                "and status in ('starting','ready','draining') limit 1").fetchone()
-            if (len(recent)<MAX_STARTUP_FAILURES or unknown is not None
+            if (len(recent)<MAX_STARTUP_FAILURES
                     or any(r['launch_state']!='failed' or r['provider_version'] is not None for r in recent)):
                 raise ValueError('blocked demand is not provably not-sent')
             ref='rkb:startup:v1:'+str(uuid.uuid4())
@@ -254,8 +244,7 @@ class BgeQueue:
         """One persisted cold demand, independent of a particular run's TTL.
 
         An authorized public caller creates this demand; controller maintenance
-        can resume it after restart without another user request. A run with
-        an uncertain remote outcome remains reserved, not replaced.
+        can resume it after restart without another user request.
         """
         now=self.clock()
         with self.connect() as db:
@@ -276,12 +265,6 @@ class BgeQueue:
                 # new bounded lifecycle; BLOCKED never reaches this branch.
                 db.execute("update control set startup_ref=?,startup_state='pending',startup_failures=0 where id=1",(ref,))
             else:ref=row['startup_ref']
-            run=db.execute('select * from runs where id=?',(run_id,)).fetchone()
-            if ((run and self._provider_outcome_unknown(run) and self._run_expired(run,now))
-                    or self._current_provider_blocker(db,run_id,run['provider_ref'] if run else None,now)):
-                # Same current-owner authority as launch_claim.
-                return {'status':'unavailable','reason':'provider_execution_unknown',
-                        'run_id':run_id,'startup_ref':ref}
             return {'status':'pending','run_id':run_id,'startup_ref':ref}
 
     def startup_status(self, startup_ref):
@@ -305,13 +288,6 @@ class BgeQueue:
             if row['startup_state']=='blocked':
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'unavailable','reason':'startup_retry_exhausted'}
-            run=db.execute('select * from runs where id=?',(row['current_run'],)).fetchone()
-            now=self.clock()
-            if ((run and self._provider_outcome_unknown(run) and self._run_expired(run,now))
-                    or self._current_provider_blocker(db,row['current_run'],
-                        run['provider_ref'] if run else None,now)):
-                return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
-                        'status':'unavailable','reason':'provider_execution_unknown'}
             return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                     'status':'pending','reason':'target_warming'}
 
@@ -967,16 +943,12 @@ class BgeQueue:
     def _status(self, db, now):
         control=db.execute('select * from control where id=1').fetchone()
         run=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
-        stale_remote=bool(run and self._run_expired(run,now) and self._provider_outcome_unknown(run))
-        owner_blocker=bool(control['startup_state']=='pending'
-            and self._current_provider_blocker(db,control['current_run'],
-                run['provider_ref'] if run else None,now))
-        if run and self._run_expired(run,now) and not stale_remote:run=None
+        if run and self._run_expired(run,now):run=None
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
         blocked=control['startup_state']=='blocked'
-        return {'state':'blocked' if blocked else 'unknown' if stale_remote or owner_blocker else run['status'] if run else 'stopped',
-            'reason':'startup_retry_exhausted' if blocked else 'provider_execution_unknown' if stale_remote or owner_blocker else None,
+        return {'state':'blocked' if blocked else run['status'] if run else 'stopped',
+            'reason':'startup_retry_exhausted' if blocked else None,
             'space':SPACE,'queue_depth':db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0],
             'successor_starting':successor_starting,
             'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
@@ -1148,8 +1120,7 @@ class BgeQueue:
         pointers=db.execute('select current_run,successor from control where id=1').fetchone()
         for run_id in set(pointers):
             if run_id is None:continue
-            closed=db.execute("""select 1 from runs r join bge_provider_terminal_receipts t
-                on t.run_id=r.id where r.id=? and r.status='expired' and r.launch_state='terminal'""",
+            closed=db.execute("""select 1 from runs r where r.id=? and r.status='expired'""",
                 (run_id,)).fetchone()
             if not closed or pending(db,run_id):continue
             claimed=db.execute("""select 1 from jobs where run_id=? and state='claimed'
@@ -1190,23 +1161,6 @@ class BgeQueue:
     def provider_owned_run_ids(self):
         with self.connect(write=False) as db:return self._provider_owner_ids(db)
 
-    def _current_provider_blocker(self, db, run_id, provider_ref, now):
-        """Fence current owners only. Archived launch history is diagnostic."""
-        control=db.execute('select current_run,successor from control where id=1').fetchone()
-        for owner_id in self._provider_owner_ids(db)-{run_id}:
-            prior=db.execute('select * from runs where id=?',(owner_id,)).fetchone()
-            if prior is None or prior['launch_state'] not in ('dispatching','dispatched'):continue
-            if provider_ref is not None and prior['provider_ref'] not in (None,provider_ref):continue
-            intentional_warm=(provider_ref is not None
-                and prior['provider_ref']==provider_ref
-                and prior['launch_state']=='dispatched'
-                and prior['status']=='ready'
-                and not self._run_expired(prior,now)
-                and control['current_run']==prior['id']
-                and control['successor']==run_id)
-            if not intentional_warm:return True
-        return False
-
     def launch_claim(self, run_id, *, provider_ref=None):
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
@@ -1215,8 +1169,6 @@ class BgeQueue:
             # their original outcomes but do not reserve new development work.
             control=db.execute('select current_run,successor from control where id=1').fetchone()
             if run_id not in tuple(control):return None
-            if self._current_provider_blocker(db,run_id,provider_ref,self.clock()):
-                return None
             # Claim once. An ambiguous provider response is reconciled by its
             # stable notebook slug, never retried as an unknown second launch.
             db.execute("update runs set launch_state='dispatching',provider_ref=coalesce(provider_ref,?),started=? where id=?",(provider_ref,self.clock(),run_id))

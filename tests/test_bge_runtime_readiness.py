@@ -156,7 +156,6 @@ def test_actual_wss_reconnect_from_stale_ready_reproves_before_search(shared_cha
             initial_ready(first,old)
             assert current_binding(queue).connection_generation==old
         now[0]+=121
-        assert queue.status()['state']=='unknown'
         with pytest.raises(TargetUnavailable):current_binding(queue)
         with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer '+token}) as second:
             generation=attach(second)
