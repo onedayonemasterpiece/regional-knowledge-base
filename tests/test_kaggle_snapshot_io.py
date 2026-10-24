@@ -163,3 +163,50 @@ async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(
                 'recovery:schema','recovery:schema:retry:1']
     finally:
         await worker.aclose();await bridge.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('cause','safe_code'),[
+    ('snapshot_native_version_mismatch','versions'),
+    ('snapshot_applied_prefix_gap','prefix'),
+    ('snapshot_disk_budget','disk'),
+    ('snapshot_archive_byte_budget','archive'),
+    ('snapshot_native_command_failed','subprocess'),
+    ('unknown_snapshot','unclassified'),
+    ('extra_args','unclassified'),
+    ('other_exception','unclassified'),
+])
+async def test_snapshot_io_failed_status_logs_only_exact_safe_code_once(caplog,cause,safe_code):
+    secret='postgres://fixture:DO_NOT_LOG@private.invalid/path?token=fixture'
+    if cause=='unknown_snapshot':
+        original=SnapshotError('snapshot_disk_budget '+secret)
+    elif cause=='extra_args':
+        original=SnapshotError('snapshot_disk_budget',secret)
+    elif cause=='other_exception':
+        original=RuntimeError(secret)
+    else:
+        original=SnapshotError(cause)
+    binding=('run','incarnation',1)
+    native=NS(_current=lambda _:None,limits=NS(timeout_seconds=2))
+    io=SnapshotIo(factory=native,tickets=None,transfer=None)
+    captures=[]
+    async def failed_capture(operation):
+        captures.append(operation)
+        raise original
+    started=io.start('one-failed-capture',binding,failed_capture)
+    task=io.operations[started['handle']].task
+    try:
+        await asyncio.gather(task,return_exceptions=True)
+        with caplog.at_level('WARNING',logger='regional_knowledge.kaggle_snapshot_io'):
+            for _ in range(3):
+                with pytest.raises(SnapshotError,match='^snapshot_io_failed$'):
+                    io.status(started['handle'],binding)
+        records=[record.getMessage() for record in caplog.records
+                 if record.name=='regional_knowledge.kaggle_snapshot_io']
+        assert records==[f'snapshot_io failed code={safe_code}']
+        assert secret not in caplog.text
+        assert task.exception() is original
+        assert io.start('one-failed-capture',binding,failed_capture)==started
+        assert io.operations[started['handle']].task is task and len(captures)==1
+    finally:
+        await io.aclose()
