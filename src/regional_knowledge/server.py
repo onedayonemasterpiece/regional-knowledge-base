@@ -380,6 +380,7 @@ def build_server(
     expert_claim_receiver=None,
     expert_result_receiver=None,
     expert_recovery_receiver=None,
+    expert_slack_socket_mode=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -426,8 +427,17 @@ def build_server(
         raise RuntimeError("RKB_AUTH_MODE must be 'embedded' or 'external'")
 
     kwargs: dict[str, Any] = {}
+    if expert_slack_socket_mode is not None:
+        from .expert_slack_socket_mode import ExpertSlackSocketMode
+        if (selected!='kaggle_source' or type(expert_slack_socket_mode) is not ExpertSlackSocketMode
+                or expert_slack_ingress is None or not expert_slack_ingress.socket_only
+                or expert_slack_socket_mode.ingress is not expert_slack_ingress
+                or expert_evidence_receiver is None
+                or expert_evidence_receiver.control is not expert_slack_ingress.control):
+            raise RuntimeError('Socket Mode requires the same existing target, ingress and human read')
     if selected=='kaggle_source':
-        kwargs['lifespan']=target_startup.lifespan
+        kwargs['lifespan']=(target_startup.lifespan if expert_slack_socket_mode is None
+            else lambda server: expert_slack_socket_mode.alongside(target_startup.lifespan,server))
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
@@ -633,7 +643,8 @@ def build_server(
                 or expert_slack_ingress.control.spool is not target_startup.config.spool
                 or expert_slack_ingress.control.people is not target_startup.config.participants):
             raise RuntimeError('Slack ingress requires exact existing target control owners')
-        mcp.custom_route(SLACK_PATH, methods=['POST'])(expert_slack_ingress.__call__)
+        if not expert_slack_ingress.socket_only:
+            mcp.custom_route(SLACK_PATH, methods=['POST'])(expert_slack_ingress.__call__)
 
     # Claim and result staging are a single opt-in capability, bound only to
     # an already provisioned original executor and exact signed ingress.
@@ -1681,10 +1692,26 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         from .expert_slack_composition import compose_expert_evidence_receiver
         expert_evidence_receiver=compose_expert_evidence_receiver(
             target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
-    # An opt-in already-provisioned Slack bot can answer bounded source search
-    # on the existing server. Do not enable expert_executor_* agent routes.
+    # Both transports reuse the same signed/verified Slack human search reply.
+    # Socket Mode uses the existing operator-owned app/bot env tokens only when
+    # the private ingress descriptor explicitly selects the socket-only codec.
     reply_config=os.getenv('RKB_EXPERT_SLACK_REPLY_CONFIG','').strip()
-    if reply_config:
+    expert_slack_socket_mode=None
+    if expert_slack_ingress is not None and expert_slack_ingress.socket_only:
+        if expert_evidence_receiver is None or reply_config:
+            raise RuntimeError('Socket Mode requires one existing reader and no second bot credential')
+        from .expert_slack_search_reply import ExpertSlackSearchReply, SlackChatSender
+        from .expert_slack_socket_mode import ExpertSlackSocketMode
+        bot_token=os.getenv('SLACK_BOT_TOKEN','')
+        reply=ExpertSlackSearchReply(ingress=expert_slack_ingress,
+            evidence=expert_evidence_receiver,
+            sender=SlackChatSender(token=bot_token,app_id=expert_slack_ingress.control.app_id,
+                team_id=expert_slack_ingress.control.team_id,
+                bot_user_id=expert_slack_ingress.control.bot_user_id))
+        expert_slack_ingress.bind_search_reply(reply)
+        expert_slack_socket_mode=ExpertSlackSocketMode(ingress=expert_slack_ingress,
+            app_token=os.getenv('SLACK_APP_TOKEN',''),bot_token=bot_token)
+    elif reply_config:
         if expert_slack_ingress is None or expert_evidence_receiver is None:
             raise RuntimeError('Slack search reply requires existing signed ingress and evidence reader')
         from .expert_slack_search_reply import configured_expert_slack_search_reply
@@ -1707,7 +1734,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         expert_evidence_receiver=expert_evidence_receiver,
         expert_claim_receiver=expert_claim_receiver,
         expert_result_receiver=expert_result_receiver,
-        expert_recovery_receiver=expert_recovery_receiver)
+        expert_recovery_receiver=expert_recovery_receiver,
+        expert_slack_socket_mode=expert_slack_socket_mode)
     # The MCP SDK's .run() configures Uvicorn without a graceful timeout.
     # Keep its actual ASGI app/lifespan and bound only the HTTP connection drain.
     uvicorn.run(
