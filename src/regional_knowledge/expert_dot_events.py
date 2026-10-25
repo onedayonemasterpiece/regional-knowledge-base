@@ -227,7 +227,10 @@ class ExpertDotEvents:
             return
         with self.control.corpus.connect() as db:
             rows=db.execute("""SELECT id FROM rkb_expert_requests
-                WHERE trigger_event_id IS NULL AND state IN ('received','pending')
+                WHERE (trigger_event_id IS NULL
+                       OR coalesce(reconcile_cursor,'')!='event_accepted')
+                  AND state IN ('received','pending','leased','result_unsealed',
+                                'result_ready','send_intent_ready')
                 ORDER BY created_at,id LIMIT 64""").fetchall()
         for row in rows:
             self.notify(row["id"])
@@ -242,11 +245,24 @@ class ExpertDotEvents:
                 await asyncio.sleep(2)
         else:
             return
-        row=await asyncio.to_thread(self.control._row,request_id)
-        if row["trigger_event_id"] is not None:
-            return
         record=self._subscription()
         if record is None:return
+        # Persist the SAME original event ID before any external callback:
+        # a fast subscriber may read the correlated request before HTTP 200.
+        # On unknown callback outcome replay only this ID, never mint a job.
+        with self.control.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",
+                           (request_id,)).fetchone()
+            if row is None or row["state"] not in _EVENT_STATES:
+                return
+            if row["trigger_event_id"] not in (None,row["event_id"]):
+                raise PermissionError("event correlation changed")
+            if row["reconcile_cursor"]=="event_accepted":
+                return
+            db.execute("""UPDATE rkb_expert_requests SET trigger_event_id=?
+                WHERE id=? AND trigger_event_id IS NULL""",
+                (row["event_id"],request_id))
         payload={"eventId":row["event_id"],"name":EVENT,
             "timestamp":datetime.fromtimestamp(row["created_at"],timezone.utc
                         ).isoformat().replace("+00:00","Z"),
@@ -258,9 +274,9 @@ class ExpertDotEvents:
         if 200<=response.status_code<300:
             with self.control.corpus.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                db.execute("""UPDATE rkb_expert_requests SET trigger_event_id=?
-                    WHERE id=? AND event_id=? AND trigger_event_id IS NULL""",
-                    (row["event_id"],request_id,row["event_id"]))
+                db.execute("""UPDATE rkb_expert_requests SET reconcile_cursor='event_accepted'
+                    WHERE id=? AND event_id=? AND trigger_event_id=?""",
+                    (request_id,row["event_id"],row["event_id"]))
 
     async def _search(self, request_id):
         """One ordinary scoped read; its evidence is ephemeral, not a new queue."""
@@ -427,12 +443,11 @@ class ExpertDotEvents:
             # Discovery is shared with ordinary RKB users; event tools
             # enforce the restricted executor principal independently.
             server=mcp._lowlevel_server
-            capabilities=server.get_capabilities(
-                protocol_version=ctx.protocol_version).model_dump(
-                    by_alias=True,exclude_none=True)
-            capabilities["events"]={}
-            return {"supportedVersions":["2026-07-28"],
-                    "capabilities":capabilities,"instructions":mcp.instructions}
+            original=await server._handle_discover(ctx,params)
+            result=original.model_dump(mode="json",by_alias=True,exclude_none=True)
+            if ctx.protocol_version=="2026-07-28":
+                result["capabilities"]["events"]={}
+            return result
 
         mcp._lowlevel_server.add_request_handler(
             "server/discover",types.RequestParams,discover)
