@@ -179,3 +179,47 @@ async def test_no_unknown_decoder_fallback_and_unread_native_layer(bundle,archiv
     with pytest.raises(pixels.DjvuPixelsUnavailable,match="embedded_text"):
         await pixels.render_verified_djvu_page(bundle=bundle,original_path=path,
             original_bytes=path.stat().st_size,inventory=foreign,index=0)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('boundary', ['decoder_verification', 'jpeg', 'final_verification'])
+async def test_page_processing_keeps_control_loop_live(bundle,archive,monkeypatch,boundary):
+    import asyncio
+    import threading
+    entered=threading.Event();release=threading.Event();decoded=False
+    verify=pixels._verified_decoder
+    current=type(bundle).current
+    def blocked():
+        entered.set()
+        release.wait(1)  # Bound the failing pre-fix path without a hanging test.
+    def decoder(candidate):
+        if boundary=='decoder_verification':blocked()
+        return verify(candidate)
+    def checked(candidate):
+        if candidate is bundle and decoded and boundary=='final_verification':blocked()
+        return current(candidate)
+    async def decode(*args):
+        nonlocal decoded
+        decoded=True
+        return b'P6\n2 2\n255\n'+bytes([240,0,0])*4
+    def jpeg(*args):
+        if boundary=='jpeg':blocked()
+        return b'\xff\xd8fixture\xff\xd9',82
+    monkeypatch.setattr(pixels,'_verified_decoder',decoder)
+    monkeypatch.setattr(type(bundle),'current',checked)
+    monkeypatch.setattr(pixels,'_decode_single',decode)
+    monkeypatch.setattr(pixels,'_jpeg',jpeg)
+    path,inventory=archive
+    task=asyncio.create_task(pixels.render_verified_djvu_page(bundle=bundle,
+        original_path=path,original_bytes=path.stat().st_size,inventory=inventory,index=0))
+    try:
+        assert await asyncio.to_thread(entered.wait,1)
+        # The same loop must process control/read work before the slow boundary finishes.
+        assert not task.done()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        result=await task
+        assert result['physical_page_index']==0 and result['image_sha256']
+    finally:
+        release.set()
+        await task

@@ -14,10 +14,12 @@ import os
 from pathlib import Path
 import stat
 import sys
+import time
 
 from .kaggle_djvu_inspect import DjvuInventory
 from .kaggle_native_bundle import VerifiedNativeBundle
 from .kaggle_native_env import verified_native_environment
+from .native_snapshot_transfer import _blocking
 
 PRIVATE_ROOT = Path('/kaggle/temp')
 MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
@@ -201,13 +203,17 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
     before=_source_stat(path,expected_bytes=original_bytes)
     if inventory.byte_length!=original_bytes:
         raise DjvuPixelsUnavailable('djvu_inventory_original_size_mismatch')
-    binary,loader,library_path,env=_verified_decoder(bundle)
+    # Inventory hashing, ELF inspection and JPEG work must leave WSS/read scheduling live.
+    began=time.monotonic()
+    binary,loader,library_path,env=await _blocking(_verified_decoder,bundle)
+    print(json.dumps(dict(event='djvu_preview_boundary',stage='decoder_verified',page_index=index,
+        elapsed_ms=round((time.monotonic()-began)*1000,3))),flush=True)
     output=None
     for edge in (1600,1280):
         raw=await _decode_single(binary,loader,library_path,env,path,index,edge)
         width,height,rgb=_read_ppm(raw,edge=edge)
         try:
-            jpeg,quality=_jpeg(rgb,width,height)
+            jpeg,quality=await _blocking(_jpeg,rgb,width,height)
         except (ImportError,RuntimeError,ValueError):
             raise DjvuPixelsUnavailable('djvu_jpeg_encoder_unavailable') from None
         if jpeg is not None:
@@ -215,7 +221,11 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
             break
     if output is None:
         raise DjvuPixelsUnavailable('djvu_preview_jpeg_byte_bound')
-    if _source_stat(path,expected_bytes=original_bytes)!=before or not bundle.current():
+    began=time.monotonic()
+    native_current=await _blocking(bundle.current)
+    print(json.dumps(dict(event='djvu_preview_boundary',stage='bundle_rechecked',page_index=index,
+        elapsed_ms=round((time.monotonic()-began)*1000,3),current=native_current)),flush=True)
+    if _source_stat(path,expected_bytes=original_bytes)!=before or not native_current:
         raise DjvuPixelsUnavailable('djvu_source_or_decoder_changed')
     jpeg,quality,edge,width,height=output
     page=inventory.pages[index]

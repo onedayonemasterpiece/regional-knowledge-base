@@ -76,6 +76,12 @@ encoding fits the existing whole MCP response ceiling. The ordinary output
 issuer rechecks authorization after page rendering without extending other read
 tickets. This public preview is independent of archival mirror work.
 
+DjVu decoder/ELF verification, JPEG encoding and final native-bundle verification
+run through the existing cancellation-safe blocking-work helper, outside the
+WSS event loop. Exact byte/ELF/source checks and page geometry remain unchanged;
+this scheduling change requires native installation and concurrent page/search
+verification before live acceptance is claimed.
+
 ## Source-proof and locator contract
 
 Port the existing corpus/authorization boundary in `quote_proof` and `source_archive` to PG. An authorized nonowner proof request must reach the original through purpose-scoped internal rendering access; never impersonate the owner or grant direct source download as a side effect. Restrict the model's input and final composited pixels to the authorized class/scope. A full private page underneath a highlighted crop is a disclosure.
