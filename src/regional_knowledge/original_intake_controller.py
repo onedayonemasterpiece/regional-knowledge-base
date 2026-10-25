@@ -296,7 +296,7 @@ class OriginalIntakeController:
                 or page.get('parser_sha256')!=receipt.parser_sha256 or page.get('native_cursor')!=native_cursor
                 or page.get('page_receipt_sha256')!=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))):
             raise OriginalIntakeError('original_page_provenance_changed')
-        if receipt.page_count<=32 and index not in self._page_proofs.get(ingestion_id,{}):
+        if index not in self._page_proofs.get(ingestion_id,{}):
             chunks=self._page_chunks.setdefault(ingestion_id,{}).setdefault(index,{})
             part_key=canonical(native_cursor).decode();raw=canonical(page)
             if part_key in chunks and chunks[part_key]!=raw:

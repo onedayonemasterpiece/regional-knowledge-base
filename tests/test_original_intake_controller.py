@@ -222,7 +222,7 @@ async def test_unknown_or_conflicting_head_never_authorizes_a_put(response):
 
 
 @pytest.mark.asyncio
-async def test_large_original_page_does_not_keep_legacy_fragments_or_proofs():
+async def test_large_original_page_releases_chunks_and_keeps_proof():
     controller=object.__new__(OriginalIntakeController)
     controller._page_chunks={};controller._page_proofs={}
     receipt=SimpleNamespace(source_id=SOURCE,page_count=139,sha256=digest(PDF),parser_sha256='parser')
@@ -248,4 +248,5 @@ async def test_large_original_page_does_not_keep_legacy_fragments_or_proofs():
     batch=await controller.pages(None,INGEST)
     assert batch.pages[0].data==IMAGE and batch.pages[0].native_text=='page text'
     assert batch.next_cursor=='1'
-    assert controller._page_chunks=={} and controller._page_proofs=={}
+    assert controller._page_chunks=={}
+    assert 0 in controller._page_proofs[INGEST]
