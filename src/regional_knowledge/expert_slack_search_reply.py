@@ -62,15 +62,22 @@ class SlackChatSender:
         self.token,self.app_id,self.team_id,self.bot_user_id=token,app_id,team_id,bot_user_id
         self.current,self.transport=current,transport
 
-    async def post_once(self, *, event_id, channel, thread, text, current):
-        if not self.current() or not current():raise PermissionError("current Slack scope required")
+    async def post_once(self, *, event_id=None, channel=None, thread=None, text=None,
+                        current=None, claim=None):
         headers={"Authorization":"Bearer "+self.token}
         async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
             auth=(await http.post("https://slack.com/api/auth.test",headers=headers)).json()
             if (auth.get("ok") is not True or auth.get("team_id")!=self.team_id
                     or auth.get("user_id")!=self.bot_user_id or not self.current()
-                    or not current()):
+                    or (current is not None and not current())):
                 raise PermissionError("Slack bot identity or evidence changed")
+            # Validate local bot/issuer before consuming the original
+            # irreversible Dataset send permit; the only remaining HTTP
+            # effect after claim is chat.postMessage itself.
+            if claim is not None:
+                args=await claim()
+                event_id,channel,thread,text=(args["event_id"],args["channel"],
+                                               args["thread"],args["text"])
             response=await http.post("https://slack.com/api/chat.postMessage",headers=headers,
                 json={"channel":channel,"thread_ts":thread,"text":text,
                       "client_msg_id":event_id,"unfurl_links":False,"unfurl_media":False})
