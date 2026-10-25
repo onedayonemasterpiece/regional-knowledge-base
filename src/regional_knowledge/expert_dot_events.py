@@ -9,11 +9,13 @@ import asyncio
 import base64
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import hmac
 import json
 import logging
 import re
 import secrets
+import socket
 import time
 from urllib.parse import urlsplit
 
@@ -66,6 +68,16 @@ def _signed_headers(secret, subscription_id, event_id, body):
     return {"content-type":"application/json","webhook-id":event_id,
             "webhook-timestamp":timestamp,"webhook-signature":"v1,"+mac,
             "X-MCP-Subscription-Id":subscription_id}
+
+
+def _public_dns(host):
+    """Reject private/mixed DNS before each HTTPS callback effect."""
+    try:
+        found={info[4][0] for info in socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)}
+        if not found or any(not ipaddress.ip_address(addr).is_global for addr in found):
+            raise ValueError("callback DNS is not public")
+    except (OSError,ValueError):
+        raise ValueError("callback DNS must resolve only to public addresses") from None
 
 
 def _event_definition():
@@ -135,6 +147,10 @@ class ExpertDotEvents:
     async def _post(self,record,event_id,payload):
         body=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode()
         headers=_signed_headers(record["secret"],record["id"],event_id,body)
+        if self.transport is None:
+            # The host is already fixed by owner configuration and TLS still
+            # verifies it; reject private/mixed callback resolution.
+            await asyncio.to_thread(_public_dns,urlsplit(record["url"]).hostname)
         async with httpx.AsyncClient(transport=self.transport,timeout=8,
                                      follow_redirects=False,trust_env=False) as client:
             response=await client.post(record["url"],content=body,headers=headers)
