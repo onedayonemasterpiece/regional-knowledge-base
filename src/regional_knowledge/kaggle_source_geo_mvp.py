@@ -181,7 +181,7 @@ async def geo_resolve(startup, principal, *, source_id, mention_id, source_revis
                     validate_command(command)
                 else:
                     scope = await spool.scope_state()
-                    if (scope['pending'] or scope['unknown']
+                    if (scope['unknown']
                             or scope['sequence'] != scope['accepted_sequence']):
                         raise _error('unavailable', 'prior_write_pending')
                     predecessor = await spool.journal.head()
