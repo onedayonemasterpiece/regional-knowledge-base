@@ -237,8 +237,8 @@ async def test_target_warming_pending_posts_one_text_only_reply(service, monkeyp
     await reply._answer(request_id)
     saved = _delivery_row(control, request_id)
     assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
-    expected = ("Запускаем инфраструктуру, подождите. Первый поиск займёт дольше обычного; "
-                "следующие запросы будут быстрыми.")
+    # The backend owns the exact wording, including a later unknown-ETA correction.
+    expected = PENDING_STARTUP_MESSAGE_RU
     if eta_seconds is not None:
         expected += "\nОжидание: примерно 300 с."
     assert len(posts) == 1 and posts[0]["text"] == expected
