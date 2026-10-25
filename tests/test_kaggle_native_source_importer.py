@@ -119,10 +119,10 @@ async def native_intake(target, tmp_path):
     spool.close()
 
 
-async def start(s, *, file_id='synthetic-174-djvu'):
+async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu'):
     return await s.importer.book_ingest(command='start',principal=s.principal,
         file=ChatFile(file_id=file_id,download_url='https://files.example.test/174.djvu?private=fixture',
-            mime_type='image/vnd.djvu',file_name='synthetic-174.djvu'),
+            mime_type=mime_type,file_name='synthetic-174.djvu'),
         payload=dict(title='Synthetic 174-page scanned source',authors=['Synthetic author'],
             publication_year=1901,language='de',catalog={'kind':'book','publisher':'Synthetic publisher'}),
         source_import=options())
@@ -158,6 +158,12 @@ async def call(s, result, command, **kwargs):
 async def stage(s, result, payload):
     return await call(s,result,'stage',payload=payload,
         source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending'))
+
+
+@pytest.mark.asyncio
+async def test_djvu_hyphenated_mime_uses_the_same_original_intake(native_intake):
+    result=await start(native_intake,mime_type='image/x-djvu')
+    assert result.source_archive_status=='verified' and result.next_action=='continue_pages'
 
 
 def state(s, result):

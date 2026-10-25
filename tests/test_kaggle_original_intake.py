@@ -11,6 +11,7 @@ import pytest
 from regional_knowledge.kaggle_original_native import NativeOriginalIntake,OriginalIntakeConfig
 from regional_knowledge.native_snapshot_transfer import SnapshotTicket
 from regional_knowledge.original_intake import OriginalIntakeSpec,OriginalIntakeError,canonical,digest
+from test_kaggle_djvu_pixels import archive as djvu_archive, bundle as djvu_bundle, native_fixture
 
 SOURCE='10000000-0000-0000-0000-000000000001'
 INGEST='20000000-0000-0000-0000-000000000002'
@@ -87,6 +88,55 @@ def ticket(f,record,method='PUT',*,page=False):
 async def acquire(n,s=None):
     f=frame('original_acquire',{'spec':(s or spec()).wire()},private={'download_url':'https://attachment.invalid/private'})
     return f,(await n.handler(f))['value']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('index',[0,1])
+async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_page(
+        native,djvu_archive,djvu_bundle,monkeypatch,index):
+    import regional_knowledge.kaggle_djvu_pixels as pixels
+    path,inventory=djvu_archive
+    encoded=[]
+    def jpeg(rgb,width,height):
+        encoded.append(rgb)
+        return b'\xff\xd8'+rgb+b'\xff\xd9',82
+    monkeypatch.setattr(pixels,'_jpeg',jpeg)
+    n=native;n.handler.native_bundle=djvu_bundle
+    source=path.read_bytes();handle='synthetic-djvu-handle'
+    n.handler._records[handle]=dict(path=path,sha256=digest(source),size=len(source),
+        format='djvu',page_count=inventory.page_count,pages={},verified={'retained':True},
+        parser_sha256=n.handler.parser_sha256,spec=spec(max_bytes=len(source)).wire())
+    args=dict(handle=handle,original_sha256=digest(source),index=index)
+    request=frame('original_pages',args)
+    result=(await n.handler(request))['value']
+    assert 'error' not in result
+    assert result['format']=='djvu' and result['physical_page_index']==index
+    assert result['page_id']==str(uuid5(UUID(SOURCE),f'page:1:{index}'))
+    assert result['original_sha256']==digest(source)
+    assert result['parser_sha256']==n.handler.parser_sha256
+    assert result['native_text']=='' and result['native_blocks']==[]
+    assert result['native_text_info']['complete'] and result['native_text_info']['requires_visual_review']
+    assert result['next_native'] is None and n.parser==[]
+    assert encoded==[bytes([240,0,0] if index==0 else [0,0,240])*4]
+    assert await n.handler(request)==await n.handler(request)
+    # A distinct read operation still reuses the retained exact page pixels.
+    assert (await n.handler(frame('original_pages',args,key='read-again')))['value']==result
+    assert len(encoded)==1
+    artifact=n.handler._records[handle]['pages'][index]
+    assert artifact['sha256']==digest(artifact['path'].read_bytes())==result['image_sha256']
+    bad=frame('original_pages',dict(args,cursor=dict(block=1,offset=0,text=0)))
+    assert (await n.handler(bad))['value']=={'error':'original_page_cursor_invalid'}
+
+
+@pytest.mark.asyncio
+async def test_djvu_dispatch_without_verified_decoder_does_not_use_ambient_tools(native,djvu_archive):
+    path,inventory=djvu_archive;n=native;source=path.read_bytes();handle='no-decoder'
+    n.handler._records[handle]=dict(path=path,sha256=digest(source),size=len(source),format='djvu',
+        page_count=inventory.page_count,pages={},verified={'retained':True},
+        parser_sha256=n.handler.parser_sha256,spec=spec(max_bytes=len(source)).wire())
+    result=await n.handler(frame('original_pages',dict(handle=handle,original_sha256=digest(source),index=0)))
+    assert result['value']=={'error':'original_djvu_decoder_required'}
+    assert n.handler._records[handle]['pages']=={} and n.parser==[]
 
 
 @pytest.mark.asyncio

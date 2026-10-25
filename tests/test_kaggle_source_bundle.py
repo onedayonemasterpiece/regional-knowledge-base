@@ -94,7 +94,7 @@ async def main():
  n._execute=execute
  expected=dict(physical_page_index=0,native_text='Synthetic bundled page')
  cursor=canonical(dict(block=0,offset=0,text=0)).decode()
- n._records['retained']=dict(sha256='a'*64,page_count=1,verified={},pages={0:dict(chunks={cursor:expected})})
+ n._records['retained']=dict(sha256='a'*64,format='pdf',page_count=1,verified={},pages={0:dict(chunks={cursor:expected})})
  result=await n(frame('retained'))
  assert result['value']==expected
  assert await n(frame('retained'))==result

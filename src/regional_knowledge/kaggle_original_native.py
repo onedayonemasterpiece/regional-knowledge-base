@@ -58,7 +58,7 @@ class OriginalIntakeConfig:
 
 
 class NativeOriginalIntake:
-    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None,telegram_downloader=None):
+    def __init__(self,*,config,database,identity,workspace,current,downloader=None,parser=None,transfer=None,telegram_downloader=None,native_bundle=None):
         if type(config) is not OriginalIntakeConfig or not callable(current):raise TypeError('retained original owner required')
         root=Path(workspace)
         if not root.is_absolute() or not root.is_relative_to(PRIVATE_ROOT) or root.resolve(strict=True)!=root or root.stat().st_mode&0o077:
@@ -81,6 +81,7 @@ class NativeOriginalIntake:
             raise OriginalIntakeError('original_telegram_binding_required')
         self.telegram_downloader=telegram_downloader
         self.parser=parser or self._parse
+        self.native_bundle=native_bundle
         self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,256*1024),timeout_seconds=config.seconds)
         self.generation=None;self.closed=False;self._records={};self._requests={};self._results={};self._lock=asyncio.Lock()
         self._prebinding_retry=set();self.telegram_channel=None
@@ -317,10 +318,28 @@ class NativeOriginalIntake:
                     or any(type(v) is not int or not 0<=v<2**31 for v in cursor.values())):
                 raise OriginalIntakeError('original_page_cursor_invalid')
             if record['verified'] is None:raise OriginalIntakeError('original_archive_verification_required')
+            if record['format']=='djvu' and cursor!=dict(block=0,offset=0,text=0):
+                raise OriginalIntakeError('original_page_cursor_invalid')
             index=args['index']
             if index not in record['pages']:
-                result=await self._parse_selected(record['path'],'page',index,
-                    parser_sha256=record['parser_sha256'])
+                if record['format']=='djvu':
+                    from .kaggle_djvu_inspect import inspect_djvu,DjvuStructureError
+                    from .kaggle_djvu_pixels import render_verified_djvu_page,DjvuPixelsUnavailable
+                    try:
+                        inventory=await _blocking(inspect_djvu,record['path'])
+                        if inventory.page_count!=record['page_count']:
+                            raise DjvuPixelsUnavailable('djvu_page_identity_invalid')
+                        result=await render_verified_djvu_page(bundle=self.native_bundle,
+                            original_path=record['path'],original_bytes=record['size'],
+                            inventory=inventory,index=index)
+                    except (DjvuStructureError,DjvuPixelsUnavailable) as error:
+                        _LOG.warning(
+                            'original_page state=unavailable format=djvu run_id=%s ingestion_id=%s page_index=%s reason=%s',
+                            self.identity[0],record['spec']['ingestion_id'],index,str(error))
+                        raise OriginalIntakeError('original_djvu_decoder_required') from None
+                else:
+                    result=await self._parse_selected(record['path'],'page',index,
+                        parser_sha256=record['parser_sha256'])
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
                 if not 1<=len(image)<=256*1024:
                     raise OriginalIntakeError('original_page_render_invalid')
@@ -332,6 +351,9 @@ class NativeOriginalIntake:
                 result['page_receipt_sha256']=digest(canonical(result))
                 record['pages'][index]=dict(result=result,path=page_path,sha256=digest(image),size=len(image),verified=None,
                     chunks={canonical(dict(block=0,offset=0,text=0)).decode():result})
+                if record['format']=='djvu':
+                    _LOG.info('original_page state=rendered format=djvu run_id=%s ingestion_id=%s page_index=%s image_bytes=%s',
+                        self.identity[0],record['spec']['ingestion_id'],index,len(image))
             artifact=record['pages'][index];key=canonical(cursor).decode()
             if key not in artifact['chunks']:
                 result=await self._parse_selected(record['path'],'text',index,cursor=cursor,
