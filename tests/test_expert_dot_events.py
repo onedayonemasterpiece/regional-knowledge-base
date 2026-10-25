@@ -29,11 +29,12 @@ def test_draft_event_has_exact_correlation_and_standard_webhook_signature():
     assert definition["payloadSchema"]["required"]==["request_id","event_id"]
     assert definition["inputSchema"]["properties"]=={}
     body=b'{"eventId":"Ev-test","data":{"request_id":"one"}}'
-    headers=_signed_headers(_whsec(),"Ev-test",body)
+    headers=_signed_headers(_whsec(),"sub_fixture","Ev-test",body)
     data=b"Ev-test."+headers["webhook-timestamp"].encode()+b"."+body
     expected="v1,"+base64.b64encode(
         hmac.new(_secret(_whsec()),data,hashlib.sha256).digest()).decode()
     assert headers["webhook-signature"]==expected
+    assert headers["X-MCP-Subscription-Id"]=="sub_fixture"
     with pytest.raises(ValueError):_secret("not-a-webhook-secret")
 
 
@@ -63,6 +64,7 @@ async def test_subscribe_keeps_chatgpt_secret_encrypted_store_and_fixed_destinat
     observed=[]
     def callback(req):
         observed.append((str(req.url),req.headers,req.content))
+        assert req.headers["X-MCP-Subscription-Id"].startswith("sub_")
         body=json.loads(req.content)
         assert body["type"]=="verification"
         return httpx.Response(200,json={"challenge":body["challenge"]})
@@ -138,7 +140,7 @@ async def test_event_intent_precedes_callback_and_same_id_replay(tmp_path,monkey
     events=_instance(httpx.MockTransport(response))
     events.control=Control()
     monkeypatch.setattr(events,"_subscription",lambda:{
-        "url":"https://callbacks.chatgpt.example/events","secret":_whsec()})
+        "id":"sub_test","url":"https://callbacks.chatgpt.example/events","secret":_whsec()})
     await events._wake("request-one")
     await events._wake("request-one")
     # Webhook 2xx is not a completed answer. With no claim, restart/renewal
