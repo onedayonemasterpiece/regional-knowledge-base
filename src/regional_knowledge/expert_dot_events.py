@@ -86,7 +86,7 @@ class ExpertDotEvents:
     """One owner-provisioned service, one signed webhook subscription, existing row."""
 
     def __init__(self, *, context: ExpertExecutorContext, reply: ExpertSlackSearchReply,
-                 oauth_provider, callback_host: str, transport=None):
+                 result_receiver, oauth_provider, callback_host: str, transport=None):
         if (type(context) is not ExpertExecutorContext
                 or type(reply) is not ExpertSlackSearchReply
                 or context.delivery.control is not reply.control
@@ -96,6 +96,7 @@ class ExpertDotEvents:
                 or re.fullmatch(r"[a-zA-Z0-9.-]{4,200}",callback_host) is None):
             raise ValueError("distinct, restricted existing RKB executor connection required")
         self.context,self.reply,self.control=context,reply,reply.control
+        self.result_receiver=result_receiver
         self.oauth=oauth_provider
         self.callback_host=callback_host.lower()
         self.transport=transport
@@ -146,8 +147,9 @@ class ExpertDotEvents:
         self._actor()
         if (params.name!=EVENT or params.arguments!={}
                 or params.cursor is not None or not isinstance(params.delivery,dict)
-                or set(params.delivery)!={"mode","url","secret"}
-                or params.delivery["mode"]!="webhook"):
+                or set(params.delivery)-{"mode","url","secret"}
+                or not {"url","secret"}<=set(params.delivery)
+                or params.delivery.get("mode","webhook")!="webhook"):
             raise ValueError("exact RKB event subscription required")
         url=self._url(params.delivery["url"])
         secret=params.delivery["secret"]
@@ -347,7 +349,7 @@ class ExpertDotEvents:
         if row["state"] in _RECORD_STATES:
             return {"state":row["state"],"request_id":request_id,
                     "retry_send_allowed":False}
-        receiver=self.context.result_receiver
+        receiver=self.result_receiver
         if receiver is None:
             raise RuntimeError("exact existing result receiver required")
         from .expert_executor_workflow import CODEC
@@ -390,7 +392,7 @@ class ExpertDotEvents:
     def register(self,mcp):
         """Add tools and draft Events methods to the SAME authenticated MCP."""
         from .expert_executor_workflow import ExpertExecutorResultReceiver
-        if type(self.context.result_receiver) is not ExpertExecutorResultReceiver:
+        if type(self.result_receiver) is not ExpertExecutorResultReceiver:
             raise ValueError("existing bound result receiver required")
 
         @mcp.tool(name="expert_request_get",
@@ -422,7 +424,8 @@ class ExpertDotEvents:
             return self.unsubscribe(params)
 
         async def discover(ctx,params):
-            self._actor()
+            # Discovery is shared with ordinary RKB users; event tools
+            # enforce the restricted executor principal independently.
             server=mcp._lowlevel_server
             capabilities=server.get_capabilities(
                 protocol_version=ctx.protocol_version).model_dump(
