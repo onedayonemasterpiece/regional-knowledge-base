@@ -121,7 +121,7 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('scenario',['second_page','busy_slots'])
+@pytest.mark.parametrize('scenario',['second_page','third_page','busy_slots'])
 async def test_original_page_waiting_never_holds_compute_and_preserves_operation(state,original_native,scenario):
     s=state;db=database();identity=(s.run,s.nonce,'incarnation-a');active=(s.run,'incarnation-a',s.generation)
     binding=PreReadyRecoveryBinding(s.run,active[1],s.generation,db.database_generation,db.writer_generation)
@@ -133,16 +133,21 @@ async def test_original_page_waiting_never_holds_compute_and_preserves_operation
     original=original_native.handler
     original.database=db;original.identity=identity;original.current=lambda b:b==active
     original.attached(s.generation);original.snapshot_io=io
-    started=[asyncio.Event(),asyncio.Event()];finished=[asyncio.Event(),asyncio.Event()];effects=[]
+    started=[asyncio.Event() for _ in range(3)];finished=[asyncio.Event() for _ in range(3)];effects=[]
     running={'count':0,'peak':0}
+    page_running={'count':0,'peak':0}
     def entered():
         running['count']+=1;running['peak']=max(running['peak'],running['count'])
     async def render(frame):
-        index=frame['arguments']['index'];effects.append(index);started[index].set();entered()
+        index=frame['arguments']['index'];effects.append(index);started[index].set()
+        page_running['count']+=1;page_running['peak']=max(page_running['peak'],page_running['count'])
         try:
             await finished[index].wait();return dict(physical_page_index=index)
-        finally:running['count']-=1
+        finally:page_running['count']-=1
     original._execute=render
+    captures=[]
+    async def capture(*args,**kwargs):captures.append(True);return {'applied_sequence':0}
+    native.capture=capture
     bridge=RecoveryPhaseDispatch(s.q,database=db,identity=identity,binding_current=lambda b:b==binding,timeout_seconds=10)
     async def transfer(*args):return None
     bridge.original_intake=NS(dispatch_transfer=transfer)
@@ -179,25 +184,39 @@ async def test_original_page_waiting_never_holds_compute_and_preserves_operation
         first=request(0)
         await pump_until(lambda:bool(receipts))
         assert receipts[0][1]['value']['status']=='pending'
-        if scenario=='second_page':
+        if scenario in ('second_page','third_page'):
             await pump_until(started[0].is_set)
             second=request(1)
             await pump_until(lambda:len(receipts)==2)
             assert receipts[1][1]['value']['status']=='pending' and not started[1].is_set()
+            if scenario=='third_page':
+                third=request(2)
+                await pump_until(lambda:len(receipts)==3)
+                assert receipts[2][1]['value']['status']=='pending' and not started[2].is_set()
+                replay=request(2)  # The third page retains its exact operation key.
         else:
-            assert not started[0].is_set()
+            await pump_until(started[0].is_set)
             second=request(0)  # Same durable/native operation, never a new retry key.
         read=await begin(s,'while-two-page-operations-wait')
         await pump_until(read.result.done)
         assert (await read.result).status=='ok' and not finished[0].is_set()
-        occupied.set();finished[0].set();finished[1].set()
-        await pump_until(lambda:first.done() and second.done())
+        if scenario!='busy_slots':
+            # Queued pages cannot consume the slots that keep Saved advancing.
+            saved=asyncio.create_task(bridge.request(binding,'capture',dict(versions={},expected_sequence=0),operation_key='capture-during-pages'))
+            pending.append(saved)
+            await pump_until(saved.done)
+            assert (await saved)=={'applied_sequence':0} and captures==[True] and not finished[0].is_set()
+        occupied.set()
+        for event in finished:event.set()
+        await pump_until(lambda:all(task.done() for task in pending))
         assert (await first)['physical_page_index']==0
-        assert (await second)['physical_page_index']==(1 if scenario=='second_page' else 0)
-        assert effects==([0,1] if scenario=='second_page' else [0])
-        assert running['count']==0 and running['peak']<=(2 if scenario=='busy_slots' else 1)
+        assert (await second)['physical_page_index']==(0 if scenario=='busy_slots' else 1)
+        expected=[0] if scenario=='busy_slots' else [0,1,2] if scenario=='third_page' else [0,1]
+        if scenario=='third_page':assert (await third)==(await replay)=={'physical_page_index':2}
+        assert effects==expected and page_running=={'count':0,'peak':1}
+        assert running['count']==0 and running['peak']<=2
         if scenario=='busy_slots':assert running['peak']==2
-        assert [f['operation_key'] for f,_ in receipts]==(['page:0','page:1'] if scenario=='second_page' else ['page:0'])
+        assert [f['operation_key'] for f,_ in receipts]==['page:'+str(index) for index in expected]
     finally:
         for task in pending:
             if not task.done():task.cancel()

@@ -35,6 +35,7 @@ _SNAPSHOT_FAILURE_CODES={
 @dataclass
 class _Operation:
     binding: tuple
+    phase: str = 'snapshot'
     attached: asyncio.Event = field(default_factory=asyncio.Event)
     task: object = None
     upload: object = None
@@ -47,7 +48,6 @@ class SnapshotIo:
     def __init__(self,*,factory,tickets,transfer):
         self.factory,self.tickets,self.transfer=factory,tickets,transfer
         self.operations={};self.closed=False
-        self._slots=asyncio.Semaphore(2)
 
     def rebind(self,binding):
         self.factory._current(binding)
@@ -62,25 +62,22 @@ class SnapshotIo:
             except SnapshotError:await operation.attached.wait()
         raise SnapshotError('snapshot_io_closed')
 
-    def start(self,key,binding,action,*,wait_for_capacity=False):
+    def start(self,key,binding,action,*,phase='snapshot'):
         self.factory._current(binding)
         handle=sha(key.encode())
         if handle not in self.operations:
-            # Match the original owner's retained request bound: supported
-            # books can exceed 256 pages. Running I/O remains capped at two.
-            if len(self.operations)>=4096 or (not wait_for_capacity
-                    and sum(not op.task.done() for op in self.operations.values())>=2):
+            # Page rendering already uses the original owner's lock. Its
+            # waiting tasks must not consume backup/verification I/O slots.
+            if len(self.operations)>=4096 or (phase!='original_pages'
+                    and sum(op.phase!='original_pages' and not op.task.done() for op in self.operations.values())>=2):
                 raise SnapshotError('snapshot_io_capacity')
-            operation=_Operation(binding)
+            operation=_Operation(binding,phase=phase)
             async def run():
                 async with asyncio.timeout(self.factory.limits.timeout_seconds):
-                    # A page may retain its same short pending handle while
-                    # these existing I/O slots are busy. It holds no BGE permit.
-                    async with self._slots:
-                        await self._current(operation)
-                        result=await action(operation)
-                        await self._current(operation)
-                        return result
+                    await self._current(operation)
+                    result=await action(operation)
+                    await self._current(operation)
+                    return result
             operation.task=asyncio.create_task(run())
             self.operations[handle]=operation
         return dict(status='pending',handle=handle)

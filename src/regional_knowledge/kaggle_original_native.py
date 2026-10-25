@@ -203,7 +203,7 @@ class NativeOriginalIntake:
             from .kaggle_pg_snapshot_native import SnapshotError
             try:
                 value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],
-                    frame['connection_generation']),render,wait_for_capacity=True)
+                    frame['connection_generation']),render,phase=frame['phase'])
             except SnapshotError:
                 _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
                 value={'error':'original_intake_unavailable'}
