@@ -230,7 +230,8 @@ async def test_pending_does_not_invent_an_estimate_or_restart_the_demand(auth,tm
         assert repeated.startup.startup_ref==first.startup.startup_ref
         assert repeated.startup.eta_seconds is None and observed.eta_seconds is None
         assert repeated.startup.message_ru==observed.message_ru
-        assert 'неизвестен' in observed.message_ru
+        assert observed.message_ru.startswith('Запускаем инфраструктуру, подождите.')
+        assert 'неизвестен' not in observed.message_ru
         assert 'eta_seconds' not in observed.model_dump(exclude_none=True)
         with queue.connect(write=False) as db:
             assert db.execute('select count(*) from runs').fetchone()[0]==1
