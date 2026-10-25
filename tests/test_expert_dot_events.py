@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from test_control_spool import env
 
 from regional_knowledge.expert_dot_events import (
     EVENT, EventParams, ExpertDotEvents, _event_definition, _secret, _signed_headers,
@@ -830,9 +831,9 @@ async def test_webhook_ack_without_claim_resumes_original_pending_request(tmp_pa
             id TEXT,event_id TEXT,state TEXT,trigger_event_id TEXT,
             reconcile_cursor TEXT,created_at REAL,lease_until REAL)""")
         conn.execute("""INSERT INTO rkb_expert_requests VALUES(
-            'still-pending','Ev-original','pending','Ev-original','event_accepted',1)""")
+            'still-pending','Ev-original','pending','Ev-original','event_accepted',1,NULL)""")
         conn.execute("""INSERT INTO rkb_expert_requests VALUES(
-            'already-done','Ev-done','delivered','Ev-done','event_accepted',2)""")
+            'already-done','Ev-done','delivered','Ev-done','event_accepted',2,NULL)""")
     events=_instance()
     events.control=SimpleNamespace(corpus=db,clock=lambda:1.0)
     wakes=[]
