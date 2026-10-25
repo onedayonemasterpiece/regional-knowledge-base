@@ -469,6 +469,8 @@ class KaggleSourceBackend:
                     if type(authority) is not VerifiedReadAuthority or authority.destination!=destination:
                         raise PermissionError('adapter destination differs')
                     await measured('auth_ms',self.read_authority.require(authority,'public_search'))
+                    await measured('request_activity_ms',
+                        asyncio.to_thread(self.worker_queue.record_request_activity))
                 try:
                     # Authenticated actor + verified current PG/worker binding
                     # suffice for reads. History renewal belongs to writes
