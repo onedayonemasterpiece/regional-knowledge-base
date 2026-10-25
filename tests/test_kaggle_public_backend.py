@@ -239,14 +239,51 @@ async def test_cancel_before_dispatch_never_claims_worker_execution(target):
 
 
 @pytest.mark.asyncio
-async def test_admission_deadline_is_typed_deadline_failure_and_compute_remains_owned(target):
+@pytest.mark.parametrize('dispatch', [False, True])
+async def test_admission_deadline_is_typed_deadline_failure_and_compute_remains_owned(target, dispatch):
     s = target
     task = asyncio.create_task(s.backend.search('synthetic query', s.principal))
-    dispatched = await work(s)
-    with pytest.raises(ToolError, match='deadline_exceeded'):
+    dispatched = await work(s) if dispatch else None
+    with pytest.raises(ToolError, match='deadline_exceeded') as error:
         await task
+    payload = json.loads(str(error.value))
+    await asyncio.to_thread(s.telemetry._queue.join)
+    terminal = next(record for record in s.records if record.get('terminal'))
+    trace = payload['read_trace']
+    assert {key: trace[key] for key in ('trace_id','attempt_id','request_ref')} == {
+        key: terminal[key] for key in ('trace_id','attempt_id','request_ref')}
+    assert trace['backend_elapsed_ms'] >= 0
+    assert terminal['dispatch_state'] == ('dispatched' if dispatch else 'not_dispatched')
+    assert set(payload) == {'status','reason','read_trace'}
     assert s.gate.abandoned == s.gate.permits
-    assert s.admission.status()['state'] == 'busy'
+    assert s.admission.status()['state'] == ('busy' if dispatch else 'idle')
+    if dispatched is not None:
+        await release(s, dispatched)
+
+
+@pytest.mark.asyncio
+async def test_exact_fetch_refusal_returns_the_same_trace_as_its_terminal_record(target):
+    from regional_knowledge.kaggle_protocol import PassageReadResult
+    from regional_knowledge.kaggle_public_backend import passage_fetch_id
+    from test_kaggle_exact_fetch import locator
+    s = target
+    task = asyncio.create_task(s.backend.fetch(passage_fetch_id(locator()), s.principal))
+    dispatched = await work(s)
+    result = PassageReadResult(request_id=dispatched.query.request_id,
+        connection_generation=s.generation, turn_generation=dispatched.query.turn_generation,
+        status='unavailable', reason='evidence_withdrawn',
+        observed_data_seq=None, observed_projection_seq=None)
+    assert await s.admission.finish_read(s.run,s.token,s.generation,result)
+    with pytest.raises(ToolError) as error:
+        await task
+    payload = json.loads(str(error.value))
+    await asyncio.to_thread(s.telemetry._queue.join)
+    terminal = next(record for record in s.records if record.get('terminal'))
+    assert payload['status'] == 'unavailable' and payload['reason'] == 'evidence_withdrawn'
+    assert payload['read_trace']['trace_id'] == terminal['trace_id']
+    assert payload['read_trace']['request_ref'] == terminal['request_ref']
+    assert set(payload) == {'status','reason','read_trace'}
+    assert terminal['dispatch_state'] == 'dispatched'
     await release(s, dispatched)
 
 
