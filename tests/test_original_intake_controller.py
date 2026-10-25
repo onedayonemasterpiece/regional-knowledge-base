@@ -25,8 +25,8 @@ from test_recovery_s3 import BotoFailure
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('continued',[False,True])
-@pytest.mark.parametrize('telegram',[False,True])
-async def test_existing_queue_receipts_url_privacy_and_native_original_readback(owner,native,continued,telegram):
+@pytest.mark.parametrize('telegram,mime_type',[(False,'application/pdf'),(False,''),(True,None)])
+async def test_existing_queue_receipts_url_privacy_and_native_original_readback(owner,native,continued,telegram,mime_type):
     e,n=owner,native
     if continued:
         import base64
@@ -111,7 +111,7 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
             n.handler.telegram_downloader=NativeTelegramOriginalDownloader(client=client,
                 chat_id=file.chat_id,topic_id=file.topic_id,current=lambda:True)
         else:
-            file=ChatFile(download_url='https://attachment.invalid/private',file_id='file',mime_type='application/pdf')
+            file=ChatFile(download_url='https://attachment.invalid/private',file_id='file',mime_type=mime_type)
         status=await controller.begin(e.auth.p.admin,operation_id='original-fixture',source_id=SOURCE,ingestion_id=INGEST,
             file=file,max_bytes=len(PDF))
         assert not status.verified and phases==['original_acquire'] and not uploads
