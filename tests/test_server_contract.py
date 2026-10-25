@@ -71,6 +71,11 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     assert "never UUIDs" in server.instructions
     assert "book_pages" in server.instructions and "book_ingest(reprocess)" in server.instructions
     assert "model performs semantic reading" in server.instructions
+    for phrase in ("ONE direct answer", "language of the user's question",
+                   "names a specific author or book", "fetch evidence",
+                   "Источники:", "В доступной базе подтверждений не найдено",
+                   "Не удалось проверить базу сейчас", "printed-page numbers from scan numbers"):
+        assert phrase in server.instructions
     live = {tool.name for tool in await build_server(profile="live").list_tools()}
     assert "book_find" not in live and "book_ingest" not in live
 
