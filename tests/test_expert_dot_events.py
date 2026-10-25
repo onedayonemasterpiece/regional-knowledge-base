@@ -271,6 +271,7 @@ async def test_missing_or_expired_subscription_uses_existing_source_reply(monkey
     reply._dot_events=dot
     reply.notify("first")
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert fallback==["first"]
     assert reply._tasks=={}
 
@@ -303,3 +304,17 @@ def test_dot_answer_contract_requires_bibliography_and_honest_no_support():
     for piece in ("1–4", "Источники:", "metadata.citation", "locator",
                   "метро", "cosmodrome", "В доступной базе подтверждений не найдено"):
         assert piece in body or (piece=="метро" and "metro" in body)
+
+
+
+def test_callback_dns_requires_public_address_and_rejects_mixed_resolution(monkeypatch):
+    import socket
+    from regional_knowledge.expert_dot_events import _public_dns
+    monkeypatch.setattr(socket,"getaddrinfo",
+        lambda host,port,**kw:[(2,1,6,"",("203.0.113.5",port)),
+                               (2,1,6,"",("127.0.0.1",port))])
+    with pytest.raises(ValueError,match="public"):
+        _public_dns("callbacks.chatgpt.example")
+    monkeypatch.setattr(socket,"getaddrinfo",
+        lambda host,port,**kw:[(2,1,6,"",("8.8.8.8",port))])
+    _public_dns("callbacks.chatgpt.example")
