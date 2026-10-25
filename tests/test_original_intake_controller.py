@@ -205,6 +205,73 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
 
 
 @pytest.mark.asyncio
+async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native):
+    e,n=owner,native
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    current=lambda b:b==binding and e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
+    with e.q.connect(write=False) as db:run=db.execute('SELECT * FROM runs WHERE id=?',(e.run,)).fetchone()
+    bridge=RecoveryPhaseDispatch(e.q,database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1'),
+        identity=(e.run,run['launch_nonce'],binding.runtime_incarnation),binding_current=current)
+    n.handler.identity=bridge.identity;n.handler.database=bridge.database
+    n.handler.current=lambda b:b==(binding.run_id,binding.runtime_incarnation,binding.connection_generation)
+    n.handler.attached(e.generation)
+    heads=[];native_reads=[];phases=[]
+    async def upload(ticket,path,*,operation_key):
+        e.c.objects[ticket.key]=(path.read_bytes(),'native-etag')
+        return 'native-etag'
+    async def download(ticket,path,*,operation_key):
+        native_reads.append(ticket.key);path.write_bytes(e.c.objects[ticket.key][0]);return path
+    def head(**kw):
+        heads.append(kw['Key'])
+        if kw['Key'] not in e.c.objects:raise BotoFailure('NoSuchKey',404)
+        data,version=e.c.objects[kw['Key']]
+        return dict(ContentLength=len(data),ETag=version)
+    n.transfer.upload,n.transfer.download=upload,download
+    e.c.head_object=head
+    e.c.generate_presigned_url=lambda *a,**k:'https://archive.invalid/signed-private-ticket'
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
+        current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+    stop=asyncio.Event()
+    async def peer():
+        while not stop.is_set():
+            work=await e.a.next_channel_work(e.run,e.token,e.generation)
+            if work is None:await asyncio.sleep(.001);continue
+            e.a.mark_work_sent(work)
+            f=dict(type='DISPATCH',protocol_version=2,connection_generation=e.generation,
+                **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+            phases.append(f['phase']);receipt=await n.handler(f)
+            await bridge.receive(dict(type='RECOVERY_PHASE_RESULT',job_id=f['id'],claim=f['claim'],receipt=receipt,
+                **{k:f[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')}),
+                run_id=e.run,token=e.token,generation=e.generation)
+            r=work.resource
+            await e.a.resource_released(e.run,e.token,e.generation,runtime_incarnation=r.runtime_incarnation,
+                resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    task=asyncio.create_task(peer())
+    try:
+        status=await controller.begin(e.auth.p.admin,operation_id='page-phases',source_id=SOURCE,ingestion_id=INGEST,
+            file=ChatFile(download_url='https://attachment.invalid/private',file_id='file'),max_bytes=len(PDF))
+        assert status.verified and phases==['original_acquire','original_archive','original_verify']
+        assert native_reads==[status.receipt.key]
+        heads.clear();phases.clear()
+        page=await controller.pages(e.auth.p.admin,INGEST)
+        assert page.pages[0].data==IMAGE
+        assert phases==['original_pages','original_archive']
+        assert len([key for key in heads if '/pages/' in key])==2
+        assert [key for key in heads if '/pages/' not in key]==[status.receipt.key]
+        assert native_reads==[status.receipt.key]
+        heads.clear();phases.clear()
+        repeated=await controller.pages(e.auth.p.admin,INGEST)
+        assert repeated==page and not phases
+        assert len([key for key in heads if '/pages/' in key])==1
+        assert [key for key in heads if '/pages/' not in key]==[status.receipt.key]
+        assert native_reads==[status.receipt.key]
+    finally:
+        stop.set();await task;await bridge.aclose();spool.close();await n.handler.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('response',[TimeoutError('private provider failure'),BotoFailure('AccessDenied',403),
     {'ContentLength':999,'ETag':'version'}])
 async def test_unknown_or_conflicting_head_never_authorizes_a_put(response):
