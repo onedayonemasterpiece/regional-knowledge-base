@@ -221,6 +221,8 @@ class ExpertSlackSearchReply:
                           else _TEMPORARILY_UNAVAILABLE)
                     if startup is not None and startup.eta_seconds is not None:
                         text+=f"\nОжидание: примерно {startup.eta_seconds} с."
+                    if model_only:
+                        return {"status":"pending","message_ru":text}
                 else:
                     if len(calls)!=1:raise PermissionError("retained source gate required")
                     issued=calls[0]
@@ -235,10 +237,7 @@ class ExpertSlackSearchReply:
                           if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
                           else answer_from_evidence(evidence))
             if model_only:
-                return {"status":"pending","message_ru":text} if (
-                    not calls and 'outcome' in locals()
-                    and type(outcome) is EvidenceSearchOutput
-                    and outcome.status=="pending") else {"status":"unavailable"}
+                return {"status":"unavailable"}
             permit=await asyncio.to_thread(self._claim_post,request_id)
             if permit is None:return
             try:
