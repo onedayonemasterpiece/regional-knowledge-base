@@ -24,6 +24,11 @@ _PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d
 _TEMPORARILY_UNAVAILABLE = "Сейчас не могу проверить, повторите вопрос через пару минут"
 
 
+def _error_reply(reason):
+    code=reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,80}",reason) else "not_ready"
+    return "Ошибка поиска. Код: unavailable/"+code
+
+
 def answer_from_evidence(result):
     if (result.get("context_gap") is not False or result.get("status") not in ("ok","degraded")
             or result.get("mode") != "hybrid" or result.get("prior_write_pending")):
@@ -185,18 +190,24 @@ class ExpertSlackSearchReply:
                 # text-only failure, but never turn an access denial into a post.
                 if calls or isinstance(exc,(PermissionError,ParticipantError)):
                     raise
+                text=_error_reply("internal_error")
                 if isinstance(exc,ToolError):
                     try:details=json.loads(str(exc))
                     except (ValueError,TypeError):raise
                     if type(details) is not dict or details.get("status") not in ("unavailable","pending"):
                         raise
-                text=_TEMPORARILY_UNAVAILABLE
+                    text=(_error_reply(details.get("reason")) if details["status"]=="unavailable"
+                          else _TEMPORARILY_UNAVAILABLE)
             else:
                 if (not calls and type(outcome) is EvidenceSearchOutput
                         and outcome.status=="pending" and outcome.reason=="target_warming"
                         and not outcome.evidence):
                     # Already-authorized startup status issues no source text.
-                    text=_TEMPORARILY_UNAVAILABLE
+                    startup=outcome.startup
+                    text=(startup.message_ru if startup is not None and startup.message_ru
+                          else _TEMPORARILY_UNAVAILABLE)
+                    if startup is not None and startup.eta_seconds is not None:
+                        text+=f"\nОжидание: примерно {startup.eta_seconds} с."
                 else:
                     if len(calls)!=1:raise PermissionError("retained source gate required")
                     issued=calls[0]
@@ -205,7 +216,7 @@ class ExpertSlackSearchReply:
                     if not issued.gate.issuance_current(issued.gated.ticket):
                         raise PermissionError("source access revoked")
                     evidence=render_evidence(issued.render(issued.gated.result),ctx)
-                    text=(_TEMPORARILY_UNAVAILABLE
+                    text=(_error_reply(evidence.get("reason"))
                           if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
                           else answer_from_evidence(evidence))
             permit=await asyncio.to_thread(self._claim_post,request_id)
