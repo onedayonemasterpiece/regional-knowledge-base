@@ -40,6 +40,14 @@ class TargetUnavailable(RuntimeError):
 _PASSAGE_ID = 'rkb:passage:v1:'
 
 
+def _evidence_title(item) -> str:
+    if item.metadata.title:
+        return item.metadata.title
+    catalog = (item.metadata.source_provenance or {}).get('catalog')
+    title = catalog.get('title') if isinstance(catalog, dict) else None
+    return title[:2048] if isinstance(title, str) and title.strip() else item.id
+
+
 def passage_fetch_id(locator: PassageContinuation) -> str:
     """Self-contained versioned locator, without a signature or capability grant."""
     return _PASSAGE_ID + base64.urlsafe_b64encode(locator.model_dump_json().encode()).decode().rstrip('=')
@@ -295,7 +303,7 @@ class KaggleSourceBackend:
             return item.id
         if evidence:
             return EvidenceSearchOutput(evidence=[FetchOutput(id=fetch_id(item),
-                title=item.metadata.title or item.id, text=item.text, url=locator(item),
+                title=_evidence_title(item), text=item.text, url=locator(item),
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
                     'text_form': item.text_form, 'continuation': item.continuation,
                     'source_continuation': item.source_continuation.model_dump(mode='json')
@@ -307,7 +315,7 @@ class KaggleSourceBackend:
                     'kind':item.kind,'exact_variant_ref':item.exact_variant_ref,
                     'variant_refs':list(item.dependencies.variant_refs)})
                 for item in result.evidence], **common)
-        return SearchOutput(results=[SearchResult(id=fetch_id(item), title=item.metadata.title or item.id,
+        return SearchOutput(results=[SearchResult(id=fetch_id(item), title=_evidence_title(item),
             url=locator(item)) for item in result.evidence], **common)
 
     @staticmethod
@@ -320,6 +328,7 @@ class KaggleSourceBackend:
         if result.status != 'ok':
             return FetchOutput(text='', **common)
         item = result.evidence[0]
+        common['title'] = _evidence_title(item)
         next_id = (passage_fetch_id(item.source_continuation)
             if item.source_continuation is not None and not item.continuation_complete else None)
         return FetchOutput(text=item.text, metadata={
