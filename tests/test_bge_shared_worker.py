@@ -557,7 +557,7 @@ async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_no
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase',['snapshot_status','capture'])
-async def test_snapshot_metadata_releases_compute_while_retaining_one_durable_job(phase):
+async def test_durable_recovery_releases_compute_while_retaining_one_job(phase):
     transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event()
     started=asyncio.Event();finish=asyncio.Event();executions=[]
     async def read(frame,*,encode):return result(frame)
@@ -576,20 +576,56 @@ async def test_snapshot_metadata_releases_compute_while_retaining_one_durable_jo
     try:
         await peer.wait('READY');await peer.put(dispatch);await started.wait()
         assert worker.job['id']=='metadata-job' and not worker.encoding.done()
-        if phase=='snapshot_status':
-            released=await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_id']=='metadata-job')
-            assert released['compute_claim']=='metadata-compute'
-            await peer.put(query(request='read-during-metadata'))
-            await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']=='read-during-metadata')
-            assert not finish.is_set() and worker.job['id']=='metadata-job'
-        else:
-            assert worker.resource['resource_id']=='metadata-job'
+        released=await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_id']=='metadata-job')
+        assert released['compute_claim']=='metadata-compute'
+        await peer.put(query(request='read-during-metadata'))
+        await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']=='read-during-metadata')
+        assert not finish.is_set() and worker.job['id']=='metadata-job'
         finish.set();receipt=await peer.wait('RECOVERY_PHASE_RESULT')
         assert receipt['job_id']=='metadata-job' and receipt['claim']=='metadata-claim'
         assert executions==['metadata-job']
         await peer.put(dict(type='RESULT_ACK',job_id='metadata-job',claim='metadata-claim',status='accepted'))
     finally:
         finish.set();stop.set();await asyncio.wait_for(task,3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_encode',[False,True])
+async def test_durable_document_forward_does_not_exclude_reads_or_overlap_model_calls(with_encode):
+    entered=threading.Event();finish=threading.Event();calls=[];active=0;peak=0
+    def native(text):
+        nonlocal active,peak
+        active+=1;peak=max(peak,active);calls.append(text)
+        try:
+            if text=='blocking document':
+                entered.set();assert finish.wait(3)
+            return [1.]+[0.]*1023
+        finally:active-=1
+    async def read(frame,*,encode):
+        if with_encode:await encode(frame['query'])
+        return result(frame)
+    try:
+        async with running(read,native) as (peer,task,loads):
+            await peer.put(dict(type='DISPATCH',id='blocked-doc',claim='doc-claim',
+                kind='document',texts=['blocking document'],space=SPACE,
+                compute_claim='doc-compute',dispatch_generation=1))
+            assert await asyncio.to_thread(entered.wait,1)
+            await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_kind']=='document')
+            await peer.put(query())
+            if with_encode:
+                await asyncio.sleep(.02)
+                assert calls==['blocking document'] and not peer.frames('QUERY_RESULT')
+                finish.set()
+            response=await peer.wait('QUERY_RESULT')
+            assert response['status']=='degraded'
+            await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_kind']=='read')
+            if not with_encode:assert not finish.is_set()
+            finish.set();durable=await peer.wait('RESULT')
+            assert durable['job_id']=='blocked-doc' and durable['claim']=='doc-claim'
+            assert calls==(['blocking document','fixture query'] if with_encode else ['blocking document'])
+            assert peak==1 and loads==['loaded']
+            await peer.put(dict(type='RESULT_ACK',job_id='blocked-doc',claim='doc-claim',status='accepted'))
+    finally:finish.set()
 
 
 @pytest.mark.asyncio
