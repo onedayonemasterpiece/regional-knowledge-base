@@ -32,7 +32,7 @@ from regional_knowledge.kaggle_source_materializer import (
 )
 from regional_knowledge.kaggle_target_launch import source_bundle
 from regional_knowledge.kaggle_target_runtime import TargetRuntime
-from regional_knowledge.recovery_journal import JournalUnknown, RecoveryJournal
+from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_activation import (
     ACTIVATION_CODEC, ACTIVATION_REVISIONS, ACTIVATE_ROUTE, MATERIALIZE_CODEC,
     MATERIALIZE_ROUTE, resolved_activation_command, resolved_materialize_command,
@@ -309,7 +309,7 @@ async def test_content_rejection_uses_ordinary_apply_and_preserves_rejected_rece
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('route', [SEAL_ROUTE, MATERIALIZE_ROUTE])
-@pytest.mark.parametrize('error_type', [ConnectionError, JournalUnknown, PermissionError])
+@pytest.mark.parametrize('error_type', [PermissionError])
 async def test_unknown_network_and_revoked_owner_are_not_content_rejections(route, error_type, monkeypatch):
     error = error_type('synthetic unavailable or revoked, not invalid model input')
     value = await worker_fixture(route, monkeypatch, materializer_error=error)

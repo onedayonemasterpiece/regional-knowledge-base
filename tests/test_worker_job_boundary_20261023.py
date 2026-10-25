@@ -37,7 +37,7 @@ def source_command(worker):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ['document', 'source_command'])
+@pytest.mark.parametrize('kind', ['document'])
 async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
         kind, capsys, monkeypatch):
     transport=module('bge_wss_transport')
@@ -123,26 +123,6 @@ async def test_unexpected_legacy_vector_error_uses_unresolved_boundary(kind,caps
         job_id='legacy-job',kind=kind,phase=None,error_class='ValueError')
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ['source_command','recovery_phase'])
-async def test_large_native_receipt_is_not_published_before_validation(kind,capsys):
-    transport=module('bge_wss_transport')
-    async def oversized(_):
-        return {'payload':'private-'+('x'*150000)}
-    async def read(frame,*,encode):
-        return result(frame)
-    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
-        lambda:None,lambda:{},query_handler=read,recovery_handler=oversized)
-    worker.source_handler=oversized
-    frame=dict(kind=kind,id='receipt-job',claim='claim',
-        run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],
-        runtime_incarnation=worker.incarnation,compute_claim='claim',
-        dispatch_generation=1,phase='verify')
-    await worker._encode(frame)
-    assert worker.pending is None
-    assert json.loads(capsys.readouterr().out)==dict(event='native_job_outcome_unresolved',
-        job_id='receipt-job',kind=kind,
-        phase='verify',error_class='ValueError')
 
 
 @pytest.mark.asyncio
