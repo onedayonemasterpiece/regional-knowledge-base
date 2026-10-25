@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 
-from .bge_queue import StaleClaim
+from .bge_queue import LIVE_JOBS,StaleClaim
 from .kaggle_recovery_phases import PHASES,b64,bounded,MAX_PHASE_RESULT_BYTES
 from .kaggle_pg_snapshot_native import SnapshotError,encode,sha
 
@@ -82,7 +82,7 @@ class RecoveryPhaseDispatch:
                 if row['kind']!='recovery_phase' or row['identity']!=encoded:
                     raise SnapshotError('recovery_operation_changed')
                 return row['id'],actor
-            if db.execute("select count(*) from jobs where state!='done'").fetchone()[0]>=256:
+            if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
                 raise SnapshotError('recovery_queue_capacity')
             run=db.execute('select * from runs where id=?',(self.identity[0],)).fetchone()
             if run is None or (run['launch_nonce'],run['runtime_incarnation'])!=self.identity[1:]:
