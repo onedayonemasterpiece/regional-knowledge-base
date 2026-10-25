@@ -227,9 +227,15 @@ async def test_large_original_page_releases_chunks_and_keeps_proof():
     controller._page_chunks={};controller._page_proofs={}
     receipt=SimpleNamespace(source_id=SOURCE,page_count=139,sha256=digest(PDF),parser_sha256='parser')
     cursor=dict(block=0,offset=0,text=0)
-    page=dict(page_id=str(uuid5(UUID(SOURCE),'page:1:0')),original_sha256=receipt.sha256,
-        parser_sha256=receipt.parser_sha256,native_cursor=cursor,next_native=None,
-        native_text='page text',native_blocks=[],native_text_info={})
+    native='page text'
+    info=dict(original_length=len(native),block_count=0,
+        native_text_sha256=digest(native.encode()),native_blocks_sha256=digest(canonical([])),
+        encoding_notice=None,offset=0,end=len(native),complete=True)
+    page=dict(format='pdf',page_count=receipt.page_count,physical_page_index=0,width=40,height=50,
+        page_id=str(uuid5(UUID(SOURCE),'page:1:0')),original_sha256=receipt.sha256,
+        parser_sha256=receipt.parser_sha256,image_size=len(IMAGE),image_sha256=digest(IMAGE),
+        mime_type='image/jpeg',preview_render=False,native_cursor=cursor,next_native=None,
+        native_text=native,native_blocks=[],native_text_info=info)
     page['page_receipt_sha256']=digest(canonical(page))
 
     async def authorize(_context):return 'actor','binding'
