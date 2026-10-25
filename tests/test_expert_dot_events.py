@@ -125,7 +125,9 @@ async def test_real_callback_connect_pins_public_ip_but_checks_original_tls_host
 
 
 @pytest.mark.asyncio
-async def test_validated_dual_stack_callback_falls_back_after_connect_failure(monkeypatch):
+@pytest.mark.parametrize("connect_failure",[httpx.ConnectError,httpx.ConnectTimeout])
+async def test_validated_dual_stack_callback_falls_back_after_connect_failure(
+        monkeypatch,connect_failure):
     import regional_knowledge.expert_dot_events as module
     monkeypatch.setattr(module,"_public_dns",lambda host:
                         ("8.8.8.8","2606:4700:4700::1111"))
@@ -135,11 +137,11 @@ async def test_validated_dual_stack_callback_falls_back_after_connect_failure(mo
         async def __aenter__(self):return self
         async def __aexit__(self,*exc):pass
         async def post(self,url,*,content,headers,extensions):
-            calls.append(url)
+            calls.append((url,headers["webhook-id"],json.loads(content)))
             assert headers["host"]=="callbacks.chatgpt.example"
             assert extensions=={"sni_hostname":"callbacks.chatgpt.example"}
             if len(calls)==1:
-                raise httpx.ConnectError("first public address unreachable")
+                raise connect_failure("first public address connection failed")
             return httpx.Response(200)
     monkeypatch.setattr(module.httpx,"AsyncClient",FakeClient)
     events=_instance()
@@ -147,8 +149,11 @@ async def test_validated_dual_stack_callback_falls_back_after_connect_failure(mo
                 "url":"https://callbacks.chatgpt.example/events","secret":_whsec()},
                 "Ev-original",{"eventId":"Ev-original"})
     assert response.status_code==200
-    assert calls==["https://8.8.8.8/events",
-                   "https://[2606:4700:4700::1111]/events"]
+    assert [item[0] for item in calls]==[
+        "https://8.8.8.8/events",
+        "https://[2606:4700:4700::1111]/events"]
+    assert [item[1] for item in calls]==["Ev-original","Ev-original"]
+    assert [item[2] for item in calls]==[{"eventId":"Ev-original"}]*2
 
 
 @pytest.mark.asyncio
@@ -372,7 +377,8 @@ async def test_get_request_does_not_claim_during_source_warmup(monkeypatch):
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     class Control:
         def _row(self,request_id):
-            return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct"}
+            return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
+                    "state":"pending"}
         def claim(self,*args,**kwargs):
             pytest.fail("a pending read cannot be claimed")
     events.control=Control()
@@ -405,6 +411,26 @@ async def test_foreign_event_and_already_sent_result_never_claim_or_send(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state",[
+    "leased","send_intent_ready","sending","unknown","delivered","blocked"])
+async def test_delayed_get_returns_original_state_without_search(monkeypatch,state):
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    class Control:
+        def _row(self,request_id):
+            return {"event_id":"Ev-original","trigger_event_id":"Ev-original",
+                    "state":state}
+        def claim(self,*args,**kwargs):
+            pytest.fail("terminal or claimed request cannot claim again")
+    events.control=Control()
+    async def search(*args,**kwargs):
+        pytest.fail("terminal/claimed request cannot trigger native search")
+    monkeypatch.setattr(events,"_search",search)
+    value=await events.get_request("request-one","Ev-original")
+    assert value=={"state":state,"request_id":"request-one"}
+
+
+@pytest.mark.asyncio
 async def test_record_result_uses_original_provider_sender_and_single_claim(monkeypatch):
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
@@ -433,6 +459,8 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
             posts.append("receipt_staged")
         def claim_send_once(self,credentials,rid,generation,token):
             assert (rid,generation,token)==(request,1,"x"*40)
+            assert sender_authorized==[True]
+            self._source_current(origin,json.loads(origin["origin"]))
             posts.append("claimed")
             origin["state"]="sending"
             return {"delivery_id":marker,"channel_id":"C0RKBTEST",
@@ -448,14 +476,12 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
             posts.append("result_saved")
             origin["state"]="send_intent_ready"
             return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
+    sender_authorized=[]
     class Sender:
-        def current(self):
-            return True
-        async def post_once(self,**kw):
-            # SlackChatSender checks current immediately before/after auth.test.
-            assert kw["current"]()
-            await asyncio.sleep(0)
-            assert kw["current"]()
+        async def post_once(self,*,claim):
+            # The real Slack sender invokes the original claim AFTER auth.test.
+            sender_authorized.append(True)
+            kw=await claim()
             assert kw["event_id"]==marker
             assert kw["channel"]=="C0RKBTEST"
             assert kw["thread"]=="1792920000.123456"
@@ -470,47 +496,117 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
         "Содержательный ответ.\nИсточники: подтверждённый текст.")
     assert result=={"state":"delivered","request_id":request,"retry_send_allowed":False}
     assert posts==["result_saved","claimed","posted","receipt_staged"]
-    assert source_checks==[True,True,True]
+    assert source_checks==[True]
     repeated=await events.record_result(request,"Ev-one",1,"x"*40,"same text")
     assert repeated["state"]=="delivered"
     assert posts==["result_saved","claimed","posted","receipt_staged"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure",["token_revoked","source_revoked"])
-async def test_local_presend_failure_never_consumes_native_permit(monkeypatch,failure):
+@pytest.mark.parametrize("failure",[
+    "token_revoked_during_auth","source_revoked_during_auth","wrong_bot_identity"])
+async def test_local_presend_failure_after_previous_permit_boundary_never_consumes_it(
+        monkeypatch,failure):
+    # Formerly auth.test ran AFTER the original irreversible send permit.
+    # Revocation during auth.test then yielded permanent false UNKNOWN.
+    from regional_knowledge.expert_slack_search_reply import SlackChatSender
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     row={"event_id":"Ev-one","trigger_event_id":"Ev-one","state":"leased",
          "origin":json.dumps({"channel_id":"C-original"})}
-    effects=[]
+    token_current=True
+    source_current=True
+    paths=[]
+    claim_attempts=[]
+    permit_count=[]
     class Control:
-        def _row(self,request_id):return row
+        def _row(self,request_id):return dict(row)
     class Delivery:
         def _source_current(self,original,destination):
-            effects.append("source_checked")
-            if failure=="source_revoked":
-                raise PermissionError("source revoked")
+            assert destination["channel_id"]=="C-original"
+            if not source_current:raise PermissionError("source revoked")
         def claim_send_once(self,*args):
-            pytest.fail("a denied local precondition cannot consume send permit")
+            claim_attempts.append(True)
+            self._source_current(row,json.loads(row["origin"]))
+            permit_count.append(True)
+            row["state"]="sending"
+            return {"delivery_id":"Ev-one","channel_id":"C-original",
+                    "thread_ts":"1792920000.123456","text":"answer"}
         def uncertain_delivery(self,*args):
-            pytest.fail("no provider POST means not unknown delivery")
+            pytest.fail("proved no-POST must not be marked unknown")
     class Receiver:
         async def _advance(self,value):
             row["state"]="send_intent_ready"
             return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
-    class Sender:
-        def current(self):return failure!="token_revoked"
-        async def post_once(self,**kw):
-            pytest.fail("no post when the source or token is already expired")
+    def provider(request):
+        nonlocal token_current,source_current
+        paths.append(request.url.path)
+        if request.url.path!="/api/auth.test":
+            pytest.fail("no chat.postMessage after local pre-POST rejection")
+        if failure=="token_revoked_during_auth":
+            token_current=False
+        if failure=="source_revoked_during_auth":
+            source_current=False
+        user="OTHER" if failure=="wrong_bot_identity" else "U0BOT"
+        return httpx.Response(200,json={"ok":True,"team_id":"T0RKB","user_id":user})
+    sender=SlackChatSender(token="xoxb-synthetic",app_id="A0RKB",
+          team_id="T0RKB",bot_user_id="U0BOT",
+          current=lambda:token_current,transport=httpx.MockTransport(provider))
     events.control=Control()
     events.context=SimpleNamespace(credentials="service",delivery=Delivery())
     events.result_receiver=Receiver()
-    events.reply=SimpleNamespace(sender=Sender(),
-        _row=lambda rid,states:row if row["state"] in states else None)
-    with pytest.raises(PermissionError,match="no longer current"):
+    events.reply=SimpleNamespace(sender=sender)
+    with pytest.raises(PermissionError):
         await events.record_result("request-one","Ev-one",1,"x"*40,"answer")
     assert row["state"]=="send_intent_ready"
+    assert paths==["/api/auth.test"]
+    assert permit_count==[]
+    assert len(claim_attempts)==(1 if failure=="source_revoked_during_auth" else 0)
+
+
+@pytest.mark.asyncio
+async def test_unknown_only_after_actual_slack_post_attempt(monkeypatch):
+    from regional_knowledge.expert_slack_search_reply import SlackChatSender
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    row={"event_id":"Ev-one","trigger_event_id":"Ev-one","state":"leased"}
+    paths=[]
+    claims=[]
+    unknown=[]
+    class Control:
+        def _row(self,rid):return dict(row)
+    class Delivery:
+        def claim_send_once(self,*args):
+            claims.append(True)
+            row["state"]="sending"
+            return {"delivery_id":"Ev-one","channel_id":"C-original",
+                    "thread_ts":"1792920000.123456","text":"answer"}
+        def uncertain_delivery(self,credentials,rid,delivery_id):
+            unknown.append(delivery_id)
+            row["state"]="unknown"
+    class Receiver:
+        async def _advance(self,value):
+            row["state"]="send_intent_ready"
+            return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
+    def provider(request):
+        paths.append(request.url.path)
+        if request.url.path=="/api/auth.test":
+            return httpx.Response(200,json={
+                "ok":True,"team_id":"T0RKB","user_id":"U0BOT"})
+        raise httpx.ReadTimeout("Slack reply after POST unknown")
+    events.control=Control()
+    events.context=SimpleNamespace(credentials="service",delivery=Delivery())
+    events.result_receiver=Receiver()
+    events.reply=SimpleNamespace(sender=SlackChatSender(
+        token="xoxb-synthetic",app_id="A0RKB",team_id="T0RKB",
+        bot_user_id="U0BOT",transport=httpx.MockTransport(provider)))
+    with pytest.raises(httpx.ReadTimeout):
+        await events.record_result("request-one","Ev-one",1,"x"*40,"answer")
+    assert paths==["/api/auth.test","/api/chat.postMessage"]
+    assert len(claims)==1 and unknown==["Ev-one"] and row["state"]=="unknown"
+    again=await events.record_result("request-one","Ev-one",1,"x"*40,"answer")
+    assert again["state"]=="unknown" and again["retry_send_allowed"] is False
+    assert paths==["/api/auth.test","/api/chat.postMessage"]
 
 
 @pytest.mark.asyncio
