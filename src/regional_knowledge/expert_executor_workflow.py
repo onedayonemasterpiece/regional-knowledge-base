@@ -39,11 +39,20 @@ class ExpertExecutorContext:
     """Reference to owner-provisioned EXISTING executor and delivery authority."""
     credentials: ExecutorCredentials
     delivery: TargetExpertDeliveryControl
+    # Optional exact MCP integration identity; no owner bearer or new secret.
+    mcp_subject: str | None = None
+    mcp_client_id: str | None = None
+    mcp_callback_host: str | None = None
 
     def __post_init__(self):
         if (type(self.credentials) is not ExecutorCredentials
                 or type(self.delivery) is not TargetExpertDeliveryControl):
             raise TypeError('existing exact executor and source-gated delivery required')
+        if any(value is not None for value in (self.mcp_subject,self.mcp_client_id,self.mcp_callback_host)):
+            if (not all(type(value) is str and value for value in
+                    (self.mcp_subject,self.mcp_client_id,self.mcp_callback_host))
+                    or self.mcp_subject==self.delivery.control.people.owner):
+                raise ValueError('distinct restricted MCP expert service required')
 
 
 def _matches(request, configured):
