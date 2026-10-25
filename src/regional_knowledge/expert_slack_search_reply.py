@@ -120,16 +120,46 @@ class ExpertSlackSearchReply:
             # dot subscription can be woken. Expired/unset falls back to it.
             return self._dot_events.notify(request_id)
         if request_id in self._tasks:return
-        if len(self._tasks)>=16:raise RuntimeError("bounded Slack event wake capacity")
-        task=asyncio.create_task(self._answer(request_id))
+        # Original requests already passed Slack ACK. A capacity refusal here
+        # would silently discard the 17th; canonical read admission is shared.
+        task=asyncio.create_task(self._answer_until_sent(request_id))
         self._tasks[request_id]=task
         def finish(t):
-            self._tasks.pop(request_id,None)
+            if self._tasks.get(request_id) is t:
+                self._tasks.pop(request_id,None)
             try:t.result()
             except asyncio.CancelledError:pass
             except Exception as exc:_LOG.warning("rkb_slack_search_pending error_type=%s",
                                                 type(exc).__name__)
         task.add_done_callback(finish)
+
+    async def _answer_until_sent(self, request_id):
+        # The SAME acknowledged request is retried only while no provider
+        # permit exists. A possible POST sets sending/unknown: never resend.
+        delay=2
+        while True:
+            try:
+                await self._answer(request_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOG.warning("rkb_slack_reply_deferred error_type=%s",
+                             type(exc).__name__)
+            row=await asyncio.to_thread(self.control._row,request_id)
+            if row["state"] not in ("received","searching"):
+                return
+            await asyncio.sleep(delay)
+            delay=min(60,delay*2)
+
+    async def resume_pending(self):
+        if self._dot_events is not None and self._dot_events._subscription() is not None:
+            return await self._dot_events.resume_pending()
+        with self.control.corpus.connect() as db:
+            rows=db.execute("""SELECT id FROM rkb_expert_requests
+                WHERE state IN ('received','searching')
+                ORDER BY created_at,id""").fetchall()
+        for row in rows:
+            self.notify(row["id"])
 
     def _verified(self, db, row):
         origin=json.loads(row["origin"])
