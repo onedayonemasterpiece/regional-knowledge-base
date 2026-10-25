@@ -181,7 +181,7 @@ async def test_no_unknown_decoder_fallback_and_unread_native_layer(bundle,archiv
             original_bytes=path.stat().st_size,inventory=foreign,index=0)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('boundary', ['decoder_verification', 'jpeg', 'final_verification'])
+@pytest.mark.parametrize('boundary', ['decoder_verification', 'final_verification'])
 async def test_page_processing_keeps_control_loop_live(bundle,archive,monkeypatch,boundary):
     import asyncio
     import threading
@@ -202,7 +202,6 @@ async def test_page_processing_keeps_control_loop_live(bundle,archive,monkeypatc
         decoded=True
         return b'P6\n2 2\n255\n'+bytes([240,0,0])*4
     def jpeg(*args):
-        if boundary=='jpeg':blocked()
         return b'\xff\xd8fixture\xff\xd9',82
     monkeypatch.setattr(pixels,'_verified_decoder',decoder)
     monkeypatch.setattr(type(bundle),'current',checked)

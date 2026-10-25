@@ -76,11 +76,12 @@ encoding fits the existing whole MCP response ceiling. The ordinary output
 issuer rechecks authorization after page rendering without extending other read
 tickets. This public preview is independent of archival mirror work.
 
-DjVu decoder/ELF verification, JPEG encoding and final native-bundle verification
+DjVu decoder/ELF verification and final native-bundle verification
 run through the existing cancellation-safe blocking-work helper, outside the
 WSS event loop. Exact byte/ELF/source checks and page geometry remain unchanged;
 this scheduling change requires native installation and concurrent page/search
-verification before live acceptance is claimed.
+verification before live acceptance is claimed. JPEG encoding keeps its existing
+serialized PyMuPDF call; PyMuPDF does not support multithreaded execution.
 
 ## Source-proof and locator contract
 

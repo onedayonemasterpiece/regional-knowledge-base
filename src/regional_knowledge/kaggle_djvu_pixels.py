@@ -203,7 +203,7 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
     before=_source_stat(path,expected_bytes=original_bytes)
     if inventory.byte_length!=original_bytes:
         raise DjvuPixelsUnavailable('djvu_inventory_original_size_mismatch')
-    # Inventory hashing, ELF inspection and JPEG work must leave WSS/read scheduling live.
+    # Inventory hashing and ELF inspection must leave WSS/read scheduling live.
     began=time.monotonic()
     binary,loader,library_path,env=await _blocking(_verified_decoder,bundle)
     print(json.dumps(dict(event='djvu_preview_boundary',stage='decoder_verified',page_index=index,
@@ -213,7 +213,7 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
         raw=await _decode_single(binary,loader,library_path,env,path,index,edge)
         width,height,rgb=_read_ppm(raw,edge=edge)
         try:
-            jpeg,quality=await _blocking(_jpeg,rgb,width,height)
+            jpeg,quality=_jpeg(rgb,width,height)
         except (ImportError,RuntimeError,ValueError):
             raise DjvuPixelsUnavailable('djvu_jpeg_encoder_unavailable') from None
         if jpeg is not None:
