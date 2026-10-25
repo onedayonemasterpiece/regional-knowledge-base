@@ -141,12 +141,16 @@ async def test_event_intent_precedes_callback_and_same_id_replay(tmp_path,monkey
         "url":"https://callbacks.chatgpt.example/events","secret":_whsec()})
     await events._wake("request-one")
     await events._wake("request-one")
-    assert len(calls)==1
-    assert calls[0]["eventId"]=="Ev-once"
-    assert calls[0]["data"]=={"request_id":"request-one","event_id":"Ev-once"}
+    # Webhook 2xx is not a completed answer. With no claim, restart/renewal
+    # may wake the SAME original event ID; it must not create a new request.
+    assert len(calls)==2
+    assert all(item["eventId"]=="Ev-once" for item in calls)
+    assert all(item["data"]=={"request_id":"request-one","event_id":"Ev-once"}
+               for item in calls)
     with db.connect() as conn:
-        row=conn.execute("SELECT reconcile_cursor FROM rkb_expert_requests").fetchone()
-        assert row["reconcile_cursor"]=="event_accepted"
+        row=conn.execute("SELECT id,trigger_event_id,state FROM rkb_expert_requests").fetchone()
+        assert (row["id"],row["trigger_event_id"],row["state"])==(
+            "request-one","Ev-once","pending")
 
 
 @pytest.mark.asyncio
@@ -164,11 +168,13 @@ async def test_wake_and_search_start_in_parallel_without_extra_queue(monkeypatch
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
     monkeypatch.setattr(events,"_search",search)
     monkeypatch.setattr(events,"_wake",wake)
-    events.notify("same-request")
-    events.notify("same-request")
+    for i in range(17):
+        events.notify(f"request-{i}")
+    events.notify("request-16") # duplicate notification is not a second wake
     await asyncio.sleep(0)
-    assert sorted(started)==["search","wake"]
-    assert len(events._reads)==1 and len(events._wakes)==1
+    assert len(started)==34
+    assert started.count("search")==17 and started.count("wake")==17
+    assert len(events._reads)==17 and len(events._wakes)==17
     done.set()
     await asyncio.gather(*events._reads.values(),*events._wakes.values())
 
@@ -247,3 +253,51 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
     repeated=await events.record_result(request,"Ev-one",1,"x"*40,"same text")
     assert repeated["state"]=="delivered"
     assert posts==["result_saved","claimed","posted","receipt_staged"]
+
+
+@pytest.mark.asyncio
+async def test_missing_or_expired_subscription_uses_existing_source_reply(monkeypatch):
+    from regional_knowledge.expert_slack_search_reply import ExpertSlackSearchReply
+    reply=object.__new__(ExpertSlackSearchReply)
+    fallback=[]
+    async def original(request_id):
+        fallback.append(request_id)
+    reply._tasks={}
+    reply._answer=original
+    dot=SimpleNamespace(_subscription=lambda:None,
+                        notify=lambda rid:pytest.fail("no dot without subscription"))
+    reply._dot_events=dot
+    reply.notify("first")
+    await asyncio.sleep(0)
+    assert fallback==["first"]
+    assert reply._tasks=={}
+
+
+@pytest.mark.asyncio
+async def test_webhook_ack_without_claim_resumes_original_pending_request(tmp_path,monkeypatch):
+    db=_Corpus(tmp_path/"control.sqlite")
+    with db.connect() as conn:
+        conn.execute("""CREATE TABLE rkb_expert_requests(
+            id TEXT,event_id TEXT,state TEXT,trigger_event_id TEXT,
+            reconcile_cursor TEXT,created_at REAL)""")
+        conn.execute("""INSERT INTO rkb_expert_requests VALUES(
+            'still-pending','Ev-original','pending','Ev-original','event_accepted',1)""")
+        conn.execute("""INSERT INTO rkb_expert_requests VALUES(
+            'already-done','Ev-done','delivered','Ev-done','event_accepted',2)""")
+    events=_instance()
+    events.control=SimpleNamespace(corpus=db)
+    wakes=[]
+    monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    monkeypatch.setattr(events,"notify",lambda request_id:wakes.append(request_id))
+    await events.resume_pending()
+    assert wakes==["still-pending"]
+
+
+def test_dot_answer_contract_requires_bibliography_and_honest_no_support():
+    from regional_knowledge.expert_dot_events import ExpertDotEvents
+    import inspect
+    # Contract is returned with each scoped request, not merely project docs.
+    body=inspect.getsource(ExpertDotEvents.get_request)
+    for piece in ("1–4", "Источники:", "metadata.citation", "locator",
+                  "метро", "cosmodrome", "В доступной базе подтверждений не найдено"):
+        assert piece in body or (piece=="метро" and "metro" in body)
