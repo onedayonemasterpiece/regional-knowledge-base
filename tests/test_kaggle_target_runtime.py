@@ -539,7 +539,9 @@ def test_controller_fresh_launch_requires_complete_stage0_before_provider(monkey
 
 
 @pytest.mark.asyncio
-async def test_restored_runtime_requires_retained_capability_and_closes_owned_candidate():
+@pytest.mark.parametrize('from_waiter',[False,True])
+@pytest.mark.parametrize('capability_current',[False,True])
+async def test_restored_runtime_requires_retained_capability_and_closes_owned_candidate(from_waiter,capability_current):
     from regional_knowledge.kaggle_restored_database import VerifiedInitializedDatabase
     target=spec();config=dict(CONFIG,target_runtime=dict(target.wire(),sql_root='/unused'))
     with pytest.raises(Exception,match='restore_capability_required'):
@@ -548,17 +550,24 @@ async def test_restored_runtime_requires_retained_capability_and_closes_owned_ca
     class Candidate:
         async def aclose(self):events.append('candidate-close')
     candidate_owner=Candidate()
-    class Factory:
-        _capabilities=set()
-        _owned_candidates={candidate_owner}
-        async def verify_initialized(self,cap,database,observed):
-            if cap not in self._capabilities or observed!=identity or database!=target.database:
-                raise PermissionError('retained verified restore required')
-            events.append('verify-capability')
-            return database.connection()
-    factory=Factory()
+    from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory
+    from regional_knowledge.kaggle_recovery_phases import WorkerRecoveryPhases
+    factory=object.__new__(NativeSnapshotFactory)
+    factory.database=target.database;factory.identity=identity
+    factory._capabilities=set();factory._owned_candidates={candidate_owner}
+    async def verify_initialized(cap,database,observed):
+        events.append('verify-capability')
+        if cap not in factory._capabilities or observed!=identity or database!=target.database:
+            raise PermissionError('retained verified restore required')
+        return database.connection()
+    factory.verify_initialized=verify_initialized
     cap=VerifiedInitializedDatabase(factory,candidate_owner,target.database,identity,None,None,0,b'',None)
     factory._capabilities.add(cap)
+    if not capability_current:factory._capabilities.discard(cap)
+    worker=None
+    if from_waiter:
+        worker=WorkerRecoveryPhases(factory=factory,download=lambda *_:None,workspace=lambda *_:None)
+        worker._initialized=cap;worker._ready.set()
     class Owner:
         def __init__(self,spec):pass
         async def start_empty(self,**kwargs):raise AssertionError('restored database was initialized')
@@ -572,11 +581,15 @@ async def test_restored_runtime_requires_retained_capability_and_closes_owned_ca
     async def prepare(encoder,**kwargs):
         async def read(frame,*,encode):pass
         return PreparedRuntime(read,candidate())
-    runtime=TargetRuntime(config,executed_source='/fixture',restored_database=cap,
+    runtime=TargetRuntime(config,executed_source='/fixture',restored_database=None if from_waiter else cap,recovery_worker=worker,
         owner_factory=Owner,pool_factory=Pool,prepare=prepare)
-    await runtime.prepare(None,run_id=identity[0],launch_nonce=identity[1],runtime_incarnation=identity[2])
+    if capability_current:
+        await runtime.prepare(None,run_id=identity[0],launch_nonce=identity[1],runtime_incarnation=identity[2])
+    else:
+        with pytest.raises(PermissionError,match='retained verified restore required'):
+            await runtime.prepare(None,run_id=identity[0],launch_nonce=identity[1],runtime_incarnation=identity[2])
     await runtime.aclose()
-    assert events==['verify-capability','pool','pool-close','candidate-close','owner-close']
+    assert events==['verify-capability',*(['pool','pool-close'] if capability_current else []),'candidate-close','owner-close']
     assert cap not in factory._capabilities and not factory._owned_candidates
 
 
