@@ -215,11 +215,12 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
         def claim_send_once(self,credentials,rid,generation,token):
             assert (rid,generation,token)==(request,1,"x"*40)
             posts.append("claimed")
+            origin["state"]="sending"
             return {"delivery_id":marker,"channel_id":"C0RKBTEST",
                     "thread_ts":"1792920000.123456",
                     "text":"Содержательный ответ.\nИсточники: подтверждённый текст."}
         def confirm_dataset_native_receipt(self,credentials,rid,proof):
-            assert posts==["claimed","posted","receipt_staged"]
+            assert posts==["result_saved","claimed","posted","receipt_staged"]
             origin["state"]="delivered"
             return {"state":"delivered"}
     class Receiver:
