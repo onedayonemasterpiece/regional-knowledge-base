@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from test_control_spool import env
+from test_participants import people
 
 from regional_knowledge.expert_dot_events import (
     EVENT, EventParams, ExpertDotEvents, _event_definition, _secret, _signed_headers,
