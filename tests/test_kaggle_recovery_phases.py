@@ -24,10 +24,10 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('old_status,kind,allowed',[
+@pytest.mark.parametrize('old_status,kind,retired',[
     ('failed','recovery_phase',True),('expired','recovery_phase',True),
     ('starting','recovery_phase',False),('failed','document',False)])
-async def test_maintenance_capacity_counts_live_work_without_deleting_retired_evidence(state,old_status,kind,allowed):
+async def test_maintenance_retires_dead_work_and_accepts_beyond_256_rows(state,old_status,kind,retired):
     s=state
     dispatch=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
         binding_current=lambda b:True)
@@ -40,13 +40,17 @@ async def test_maintenance_capacity_counts_live_work_without_deleting_retired_ev
             db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) '
                 'VALUES(?,?,?,?,?,?,?,?,?)',(f'old-{n}','maintenance:'+old,str(n),kind,'[]','{}','pending',1,1))
     try:
-        if allowed:
-            job,actor=dispatch._enqueue(identity)
-            assert dispatch._enqueue(identity)==(job,actor)
-        else:
-            with pytest.raises(SnapshotError,match='recovery_queue_capacity'):dispatch._enqueue(identity)
+        s.q.maintenance()
+        job,actor=dispatch._enqueue(identity)
+        assert dispatch._enqueue(identity)==(job,actor)
+        ordinary=s.q.enqueue('actor','beyond-256',['ordinary document'],kind='document')
+        owner=object();s.q._source_commands=owner
+        source=s.q._enqueue_source_command(owner,'actor',{'operation_key':'source-beyond-256'})
+        assert ordinary!=source!=job
         with s.q.connect(write=False) as db:
-            assert db.execute("SELECT count(*) FROM jobs WHERE id LIKE 'old-%' AND state='pending'").fetchone()[0]==256
+            rows=db.execute("SELECT state,identity,result FROM jobs WHERE id LIKE 'old-%'").fetchall()
+            assert len(rows)==256
+            assert all(tuple(r)==('done' if retired else 'pending','{}',None) for r in rows)
     finally:await dispatch.aclose()
 
 
