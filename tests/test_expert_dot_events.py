@@ -55,6 +55,7 @@ def _instance(transport=None):
     owner.transport=transport
     owner._scope="restricted-dot|bound-client"
     owner._wakes={}
+    owner._reads={}
     return owner
 
 
@@ -155,26 +156,72 @@ async def test_event_intent_precedes_callback_and_same_id_replay(tmp_path,monkey
 
 
 @pytest.mark.asyncio
-async def test_subscribed_wakes_all_17_saved_questions_without_speculative_search(monkeypatch):
+async def test_parallel_search_and_wake_for_17_saved_requests_without_loss(monkeypatch):
     events=_instance()
     started=[]
     release=asyncio.Event()
-    async def wake(request_id):
-        started.append(request_id)
+    async def search(request_id,ready=None):
+        started.append(("search",request_id))
         await release.wait()
-    async def unexpected_search(request_id):
-        pytest.fail("notify must not issue a speculative native search")
+        return {"status":"ok"}
+    async def wake(request_id):
+        started.append(("wake",request_id))
+        await release.wait()
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    monkeypatch.setattr(events,"_search",search)
     monkeypatch.setattr(events,"_wake",wake)
-    monkeypatch.setattr(events,"_search",unexpected_search)
     for i in range(17):
         events.notify(f"request-{i}")
     events.notify("request-16")
     await asyncio.sleep(0)
-    assert len(started)==17
-    assert len(events._wakes)==17
+    assert len(started)==34
+    assert sum(1 for kind,_ in started if kind=="search")==17
+    assert sum(1 for kind,_ in started if kind=="wake")==17
+    assert len(events._reads)==17 and len(events._wakes)==17
     release.set()
-    await asyncio.gather(*tuple(events._wakes.values()))
+    await asyncio.gather(*(entry[0] for entry in events._reads.values()),
+                         *events._wakes.values())
+
+
+@pytest.mark.asyncio
+async def test_finished_native_prefetch_reaches_dot_without_second_search(monkeypatch):
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    class Control:
+        bot_user_id="U0BOT"
+        def _row(self,request_id):
+            return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct"}
+        def claim(self,credentials,*,request_id,lease_seconds):
+            return {"state":"leased","generation":1,"execution_token":"x"*40}
+        def claim_context(self,credentials,request_id,generation,token):
+            return {"input_text":"<@U0BOT> Как возникла Альбертина?"}
+    events.control=Control()
+    events.context=SimpleNamespace(credentials="service")
+    search_calls=[]
+    search_finished=asyncio.Event()
+    async def native_search(request_id,ready=None):
+        search_calls.append(request_id)
+        search_finished.set()  # Native lookup finished before the event was read.
+        if ready is not None:
+            await ready.wait()  # Existing guarded source ticket remains unrendered.
+        return {"status":"ok","context_gap":False,
+                "evidence":[{"text":"Альбертина",
+                    "metadata":{"citation":"История университета",
+                                "locator":"стр. 59"}}]}
+    wake_calls=[]
+    async def wake(request_id):wake_calls.append(request_id)
+    monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    monkeypatch.setattr(events,"_search",native_search)
+    monkeypatch.setattr(events,"_wake",wake)
+    events.notify("request-accepted")
+    await search_finished.wait()
+    assert search_calls==["request-accepted"]
+    await asyncio.sleep(0)
+    value=await events.get_request("request-accepted","Ev-correct")
+    assert value["state"]=="leased"
+    assert value["evidence"]["evidence"][0]["metadata"]["locator"]=="стр. 59"
+    assert search_calls==["request-accepted"]
+    assert wake_calls==["request-accepted"]
 
 
 @pytest.mark.asyncio
