@@ -47,6 +47,7 @@ class SnapshotIo:
     def __init__(self,*,factory,tickets,transfer):
         self.factory,self.tickets,self.transfer=factory,tickets,transfer
         self.operations={};self.closed=False
+        self._slots=asyncio.Semaphore(2)
 
     def rebind(self,binding):
         self.factory._current(binding)
@@ -61,21 +62,25 @@ class SnapshotIo:
             except SnapshotError:await operation.attached.wait()
         raise SnapshotError('snapshot_io_closed')
 
-    def start(self,key,binding,action):
+    def start(self,key,binding,action,*,wait_for_capacity=False):
         self.factory._current(binding)
         handle=sha(key.encode())
         if handle not in self.operations:
             # Match the original owner's retained request bound: supported
             # books can exceed 256 pages. Running I/O remains capped at two.
-            if len(self.operations)>=4096 or sum(not op.task.done() for op in self.operations.values())>=2:
+            if len(self.operations)>=4096 or (not wait_for_capacity
+                    and sum(not op.task.done() for op in self.operations.values())>=2):
                 raise SnapshotError('snapshot_io_capacity')
             operation=_Operation(binding)
             async def run():
                 async with asyncio.timeout(self.factory.limits.timeout_seconds):
-                    await self._current(operation)
-                    result=await action(operation)
-                    await self._current(operation)
-                    return result
+                    # A page may retain its same short pending handle while
+                    # these existing I/O slots are busy. It holds no BGE permit.
+                    async with self._slots:
+                        await self._current(operation)
+                        result=await action(operation)
+                        await self._current(operation)
+                        return result
             operation.task=asyncio.create_task(run())
             self.operations[handle]=operation
         return dict(status='pending',handle=handle)
