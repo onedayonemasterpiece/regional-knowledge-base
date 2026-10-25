@@ -814,11 +814,12 @@ async def test_missing_or_expired_subscription_uses_existing_source_reply(monkey
         fallback.append(request_id)
     reply._tasks={}
     reply._answer=original
+    reply.control=SimpleNamespace(_row=lambda rid:{"state":"delivered"})
     dot=SimpleNamespace(_subscription=lambda:None,
                         notify=lambda rid:pytest.fail("no dot without subscription"))
     reply._dot_events=dot
     reply.notify("first")
-    await asyncio.sleep(0)
+    await asyncio.wait_for(reply._tasks["first"],2)
     await asyncio.sleep(0)
     assert fallback==["first"]
     assert reply._tasks=={}
