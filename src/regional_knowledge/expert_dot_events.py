@@ -17,7 +17,7 @@ import re
 import secrets
 import socket
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from mcp import types
@@ -78,6 +78,7 @@ def _public_dns(host):
             raise ValueError("callback DNS is not public")
     except (OSError,ValueError):
         raise ValueError("callback DNS must resolve only to public addresses") from None
+    return sorted(found)[0]
 
 
 def _event_definition():
@@ -147,13 +148,22 @@ class ExpertDotEvents:
     async def _post(self,record,event_id,payload):
         body=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode()
         headers=_signed_headers(record["secret"],record["id"],event_id,body)
+        target=record["url"]
+        extensions=None
         if self.transport is None:
-            # The host is already fixed by owner configuration and TLS still
-            # verifies it; reject private/mixed callback resolution.
-            await asyncio.to_thread(_public_dns,urlsplit(record["url"]).hostname)
+            # Connect to the already validated PUBLIC IP, not a second DNS
+            # resolution. Preserve original Host and SNI for TLS validation.
+            parsed=urlsplit(target)
+            host=parsed.hostname
+            ip=await asyncio.to_thread(_public_dns,host)
+            target=urlunsplit(("https",f"[{ip}]" if ":" in ip else ip,
+                               parsed.path,parsed.query,""))
+            headers["host"]=host
+            extensions={"sni_hostname":host}
         async with httpx.AsyncClient(transport=self.transport,timeout=8,
                                      follow_redirects=False,trust_env=False) as client:
-            response=await client.post(record["url"],content=body,headers=headers)
+            response=await client.post(target,content=body,headers=headers,
+                                       extensions=extensions)
         return response
 
     async def subscribe(self,params):
@@ -175,7 +185,8 @@ class ExpertDotEvents:
         response=await self._post({"id":sub_id,"url":url,"secret":secret},
             "verify_"+identity[:24],{"type":"verification","challenge":nonce})
         try:
-            if response.status_code!=200 or response.json().get("challenge")!=nonce:
+            matched=response.json().get("challenge") if response.status_code==200 else None
+            if type(matched) is not str or not hmac.compare_digest(matched,nonce):
                 raise ValueError("callback verification unavailable")
         except (ValueError,TypeError,AttributeError):
             raise ValueError("callback verification unavailable") from None
