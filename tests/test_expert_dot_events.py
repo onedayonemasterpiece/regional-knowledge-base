@@ -329,3 +329,32 @@ def test_callback_dns_requires_public_address_and_rejects_mixed_resolution(monke
     monkeypatch.setattr(socket,"getaddrinfo",
         lambda host,port,**kw:[(2,1,6,"",("8.8.8.8",port))])
     _public_dns("callbacks.chatgpt.example")
+
+
+
+@pytest.mark.asyncio
+async def test_both_existing_http_and_socket_lifespan_resume_pending_request_once():
+    from contextlib import asynccontextmanager
+    from regional_knowledge.server import _resume_original_dot_requests
+    for transport in ("http","socket"):
+        observed=[]
+        @asynccontextmanager
+        async def target(server):
+            observed.append("target_started")
+            yield server
+            observed.append("target_stopped")
+        @asynccontextmanager
+        async def socket(server):
+            async with target(server) as runtime:
+                observed.append("socket_connected")
+                yield runtime
+                observed.append("socket_closed")
+        class Events:
+            async def resume_pending(self):
+                observed.append("original_request_rows_rescanned")
+        existing=target if transport=="http" else socket
+        async with _resume_original_dot_requests(existing,Events())("rkb") as runtime:
+            assert runtime=="rkb"
+            assert observed[-1]=="original_request_rows_rescanned"
+        assert observed.count("original_request_rows_rescanned")==1
+        assert observed[-1]=="target_stopped"
