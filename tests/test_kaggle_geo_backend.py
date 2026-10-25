@@ -24,15 +24,40 @@ from test_control_spool import handler
 from test_geo_migration import uid
 
 
-async def configured(s):
+async def configured(s,*,durable=True):
     store=ConditionalMemoryStore();journal=RecoveryJournal(store,stream='geo-output-fixture',max_outcome_bytes=8192)
     spool=ControlSpool(s.queue,s.auth.p.registry,journal,HandlerRegistry([handler()]))
     env=SimpleNamespace(p=s.auth.p,spool=spool,journal=journal,store=store)
-    gate,authority,b,manifest,commands,_=await setup(env,s.auth,binding=current_binding(s.queue))
+    gate,authority,b,manifest,commands,_=await setup(env,s.auth,binding=current_binding(s.queue),durable=durable)
     s.auth.resolver.release(authority)
     backend=KaggleGeoBackend(worker_queue=s.queue,read_authority=s.auth.resolver,geo_gate=gate,
         destination_ref='geo-test',current=lambda:True) # fixture routing state, gate still verifies actual current proof
     return env,gate,backend,manifest,commands
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('active',[False,True])
+async def test_registered_graph_fetch_routes_geo_without_bootstrap_only_after_activation(target,monkeypatch,active):
+    from mcp.server.mcpserver import MCPServer
+    from regional_knowledge.kaggle_source_graph_tools import register_source_graph_tools
+    s=target;e,gate,geo,manifest,commands=await configured(s,durable=active)
+    try:
+        gate.operation_keys=tuple(command.operation_key for command in commands)
+        gate.invalidate()  # installed service without SourceGeoInstaller/bootstrap
+        if not active:
+            # A manifest loaded by an installer alone must not select GEO.
+            gate._places=frozenset({uid(10)})
+        seen=[]
+        async def geo_fetch(*args,**kwargs):seen.append('geo');return {'branch':'geo'}
+        async def source_fetch(*args,**kwargs):seen.append('source');return {'branch':'source'}
+        monkeypatch.setattr(geo,'graph_fetch',geo_fetch)
+        server=MCPServer('geo-routing-regression')
+        register_source_graph_tools(server,SimpleNamespace(source_graph_fetch=source_fetch),geo,lambda:s.principal)
+        response=await server.call_tool('graph_fetch',{'entity_id':uid(10)})
+        assert not response.is_error
+        assert seen==(['geo'] if active else ['source'])
+        if active:assert gate.installation_current(current_binding(s.queue),gate.operation_keys)
+    finally:e.spool.close()
 
 
 def response(s,dispatched,manifest,commands):
