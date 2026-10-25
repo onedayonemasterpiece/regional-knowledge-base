@@ -69,17 +69,15 @@ async def fused_search(connection, query: str, *,
                        timeout_seconds: float = 2.0,
                        filters: QueryFilters | None = None,
                        snapshot_guard=None, snapshot_finish=None,
-                       stage_timings: dict[str, float] | None = None,
-                       source_provenance: bool = False) -> SearchResult:
+                       stage_timings: dict[str, float] | None = None) -> SearchResult:
     return await _search(connection, query, encode=encode, top_k=top_k,
         candidate_budget=candidate_budget, timeout_seconds=timeout_seconds,
         filters=filters, snapshot_guard=snapshot_guard, snapshot_finish=snapshot_finish,
-        stage_timings=stage_timings, observe=False, source_provenance=source_provenance)
+        stage_timings=stage_timings, observe=False)
 
 
 async def acceptance_search(connection, query: str, *, encode, filters,
-                            timeout_seconds, snapshot_guard, snapshot_finish, stage_timings=None,
-                            source_provenance=False):
+                            timeout_seconds, snapshot_guard, snapshot_finish, stage_timings=None):
     """Internal measurement only; controller fixture authorization is upstream.
 
     Fixed source scope, candidate budget100, RRF60, HNSW settings and one encode
@@ -92,12 +90,12 @@ async def acceptance_search(connection, query: str, *, encode, filters,
     return await _search(connection, query, encode=encode, top_k=3,
         candidate_budget=100, timeout_seconds=timeout_seconds, filters=filters,
         snapshot_guard=snapshot_guard, snapshot_finish=snapshot_finish,
-        stage_timings=stage_timings, observe=True, source_provenance=source_provenance)
+        stage_timings=stage_timings, observe=True)
 
 
 async def _search(connection, query, *, encode, top_k, candidate_budget,
                   timeout_seconds, filters, snapshot_guard, snapshot_finish,
-                  stage_timings, observe, source_provenance):
+                  stage_timings, observe):
     """Execute on an exclusively checked-out idle async psycopg connection.
 
     Encoder adapter contract: cancellation discards this consumer; the adapter
@@ -230,7 +228,7 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                     if story:
                         await execute("SELECT * FROM rkb_v4.editorial_hydrate_v1(%s::uuid[],%s::uuid[])" if editorial else
                                       "SELECT * FROM rkb_v4.story_hydrate_v1(%s::uuid[],%s::uuid[])", (ids,source_ids))
-                    elif source_provenance:
+                    else:
                         hydration = ('rkb_v4.hydrate(%s::uuid[])' if source_ids is None else
                                      'rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])')
                         await execute(f"""SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
@@ -239,11 +237,6 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                             LEFT JOIN rkb_v4.source_catalog c
                               ON c.source_id=h.source_id AND c.source_revision=h.revision
                             ORDER BY h.ordinality""", (ids,) if source_ids is None else (ids,source_ids))
-                    elif source_ids is None:
-                        await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
-                    else:
-                        await execute("SELECT * FROM rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])",
-                                      (ids, source_ids))
                     rows = await cursor.fetchall()
                     if observe and (len(rows) != len(ids) or {row[0] for row in rows} != set(ids)):
                         raise ValueError('acceptance rank hydration incomplete')

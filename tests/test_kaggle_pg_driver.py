@@ -123,6 +123,16 @@ async def database():
         _CI_PARAMS = None
 
 
+@pytest_asyncio.fixture
+async def catalog_database(database):
+    # Source search hydrates the canonical catalog introduced by SQL009.
+    # Keep the SQL001 base fixture for historical migration/replay tests.
+    async with database.transaction():
+        for path in sorted((ROOT / "sql/kaggle").glob("00[2-9]_*.sql")):
+            await database.execute(path.read_text(), prepare=False)
+    return database
+
+
 async def settings(connection):
     assert connection.info.transaction_status == TransactionStatus.IDLE
     async with connection.transaction():
@@ -140,7 +150,7 @@ async def encode_stub(query):
 
 
 @pytest.mark.asyncio
-async def test_actual_fused_search_full_fields_and_pool_settings(database):
+async def test_actual_fused_search_full_fields_and_pool_settings(catalog_database):
     connection = await connect()
     try:
         baseline = await settings(connection)
@@ -175,7 +185,8 @@ async def wait_for_lock_wait(observer, pid):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("caller_cancel", [False, True])
-async def test_actual_locked_query_cancel_cleanup_and_connection_reuse(database, caller_cancel):
+async def test_actual_locked_query_cancel_cleanup_and_connection_reuse(catalog_database, caller_cancel):
+    database = catalog_database
     connection = await connect()
     blocker = await connect()
     task = None

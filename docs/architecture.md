@@ -78,7 +78,7 @@ Revision projections immutable. После готового staging атомар
 
 4. Kaggle проверяет current source eligibility, Dev — current person/grant/turn fence перед выдачей. При отзыве или недоборе допускается bounded refill либо честный partial/degraded в оставшемся budget; это не новое полное retry окно.
 
-В текущем source-read профиле существующий batched hydrate тем же SQL-запросом
+Для source search существующий batched hydrate тем же SQL-запросом
 присоединяет название из `source_catalog` по source/revision. Прежний порядок
 top-K сохраняется через ordinality. Тонкий поиск, evidence и exact fetch показывают
 принятый `catalog.title`; если названия нет — прежний

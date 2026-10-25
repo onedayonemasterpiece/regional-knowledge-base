@@ -188,8 +188,7 @@ class KaggleWorkerQuery:
                     **({'source_provenance':True} if self.source_provenance else {}),
                     **({'public_illustrations':True} if self.public_illustrations else {})) if exact else
                 await execute_query(query, acquire=self.acquire, tokenizer=self.tokenizer,
-                                    encode=encode, telemetry=self.telemetry,
-                                    **({'source_provenance':True} if self.source_provenance else {})))
+                                    encode=encode, telemetry=self.telemetry))
             result_type = AcceptanceReadResult if acceptance else SourceGraphReadResult if graph else EditorialReadResult if editorial else CaseReadResult if case else GeoReadResult if geo else SourceReadResult if source else FactReadResult if fact else StoryReadResult if story else PassageReadResult if exact else QueryResult
             if type(result) is not result_type or any(getattr(result, key) != getattr(identity, key)
                     for key in ('request_id', 'connection_generation', 'turn_generation')):

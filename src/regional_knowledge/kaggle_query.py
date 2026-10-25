@@ -119,7 +119,7 @@ def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
 
 
 async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, encode,
-                        telemetry: asyncio.Queue | None = None, source_provenance=False) -> QueryResult:
+                        telemetry: asyncio.Queue | None = None) -> QueryResult:
     """Acquire from the existing pool; return one bounded typed QUERY_RESULT.
 
     acquire is an existing async pool-lease context manager factory. Input is an
@@ -203,7 +203,6 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                         from .kaggle_search import acceptance_search
                     searched = await (acceptance_search if acceptance else fused_search)(connection, query.query, encode=checked_encode,
                         **({} if acceptance else {'top_k':query.evidence_limit}), filters=query.filters,
-                        **({'source_provenance':True} if source_provenance else {}),
                         timeout_seconds=max(.000001, deadline - loop.time()),
                         snapshot_guard=guard, snapshot_finish=finish, stage_timings=stages)
                     stages["search_ms"] = (loop.time() - mark) * 1000
