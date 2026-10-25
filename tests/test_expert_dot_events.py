@@ -177,6 +177,137 @@ class _Corpus:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase",[
+    "leased","result_unsealed","result_ready","send_intent_ready"])
+async def test_expired_original_request_lease_resumes_through_real_claim_and_same_event(
+        env,monkeypatch,phase):
+    from regional_knowledge.expert_delivery_control import TargetExpertDeliveryControl
+    from regional_knowledge.expert_request_control import RequestControlError
+    from regional_knowledge.expert_slack_search_reply import SlackChatSender
+    from test_expert_delivery_control import _accepted_request
+    from test_expert_request_control import _prepare
+
+    ctl,creds,_=_prepare(env)
+    clock=[1792000001.0]
+    ctl.clock=lambda:clock[0]
+    entry=await _accepted_request(env,ctl,1,1)
+    rid=entry["request_id"]
+    with ctl.corpus.connect() as db:
+        row=db.execute("SELECT event_id FROM rkb_expert_requests WHERE id=?",
+                       (rid,)).fetchone()
+        event_id=row["event_id"]
+        db.execute("UPDATE rkb_expert_requests SET trigger_event_id=? WHERE id=?",
+                   (event_id,rid))
+    initial=ctl.claim(creds,request_id=rid,lease_seconds=120)
+    assert initial["state"]=="leased" and initial["generation"]==1
+    original="Source-grounded synthetic answer. Источники: Gause, стр. 59."
+    delivery=TargetExpertDeliveryControl(ctl,source_gate=lambda row,origin:True)
+    args=(creds,rid,initial["generation"],initial["execution_token"])
+    if phase!="leased":
+        delivery.prepare_result(*args,text=original)
+    if phase in ("result_ready","send_intent_ready"):
+        result_intent=delivery.exact_result_intent(rid,2)
+        seal=await env.journal.seal([result_intent],
+            predecessor=await env.journal.head(),writer_generation="writer-1")
+        await delivery.verify_remote_result(*args,result_intent,seal)
+    if phase=="send_intent_ready":
+        send_intent=delivery.exact_send_intent(rid,3)
+        seal=await env.journal.seal([send_intent],
+            predecessor=await env.journal.head(),writer_generation="writer-1")
+        await delivery.verify_remote_send(*args,send_intent,seal)
+    before=ctl._row(rid)
+    assert before["state"]==phase
+    events=_instance()
+    events.control=ctl
+    events.context=SimpleNamespace(credentials=creds)
+    events.reply=SimpleNamespace(control=ctl,bot_user_id="UBOT")
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    searches=[]
+    async def guarded_search(request_id,ready=None):
+        searches.append(request_id)
+        if phase!="leased":
+            pytest.fail("saved original result must never be searched again")
+        return {"status":"ok","context_gap":False,
+                "evidence":[{"text":"Current retained source","metadata":{
+                    "citation":"Gause","locator":"стр. 59"}}]}
+    monkeypatch.setattr(events,"_search",guarded_search)
+    # Still leased/processing: no second notification or token before expiry.
+    wakes=[]
+    def wake_on_recovery(request_id,*,prefetch=True):
+        wakes.append((request_id,prefetch))
+    monkeypatch.setattr(events,"notify",wake_on_recovery)
+    await events.resume_pending()
+    assert wakes==[]
+    assert await events.get_request(rid,event_id)=={
+        "state":phase,"request_id":rid}
+    clock[0]+=121
+    await events.resume_pending()
+    assert wakes==[(rid,False)]
+    # Same immutable event and no fresh request identity at re-subscription.
+    ctl.confirm_dataset_coverage=lambda _:True
+    sent_events=[]
+    async def signed_callback(record,event,payload):
+        sent_events.append((event,payload["data"]["request_id"]))
+        return httpx.Response(200)
+    monkeypatch.setattr(events,"_post",signed_callback)
+    await events._wake(rid)
+    assert sent_events==[(event_id,rid)]
+    result=await events.get_request(rid,event_id)
+    assert result["state"]=="leased"
+    assert result["event_id"]==event_id
+    assert result["generation"]==2
+    assert result["execution_token"]!=initial["execution_token"]
+    if phase=="leased":
+        assert searches==[rid] and result["evidence"]["status"]=="ok"
+    else:
+        assert searches==[]
+        assert result["resume_state"]==phase
+        assert result["saved_result"]==original
+        after=ctl._row(rid)
+        assert after["result_json"]==before["result_json"]
+        assert after["result_generation"]==before["result_generation"]==1
+        assert after["send_intent_hash"]==before["send_intent_hash"]
+    with pytest.raises(RequestControlError,match="request_fence_denied"):
+        ctl.claim_context(*args)
+    wakes.clear()
+    await events.resume_pending()
+    assert wakes==[]  # New live lease is not wakeable until it expires.
+    # Only a remotely covered ORIGINAL send intent can reach provider.
+    if phase=="send_intent_ready":
+        posts=[]
+        def provider(request):
+            if request.url.path.endswith("auth.test"):
+                return httpx.Response(200,json={"ok":True,
+                    "team_id":"T111","user_id":"UBOT"})
+            body=json.loads(request.content)
+            posts.append(body)
+            return httpx.Response(200,json={"ok":True,
+                "channel":body["channel"],"ts":"1792000040.100",
+                "message":{"text":body["text"],"user":"UBOT",
+                           "thread_ts":body["thread_ts"],
+                           "client_msg_id":body["client_msg_id"]}})
+        sender=SlackChatSender(token="xoxb-synthetic",app_id="A111",
+            team_id="T111",bot_user_id="UBOT",
+            transport=httpx.MockTransport(provider))
+        async def original_claim():
+            permit=delivery.claim_send_once(creds,rid,result["generation"],
+                                            result["execution_token"])
+            return {"event_id":permit["delivery_id"],
+                    "channel":permit["channel_id"],
+                    "thread":permit["thread_ts"],"text":permit["text"]}
+        receipt=await sender.post_once(claim=original_claim)
+        assert receipt["event_id"]==before["delivery_id"]
+        assert len(posts)==1 and posts[0]["text"]==original
+        with pytest.raises(RequestControlError,match="request_fence_denied"):
+            await sender.post_once(claim=original_claim)
+        assert len(posts)==1 and ctl._row(rid)["delivery_attempt"]==1
+        wakes.clear()
+        await events.resume_pending()
+        assert wakes==[]
+
+
+@pytest.mark.asyncio
 async def test_event_intent_precedes_callback_and_same_id_replay(tmp_path,monkeypatch):
     db=_Corpus(tmp_path/"control.sqlite")
     with db.connect() as conn:
