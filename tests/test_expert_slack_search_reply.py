@@ -521,6 +521,170 @@ async def test_legacy_rebind_resumes_saved_searching_without_new_slack_event(
 
 
 @pytest.mark.asyncio
+async def test_legacy_searching_restores_with_active_dot_after_one_slack_ack(
+        service,monkeypatch):
+    ctl,receiver,reply,rid,posts=_temporary_reply_harness(service)
+    denied=asyncio.Event()
+    valid={"bot":False}
+    paths=[]
+    def provider(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth.test"):
+            if not valid["bot"]:
+                denied.set()
+            return httpx.Response(200,json={"ok":True,"team_id":"T111",
+                "user_id":"UBOT" if valid["bot"] else "OTHER"})
+        body=json.loads(request.content)
+        posts.append(body)
+        return httpx.Response(200,json={"ok":True,"channel":body["channel"],
+            "ts":"1792000008.200","message":{"text":body["text"],
+                 "user":"UBOT","thread_ts":body["thread_ts"],
+                 "client_msg_id":body["client_msg_id"]}})
+    reply.sender.transport=httpx.MockTransport(provider)
+    reply.ingress.bind_search_reply(reply)
+    app=Starlette(routes=[Route(PATH,reply.ingress.__call__,methods=["POST"])])
+    raw,headers=_event()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as http:
+        accepted=await http.post(PATH,content=raw,headers=headers)
+    assert accepted.status_code==200 and accepted.json()=={"ok":True}
+    await asyncio.wait_for(denied.wait(),4)
+    await asyncio.sleep(0)
+    first=_delivery_row(ctl,rid)
+    assert first["state"]=="searching" and first["delivery_attempt"]==0
+    assert paths==["/api/auth.test"] and posts==[]
+    # Simulate process exit with original persisted row but without its task.
+    task=reply._tasks[rid]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    valid["bot"]=True
+    ingress=ExpertSlackIngress(ctl,signing_secret="test-signing-secret",
+                               clock=lambda:1792000001)
+    restarted=ExpertSlackSearchReply(ingress=ingress,evidence=receiver,
+                                      sender=reply.sender)
+    ingress.bind_search_reply(restarted)
+    dot_scans=[]
+    class ActiveDot:
+        def _subscription(self):return {"state":"active"}
+        async def resume_pending(self):dot_scans.append("dot original rows")
+        def notify(self,request_id):
+            pytest.fail("original searching legacy row must not enter dot wake")
+    restarted._dot_events=ActiveDot()
+    await restarted.resume_pending()
+    assert dot_scans==["dot original rows"] and rid in restarted._tasks
+    await asyncio.wait_for(restarted._tasks[rid],8)
+    await asyncio.sleep(0)
+    sent=_delivery_row(ctl,rid)
+    assert sent["state"]=="delivered" and sent["delivery_attempt"]==1
+    assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-1"
+    assert posts[0]["thread_ts"]=="1792000000.100"
+    assert paths==["/api/auth.test","/api/auth.test","/api/chat.postMessage"]
+    await restarted.resume_pending()
+    assert dot_scans==["dot original rows","dot original rows"]
+    assert restarted._tasks=={} and len(posts)==1
+
+
+@pytest.mark.asyncio
+async def test_transient_post_attempt_sqlite_state_read_keeps_original_ack_task(
+        service,monkeypatch):
+    import sqlite3
+    ctl,receiver,reply,rid,posts=_temporary_reply_harness(service)
+    reply.ingress.bind_search_reply(reply)
+    checked=asyncio.Event()
+    allowed={"bot":False,"fail_read":True}
+    paths=[]
+    original_row=ctl._row
+    def transient_row(request_id):
+        if not allowed["bot"] and allowed["fail_read"]:
+            allowed["fail_read"]=False
+            checked.set()
+            raise sqlite3.OperationalError("database is locked")
+        return original_row(request_id)
+    monkeypatch.setattr(ctl,"_row",transient_row)
+    def provider(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth.test"):
+            return httpx.Response(200,json={"ok":True,"team_id":"T111",
+                "user_id":"UBOT" if allowed["bot"] else "OTHER"})
+        body=json.loads(request.content)
+        posts.append(body)
+        return httpx.Response(200,json={"ok":True,"channel":body["channel"],
+            "ts":"1792000008.200","message":{"text":body["text"],
+                 "user":"UBOT","thread_ts":body["thread_ts"],
+                 "client_msg_id":body["client_msg_id"]}})
+    reply.sender.transport=httpx.MockTransport(provider)
+    app=Starlette(routes=[Route(PATH,reply.ingress.__call__,methods=["POST"])])
+    raw,headers=_event()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as http:
+        accepted=await http.post(PATH,content=raw,headers=headers)
+    assert accepted.status_code==200 and accepted.json()=={"ok":True}
+    await asyncio.wait_for(checked.wait(),4)
+    assert _delivery_row(ctl,rid)["state"]=="searching" and posts==[]
+    allowed["bot"]=True
+    await asyncio.wait_for(reply._tasks[rid],8)
+    await asyncio.sleep(0)
+    sent=_delivery_row(ctl,rid)
+    assert sent["state"]=="delivered" and sent["delivery_attempt"]==1
+    assert allowed["fail_read"] is False
+    assert paths==["/api/auth.test","/api/auth.test","/api/chat.postMessage"]
+    assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-1"
+    await reply.resume_pending()
+    assert len(posts)==1 and reply._tasks=={}
+
+
+@pytest.mark.asyncio
+async def test_restart_65_acknowledged_legacy_questions_paces_native_first_reads(
+        service,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    ctl,receiver,reply,first,posts=_temporary_reply_harness(service)
+    requests=[first]
+    for n in range(2,66):
+        entry=ctl.accept(_observation(n=n,thread=f"1792001000.{n:03d}"))
+        requests.append(entry["request_id"])
+    assert len(requests)==len(set(requests))==65
+    active=0
+    peak=0
+    seen=[]
+    async def native_search(query,**kwargs):
+        nonlocal active,peak
+        active+=1
+        peak=max(peak,active)
+        seen.append(kwargs["request_id"])
+        try:
+            # If startup launches all 65 at once, the existing two-second
+            # native deadline would yield false terminal source-only errors.
+            await asyncio.sleep(.003)
+            if active>1:
+                raise ToolError('{"status":"unavailable","reason":"deadline_exceeded"}')
+            return EvidenceSearchOutput(evidence=[],status="pending",
+                reason="target_warming",mode="lexical_degraded",
+                main_state="starting",startup=StartupStatus(
+                    startup_ref="r"*51,status="pending",reason="target_warming",
+                    eta_seconds=300,message_ru=PENDING_STARTUP_MESSAGE_RU))
+        finally:
+            active-=1
+    monkeypatch.setattr(receiver.backend,"search_adapter",native_search)
+    await reply.resume_pending()
+    assert len(reply._tasks)==65  # All accepted work retained without cap16.
+    tasks=tuple(reply._tasks.values())
+    await asyncio.wait_for(asyncio.gather(*tasks),45)
+    await asyncio.sleep(0)
+    assert len(seen)==65 and set(seen)==set(requests)
+    assert peak==1 and active==0
+    assert len(posts)==65
+    assert {item["client_msg_id"] for item in posts}=={
+        f"Ev-{n}" for n in range(1,66)}
+    assert all(item["text"].startswith(PENDING_STARTUP_MESSAGE_RU)
+               and "deadline_exceeded" not in item["text"] for item in posts)
+    assert all(_delivery_row(ctl,rid)["state"]=="delivered" for rid in requests)
+    assert reply._tasks=={}
+    await reply.resume_pending()
+    assert not reply._tasks and len(posts)==65
+
+
+@pytest.mark.asyncio
 async def test_one_signed_legacy_ack_with_uncertain_post_never_retries_itself(
         service,monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
