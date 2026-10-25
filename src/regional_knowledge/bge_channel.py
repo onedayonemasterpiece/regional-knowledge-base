@@ -134,6 +134,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                     'connection_generation': generation, 'environment': environment,
                     'readiness_verified': False}))
             outgoing = asyncio.PriorityQueue(maxsize=SEND_QUEUE_FRAMES)
+            service_frames = asyncio.Queue()
             sequence = count()
             probe_nonce = None
             last_work = None
@@ -374,13 +375,17 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             await send('DISPATCH', priority=1, **job)
                     await asyncio.sleep(RECONCILE_SECONDS)
 
-            async def receiver():
+            async def receiver(service=False):
                 nonlocal ready, promoted, probe_nonce, runtime_readiness, runtime_blocked, telegram_inflight, telegram_challenge
                 while True:
-                    message = await socket.receive()
+                    message = await (service_frames.get() if service else socket.receive())
                     if message['type'] == 'websocket.disconnect':
                         return
-                    frame = _decode(message)
+                    frame = message if service else _decode(message)
+                    if not service and frame['type'] in ('RECOVERY_PHASE_RESULT', 'SNAPSHOT_UPLOAD_INTENT',
+                                                         'RKB1_BIND_REQUEST', 'SOURCE_COMMAND_RESULT'):
+                        service_frames.put_nowait(frame)
+                        continue
                     if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
                         raise StaleAttachment('generation')
                     observed = await status()
@@ -610,7 +615,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 if probe_nonce is not None:
                     await send('RESOURCE_PROBE', probe_nonce=probe_nonce)
             tasks = [asyncio.create_task(sender()), asyncio.create_task(receiver()),
-                     asyncio.create_task(dispatch())]
+                     asyncio.create_task(dispatch()), asyncio.create_task(receiver(service=True))]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()

@@ -203,23 +203,15 @@ class RecoveryPhaseDispatch:
         if not self.current(binding):raise PermissionError('snapshot transfer binding expired')
         return ticket.wire()
 
-    async def receive(self,frame,*,run_id,token,generation):
-        arrived=self.queue.clock()
-        bounded(frame['receipt'],MAX_PHASE_RESULT_BYTES)
-        with self.queue.connect() as db:
+    def _receive(self,frame,*,run_id,token,generation,arrived,settle):
+        with self.queue.connect(write=settle) as db:
             run=self._run(db,run_id,token,generation)
             job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
             if job is None or job['run_id']!=run_id or job['claim']!=frame['claim']:
                 raise StaleClaim('recovery assignment changed')
+            if not settle:return job,run
             _LOG.info('recovery_phase_receipt run_id=%s generation=%s job_id=%s arrived_at=%.6f',
                 run_id,generation,job['id'],arrived)
-            eligible=self.eligible(job,run,generation)
-            if not eligible and self.rebind_current is not None:
-                # A retained result can beat periodic startup maintenance to
-                # the new socket. Rebind before emitting any terminal stale ACK.
-                self.rebind_current()
-                eligible=self.eligible(job,run,generation)
-            if not eligible:raise StaleClaim('recovery assignment changed')
             if tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity:
                 raise PermissionError('recovery receipt runtime changed')
             identity=json.loads(job['identity']);receipt=frame['receipt']
@@ -237,13 +229,35 @@ class RecoveryPhaseDispatch:
                 self.queue._promote_schema_runtime(db,run,generation,receipt['value']['readiness'],
                     target_version=identity['arguments']['target_schema_version'])
                 if self.schema_context is None:raise SnapshotError('migration_context_promotion_unavailable')
-                self.schema_context(receipt['value']['schema_version'])
             if status=='accepted':db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
+        return job,receipt,status
+
+    async def receive(self,frame,*,run_id,token,generation):
+        arrived=self.queue.clock()
+        bounded(frame['receipt'],MAX_PHASE_RESULT_BYTES)
+        job,run=await asyncio.to_thread(self._receive,frame,run_id=run_id,token=token,generation=generation,arrived=arrived,settle=False)
+        eligible=self.eligible(job,run,generation)
+        if not eligible and self.rebind_current is not None:
+            self.rebind_current()
+            eligible=self.eligible(job,run,generation)
+        if not eligible:raise StaleClaim('recovery assignment changed')
+        # A cancelled connection must drain its committed receipt and loop
+        # callbacks before propagating cancellation without an ACK.
+        settlement=asyncio.create_task(asyncio.to_thread(self._receive,frame,
+            run_id=run_id,token=token,generation=generation,arrived=arrived,settle=True))
+        cancelled=False
+        while not settlement.done():
+            try:await asyncio.shield(settlement)
+            except asyncio.CancelledError:cancelled=True
+        job,receipt,status=settlement.result()
+        if receipt['phase']=='schema_migrate' and receipt['value'].get('readiness') is not None:
+            self.schema_context(receipt['value']['schema_version'])
         self._bindings.pop(frame['job_id'],None)
         self.queue._notify_result(frame['job_id'])
         _LOG.info('recovery_phase_settled run_id=%s generation=%s phase=%s job_id=%s status=%s total_ms=%.3f receive_ms=%.3f',
             run_id,generation,receipt['phase'],frame['job_id'],status,
             (self.queue.clock()-job['created'])*1000,(self.queue.clock()-arrived)*1000)
+        if cancelled:raise asyncio.CancelledError
         return dict(job_id=frame['job_id'],claim=frame['claim'],status=status)
 
     async def aclose(self):
