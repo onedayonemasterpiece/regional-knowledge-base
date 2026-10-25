@@ -636,6 +636,114 @@ async def test_transient_post_attempt_sqlite_state_read_keeps_original_ack_task(
 
 
 @pytest.mark.asyncio
+async def test_same_slack_dialog_restored_head_must_send_first_after_stalled_resolution(
+        service,monkeypatch):
+    ctl,receiver,reply,first,posts=_temporary_reply_harness(service)
+    ctl.clock=lambda:1792000002.0
+    second=ctl.accept(_observation(n=2))["request_id"]
+    with ctl.corpus.connect() as db:
+        before=db.execute("SELECT dialog_id,dialog_seq FROM rkb_expert_requests "
+                          "WHERE id=?",(first,)).fetchone()
+        after=db.execute("SELECT dialog_id,dialog_seq FROM rkb_expert_requests "
+                         "WHERE id=?",(second,)).fetchone()
+    assert before["dialog_id"]==after["dialog_id"]
+    assert (before["dialog_seq"],after["dialog_seq"])==(1,2)
+
+    first_stalled=asyncio.Event()
+    release_first=asyncio.Event()
+    original_resolver=receiver.authority.resolve_adapter
+    resolves=0
+    async def stall_first_resolver(**kwargs):
+        nonlocal resolves
+        resolves+=1
+        if resolves==1:
+            first_stalled.set()
+            await release_first.wait()
+        return await original_resolver(**kwargs)
+    monkeypatch.setattr(receiver.authority,"resolve_adapter",stall_first_resolver)
+
+    async def warm_source(query,**kwargs):
+        return EvidenceSearchOutput(evidence=[],status="pending",
+            reason="target_warming",mode="lexical_degraded",
+            main_state="starting",startup=StartupStatus(
+                startup_ref="r"*51,status="pending",reason="target_warming",
+                eta_seconds=300,message_ru=PENDING_STARTUP_MESSAGE_RU))
+    monkeypatch.setattr(receiver.backend,"search_adapter",warm_source)
+    second_denied=asyncio.Event()
+    loop=asyncio.get_running_loop()
+    original_claim=reply._claim_post
+    def observe_actual_claim(request_id):
+        permit=original_claim(request_id)
+        if request_id==second and not release_first.is_set():
+            assert permit is None  # Existing head fence, not a mock refusal.
+            loop.call_soon_threadsafe(second_denied.set)
+        return permit
+    monkeypatch.setattr(reply,"_claim_post",observe_actual_claim)
+
+    # Both saved, ACKed requests are resumed without a new Slack event.
+    await reply.resume_pending()
+    pending=dict(reply._tasks)
+    assert set(pending)=={first,second}
+    try:
+        await asyncio.wait_for(first_stalled.wait(),3)
+        # The earlier independent-startup fix permits the second native read,
+        # but the SAME-dialog send permit must still be withheld.
+        await asyncio.wait_for(second_denied.wait(),7)
+        assert posts==[]
+        assert _delivery_row(ctl,first)["state"]=="searching"
+        assert _delivery_row(ctl,second)["state"]=="searching"
+        assert _delivery_row(ctl,second)["delivery_attempt"]==0
+        release_first.set()
+        await asyncio.wait_for(asyncio.gather(*pending.values()),12)
+        await asyncio.sleep(0)
+        assert [item["client_msg_id"] for item in posts]==["Ev-1","Ev-2"]
+        assert all(item["thread_ts"]=="1792000000.100" for item in posts)
+        assert _delivery_row(ctl,first)["state"]=="delivered"
+        assert _delivery_row(ctl,second)["state"]=="delivered"
+        assert _delivery_row(ctl,second)["delivery_attempt"]==1
+        await reply.resume_pending()
+        assert reply._tasks=={} and len(posts)==2
+    finally:
+        release_first.set()
+        for task in pending.values():
+            if not task.done():task.cancel()
+        await asyncio.gather(*pending.values(),return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_unknown_legacy_dialog_head_blocks_later_slack_post_without_resend(
+        service,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    ctl,receiver,reply,first,posts=_temporary_reply_harness(service,lost_ack=True)
+    async def transient(query,**kwargs):
+        raise ToolError('{"status":"unavailable","reason":"target_warming"}')
+    monkeypatch.setattr(receiver.backend,"search_adapter",transient)
+    # First provider POST may have succeeded but its ACK was lost.
+    with pytest.raises(httpx.ReadTimeout):
+        await reply._answer(first)
+    first_saved=_delivery_row(ctl,first)
+    assert first_saved["state"]=="unknown"
+    assert first_saved["delivery_attempt"]==1
+    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
+
+    ctl.clock=lambda:1792000002.0
+    second=ctl.accept(_observation(n=2))["request_id"]
+    # Both questions remain in the same original Slack thread.
+    assert ctl._row(first)["dialog_id"]==ctl._row(second)["dialog_id"]
+    with pytest.raises(PermissionError,match="not claimable"):
+        await reply._answer(second)
+    assert _delivery_row(ctl,second)["state"]=="searching"
+    assert _delivery_row(ctl,second)["delivery_attempt"]==0
+    assert _delivery_row(ctl,first)==first_saved
+    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
+    # Re-reading the same waiting result never grants a second Slack effect.
+    with pytest.raises(PermissionError,match="not claimable"):
+        await reply._answer(second)
+    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
+    assert _delivery_row(ctl,second)["delivery_attempt"]==0
+
+
+@pytest.mark.asyncio
 async def test_unrelated_restart_resolve_adapter_stall_does_not_hold_other_dialogs(
         service,monkeypatch):
     ctl,receiver,reply,first,posts=_temporary_reply_harness(service)
