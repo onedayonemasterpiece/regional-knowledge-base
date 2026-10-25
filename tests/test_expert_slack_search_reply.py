@@ -521,6 +521,32 @@ async def test_legacy_rebind_resumes_saved_searching_without_new_slack_event(
 
 
 @pytest.mark.asyncio
+async def test_one_signed_legacy_ack_with_uncertain_post_never_retries_itself(
+        service,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    ctl,receiver,reply,rid,posts=_temporary_reply_harness(service,lost_ack=True)
+    reply.ingress.bind_search_reply(reply)
+    async def temporary(query,**kw):
+        raise ToolError('{"status":"unavailable","reason":"target_warming"}')
+    monkeypatch.setattr(receiver.backend,"search_adapter",temporary)
+    app=Starlette(routes=[Route(PATH,reply.ingress.__call__,methods=["POST"])])
+    raw,head=_event()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as http:
+        first=await http.post(PATH,content=raw,headers=head)
+        assert first.status_code==200 and first.json()=={"ok":True}
+    await asyncio.wait_for(reply._tasks[rid],3)
+    await asyncio.sleep(0)
+    saved=_delivery_row(ctl,rid)
+    assert saved["state"]=="unknown" and saved["delivery_attempt"]==1
+    assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-1"
+    assert reply._tasks=={}
+    await reply.resume_pending()
+    assert reply._tasks=={} and len(posts)==1
+    assert _delivery_row(ctl,rid)==saved
+
+
+@pytest.mark.asyncio
 async def test_generic_post_unknown_never_resends_after_provider_lost_ack(service, monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
 
