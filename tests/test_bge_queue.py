@@ -19,6 +19,28 @@ def test_atomic_start_and_durable_replayed_job(tmp_path):
     with pytest.raises(ValueError):queue.enqueue('actor','same',['changed'])
 
 
+@pytest.mark.parametrize('transition',['lease','failure','drain'])
+def test_retired_run_finishes_maintenance_bookkeeping_without_inventing_native_result(tmp_path,transition):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    ordinary=queue.enqueue('actor','ordinary',['ordinary work'],kind='document')
+    run,_=run_details(queue)
+    with queue.connect() as db:
+        for name,state in [('pending','pending'),('claimed','pending' if transition=='drain' else 'claimed')]:
+            db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(name,'maintenance:'+run,name,'recovery_phase','[]','{"operation":"unknown"}',state,
+                    1000,1000,run,'retained-claim',2000))
+    if transition=='lease':now[0]+=901;queue.maintenance()
+    elif transition=='failure':queue.launch_record(run,'owner/notebook',failed=True)
+    else:
+        with queue.connect() as db:db.execute("UPDATE runs SET status='draining' WHERE id=?",(run,))
+        queue.maintenance()
+    with queue.connect(write=False) as db:
+        rows=db.execute("SELECT state,result,identity,run_id,claim FROM jobs WHERE kind='recovery_phase'").fetchall()
+        assert len(rows)==2
+        assert all(tuple(r)==('done',None,'{"operation":"unknown"}',run,'retained-claim') for r in rows)
+    assert queue.result('actor',ordinary)['state']=='pending'
+
+
 def test_planned_idle_drain_preserves_provider_reservation_and_pending_work(tmp_path):
     queue=BgeQueue(tmp_path/'queue.sqlite');job=queue.enqueue('actor','work',['query'])
     run,token=run_details(queue)

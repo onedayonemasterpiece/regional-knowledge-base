@@ -32,11 +32,7 @@ MAX_STARTUP_FAILURES = 3  # Finite verified-not-sent/terminal retries per durabl
 _WAITERS = {}
 _WAITERS_LOCK = threading.Lock()
 RECONCILE_SECONDS = 0.25
-# Unfinished work that a live or future run can still execute. A recovery phase
-# is bound to its own run's actor, so once that run is expired/failed the row is
-# retained evidence only: it is neither startup demand nor admission capacity.
-LIVE_JOBS = ("state!='done' and not (kind='recovery_phase' and actor in "
-             "(select 'maintenance:'||id from runs where status in ('expired','failed')))")
+LIVE_JOBS = "state!='done'"
 _LOG = logging.getLogger(__name__)
 
 
@@ -177,7 +173,14 @@ class BgeQueue:
         return (run['status']=='expired' or now>=run['started']+MAX_LIFETIME
                 or now>=run['useful']+IDLE_SECONDS or lost or run['status']=='failed')
 
+    def _retire_recovery_jobs(self,db,now):
+        # Retired-run bookkeeping ends here. Keep native outcomes/claims as
+        # evidence; done with no result does not assert native success.
+        db.execute("""UPDATE jobs SET state='done',updated=? WHERE kind='recovery_phase' AND state!='done'
+            AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))""",(now,))
+
     def _expire(self, db, now):
+        self._retire_recovery_jobs(db,now)
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             # A cold start gets at most 15 minutes to prove the completed native
             # bootstrap or become ready. Only trusted finalized pins permit the
@@ -187,6 +190,7 @@ class BgeQueue:
                 if pending(db,run['id']):
                     continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
+                self._retire_recovery_jobs(db,now)
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
@@ -287,8 +291,6 @@ class BgeQueue:
                     raise ValueError('idempotency payload mismatch')
                 if previous['state']!='done':self._ensure(db,now)
                 return previous['id']
-            if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
-                raise RuntimeError('BGE queue full')
             db.execute('update control set startup_ref=null,startup_state=null,startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
@@ -312,8 +314,6 @@ class BgeQueue:
                 if prior['kind']!='source_command' or prior['identity']!=encoded:
                     raise ValueError('source operation has different exact dispatch binding')
                 return prior['id']
-            if db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0]>=256:
-                raise RuntimeError('BGE queue full')
             db.execute('update control set startup_ref=null,startup_state=null,startup_failures=0 where id=1 and startup_failures>=?',(MAX_STARTUP_FAILURES,))
             self._ensure(db,now);job_id=str(uuid.uuid4())
             db.execute('insert into jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) values(?,?,?,?,?,?,?,?,?)',
@@ -829,6 +829,7 @@ class BgeQueue:
             # Kaggle version status, or local timeout never sets this state.
             db.execute("update runs set status='expired',channel_active=0,launch_state='terminal' where id=?",
                        (run['id'],))
+            self._retire_recovery_jobs(db,self.clock())
             db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
             db.execute('update control set current_run=null where current_run=?',(run['id'],))
             db.execute('update control set successor=null where successor=?',(run['id'],))
@@ -987,6 +988,7 @@ class BgeQueue:
             from .queue_writer import pending
             for row in draining:
                 if not pending(db,row['id']):db.execute("update runs set status='expired' where id=?",(row['id'],))
+            self._retire_recovery_jobs(db,now)
             db.execute(
                 "delete from jobs where kind='query' and state='done' and updated<?",
                 (now-DONE_QUERY_RETENTION_SECONDS,),
@@ -1145,6 +1147,7 @@ class BgeQueue:
             db.execute('update runs set provider_ref=?,provider_version=coalesce(provider_version,?),launch_state=?,status=case when ? then ? else status end where id=?',
                        (provider_ref,provider_version,'failed' if failed else 'dispatched',failed,'failed',run_id))
             if failed:
+                self._retire_recovery_jobs(db,self.clock())
                 # Count a known failure once. Repeated failed receipts cannot
                 # re-arm the launch budget or start infinite 60-second loops.
                 if row and row['status']!='failed':
