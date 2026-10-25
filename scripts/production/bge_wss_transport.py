@@ -418,10 +418,13 @@ class BgeWssTransport:
         if self.shared_reads:
             self._claim_resource(job, 'document')
         self.job = job
-        if self.shared_reads and job['kind']=='source_command':
+        if self.shared_reads and (job['kind']=='source_command' or (
+                job['kind']=='recovery_phase' and job.get('phase')=='snapshot_status')):
             # Accepted native work keeps its durable job/claim. Its BGE calls
             # share ResidentEncoder's lock with QUERY, so PG/Python work must
             # not reserve the channel's only read permit for the whole job.
+            # Snapshot status only inspects its existing I/O task; retaining
+            # that metadata reply must not reserve model/PG compute either.
             self.last_released,self.resource=self.resource,None
         self.encoding = asyncio.create_task(self._encode(job))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))

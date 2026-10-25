@@ -556,6 +556,43 @@ async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_no
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['snapshot_status','capture'])
+async def test_snapshot_metadata_releases_compute_while_retaining_one_durable_job(phase):
+    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event()
+    started=asyncio.Event();finish=asyncio.Event();executions=[]
+    async def read(frame,*,encode):return result(frame)
+    async def native(frame):
+        executions.append(frame['id']);started.set();await finish.wait()
+        return {'phase':phase,'request_sha256':'c'*64,'value':{'status':'pending'}}
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
+        lambda:lambda _: [1.]+[0.]*1023,lambda:{},query_handler=read,
+        recovery_handler=native,connector=peer.connect,heartbeat_seconds=.01,maximum_seconds=8,stop=stop)
+    task=asyncio.create_task(worker.run())
+    dispatch=dict(type='DISPATCH',id='metadata-job',claim='metadata-claim',kind='recovery_phase',
+        compute_claim='metadata-compute',dispatch_generation=1,run_id=CONFIG['run_id'],
+        launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation,
+        database_generation='fixture-db',writer_generation='fixture-writer',
+        phase=phase,operation_key='metadata-operation',request_sha256='c'*64,arguments={'handle':'owned'})
+    try:
+        await peer.wait('READY');await peer.put(dispatch);await started.wait()
+        assert worker.job['id']=='metadata-job' and not worker.encoding.done()
+        if phase=='snapshot_status':
+            released=await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_id']=='metadata-job')
+            assert released['compute_claim']=='metadata-compute'
+            await peer.put(query(request='read-during-metadata'))
+            await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']=='read-during-metadata')
+            assert not finish.is_set() and worker.job['id']=='metadata-job'
+        else:
+            assert worker.resource['resource_id']=='metadata-job'
+        finish.set();receipt=await peer.wait('RECOVERY_PHASE_RESULT')
+        assert receipt['job_id']=='metadata-job' and receipt['claim']=='metadata-claim'
+        assert executions==['metadata-job']
+        await peer.put(dict(type='RESULT_ACK',job_id='metadata-job',claim='metadata-claim',status='accepted'))
+    finally:
+        finish.set();stop.set();await asyncio.wait_for(task,3)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('job_kind', ['source_command', 'recovery_phase'])
 @pytest.mark.parametrize('fault', ['new_dispatch', 'wrong_incarnation', 'stale_generation',
                                   'changed_replay', 'wrong_ack', 'authority_closed'])
