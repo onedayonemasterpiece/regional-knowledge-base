@@ -479,8 +479,6 @@ class TargetRuntime:
             try:
                 original_handler=NativeOriginalIntake(config=OriginalIntakeConfig.from_wire(self.target['original_intake']),
                     database=self.database,identity=identity,workspace=workspace,
-                    illustration_acquire=self.pool.connection,
-                    illustration_writer_acquire=self.writer_pool.connection if self.writer_pool else None,
                     telegram_downloader=self.telegram_original_downloader,current=lambda binding:
                         not self.closed and binding[:2]==(run_id,runtime_incarnation))
             except BaseException:
