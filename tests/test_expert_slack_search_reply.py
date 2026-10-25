@@ -306,7 +306,7 @@ async def test_error_code_never_reflects_untrusted_exception_detail(service, mon
     await reply._answer(request_id)
     assert _delivery_row(control, request_id)["state"] == "delivered"
     assert len(posts) == 1
-    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/not_ready"
+    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable"
     assert "secret" not in posts[0]["text"]
 
 
