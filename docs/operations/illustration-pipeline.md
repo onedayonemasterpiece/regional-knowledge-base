@@ -120,6 +120,8 @@ original-lock wait, `parse_render_complete` (the complete decoder/parser call,
 including native text and JPEG work), and `ready` with `image_cached` and
 `text_cached`. These flags mean reuse from before this request; the first render
 is not a cache hit. This does not separate JPEG encoding from decoder startup.
+The lock timer starts immediately before acquisition, after the I/O task's
+attachment wait; a disconnected task's wait is not attributed to rendering.
 `original_page_read` records native-receipt wait (including restoration/polling),
 archive verification, and derivative-image download as separate durations.
 Correlate native job IDs with the existing `recovery_phase_dispatch/receipt`
@@ -132,6 +134,8 @@ required before claiming any live timing improvement.
 Recovery WSS events additionally distinguish API socket-send queue/time, native
 dispatch receipt, handler begin/end and native result-send queue/time, correlated
 by run/job/generation/phase. Native handler failure still emits an end event.
+Compute native scheduling/execution intervals from their process-local monotonic
+timestamps; API and native clocks are independent.
 `send_returned` only describes the local send call; the opposite endpoint's
 receipt remains independent evidence. API and worker entrypoints enable these
 specific INFO loggers while unrelated library logging remains at WARNING.

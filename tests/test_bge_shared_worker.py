@@ -608,8 +608,8 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
                 if line.startswith('{')]
             expected={
                 'native_recovery_dispatch_receive':{'receive_validation_ms'},
-                'native_recovery_handler_begin':{'receive_to_handler_ms'},
-                'native_recovery_handler_end':{'handler_ms'},
+                'native_recovery_handler_begin':set(),
+                'native_recovery_handler_end':set(),
                 'native_recovery_result_socket_send':{'queue_wait_ms','socket_send_ms'},
             }
             for name,timings in expected.items():
@@ -623,6 +623,8 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
                       {'send_returned'} if name=='native_recovery_result_socket_send' else set())}
                 assert all(event[key]>=0 for key in timings)
                 assert event['at_monotonic_s']>0
+            moments=[next(e['at_monotonic_s'] for e in events if e.get('event')==name) for name in expected]
+            assert moments==sorted(moments)
             assert next(x for x in events if x.get('event')=='native_recovery_handler_end')['handler_returned'] is True
             assert next(x for x in events if x.get('event')=='native_recovery_result_socket_send')['send_returned'] is True
         original_job, original_pending = worker.job, worker.pending

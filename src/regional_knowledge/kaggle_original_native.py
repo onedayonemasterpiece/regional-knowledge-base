@@ -197,8 +197,8 @@ class NativeOriginalIntake:
         if frame['phase']=='original_pages' and self.snapshot_io is not None:
             prior=self._remember_request(key,request)
             if prior is not None:return prior
-            queued=time.monotonic()
             async def render(operation):
+                queued=time.monotonic()
                 async with self._lock:
                     _LOG.info('native_original_page stage=lock_acquired run_id=%s job_id=%s wait_ms=%.3f',
                         self.identity[0],frame['id'],(time.monotonic()-queued)*1000)
