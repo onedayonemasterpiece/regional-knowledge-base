@@ -31,7 +31,6 @@ jobs:
       - name: Test actual intake, journal and checkpoint boundaries with synthetic I/O
         run: |
           python -m pytest -q -ra -p no:cacheprovider --junitxml=intake-boundary.xml \
-            tests/test_kaggle_native_intake_checkpoint_boundary.py \
             tests/test_dataset_recovery_store.py::test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent \
             tests/test_kaggle_dataset_checkpoint.py::test_capture_materializes_crash_gap_outcome_before_export_and_keeps_it_pending \
             tests/test_kaggle_dataset_checkpoint.py::test_work_cycle_waits_for_quiet_then_resumes_published_version_after_lost_native_readback

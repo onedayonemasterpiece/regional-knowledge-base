@@ -310,7 +310,6 @@ async def test_applied_page_status_needs_no_second_original_head(native_intake, 
     assert verified_calls==[book.ingestion_id]
 
 
-
 @pytest.mark.asyncio
 async def test_resume_cursor_ignores_newer_stage_not_yet_applied(native_intake):
     s=native_intake
@@ -502,51 +501,36 @@ async def test_start_allows_same_file_retry_but_blocks_second_original_before_ac
 
 
 @pytest.mark.asyncio
-async def test_normal_start_keeps_inactive_legacy_rows_and_accepted_bytes_unchanged(native_intake):
-    s=native_intake;old=await start(s)
-    row=s.importer._row(s.principal.subject,old.ingestion_id)
-    s.importer.native_intake._state(row,create=True)
+async def test_legacy_intake_status_requires_reimport_without_changing_accepted_command(native_intake):
+    s = native_intake
+    original = await start(s)
+    await stage(s, original, batch(s, original, count=1))
+    entry = await pending(s, original)
+    frozen = entry.command_bytes
+    count = operation_count(s)
     with s.t.queue.connect() as db:
-        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(old.ingestion_id,))
-    await stage(s,old,batch(s,old,count=1))
-    entry=await finish(s,old) # Known durable receipt, not yet settled in compact progress.
-    frozen=entry.command_bytes
-    before_row=s.importer._row(s.principal.subject,old.ingestion_id)
-    before_state=state(s,old)
-    new=await start(s)
-    assert new.ingestion_id!=old.ingestion_id and new.document_id!=old.document_id
-    assert s.importer._row(s.principal.subject,old.ingestion_id)==before_row
-    assert state(s,old)==before_state
-    assert (await s.spool.get(entry.command.operation_key)).command_bytes==frozen
-    assert (await s.spool.get(entry.command.operation_key)).outcome_state=='DURABLE'
-    assert len(s.originals.calls)==2
-
-
-@pytest.mark.asyncio
-async def test_new_upload_can_stage_after_foreign_uncertain_legacy_operation(native_intake):
-    s=native_intake;old=await start(s)
-    row=s.importer._row(s.principal.subject,old.ingestion_id)
-    s.importer.native_intake._state(row,create=True)
-    with s.t.queue.connect() as db:
-        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',(old.ingestion_id,))
-    await stage(s,old,batch(s,old,count=1))
-    entry=await pending(s,old)
-    await s.spool.mark_apply_sent(entry.command.operation_key)
-    before_row=s.importer._row(s.principal.subject,old.ingestion_id)
-    before_state=state(s,old)
-    again=await start(s)
-    assert again.ingestion_id!=old.ingestion_id
-    assert s.importer._row(s.principal.subject,old.ingestion_id)==before_row
-    assert state(s,old)==before_state
-    assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
-    assert len(s.originals.calls)==2
-    assert (await stage(s,again,batch(s,again,count=1))).state=='processing'
-    next_entry=await pending(s,again)
-    assert next_entry.command.sequence==entry.command.sequence+1
-    assert (await s.spool.get(entry.command.operation_key)).command_bytes==entry.command_bytes
-    assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
+        db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=0 WHERE ingestion_id=?',
+            (original.ingestion_id,))
+        jobs = [dict(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')]
+    from regional_knowledge.kaggle_importer import KaggleSourceImporter
+    s.importer = KaggleSourceImporter(s.startup, originals=s.originals, tokenizer=s.importer.tokenizer)
+    s.startup.importer = s.importer
+    replacement = await s.importer.book_ingest(command='start', principal=s.principal,
+        file=ChatFile(file_id='synthetic-174-djvu', download_url='https://files.example.test/174.djvu',
+            mime_type='image/vnd.djvu', file_name='synthetic-174.djvu'),
+        payload=dict(title='Replacement title after retiring legacy intake'), source_import=options())
+    assert replacement.ingestion_id != original.ingestion_id
+    for _ in range(2):
+        failed = await call(s, original, 'status')
+        assert failed.state == 'failed' and failed.message == 'legacy_import_reimport_required'
+        assert state(s, original)['rejected_reason'] == 'legacy_import_reimport_required'
+        assert operation_count(s) == count
+        retained = await s.spool.get(entry.command.operation_key)
+        assert retained.command_bytes == frozen and retained.accepted == entry.accepted
+        assert retained.apply_receipt == entry.apply_receipt
     with s.t.queue.connect(write=False) as db:
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 2
+        assert [dict(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')] == jobs
+    assert s.importer._row(s.principal.subject, original.ingestion_id)['phase'] == 'failed'
 
 
 @pytest.mark.asyncio

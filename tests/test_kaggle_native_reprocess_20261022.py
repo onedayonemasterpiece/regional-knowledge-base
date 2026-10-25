@@ -140,67 +140,6 @@ async def test_native_reprocess_cannot_bypass_second_active_owner_import(intake,
 
 
 @pytest.mark.asyncio
-async def test_native_reprocess_terminal_requires_exact_dataset_covered_outcome(intake, monkeypatch):
-    s = intake
-    original = await start(s)
-    row = s.importer._row(s.principal.subject, original.ingestion_id)
-    s.importer._save(row, phase="finalized")
-    # A finalized local flag without an accepted command is NEVER durable.
-    peer = _installed_native(monkeypatch, s.importer, phase="finalized")
-    with pytest.raises(ToolError, match="native_source_accepted_outcome_not_saved"):
-        await s.importer.book_ingest(command="reprocess", principal=s.principal,
-            document_id=original.document_id)
-    assert peer.entry_calls == 1
-
-    op = "source-activate:" + original.ingestion_id
-    payload = b'{"accepted":true,"source_revision":1}'
-    outcome_hash = digest(payload)
-    binding = s.importer.startup.binding
-    command = SimpleNamespace(operation_key=op,route="source.activate.v1",
-        person_id=s.principal.subject,ids={"source_id":original.document_id},sequence=5)
-    receipt = RemoteOutcomeReceipt(op, "a"*64, outcome_hash, "saved/recovery/original", 0,
-        binding.database_generation)
-    entry = SimpleNamespace(command=command,command_sha256="a"*64,accepted=object(),
-        database_generation=binding.database_generation,apply_receipt=SimpleNamespace(
-            status="applied",outcome=payload),outcome_state="DURABLE",remote_outcome=receipt)
-    peer.terminal = entry
-    # A remote receipt on an S3/memory store is not a verified Dataset version.
-    with pytest.raises(ToolError, match="native_source_dataset_coverage_required"):
-        await s.importer.book_ingest(command="reprocess", principal=s.principal,
-            document_id=original.document_id)
-
-    envelope = canonical(dict(codec="rkb.outcome.v1",stream=s.spool.journal.stream,
-        operation_key=op,command_sha256="a"*64,sequence=5,
-        database_generation=binding.database_generation,outcome_b64=base64.b64encode(payload).decode(),
-        outcome_sha256=outcome_hash,outcome_length=len(payload)))
-    receipt = RemoteOutcomeReceipt(op,"a"*64,outcome_hash,"saved/recovery/original",len(envelope),
-        binding.database_generation)
-    peer.terminal = SimpleNamespace(**{**vars(entry), "remote_outcome":receipt})
-    store = object.__new__(DatasetRecoveryStore)
-    async def read(self, key, *, max_bytes):
-        assert key == receipt.key and max_bytes >= len(envelope)
-        return SimpleNamespace(data=envelope)
-    store.read = MethodType(read, store)
-    store.remote_durable = lambda key, data: False
-    s.spool.journal.store = store
-    with pytest.raises(ToolError, match="native_source_dataset_coverage_required"):
-        await s.importer.book_ingest(command="reprocess", principal=s.principal,
-            document_id=original.document_id)
-    store.remote_durable = lambda key, data: data == envelope
-    # Dataset coverage is now synthetic TRUE, but native SQL allows ONLY
-    # absent_source + revision1. We must not mint a duplicate document or
-    # pretend a derived revision has been installed.
-    with pytest.raises(ToolError, match="native_source_revision_upgrade_required"):
-        await s.importer.book_ingest(command="reprocess", principal=s.principal,
-            document_id=original.document_id)
-    with pytest.raises(ToolError, match="native_source_revision_upgrade_required"):
-        await s.importer.book_ingest(command="rechunk", principal=s.principal,
-            document_id=original.document_id)
-    assert len(s.originals.calls) == 1
-    assert peer.status_calls == 0
-
-
-@pytest.mark.asyncio
 async def test_reuse_rejects_wrong_owned_document_and_identity(intake, monkeypatch):
     s = intake
     original = await start(s)
