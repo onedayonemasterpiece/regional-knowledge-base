@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import pytest
 from regional_knowledge.bge_queue import BgeQueue,IDLE_SECONDS,ROTATE_SECONDS,DONE_QUERY_RETENTION_SECONDS,DONE_AUDIT_RETENTION_SECONDS
 from regional_knowledge.bge_contract import SPACE,validate_vector
@@ -37,7 +38,8 @@ def test_retired_run_finishes_maintenance_bookkeeping_without_inventing_native_r
     with queue.connect(write=False) as db:
         rows=db.execute("SELECT state,result,identity,run_id,claim FROM jobs WHERE kind='recovery_phase'").fetchall()
         assert len(rows)==2
-        assert all(tuple(r)==('done',None,'{"operation":"unknown"}',run,'retained-claim') for r in rows)
+        assert all((r['state'],json.loads(r['result']),r['identity'],r['run_id'],r['claim'])==
+            ('done',{'value':{'error':'run_expired'}},'{"operation":"unknown"}',run,'retained-claim') for r in rows)
     assert queue.result('actor',ordinary)['state']=='pending'
 
 

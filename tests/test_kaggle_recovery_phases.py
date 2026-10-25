@@ -1,6 +1,7 @@
 from regional_knowledge.kaggle_current_registry import current_registry,registry_sha256
 """Actual durable admission/channel with synthetic native phases; no PG/model/S3."""
 import asyncio
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -50,7 +51,8 @@ async def test_maintenance_retires_dead_work_and_accepts_beyond_256_rows(state,o
         with s.q.connect(write=False) as db:
             rows=db.execute("SELECT state,identity,result FROM jobs WHERE id LIKE 'old-%'").fetchall()
             assert len(rows)==256
-            assert all(tuple(r)==('done' if retired else 'pending','{}',None) for r in rows)
+            assert all((r['state'],r['identity'],json.loads(r['result']) if r['result'] else None)==
+                ('done' if retired else 'pending','{}',{'value':{'error':'run_expired'}} if retired else None) for r in rows)
     finally:await dispatch.aclose()
 
 
@@ -303,7 +305,7 @@ async def test_maintenance_before_ready_uses_actual_slot_and_durable_claim(state
 
 
 @pytest.mark.asyncio
-async def test_worker_caches_exact_known_result_but_retains_unknown_before_effects():
+async def test_worker_caches_completed_result_and_retries_native_read_after_transient_failure():
     f=object.__new__(NativeSnapshotFactory);f.database=database();f.identity=('r','n','i');f._current=lambda b:None
     calls=[]
     async def verify(binding,ref):calls.append(ref);return {'observed':'native'}
@@ -316,13 +318,45 @@ async def test_worker_caches_exact_known_result_but_retains_unknown_before_effec
         request_sha256=sha(encode({'phase':'verify','arguments':args})),compute_claim='slot',dispatch_generation=1)
     first=await worker(frame)
     assert await worker(frame)==first and calls==['known']
+    changed=frame|{'arguments':{'reference':'changed'},'request_sha256':sha(encode({'phase':'verify','arguments':{'reference':'changed'}}))}
+    with pytest.raises(SnapshotError,match='operation_changed'):await worker(changed)
     with pytest.raises(SnapshotError):await worker(frame|{'arguments':{'reference':'changed'}})
     with pytest.raises(SnapshotError):await worker(frame|{'sql':'select 1'})
-    async def lost(binding,ref):calls.append('effect');raise ConnectionError('lost native response')
+    async def lost(binding,ref):calls.append('lost-read');raise ConnectionError('lost native response')
     f.verify_reference=lost;frame=frame|{'operation_key':'unknown'}
     with pytest.raises(ConnectionError):await worker(frame)
-    with pytest.raises(SnapshotError,match='unknown_requires_reconciliation'):await worker(frame)
-    assert calls==['known','effect']
+    f.verify_reference=verify
+    recovered=await worker(frame)
+    assert await worker(frame)==recovered
+    assert calls==['known','lost-read','known']
+
+
+@pytest.mark.asyncio
+async def test_result_timeout_reuses_same_durable_job_and_accepts_its_late_receipt(state):
+    s=state
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b is s,timeout_seconds=.02)
+    first=second=None
+    try:
+        first,work,frame=await work_for(s,bridge)
+        with pytest.raises(TimeoutError):await first
+        bridge.timeout=5
+        second=asyncio.create_task(bridge.request(s,frame['phase'],frame['arguments'],operation_key=frame['operation_key']))
+        await asyncio.sleep(.01)
+        await bridge.receive(response(s,frame,{'native':'late-readback'}),run_id=s.run,token=s.token,generation=s.generation)
+        assert await second=={'native':'late-readback'}
+        assert await bridge.request(s,frame['phase'],frame['arguments'],operation_key=frame['operation_key'])=={'native':'late-readback'}
+        with s.q.connect(write=False) as db:
+            rows=db.execute("SELECT id,state FROM jobs WHERE kind='recovery_phase'").fetchall()
+            assert [tuple(r) for r in rows]==[(frame['id'],'done')]
+        r=work.resource
+        await s.a.resource_released(s.run,s.token,s.generation,runtime_incarnation=r.runtime_incarnation,
+            resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    finally:
+        for task in (first,second):
+            if task is not None and not task.done():task.cancel()
+        await asyncio.gather(*(t for t in (first,second) if t is not None),return_exceptions=True)
+        await bridge.aclose()
 
 
 

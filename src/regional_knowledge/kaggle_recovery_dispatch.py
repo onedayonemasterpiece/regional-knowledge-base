@@ -2,7 +2,7 @@
 
 No public enqueue surface, human impersonation, SQL RPC or second dispatcher.
 The existing run authentication, document resource and durable RESULT_ACK own
-assignment/reconnect semantics; a timeout preserves an unknown operation.
+assignment/reconnect semantics; a timeout leaves the same durable job available.
 """
 from __future__ import annotations
 
@@ -121,8 +121,8 @@ class RecoveryPhaseDispatch:
         self._bindings[job]=binding;self.queue.shared_reads._event.set()
         result=await self.queue.wait_result(actor,job,self.timeout)
         if result is None:
-            _LOG.warning('recovery_phase_unknown run_id=%s phase=%s operation_hash=%s',self.identity[0],phase,sha(operation_key.encode()))
-            raise SnapshotError('recovery_phase_unknown_reconcile_same_operation')
+            _LOG.warning('recovery_phase_timeout run_id=%s phase=%s operation_hash=%s',self.identity[0],phase,sha(operation_key.encode()))
+            raise TimeoutError('recovery phase result timeout')
         # The durable result owns replay after completion. Only outstanding
         # work needs its attachment retained for transfer/dispatch authority.
         self._bindings.pop(job,None)
