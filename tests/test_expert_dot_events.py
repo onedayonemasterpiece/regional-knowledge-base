@@ -283,7 +283,8 @@ async def test_finished_native_prefetch_reaches_dot_without_second_search(monkey
     class Control:
         bot_user_id="U0BOT"
         def _row(self,request_id):
-            return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct"}
+            return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
+                    "state":"pending"}
         def claim(self,credentials,*,request_id,lease_seconds):
             return {"state":"leased","generation":1,"execution_token":"x"*40}
         def claim_context(self,credentials,request_id,generation,token):
