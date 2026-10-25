@@ -116,13 +116,18 @@ class ExpertSlackSearchReply:
 
     def notify(self, request_id):
         if self._dot_events is not None and self._dot_events._subscription() is not None:
-            # Only suppress the original source-only reply if a real, current
-            # dot subscription can be woken. Expired/unset falls back to it.
+            # Fresh events belong to dot, but already-searching legacy rows
+            # always finish through their original sender at restart.
             return self._dot_events.notify(request_id)
-        if request_id in self._tasks:return
-        # Original requests already passed Slack ACK. A capacity refusal here
-        # would silently discard the 17th; canonical read admission is shared.
-        task=asyncio.create_task(self._answer_until_sent(request_id))
+        self._wake_legacy(request_id)
+
+    def _wake_legacy(self, request_id, *, after=None, first_done=None):
+        if request_id in self._tasks:
+            if first_done is not None:first_done.set()
+            return
+        # The original request remains the only durable work identity.
+        task=asyncio.create_task(self._answer_until_sent(
+            request_id,after=after,first_done=first_done))
         self._tasks[request_id]=task
         def finish(t):
             if self._tasks.get(request_id) is t:
@@ -133,33 +138,47 @@ class ExpertSlackSearchReply:
                                                 type(exc).__name__)
         task.add_done_callback(finish)
 
-    async def _answer_until_sent(self, request_id):
+    async def _answer_until_sent(self, request_id, *, after=None, first_done=None):
         # The SAME acknowledged request is retried only while no provider
         # permit exists. A possible POST sets sending/unknown: never resend.
+        if after is not None:
+            await after.wait()
         delay=2
         while True:
             try:
                 await self._answer(request_id)
+                row=await asyncio.to_thread(self.control._row,request_id)
+                if row is None or row["state"] not in ("received","searching"):
+                    return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 _LOG.warning("rkb_slack_reply_deferred error_type=%s",
                              type(exc).__name__)
-            row=await asyncio.to_thread(self.control._row,request_id)
-            if row["state"] not in ("received","searching"):
-                return
+            finally:
+                if first_done is not None:
+                    first_done.set()
+                    first_done=None
             await asyncio.sleep(delay)
             delay=min(60,delay*2)
 
     async def resume_pending(self):
-        if self._dot_events is not None and self._dot_events._subscription() is not None:
-            return await self._dot_events.resume_pending()
+        subscribed=(self._dot_events is not None
+                    and self._dot_events._subscription() is not None)
         with self.control.corpus.connect() as db:
             rows=db.execute("""SELECT id FROM rkb_expert_requests
-                WHERE state IN ('received','searching')
-                ORDER BY created_at,id""").fetchall()
+                WHERE state='searching' OR (state='received' AND ?)
+                ORDER BY created_at,id""",(not subscribed,)).fetchall()
+        # Sequence only the FIRST attempt of each restored request. No
+        # arbitrary cap, new queue or mass native-search fan-out at startup;
+        # later retries retain the original task and canonical admission.
+        previous=None
         for row in rows:
-            self.notify(row["id"])
+            first_done=asyncio.Event()
+            self._wake_legacy(row["id"],after=previous,first_done=first_done)
+            previous=first_done
+        if subscribed:
+            await self._dot_events.resume_pending()
 
     def _verified(self, db, row):
         origin=json.loads(row["origin"])
