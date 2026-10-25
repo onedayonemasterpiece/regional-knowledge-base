@@ -296,13 +296,14 @@ class OriginalIntakeController:
                 or page.get('parser_sha256')!=receipt.parser_sha256 or page.get('native_cursor')!=native_cursor
                 or page.get('page_receipt_sha256')!=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))):
             raise OriginalIntakeError('original_page_provenance_changed')
-        chunks=self._page_chunks.setdefault(ingestion_id,{}).setdefault(index,{})
-        part_key=canonical(native_cursor).decode();raw=canonical(page)
-        if part_key in chunks and chunks[part_key]!=raw:
-            self._page_proofs.get(ingestion_id,{}).pop(index,None)
-            raise OriginalIntakeError('original_page_fragment_changed')
-        chunks[part_key]=raw
-        self._assemble_available(ingestion_id,index,chunks)
+        if receipt.page_count<=32 and index not in self._page_proofs.get(ingestion_id,{}):
+            chunks=self._page_chunks.setdefault(ingestion_id,{}).setdefault(index,{})
+            part_key=canonical(native_cursor).decode();raw=canonical(page)
+            if part_key in chunks and chunks[part_key]!=raw:
+                self._page_proofs.get(ingestion_id,{}).pop(index,None)
+                raise OriginalIntakeError('original_page_fragment_changed')
+            chunks[part_key]=raw
+            self._assemble_available(ingestion_id,index,chunks)
         issued=self._record_issued_image(receipt,page)
         next_cursor=(encode_page_cursor(index,page['next_native']) if page['next_native'] is not None
             else str(index+1) if index+1<receipt.page_count else None)
@@ -381,6 +382,9 @@ class OriginalIntakeController:
             seen.add(key);part=json.loads(chunks[key]);parts.append(part);cursor=part['next_native']
             if cursor is None:
                 self._page_proofs.setdefault(ingestion_id,{})[index]=canonical(assemble_native_page(parts))
+                del self._page_chunks[ingestion_id][index]
+                if not self._page_chunks[ingestion_id]:
+                    del self._page_chunks[ingestion_id]
                 return
         raise OriginalIntakeError('original_page_continuation_bound')
 
