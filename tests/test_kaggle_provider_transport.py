@@ -113,9 +113,7 @@ def test_redirect_body_is_not_read_and_location_not_followed(server):
     with sdk_boundary() as (client,session,state):
         original=session.send;started=time.monotonic()
         with pytest.raises(ValueError):
-            # This tests redirect rejection, not the separate 120 ms drip
-            # deadline. Keep the existing <300 ms assertion and 700 ms body trap.
-            with native._bounded_transport(client,started+.5,time.monotonic):
+            with native._bounded_transport(client,started+.12,time.monotonic):
                 session.send(SimpleNamespace(url=base+'/redirect'))
         assert time.monotonic()-started<.3
         assert state.session_calls==0 and state.adapter_calls==1
