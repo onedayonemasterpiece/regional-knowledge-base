@@ -126,6 +126,46 @@ def heartbeat(socket, generation):
     assert ack['type'] == 'HEARTBEAT_ACK'
 
 
+def test_query_result_does_not_wait_for_slow_recovery_receipt(peer, monkeypatch):
+    p = peer
+    receiving = threading.Event()
+    settled = threading.Event()
+    finished = []
+    finish_read = p.a.finish_read
+
+    async def slow_receive(frame, **binding):
+        receiving.set()
+        await asyncio.sleep(3)
+        settled.set()
+        return dict(job_id=frame['job_id'], claim=frame['claim'], status='accepted')
+
+    async def record_finish(*args, **kwargs):
+        finished.append(time.monotonic())
+        return await finish_read(*args, **kwargs)
+
+    p.q._recovery_phases = SimpleNamespace(receive=slow_receive)
+    monkeypatch.setattr(p.a, 'finish_read', record_finish)
+    with connect(p) as socket:
+        generation = attach(p, socket)
+        ready(socket, generation)
+        ticket = begin(p, generation, 'read-after-recovery-receipt')
+        query = receive_expected(socket, 'QUERY')
+        send(socket, generation, 'RECOVERY_PHASE_RESULT',
+            job_id='retained-maintenance', claim='retained-claim', receipt={},
+            run_id=p.run, launch_nonce=p.nonce, runtime_incarnation='synthetic-incarnation',
+            compute_claim='retained-compute', dispatch_generation=generation)
+        assert receiving.wait(.5)
+        started = time.monotonic()
+        socket.send_json(answer(query))
+
+        async def delivered():
+            return await asyncio.wait_for(asyncio.shield(ticket.result), .2)
+
+        assert p.client.portal.call(delivered).mode == 'hybrid'
+        assert finished and finished[0] - started < .2
+        assert not settled.is_set()
+
+
 def test_worker_resource_updates_do_not_wait_for_queue_writer(peer):
     """Actual worker busy/idle controls must not turn each QUERY into a write."""
     p = peer
