@@ -173,7 +173,8 @@ class WorkerRecoveryPhases:
             raise SnapshotError('recovery_runtime_identity_changed')
         async with asyncio.timeout(900):await self._ready.wait()
         if self._initialization_error is not None:raise self._initialization_error
-        await self._initialized.verify_for(database,run_id,launch_nonce,runtime_incarnation)
+        # TargetRuntime verifies this retained capability immediately before
+        # opening its reader pool; waiting must not repeat that native probe.
         return self._initialized
 
     async def __call__(self,frame):
