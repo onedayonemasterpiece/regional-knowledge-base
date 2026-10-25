@@ -171,7 +171,7 @@ class ExpertSlackSearchReply:
             if state=="delivered":request_order.advance(db,row["dialog_id"])
             return True
 
-    async def _answer(self, request_id, *, model_only=False):
+    async def _answer(self, request_id, *, model_only=False, ready_for_dot=None):
         states=("received","pending","leased") if model_only else ("received","searching")
         row=await asyncio.to_thread(self._row,request_id,states,begin=not model_only)
         if row is None:return
@@ -227,6 +227,14 @@ class ExpertSlackSearchReply:
                     if len(calls)!=1:raise PermissionError("retained source gate required")
                     issued=calls[0]
                     issued.gate=_RequestFence(issued.gate,current)
+                    # Hold the existing source ticket only briefly until dot
+                    # consumes its ready parallel search. Reissue CURRENT
+                    # evidence at consumption, never reuse stale rendered bytes.
+                    if model_only and ready_for_dot is not None:
+                        try:
+                            await asyncio.wait_for(ready_for_dot.wait(),20)
+                        except TimeoutError:
+                            return {"status":"unavailable"}
                     issued.gated=await issued.gate.refresh(issued.gated)
                     if not issued.gate.issuance_current(issued.gated.ticket):
                         raise PermissionError("source access revoked")
