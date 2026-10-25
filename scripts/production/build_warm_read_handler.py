@@ -41,10 +41,12 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
         def visit_ImportFrom(self,node):
             nonlocal replaced
             if executor_source is not None and node.level==1 and node.module=='kaggle_query':
-                if not any(item.name=='execute_query' for item in node.names):return node
-                node.names=[item for item in node.names if item.name!='execute_query']
-                assignment=ast.copy_location(ast.parse("execute_query = _warm_query['execute_query']").body[0],node)
-                return [node,assignment] if node.names else assignment
+                executors=[item for item in node.names if item.name in ('execute_query','execute_passage_read')]
+                if not executors:return node
+                node.names=[item for item in node.names if item not in executors]
+                assignments=[ast.copy_location(ast.parse(
+                    f"{item.asname or item.name} = _warm_query[{item.name!r}]").body[0],node) for item in executors]
+                return ([node] if node.names else [])+assignments
             if node.level==1 and node.module=='kaggle_source_graph_read' and any(
                     item.name=='execute_source_graph_read' for item in node.names):
                 if len(node.names)!=1 or node.names[0].asname is not None:
