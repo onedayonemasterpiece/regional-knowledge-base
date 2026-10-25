@@ -110,7 +110,6 @@ class ExpertDotEvents:
         self.callback_host=callback_host.lower()
         self.transport=transport
         self._wakes={}
-        self._reads={}
         self._scope=context.mcp_subject+"|"+context.mcp_client_id
 
     def _actor(self):
@@ -211,27 +210,22 @@ class ExpertDotEvents:
         return {}
 
     def notify(self, request_id):
-        """Run source search and independent event wake concurrently."""
-        if self._subscription() is None:
+        """Wake dot through the original saved request; search only when dot reads."""
+        if self._subscription() is None or request_id in self._wakes:
             return
-        for cache, fn in ((self._reads,self._search),(self._wakes,self._wake)):
-            if request_id in cache:
-                continue
-            # Shared admission already enforces read capacity/fairness.
-            # Dropping accepted question #17 would silently lose the answer.
-            task=asyncio.create_task(fn(request_id))
-            cache[request_id]=task
-            def finished(done, *, key=request_id, target=cache):
-                # Only in-flight searches may be reused. Completed plaintext
-                # evidence is released immediately, not cached indefinitely.
-                if target.get(key) is done:
-                    target.pop(key,None)
-                try:done.result()
-                except asyncio.CancelledError:pass
-                except Exception as exc:
-                    _LOG.warning("rkb_dot_wake status=deferred error_type=%s",
-                                 type(exc).__name__)
-            task.add_done_callback(finished)
+        # No speculative search: it could finish before dot reads, then
+        # require a second native read or hold private evidence after release.
+        task=asyncio.create_task(self._wake(request_id))
+        self._wakes[request_id]=task
+        def finished(done):
+            if self._wakes.get(request_id) is done:
+                self._wakes.pop(request_id,None)
+            try:done.result()
+            except asyncio.CancelledError:pass
+            except Exception as exc:
+                _LOG.warning("rkb_dot_wake status=deferred error_type=%s",
+                             type(exc).__name__)
+        task.add_done_callback(finished)
 
     async def resume_pending(self):
         if self._subscription() is None:
@@ -244,13 +238,25 @@ class ExpertDotEvents:
             self.notify(row["id"])
 
     async def _wake(self, request_id):
-        # Cover the original accepted request before signaling that it is claimable.
-        for attempt in range(8):
-            if await asyncio.to_thread(self.control.confirm_dataset_coverage,request_id):
-                break
-            await self.control.stage_received_dataset(request_id)
-            if attempt<7:
-                await asyncio.sleep(2)
+        # Continue this SAME wake while the original request is pending.
+        # Coverage may take minutes: eight fixed attempts would lose an ACKed
+        # question until restart despite a later accepted Dataset record.
+        delay=2
+        while self._subscription() is not None:
+            try:
+                if await asyncio.to_thread(self.control.confirm_dataset_coverage,request_id):
+                    break
+                with self.control.corpus.connect() as db:
+                    state=db.execute("SELECT state FROM rkb_expert_requests WHERE id=?",
+                                     (request_id,)).fetchone()
+                if state is None or state["state"] not in ("received","pending"):
+                    return
+                await self.control.stage_received_dataset(request_id)
+            except (RequestControlError, OSError) as exc:
+                _LOG.warning("rkb_dot_coverage status=deferred error_type=%s",
+                             type(exc).__name__)
+            await asyncio.sleep(delay)
+            delay=min(60,delay*2)
         else:
             return
         record=self._subscription()
@@ -273,22 +279,22 @@ class ExpertDotEvents:
             "timestamp":datetime.fromtimestamp(row["created_at"],timezone.utc
                         ).isoformat().replace("+00:00","Z"),
             "cursor":None,"data":{"request_id":row["id"],"event_id":row["event_id"]}}
-        # Bounded retries of the SAME event ID; the row, not another queue,
-        # survives process failure. 4xx denial is not retried.
-        for attempt in range(5):
+        # One continuing task for the SAME original event, not a new queue.
+        # A fifth transient failure cannot strand an ACKed question forever.
+        delay=2
+        while self._subscription() is not None:
             try:response=await self._post(record,row["event_id"],payload)
             except (httpx.HTTPError,ValueError):
                 response=None
             if response is not None and 200<=response.status_code<300:
-                # 2xx is only webhook acceptance, NOT a model/Slack answer.
-                # Until claim, the original row remains pending and is
-                # eligible for a same-event wake after restart/renewal.
+                # 2xx acknowledges the callback, not the answer. If dot dies
+                # before claim, existing startup/subscription scan replays it.
                 return
             if response is not None and response.status_code<500 \
                     and response.status_code not in (408,425,429):
                 return
-            if attempt<4:
-                await asyncio.sleep(min(16,2**attempt))
+            await asyncio.sleep(delay)
+            delay=min(60,delay*2)
 
     async def _search(self, request_id):
         # The original Slack responder already owns authorized source search
@@ -305,15 +311,12 @@ class ExpertDotEvents:
             raise PermissionError("original event not correlated")
         # A cold/unavailable search has not produced a source-grounded answer.
         # Preserve the question unclaimed so the SAME event may be read again.
-        task=self._reads.pop(request_id,None)
-        # A completed task has released its original issuance ticket. Reread
-        # through the SAME current source gate instead of serving stale bytes.
-        evidence=(await task if task is not None and not task.done()
-                  else await self._search(request_id))
+        # Read once under the existing live issuance gate, after the event is
+        # consumed. No discarded prefetch, plaintext cache or stale ticket.
+        evidence=await self._search(request_id)
         if not isinstance(evidence,dict):
             evidence={"status":"unavailable"}
         if evidence.get("status") not in ("ok","degraded") or evidence.get("context_gap") is True:
-            self._reads.pop(request_id,None)
             return {"state":"pending","request_id":request_id,"evidence":evidence}
         try:
             lease=await asyncio.to_thread(self.control.claim,self.context.credentials,
@@ -332,7 +335,9 @@ class ExpertDotEvents:
                 "generation":lease["generation"],
                 "execution_token":lease["execution_token"],
                 "question":query,"evidence":evidence,
-                "instructions":"Return ONE coherent answer in the question language; for Russian, "
+                "instructions":"Answer the question in your own words first; never substitute raw "
+                    "quotes or source cards for an answer. Return ONE coherent answer "
+                    "in the question language; for Russian, "
                     "use 1–4 meaningful Russian sentences followed by 'Источники:'. "
                     "Cite only passages that actually support the named fact, using verified "
                     "metadata.citation and locator (printed or scanned page when known); "
