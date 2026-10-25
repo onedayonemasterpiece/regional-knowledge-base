@@ -93,6 +93,38 @@ async def test_subscribe_keeps_chatgpt_secret_encrypted_store_and_fixed_destinat
 
 
 @pytest.mark.asyncio
+async def test_real_callback_connect_pins_public_ip_but_checks_original_tls_host(monkeypatch):
+    import regional_knowledge.expert_dot_events as module
+    observed=[]
+    monkeypatch.setattr(module,"_public_dns",lambda host:
+                        "8.8.8.8" if host=="callbacks.chatgpt.example" else
+                        pytest.fail("unexpected callback host"))
+    class FakeClient:
+        def __init__(self,**kwargs):
+            assert kwargs["trust_env"] is False
+            assert kwargs["follow_redirects"] is False
+            assert kwargs["transport"] is None
+        async def __aenter__(self):return self
+        async def __aexit__(self,*exc):pass
+        async def post(self,url,*,content,headers,extensions):
+            observed.append((url,headers,extensions,json.loads(content)))
+            return httpx.Response(200)
+    monkeypatch.setattr(module.httpx,"AsyncClient",FakeClient)
+    events=_instance()
+    result=await events._post({"id":"sub-original",
+             "url":"https://callbacks.chatgpt.example/events?topic=1",
+             "secret":_whsec()},"Ev-original",{"eventId":"Ev-original"})
+    assert result.status_code==200
+    assert len(observed)==1
+    url,headers,extensions,body=observed[0]
+    assert url=="https://8.8.8.8/events?topic=1"
+    assert headers["host"]=="callbacks.chatgpt.example"
+    assert extensions=={"sni_hostname":"callbacks.chatgpt.example"}
+    assert headers["X-MCP-Subscription-Id"]=="sub-original"
+    assert body=={"eventId":"Ev-original"}
+
+
+@pytest.mark.asyncio
 async def test_failed_callback_does_not_create_subscription(monkeypatch):
     events=_instance(httpx.MockTransport(lambda req:httpx.Response(401)))
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
