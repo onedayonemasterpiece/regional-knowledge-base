@@ -1,9 +1,11 @@
 """Exact real journal/spool/OAuth boundary with synthetic native coverage fixture."""
 import base64
+import asyncio
 from dataclasses import replace
 import hashlib
 from types import SimpleNamespace
 import time
+import threading
 
 import pytest
 
@@ -76,6 +78,31 @@ async def test_current_personal_scope_exact_manifest_bytes_and_final_output_refr
     refreshed=await gate.refresh(gated)
     assert not gate.issuance_current(gated.ticket) and gate.issuance_current(refreshed.ticket)
     gate.release(refreshed.ticket)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revoke',[False,True])
+async def test_geo_plan_keeps_read_authority_responsive_and_rechecks_native_history(env,auth,monkeypatch,revoke):
+    gate,authority,b,manifest,resolved,keys=await setup(env,auth)
+    original=GeoReadGate._manifest_proof
+    entered=asyncio.Event();release=threading.Event();loop=asyncio.get_running_loop()
+    def blocked(*args):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2), 'planning blocked the read event loop'
+        return original(*args)
+    monkeypatch.setattr(GeoReadGate,'_manifest_proof',staticmethod(blocked))
+    task=asyncio.create_task(gate.establish(keys,binding=b))
+    try:
+        await asyncio.wait_for(entered.wait(),1)
+        assert not task.done() and gate._manifest is None
+        await asyncio.wait_for(gate.authority.require(authority,'public_search'),1)
+        if revoke:env.spool.invalidate_source_history()
+    finally:release.set()
+    if revoke:
+        with pytest.raises(SourceGateDenied,match='native accepted manifest'):await task
+        assert gate._manifest is None
+    else:
+        assert await task==manifest.sha256 and gate.installation_current(b,keys)
 
 
 @pytest.mark.asyncio

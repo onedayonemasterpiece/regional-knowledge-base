@@ -10,6 +10,7 @@ import base64
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import time
 from types import MappingProxyType
 
@@ -21,6 +22,8 @@ from .kaggle_protocol import TrustedActorContext
 from .read_authority import ReadAuthority
 from .source_read_gate import binding_key,SourceGateDenied
 from .source_history_verifier import _Coverage
+
+_LOG=logging.getLogger(__name__)
 
 
 @dataclass(frozen=True,eq=False)
@@ -153,22 +156,35 @@ class GeoReadGate:
                 first,last=entries[0],entries[-1]
                 if first[2]['action']!='open' or last[2]['action']!='activate' or any(p['action']!='batch' for _,_,p in entries[1:-1]):
                     raise SourceGateDenied('GEO manifest phase ordering differs')
-                c=last[1];header=first[2]
-                bodies=[base64.b64decode(item['wire_b64']) for _,_,payload in entries[1:-1] for item in payload['items']]
-                raw=base64.b64decode(header['header_prefix_b64'])+b','.join(bodies)+base64.b64decode(header['header_suffix_b64'])
-                if len(raw)>4*1024*1024:raise SourceGateDenied('GEO manifest byte budget')
-                manifest=GeoMigrationManifest.from_wire(json.loads(raw)).require_ready();plan=plan_geo_manifest(manifest)
-                if (canonical(manifest.wire())!=raw or tuple(p.payload for _,p,_ in entries)!=plan.payloads
-                        or any(p.ids!={'manifest_id':plan.manifest_id} or p.person_id!=c.person_id
-                            or p.expected_revisions['manifest_index_sha256']!=plan.index_sha256 for _,p,_ in entries)
-                        or not self._history_current(binding,c.sequence)):
+                started=time.monotonic()
+                try:
+                    proof=await asyncio.to_thread(self._manifest_proof,entries,binding.database_generation,operation_keys)
+                finally:
+                    _LOG.info('geo_manifest_proof phase=plan elapsed_ms=%.3f commands=%d database_generation=%s',
+                        (time.monotonic()-started)*1000,len(entries),binding.database_generation)
+                # Thread completion can outlive its original native binding.
+                # Only the event-loop owner publishes a still-current proof.
+                if not self._history_current(binding,last[1].sequence):
                     raise SourceGateDenied('GEO native accepted manifest differs')
-                proof=_Manifest(binding.database_generation,plan.manifest_id,
-                    MappingProxyType({item.key:hashlib.sha256(canonical(item.wire())).hexdigest() for item in manifest.items}),
-                    MappingProxyType({item.stable_id:frozenset(item.payload.provenance_keys) for item in manifest.items if item.payload.kind=='place'}),
-                    c.sequence,c.operation_key,last[0].command_sha256,operation_keys)
                 self._manifest=proof
-                return plan.manifest_id
+                return proof.manifest_id
+
+    @staticmethod
+    def _manifest_proof(entries,database_generation,operation_keys):
+        """Pure bounded reconstruction; no spool or runtime authority changes."""
+        first,last=entries[0],entries[-1];c=last[1];header=first[2]
+        bodies=[base64.b64decode(item['wire_b64']) for _,_,payload in entries[1:-1] for item in payload['items']]
+        raw=base64.b64decode(header['header_prefix_b64'])+b','.join(bodies)+base64.b64decode(header['header_suffix_b64'])
+        if len(raw)>4*1024*1024:raise SourceGateDenied('GEO manifest byte budget')
+        manifest=GeoMigrationManifest.from_wire(json.loads(raw)).require_ready();plan=plan_geo_manifest(manifest)
+        if (canonical(manifest.wire())!=raw or tuple(p.payload for _,p,_ in entries)!=plan.payloads
+                or any(p.ids!={'manifest_id':plan.manifest_id} or p.person_id!=c.person_id
+                    or p.expected_revisions['manifest_index_sha256']!=plan.index_sha256 for _,p,_ in entries)):
+            raise SourceGateDenied('GEO native accepted manifest differs')
+        return _Manifest(database_generation,plan.manifest_id,
+            MappingProxyType({item.key:hashlib.sha256(canonical(item.wire())).hexdigest() for item in manifest.items}),
+            MappingProxyType({item.stable_id:frozenset(item.payload.provenance_keys) for item in manifest.items if item.payload.kind=='place'}),
+            c.sequence,c.operation_key,last[0].command_sha256,operation_keys)
 
     def installation_current(self,binding,operation_keys):
         """Only an established durable manifest and its native prefix open import."""
