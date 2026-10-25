@@ -266,7 +266,7 @@ async def execute_passage_read(request: PassageReadRequest, *, acquire, source_p
 async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False,public_illustrations=False) -> PassageRead:
     """Internal continuation resolver after renewed upstream authorization.
 
-    An unchanged immutable passage/source/eligibility fence is required. The
+    An unchanged immutable passage/source fence is required. The
     locator itself grants no rights; the Dev output gate must still reauthorize.
     """
     loop = asyncio.get_running_loop()
@@ -305,17 +305,15 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                             await cursor.execute(statement, params)
 
                         await _frontier(cursor, execute, query, observed, require_dense=False)
-                        await execute("""SELECT p.passage_id,p.source_id,p.revision,p.locator,p.body,s.bibliography,
-                            v.eligibility_revision FROM rkb_v4.passage_search p
+                        await execute("""SELECT p.passage_id,p.source_id,p.revision,p.locator,p.body,s.bibliography
+                            FROM rkb_v4.passage_search p
                             JOIN rkb_v4.active_revision a USING(source_id,revision)
                             JOIN rkb_v4.sources s USING(source_id)
-                            JOIN rkb_v4.source_visibility v USING(source_id)
                             WHERE p.passage_id=%s::uuid AND p.source_id=%s::uuid AND p.revision=%s
                             AND s.accepted AND NOT s.withdrawn""",
                             (locator.passage_id, locator.source.source_id, locator.source.content_revision))
                         row = await cursor.fetchone()
-                        if (row is None or row[6] != locator.source.eligibility_revision
-                                or observed["database"] != locator.database_generation):
+                        if row is None or observed["database"] != locator.database_generation:
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
                         illustrations, illustrations_has_more = (), False
