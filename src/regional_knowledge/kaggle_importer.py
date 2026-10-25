@@ -255,10 +255,6 @@ class KaggleSourceImporter:
     async def _start(self, access, *, file, metadata, source_import):
         if file is None:
             raise failure('attached_source_required', status='invalid_query')
-        mime = (file.mime_type or '').lower().split(';', 1)[0]
-        if mime not in {'application/pdf', 'application/x-pdf','image/vnd.djvu','image/x.djvu','image/x-djvu',
-                'application/x-djvu','application/vnd.djvu','application/octet-stream'}:
-            raise failure('target_pdf_or_djvu_only')
         if not metadata.get('title') or metadata.get('duplicate_policy', 'reuse') != 'reuse' or metadata.get('catalog_update'):
             raise failure('new_small_source_metadata_required', status='invalid_query')
         catalog = metadata.get('catalog') or {}

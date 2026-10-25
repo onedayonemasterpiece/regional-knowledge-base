@@ -166,6 +166,17 @@ async def test_native_hash_archive_conditional_readback_and_page_identity(native
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mime_type', ['application/pdf', 'text/html', None])
+async def test_unsupported_bytes_are_rejected_independently_of_mime(native, monkeypatch, mime_type):
+    import sys
+    monkeypatch.setattr(sys.modules[__name__], 'PDF', b'<html>not a PDF or DjVu original</html>')
+    _, result = await acquire(native, spec(mime_type=mime_type))
+    assert result == {'error': 'original_format_unsupported', 'terminal': True}
+    assert native.download.calls == 1
+    assert not native.parser and not native.transfer.calls
+
+
+@pytest.mark.asyncio
 async def test_expected_hash_and_page_bound_fail_before_archive(native):
     _,bad=await acquire(native,spec(expected_sha256='f'*64))
     assert bad['error']=='original_expected_bytes_mismatch' and not native.transfer.calls

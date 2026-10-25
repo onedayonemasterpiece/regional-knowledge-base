@@ -161,8 +161,9 @@ async def stage(s, result, payload):
 
 
 @pytest.mark.asyncio
-async def test_djvu_hyphenated_mime_uses_the_same_original_intake(native_intake):
-    result=await start(native_intake,mime_type='image/x-djvu')
+@pytest.mark.parametrize('mime_type', ['image/x-djvu', 'application/djvu', ''])
+async def test_original_mime_metadata_does_not_preempt_verified_intake(native_intake, mime_type):
+    result=await start(native_intake,mime_type=mime_type)
     assert result.source_archive_status=='verified' and result.next_action=='continue_pages'
 
 
