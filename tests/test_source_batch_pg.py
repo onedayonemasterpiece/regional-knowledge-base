@@ -109,6 +109,44 @@ async def test_one_of_174_pages_is_searchable_without_seal_and_retry_reuses_vect
 
 @PG
 @pytest.mark.asyncio
+async def test_fetch_second_packet_passage_includes_its_pages_and_regions(image_pg_sql18):
+    from regional_knowledge.kaggle_protocol import PassageContinuation,PassageReadRequest,SourceDependency
+    from regional_knowledge.kaggle_query import execute_passage_read
+    env=image_pg_sql18;prepare,_=native(env)
+    first=exact_batch(count=1)
+    second=exact_batch(1,digest(canonical(first)),start=1,count=1)
+    for doc in (first,second):
+        assert (await accepted(env,stage_command(doc,env['sequence']+1))).status=='applied'
+        command=packet(env,doc);await prepare(command)
+        assert (await accepted(env,command)).status=='applied'
+    page_id=second['model_payload']['pages'][0]['page_id']
+    async with env['connection'].transaction():
+        stored=await (await env['connection'].execute(
+            'SELECT manifest FROM rkb_v4.source_manifests WHERE source_id=%s',(SOURCE,))).fetchone()
+        assert [p['page_id'] for p in stored[0]['pages']]==[first['model_payload']['pages'][0]['page_id']]
+        row=await (await env['connection'].execute('''SELECT p.passage_id,p.revision,v.eligibility_revision
+            FROM rkb_v4.passage_search p JOIN rkb_v4.source_visibility v USING(source_id)
+            JOIN rkb_v4.source_passage_provenance x USING(passage_id)
+            WHERE p.source_id=%s AND x.data->'page_ids' @> jsonb_build_array(%s::text)''',
+            (SOURCE,page_id))).fetchone()
+    @asynccontextmanager
+    async def acquire():yield env['connection']
+    locator=PassageContinuation(database_generation=DB,visibility_epoch=0,
+        source=SourceDependency(source_id=SOURCE,content_revision=row[1],eligibility_revision=row[2]),
+        passage_id=str(row[0]),text_offset=0,bibliography_offset=0)
+    fetched=await execute_passage_read(PassageReadRequest(locator=locator,request_id='second-packet-fetch',
+        connection_generation=1,turn_generation=1,min_data_seq=env['sequence'],deadline_ms=2000,
+        actor=dict(person_id=PERSON,audience='personal',auth_epoch=1,visibility_epoch=0)),
+        acquire=acquire,source_provenance=True)
+    assert fetched.status=='ok',fetched.reason
+    provenance=fetched.evidence[0].metadata.source_provenance
+    assert [p['page_id'] for p in provenance['pages']]==[page_id]
+    assert provenance['pages'][0]['physical_page_index']==1
+    assert provenance['regions'] and all(r['page_id']==page_id for r in provenance['regions'])
+
+
+@PG
+@pytest.mark.asyncio
 async def test_bad_optional_passage_link_does_not_block_text_or_other_pages(image_pg_sql18):
     env=image_pg_sql18;first=exact_batch(count=1);prepare,calls=native(env)
     await accepted(env,stage_command(first,1));c=packet(env,first);await prepare(c);await accepted(env,c)
