@@ -360,7 +360,9 @@ class NativeOriginalIntake:
                     from .kaggle_djvu_inspect import inspect_djvu,DjvuStructureError
                     from .kaggle_djvu_pixels import render_verified_djvu_page,DjvuPixelsUnavailable
                     try:
-                        inventory=await _blocking(inspect_djvu,record['path'])
+                        if 'inventory' not in record:
+                            record['inventory']=await _blocking(inspect_djvu,record['path'])
+                        inventory=record['inventory']
                         if inventory.page_count!=record['page_count']:
                             raise DjvuPixelsUnavailable('djvu_page_identity_invalid')
                         result=await render_verified_djvu_page(bundle=self.native_bundle,
