@@ -34,7 +34,6 @@ EVENT = "rkb.expert.question.created"
 _RECORD_STATES = frozenset(("sending", "unknown", "delivered"))
 _EVENT_STATES = ("received", "pending", "leased", "result_unsealed",
                  "result_ready", "send_intent_ready")
-_MAX_SEARCHES = 16
 
 
 class EventParams(types.RequestParams):
@@ -201,12 +200,8 @@ class ExpertDotEvents:
         for cache, fn in ((self._reads,self._search),(self._wakes,self._wake)):
             if request_id in cache:
                 continue
-            # Completed reads may be recreated from the original row after restart.
-            for key,task in list(cache.items()):
-                if task.done() and len(cache)>=_MAX_SEARCHES:
-                    cache.pop(key,None)
-            if len(cache)>=_MAX_SEARCHES:
-                continue
+            # Shared admission already enforces read capacity/fairness.
+            # Dropping accepted question #17 would silently lose the answer.
             task=asyncio.create_task(fn(request_id))
             cache[request_id]=task
             def finished(done, *, key=request_id, target=cache):
@@ -224,10 +219,7 @@ class ExpertDotEvents:
             return
         with self.control.corpus.connect() as db:
             rows=db.execute("""SELECT id FROM rkb_expert_requests
-                WHERE (trigger_event_id IS NULL
-                       OR coalesce(reconcile_cursor,'')!='event_accepted')
-                  AND state IN ('received','pending','leased','result_unsealed',
-                                'result_ready','send_intent_ready')
+                WHERE state IN ('received','pending')
                 ORDER BY created_at,id LIMIT 64""").fetchall()
         for row in rows:
             self.notify(row["id"])
@@ -255,8 +247,6 @@ class ExpertDotEvents:
                 return
             if row["trigger_event_id"] not in (None,row["event_id"]):
                 raise PermissionError("event correlation changed")
-            if row["reconcile_cursor"]=="event_accepted":
-                return
             db.execute("""UPDATE rkb_expert_requests SET trigger_event_id=?
                 WHERE id=? AND trigger_event_id IS NULL""",
                 (row["event_id"],request_id))
@@ -271,11 +261,9 @@ class ExpertDotEvents:
             except (httpx.HTTPError,ValueError):
                 response=None
             if response is not None and 200<=response.status_code<300:
-                with self.control.corpus.connect() as db:
-                    db.execute("BEGIN IMMEDIATE")
-                    db.execute("""UPDATE rkb_expert_requests SET reconcile_cursor='event_accepted'
-                        WHERE id=? AND event_id=? AND trigger_event_id=?""",
-                        (request_id,row["event_id"],row["event_id"]))
+                # 2xx is only webhook acceptance, NOT a model/Slack answer.
+                # Until claim, the original row remains pending and is
+                # eligible for a same-event wake after restart/renewal.
                 return
             if response is not None and response.status_code<500 \
                     and response.status_code not in (408,425,429):
