@@ -134,9 +134,7 @@ def current_binding(queue):
         raise TargetUnavailable('target runtime unavailable') from None
 
 
-PENDING_STARTUP_ETA_SECONDS = 300
-PENDING_STARTUP_MESSAGE_RU = ("Запускаем инфраструктуру, подождите. Первый поиск займёт дольше обычного; "
-    "следующие запросы будут быстрыми.")
+PENDING_STARTUP_MESSAGE_RU = "Запускаем инфраструктуру, подождите. Срок готовности пока неизвестен."
 
 
 class KaggleSourceBackend:
@@ -443,6 +441,11 @@ class KaggleSourceBackend:
                 values['result_to_terminal_ms']=(time.monotonic()-received_at)*1000
             telemetry.finish_attempt(attempt,status=final_status,reason=final_reason,
                 executed_branches=branches,controller_stages_ms=values)
+        def failure(final_status,final_reason,**extra):
+            return ToolError(json.dumps(dict(status=final_status,reason=final_reason,
+                read_trace=ReadTrace(**attempt.correlation(),
+                    backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'),
+                **extra),separators=(',',':')))
         try:
             async with asyncio.timeout_at(None if illustration else deadline):
                 try:
@@ -470,16 +473,14 @@ class KaggleSourceBackend:
                         asyncio.to_thread(self.worker_queue.request_startup))
                     if demand['status']=='unavailable':
                         status,reason='unavailable',demand['reason']
-                        raise ToolError(json.dumps({'status':status,'reason':reason,
-                            'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
+                        raise failure(status,reason,startup_ref=demand['startup_ref']) from None
                     status,reason='pending','target_warming'
                     if exact:
                         # Exact fetch/catalogue/read DTOs do not have pending.
                         # Do not silently substitute empty source content.
-                        raise ToolError(json.dumps({'status':'unavailable','reason':'target_warming',
-                            'startup_ref':demand['startup_ref']},separators=(',',':'))) from None
+                        raise failure('unavailable','target_warming',startup_ref=demand['startup_ref']) from None
                     startup_status=StartupStatus(startup_ref=demand['startup_ref'],
-                        status='pending',reason='target_warming',eta_seconds=PENDING_STARTUP_ETA_SECONDS,
+                        status='pending',reason='target_warming',
                         message_ru=PENDING_STARTUP_MESSAGE_RU)
                     common=dict(status='pending',reason='target_warming',mode='lexical_degraded',
                         retrieval_mode='lexical_only',main_state='starting',startup=startup_status,
@@ -526,7 +527,7 @@ class KaggleSourceBackend:
                 permit = None
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
-                    raise ToolError(json.dumps({'status': status, 'reason': reason}))
+                    raise failure(status,reason)
                 render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:self._render_chunks(value,attempt=attempt,request=catalog_request)) if catalog_request is not None and catalog_request.get('operation')=='accepted_chunks' else (lambda value:BookFindOutput(
                     query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt,comparison=fact_request['action']=='observation_compare')) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
@@ -571,23 +572,23 @@ class KaggleSourceBackend:
             if not asyncio.current_task().cancelling():
                 status = 'unavailable'
                 reason = 'deadline_exceeded' if time.monotonic() >= deadline-.002 else 'context_gap'
-                raise ToolError(json.dumps({'status': status, 'reason': reason})) from None
+                raise failure(status,reason) from None
             status, reason = 'cancelled', 'caller_cancelled'
             raise
         except TimeoutError:
             status, reason = 'unavailable', 'deadline_exceeded'
-            raise ToolError('{"status":"unavailable","reason":"deadline_exceeded"}') from None
+            raise failure(status,reason) from None
         except ToolError:
             raise
         except PermissionError:
             status, reason = 'denied', 'access_denied'
-            raise ToolError('{"status":"denied","reason":"access_denied"}') from None
+            raise failure(status,reason) from None
         except PublicQueryInvalid:
             status, reason = 'invalid_query', 'invalid_input'
-            raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
+            raise failure(status,reason) from None
         except Exception:
             status, reason = 'unavailable', 'not_ready'
-            raise ToolError('{"status":"unavailable","reason":"not_ready"}') from None
+            raise failure(status,reason) from None
         finally:
             if ticket is not None:
                 self.worker_queue.shared_reads.cancel_read(ticket)
@@ -665,7 +666,6 @@ class KaggleSourceBackend:
                     observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
             if observed['status']=='pending':
                 observed['message_ru']=PENDING_STARTUP_MESSAGE_RU
-                observed['eta_seconds']=PENDING_STARTUP_ETA_SECONDS
             return StartupStatus.model_validate(observed)
         except (ValueError,TypeError):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None

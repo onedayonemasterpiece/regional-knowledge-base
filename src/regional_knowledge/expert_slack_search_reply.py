@@ -12,6 +12,7 @@ import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .participants import ParticipantError
+from .contracts import EvidenceSearchOutput
 from .expert_evidence_receiver import ExpertEvidenceReceiver, _RequestFence
 from .expert_slack_ingress import ExpertSlackIngress
 from .projects_hub_reader import PrivateInput, ReadContext, render as render_evidence
@@ -21,6 +22,11 @@ from . import request_order
 _LOG = logging.getLogger(__name__)
 _PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
 _TEMPORARILY_UNAVAILABLE = "Сейчас не могу проверить, повторите вопрос через пару минут"
+
+
+def _error_reply(reason):
+    code=reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,80}",reason) else "not_ready"
+    return "Ошибка поиска. Код: unavailable/"+code
 
 
 def answer_from_evidence(result):
@@ -176,7 +182,7 @@ class ExpertSlackSearchReply:
             issued=None
             try:
                 with capture_read_output() as calls:
-                    await self.evidence.backend.search_adapter(query,authority=authority,
+                    outcome=await self.evidence.backend.search_adapter(query,authority=authority,
                         request_id=request_id,turn_generation=0,min_data_seq=0,
                         deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
             except Exception as exc:
@@ -184,23 +190,35 @@ class ExpertSlackSearchReply:
                 # text-only failure, but never turn an access denial into a post.
                 if calls or isinstance(exc,(PermissionError,ParticipantError)):
                     raise
+                text=_error_reply("internal_error")
                 if isinstance(exc,ToolError):
                     try:details=json.loads(str(exc))
                     except (ValueError,TypeError):raise
                     if type(details) is not dict or details.get("status") not in ("unavailable","pending"):
                         raise
-                text=_TEMPORARILY_UNAVAILABLE
+                    text=(_error_reply(details.get("reason")) if details["status"]=="unavailable"
+                          else _TEMPORARILY_UNAVAILABLE)
             else:
-                if len(calls)!=1:raise PermissionError("retained source gate required")
-                issued=calls[0]
-                issued.gate=_RequestFence(issued.gate,current)
-                issued.gated=await issued.gate.refresh(issued.gated)
-                if not issued.gate.issuance_current(issued.gated.ticket):
-                    raise PermissionError("source access revoked")
-                evidence=render_evidence(issued.render(issued.gated.result),ctx)
-                text=(_TEMPORARILY_UNAVAILABLE
-                      if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
-                      else answer_from_evidence(evidence))
+                if (not calls and type(outcome) is EvidenceSearchOutput
+                        and outcome.status=="pending" and outcome.reason=="target_warming"
+                        and not outcome.evidence):
+                    # Already-authorized startup status issues no source text.
+                    startup=outcome.startup
+                    text=(startup.message_ru if startup is not None and startup.message_ru
+                          else _TEMPORARILY_UNAVAILABLE)
+                    if startup is not None and startup.eta_seconds is not None:
+                        text+=f"\nОжидание: примерно {startup.eta_seconds} с."
+                else:
+                    if len(calls)!=1:raise PermissionError("retained source gate required")
+                    issued=calls[0]
+                    issued.gate=_RequestFence(issued.gate,current)
+                    issued.gated=await issued.gate.refresh(issued.gated)
+                    if not issued.gate.issuance_current(issued.gated.ticket):
+                        raise PermissionError("source access revoked")
+                    evidence=render_evidence(issued.render(issued.gated.result),ctx)
+                    text=(_error_reply(evidence.get("reason"))
+                          if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
+                          else answer_from_evidence(evidence))
             permit=await asyncio.to_thread(self._claim_post,request_id)
             if permit is None:return
             try:

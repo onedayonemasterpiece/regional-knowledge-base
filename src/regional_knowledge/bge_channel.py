@@ -529,9 +529,20 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         recovery_dispatch=getattr(queue,'_recovery_phases',None)
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation'))
-                        if recovery_dispatch is None or shared is None:
-                            raise ValueError('recovery_executor_unavailable')
                         _identifier(frame['job_id']);_identifier(frame['claim'])
+                        if shared is None:
+                            raise ValueError('recovery_executor_unavailable')
+                        if recovery_dispatch is None:
+                            # A retained result can arrive immediately after
+                            # READY on API restart, before periodic startup has
+                            # rebuilt its maintenance owner. Keep this exact
+                            # receipt until that owner can authenticate/settle it.
+                            logger.info(json.dumps({'event':'bge_recovery_owner_wait',
+                                'run_id':run_id,'connection_generation':generation}))
+                            async with asyncio.timeout(2*SEND_TIMEOUT_SECONDS):
+                                while recovery_dispatch is None:
+                                    await asyncio.sleep(RECONCILE_SECONDS)
+                                    recovery_dispatch=getattr(queue,'_recovery_phases',None)
                         try:
                             settled=await recovery_dispatch.receive(frame,run_id=run_id,token=token,generation=generation)
                         except (StaleClaim,LookupError):

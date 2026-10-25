@@ -199,7 +199,7 @@ async def test_authorized_concurrent_cold_public_search_returns_one_pending_dema
                    and reply.startup.protocol == 'rkb.startup.v1'
                    and not reply.results and reply.main_state == 'starting'
                    for reply in replies)
-        assert all(reply.startup.eta_seconds == 300
+        assert all(reply.startup.eta_seconds is None
                    and reply.startup.message_ru is not None
                    and reply.startup.message_ru.startswith("Запускаем инфраструктуру")
                    and "минут" not in reply.startup.message_ru
@@ -208,6 +208,33 @@ async def test_authorized_concurrent_cold_public_search_returns_one_pending_dema
         with queue.connect(write=False) as db:
             assert db.execute("select count(*) from runs").fetchone()[0] == 1
             assert db.execute("select count(*) from jobs").fetchone()[0] == 0
+    finally:
+        admission.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('elapsed', [75,301])
+async def test_pending_does_not_invent_an_estimate_or_restart_the_demand(auth,tmp_path,elapsed):
+    now=[1000.0]
+    queue=BgeQueue(tmp_path/'startup-estimate.sqlite',clock=lambda:now[0])
+    admission=queue.configure_shared_reads(auth.resolver)
+    backend=KaggleSourceBackend(worker_queue=queue,read_authority=auth.resolver,
+        source_gate=Gate(auth.resolver),destination_ref='synthetic-response')
+    principal=SimpleNamespace(access_token=auth.tokens.access_token)
+    try:
+        first=await backend.search('synthetic query',principal)
+        assert first.startup.eta_seconds is None
+        now[0]+=elapsed
+        repeated=await backend.search('synthetic query',principal)
+        observed=await backend.startup_status(first.startup.startup_ref,principal)
+        assert repeated.startup.startup_ref==first.startup.startup_ref
+        assert repeated.startup.eta_seconds is None and observed.eta_seconds is None
+        assert repeated.startup.message_ru==observed.message_ru
+        assert 'неизвестен' in observed.message_ru
+        assert 'eta_seconds' not in observed.model_dump(exclude_none=True)
+        with queue.connect(write=False) as db:
+            assert db.execute('select count(*) from runs').fetchone()[0]==1
+            assert db.execute('select count(*) from jobs').fetchone()[0]==0
     finally:
         admission.close()
 
@@ -223,10 +250,10 @@ async def test_startup_status_requires_fresh_public_search_authority(auth,tmp_pa
         principal=SimpleNamespace(access_token=auth.tokens.access_token)
         observed=await backend.startup_status(ref,principal)
         assert observed.status=='pending' and observed.protocol=='rkb.startup.v1'
-        assert observed.eta_seconds == 300
+        assert observed.eta_seconds is None
         assert observed.message_ru is not None
         assert observed.message_ru.startswith("Запускаем инфраструктуру")
-        assert observed.model_dump(exclude_none=True)['eta_seconds'] == 300
+        assert 'eta_seconds' not in observed.model_dump(exclude_none=True)
         with pytest.raises(ToolError,match='access_denied'):
             await backend.startup_status(ref,SimpleNamespace(access_token='invalid-token'))
         with pytest.raises(ToolError,match='invalid_input'):
