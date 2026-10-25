@@ -385,7 +385,10 @@ class ExpertDotEvents:
         except RequestControlError:
             return {"state":"pending","request_id":request_id}
         if lease["state"]!="leased":
-            return {"state":lease["state"],"request_id":request_id}
+            # fair_head may be busy with the previous Slack dialog turn.
+            # This correlated saved question remains pending, not empty.
+            return {"state":"pending" if lease["state"] in ("empty","deferred")
+                    else lease["state"],"request_id":request_id}
         claim=await asyncio.to_thread(self.control.claim_context,self.context.credentials,
             request_id,lease["generation"],lease["execution_token"])
         # The exact Slack source question is returned only to the bound
