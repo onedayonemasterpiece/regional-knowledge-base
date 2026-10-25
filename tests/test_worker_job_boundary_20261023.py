@@ -138,9 +138,18 @@ async def test_large_native_receipt_is_not_published_before_validation(kind,caps
         dispatch_generation=1,phase='verify')
     await worker._encode(frame)
     assert worker.pending is None
-    assert json.loads(capsys.readouterr().out)==dict(event='native_job_outcome_unresolved',
+    output=capsys.readouterr().out
+    events=[json.loads(line) for line in output.splitlines()]
+    if kind=='recovery_phase':
+        assert [event['event'] for event in events]==[
+            'native_recovery_handler_begin','native_recovery_handler_end','native_job_outcome_unresolved']
+        assert events[1]['handler_returned'] is True  # Handler returned; receipt validation failed.
+    else:
+        assert len(events)==1
+    assert events[-1]==dict(event='native_job_outcome_unresolved',
         job_id='receipt-job',kind=kind,
         phase='verify',error_class='ValueError')
+    assert 'private-' not in output  # Even the rejected native receipt stays private.
 
 
 @pytest.mark.asyncio
@@ -181,7 +190,13 @@ async def test_true_stop_is_not_swallowed_as_job_unknown(capsys):
     worker.recovery_handler=stop
     with pytest.raises(transport.BgeChannelStopped):
         await worker._encode(dict(kind='recovery_phase',id='stop-job',claim='claim'))
-    assert worker.pending is None and capsys.readouterr().out==''
+    assert worker.pending is None
+    output=capsys.readouterr().out
+    events=[json.loads(line) for line in output.splitlines()]
+    assert [event['event'] for event in events]==[
+        'native_recovery_handler_begin','native_recovery_handler_end']
+    assert events[1]['handler_returned'] is False  # STOP propagates, never becomes UNKNOWN.
+    assert 'explicit stop' not in output
 
 
 @pytest.mark.asyncio

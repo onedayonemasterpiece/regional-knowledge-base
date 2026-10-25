@@ -700,8 +700,9 @@ async def test_preparation_can_wait_for_recovery_while_same_channel_executes_pha
 
 
 @pytest.mark.parametrize('deferred_owner', [False, True])
-def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer, deferred_owner):
+def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer, deferred_owner, caplog):
     from test_bge_shared_channel import connect,attach,send,receive_expected,release
+    caplog.set_level('INFO', logger='regional_knowledge.bge_channel')
     p=peer;retained={}
     with connect(p) as socket:
         generation=attach(p,socket)
@@ -731,6 +732,17 @@ def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer, de
             async def result():return await retained['task']
             assert p.client.portal.call(result)=={'verified':True}
             assert p.q.result(p.auth.p.owner.subject,p.document)['state']=='pending'
+            sends=[json.loads(item.message) for item in caplog.records
+                if item.name=='regional_knowledge.bge_channel'
+                and 'bge_recovery_dispatch_socket_send' in item.message]
+            assert len(sends)==1
+            event=sends[0]
+            assert event['job_id']==frame['id'] and event['run_id']==p.run
+            assert event['phase']=='verify' and event['connection_generation']==generation
+            assert event['send_returned'] is True
+            assert event['queue_wait_ms']>=0 and event['socket_send_ms']>=0
+            assert set(event)=={'event','job_id','run_id','phase','connection_generation',
+                'queue_wait_ms','socket_send_ms','send_returned'}  # No claim or payload.
         finally:p.client.portal.call(retained['bridge'].aclose)
 
 

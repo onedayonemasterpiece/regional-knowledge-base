@@ -559,7 +559,7 @@ async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_no
 @pytest.mark.parametrize('job_kind', ['source_command', 'recovery_phase'])
 @pytest.mark.parametrize('fault', ['new_dispatch', 'wrong_incarnation', 'stale_generation',
                                   'changed_replay', 'wrong_ack', 'authority_closed'])
-async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(monkeypatch, job_kind, fault):
+async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(monkeypatch, job_kind, fault, capsys):
     from regional_knowledge.kaggle_bootstrap import PreparedRuntime
     from test_kaggle_target_runtime import candidate
     transport = module('bge_wss_transport')
@@ -602,6 +602,29 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
         await peer.put(dispatch)
         original_result = await peer.wait(result_type)
         await peer.wait('RESOURCE_RELEASED')
+        if job_kind == 'recovery_phase':
+            # Observe native receive, actual handler and socket send in one session.
+            events=[json.loads(line) for line in capsys.readouterr().out.splitlines()
+                if line.startswith('{')]
+            expected={
+                'native_recovery_dispatch_receive':{'receive_validation_ms'},
+                'native_recovery_handler_begin':{'receive_to_handler_ms'},
+                'native_recovery_handler_end':{'handler_ms'},
+                'native_recovery_result_socket_send':{'queue_wait_ms','socket_send_ms'},
+            }
+            for name,timings in expected.items():
+                observed=[event for event in events if event.get('event')==name]
+                assert len(observed)==1, name
+                event=observed[0]
+                assert event['run_id']==CONFIG['run_id'] and event['job_id']=='retained-job'
+                assert event['phase']=='fixture-phase' and event['connection_generation']==1
+                assert set(event)=={'event','at_monotonic_s','run_id','job_id','phase','connection_generation',*timings,
+                    *({'handler_returned'} if name=='native_recovery_handler_end' else
+                      {'send_returned'} if name=='native_recovery_result_socket_send' else set())}
+                assert all(event[key]>=0 for key in timings)
+                assert event['at_monotonic_s']>0
+            assert next(x for x in events if x.get('event')=='native_recovery_handler_end')['handler_returned'] is True
+            assert next(x for x in events if x.get('event')=='native_recovery_result_socket_send')['send_returned'] is True
         original_job, original_pending = worker.job, worker.pending
         original_encoder, original_runtime = worker.encoder, worker.prepared_runtime
         conflicting = dict(dispatch, id='different-job', claim='different-claim', compute_claim='different-compute')

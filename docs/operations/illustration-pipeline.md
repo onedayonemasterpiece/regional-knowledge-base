@@ -129,6 +129,13 @@ overlapping measurements. Logs contain identifiers, durations and byte counts,
 never page text, image bytes, archive URLs or tickets. A deployed readback is
 required before claiming any live timing improvement.
 
+Recovery WSS events additionally distinguish API socket-send queue/time, native
+dispatch receipt, handler begin/end and native result-send queue/time, correlated
+by run/job/generation/phase. Native handler failure still emits an end event.
+`send_returned` only describes the local send call; the opposite endpoint's
+receipt remains independent evidence. API and worker entrypoints enable these
+specific INFO loggers while unrelated library logging remains at WARNING.
+
 - Use at least three natural-language searches without hardcoded image IDs. Demonstrate exact evidence/figure association and printed-caption/model-observation separation; include a nearby unrelated same-page image negative case.
 - Fetch real images through the actual MCP connection, check actual pixels/MIME and accessible registered media without custom Telegram hash comparison, and deliver public renditions to an audience without a personal book grant. Separately test denied quote/page/original access and authorized owner/demo/expert/local_historian proof.
 - Exercise a mislabeled page crop, actual final output geometry, warm-cache withdrawal, expired demo and stale callbacks. Return usable partial results when one page is pending or denied.

@@ -346,7 +346,7 @@ class BgeWssTransport:
             return self.original_intake_handler
         return self.recovery_handler
 
-    async def _encode(self, job):
+    async def _encode(self, job, *, recovery_received_at=None):
         """One exception boundary for every durable native or vector job.
 
         A post-dispatch failure has an unknown effect. Retain the exact job and
@@ -358,11 +358,28 @@ class BgeWssTransport:
                 handler = self._native_handler(job)
                 if handler is None:
                     raise ValueError('fixed native executor unavailable')
-                if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
-                    with self.snapshot_channel.assignment(job):
+                handler_started = time.monotonic() if job['kind'] == 'recovery_phase' else None
+                if handler_started is not None:
+                    print(json.dumps({'event': 'native_recovery_handler_begin', 'at_monotonic_s': time.monotonic(),
+                        'run_id': self.config['run_id'], 'job_id': job['id'],
+                        'phase': job.get('phase'), 'connection_generation': self._connection_generation,
+                        'receive_to_handler_ms': round((handler_started - recovery_received_at) * 1000, 3)
+                            if recovery_received_at is not None else None}, separators=(',', ':')), flush=True)
+                handler_returned = False
+                try:
+                    if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
+                        with self.snapshot_channel.assignment(job):
+                            receipt = await handler(job)
+                    else:
                         receipt = await handler(job)
-                else:
-                    receipt = await handler(job)
+                    handler_returned = True
+                finally:
+                    if handler_started is not None:
+                        print(json.dumps({'event': 'native_recovery_handler_end', 'at_monotonic_s': time.monotonic(),
+                            'run_id': self.config['run_id'], 'job_id': job['id'],
+                            'phase': job.get('phase'), 'connection_generation': self._connection_generation,
+                            'handler_ms': round((time.monotonic() - handler_started) * 1000, 3),
+                            'handler_returned': handler_returned}, separators=(',', ':')), flush=True)
                 pending = dict(job_id=job['id'], claim=job['claim'], receipt=receipt,
                     **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
                         'compute_claim', 'dispatch_generation')})
@@ -414,7 +431,7 @@ class BgeWssTransport:
                 'error_class':type(error).__name__},
                 separators=(',', ':')), flush=True)
 
-    def _start(self, job):
+    def _start(self, job, *, recovery_received_at=None):
         if self.shared_reads:
             self._claim_resource(job, 'document')
         self.job = job
@@ -423,7 +440,7 @@ class BgeWssTransport:
             # share ResidentEncoder's lock with QUERY, so PG/Python work must
             # not reserve the channel's only read permit for the whole job.
             self.last_released,self.resource=self.resource,None
-        self.encoding = asyncio.create_task(self._encode(job))
+        self.encoding = asyncio.create_task(self._encode(job, recovery_received_at=recovery_received_at))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
     @staticmethod
@@ -483,14 +500,29 @@ class BgeWssTransport:
         async def put(frame, priority=0):
             nonlocal order
             order += 1
-            await outbound.put((priority, order, {'connection_generation': generation, **frame}))
+            await outbound.put((priority, order, {'connection_generation': generation, **frame},
+                time.monotonic() if frame.get('type') == 'RECOVERY_PHASE_RESULT' else None,
+                self.job.get('phase') if frame.get('type') == 'RECOVERY_PHASE_RESULT' else None))
 
         async def writer():
             while True:
-                _, _, frame = await outbound.get()
+                _, _, frame, enqueued_at, phase = await outbound.get()
                 if frame.get('type') == 'QUERY_RESULT' and frame.get('connection_generation') != generation:
                     continue
-                await send(frame)
+                send_started = time.monotonic() if enqueued_at is not None else None
+                send_returned = False
+                try:
+                    await send(frame)
+                    send_returned = True
+                finally:
+                    if send_started is not None:
+                        print(json.dumps({'event': 'native_recovery_result_socket_send', 'at_monotonic_s': time.monotonic(),
+                            'run_id': self.config['run_id'], 'job_id': frame['job_id'],
+                            'phase': phase,
+                            'connection_generation': generation,
+                            'queue_wait_ms': round((send_started - enqueued_at) * 1000, 3),
+                            'socket_send_ms': round((time.monotonic() - send_started) * 1000, 3),
+                            'send_returned': send_returned}, separators=(',', ':')), flush=True)
                 if frame.get('type') == 'QUERY_RESULT':
                     # Maintain one bounded off-loop native drain. No optional
                     # product_telemetry import/emit belongs in this writer Task.
@@ -578,6 +610,7 @@ class BgeWssTransport:
             nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
+                received_at = time.monotonic()
                 if type(frame.get('connection_generation')) is not int:
                     raise ValueError('integer channel generation required')
                 if frame['connection_generation'] != generation:
@@ -638,6 +671,12 @@ class BgeWssTransport:
                             or type(frame.get('dispatch_generation')) is not int
                             or frame['dispatch_generation'] < 1 or frame['kind'] not in ('document','source_command','recovery_phase')):
                         raise ValueError('shared document resource contract')
+                    if recovery:
+                        print(json.dumps({'event': 'native_recovery_dispatch_receive', 'at_monotonic_s': time.monotonic(),
+                            'run_id': self.config['run_id'], 'job_id': frame['id'],
+                            'phase': frame.get('phase'), 'connection_generation': generation,
+                            'receive_validation_ms': round((time.monotonic() - received_at) * 1000, 3)},
+                            separators=(',', ':')), flush=True)
                     key = (frame['id'], frame['claim'])
                     if key == self.acknowledged:
                         continue  # A control ACK can overtake a buffered replay.
@@ -676,7 +715,7 @@ class BgeWssTransport:
                     else:
                         if self.shared_reads:
                             await queue_read_result()
-                        self._start(frame)
+                        self._start(frame, recovery_received_at=received_at if recovery else None)
                 elif kind == 'RESULT_ACK':
                     if (self.pending is None or frame.get('job_id') != self.pending['job_id']
                             or frame.get('claim') != self.pending['claim']

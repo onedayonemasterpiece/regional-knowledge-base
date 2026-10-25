@@ -9,6 +9,7 @@ os.environ['TOKENIZERS_PARALLELISM']='false'
 os.environ['OMP_NUM_THREADS']='4'
 os.environ['MKL_NUM_THREADS']='4'
 import json
+import logging
 import threading
 import time
 import urllib.error
@@ -78,6 +79,8 @@ def _load_model(artifacts):
     return encode
 
 def main(*, prepare_runtime=None, close_runtime=None, recovery_handler=None, snapshot_channel=None):
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger('regional_knowledge.kaggle_original_native').setLevel(logging.INFO)
     config=RUN_CONFIG;started=time.monotonic();stop=threading.Event()
     if prepare_runtime is not None and config.get('transport') != 'wss':
         raise ValueError('resident preparation requires the existing WSS channel')

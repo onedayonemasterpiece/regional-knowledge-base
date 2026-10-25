@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import secrets
+import time
 from itertools import count
 
 import anyio
@@ -157,12 +158,13 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 if frame_type=='DISPATCH' and payload.get('kind')=='recovery_phase':limit=MAX_RECOVERY_DISPATCH_BYTES
                 if len(encoded.encode('utf-8')) > limit:
                     raise ValueError('outgoing_size')
-                await asyncio.wait_for(outgoing.put((priority, next(sequence), frame, encoded, work)), SEND_TIMEOUT_SECONDS)
+                enqueued_at = time.monotonic() if frame_type == 'DISPATCH' and payload.get('kind') == 'recovery_phase' else None
+                await asyncio.wait_for(outgoing.put((priority, next(sequence), frame, encoded, work, enqueued_at)), SEND_TIMEOUT_SECONDS)
 
             async def sender():
                 nonlocal ready_ack_sent, telegram_inflight, telegram_challenge
                 while True:
-                    priority, _, frame, encoded, work = await outgoing.get()
+                    priority, _, frame, encoded, work, enqueued_at = await outgoing.get()
                     if work is not None:
                         await status()  # Revalidate the authenticated attachment.
                         try:
@@ -205,9 +207,19 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             encoded=json.dumps(frame,allow_nan=False,separators=(',',':'))
                     if frame.get('type')=='RKB1_BIND_PENDING':
                         telegram_inflight=False;telegram_challenge=None
+                    send_started = time.monotonic() if enqueued_at is not None else None
+                    send_returned = False
                     try:
                         await asyncio.wait_for(socket.send_text(encoded), SEND_TIMEOUT_SECONDS)
+                        send_returned = True
                     finally:
+                        if send_started is not None:
+                            logger.info(json.dumps({'event': 'bge_recovery_dispatch_socket_send',
+                                'run_id': run_id, 'job_id': frame['id'], 'phase': frame.get('phase'),
+                                'connection_generation': generation,
+                                'queue_wait_ms': round((send_started - enqueued_at) * 1000, 3),
+                                'socket_send_ms': round((time.monotonic() - send_started) * 1000, 3),
+                                'send_returned': send_returned}))
                         if frame.get('type')=='RKB1_BIND_GRANT':
                             for key in ('bundle_b64','api_id','api_hash'):frame.pop(key,None)
                         encoded=None
