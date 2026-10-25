@@ -51,7 +51,7 @@ Required output inventory задаётся до операции; native output 
 
 ## Таймеры и ресурсные границы
 
-Useful-idle — 30 минут от реального спроса. Writer lease, task claim, heartbeat/Ping, stage progress, source-cache idle и provider lifetime независимы. Keepalive не делает notebook вечным и не продлевает полезный спрос.
+Useful-idle — 30 минут от реального спроса. Авторизованный direct `search_adapter` обновляет существующую activity-запись при входе, как обычный MCP; ответ модели не требуется. Отозванный authority и служебный heartbeat полезным спросом не считаются. Writer lease, task claim, heartbeat/Ping, stage progress, source-cache idle и provider lifetime независимы. Keepalive не делает notebook вечным и не продлевает полезный спрос.
 
 Frames, total buffers, inflight credits, handshake/send deadlines и retry windows ограничены. CPU encode, render, blocking DB/file/network operations вынесены из event loop. Control reads не используют BEGIN IMMEDIATE. После commit сигнал wakeup виден другим process; bounded reconciliation восстанавливает пропущенные notifications.
 

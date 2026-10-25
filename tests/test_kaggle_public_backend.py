@@ -589,3 +589,60 @@ async def test_fastmcp_fetch_schema_matches_guarded_structured_wire(branch):
         else:
             assert payload["result"]["id"] == "opaque"
             assert payload["result"]["text"] == "Source text"
+
+
+@pytest.mark.asyncio
+async def test_direct_adapter_reads_renew_idle_without_renewing_from_heartbeat(target):
+    from regional_knowledge.bge_queue import IDLE_SECONDS
+    s=target
+    for minute in range(1,32):
+        now=1000.+60*minute
+        s.queue.clock=lambda:now
+        s.queue.heartbeat(s.run,s.token,ready=True,connection_generation=s.generation)
+        authority=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+            destination=s.backend.destination)
+        async def read():
+            with capture_read_output() as calls:
+                result=await s.backend.search_adapter('synthetic query',authority=authority,
+                    request_id=f'adapter-minute-{minute}',turn_generation=0,min_data_seq=0,
+                    deadline_monotonic=asyncio.get_running_loop().time()+2,
+                    destination=s.backend.destination)
+            return result,calls
+        task=asyncio.create_task(read())
+        dispatched=await work(s)
+        await settle(s,dispatched)
+        result,calls=await task
+        for call in calls:
+            call.complete(result.status,result.reason);call.release()
+        r=dispatched.resource
+        await s.admission.resource_released(s.run,s.token,s.generation,
+            runtime_incarnation=r.runtime_incarnation,resource_kind=r.resource_kind,
+            resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+        with s.queue.connect(write=False) as db:
+            assert db.execute('SELECT useful FROM runs WHERE id=?',(s.run,)).fetchone()[0]==now
+    # Keep heartbeats healthy after the last read without adding user demand.
+    for elapsed in range(60,IDLE_SECONDS,60):
+        s.queue.clock=lambda:now+elapsed
+        s.queue.heartbeat(s.run,s.token,ready=True,connection_generation=s.generation)
+    s.queue.clock=lambda:now+IDLE_SECONDS-1
+    s.queue.heartbeat(s.run,s.token,ready=True,connection_generation=s.generation)
+    with s.queue.connect(write=False) as db:
+        row=db.execute('SELECT * FROM runs WHERE id=?',(s.run,)).fetchone()
+        assert row['useful']==now and not s.queue._run_expired(row,now+IDLE_SECONDS-1)
+        assert s.queue._run_expired(row,now+IDLE_SECONDS+1)
+
+
+@pytest.mark.asyncio
+async def test_revoked_direct_adapter_authority_does_not_renew_idle(target):
+    s=target
+    authority=await s.auth.resolver.resolve_oauth(s.auth.tokens.access_token,
+        destination=s.backend.destination)
+    token=await s.auth.provider.load_access_token(s.auth.tokens.access_token)
+    await s.auth.provider.revoke_token(token)
+    s.queue.clock=lambda:1100.
+    with capture_read_output(),pytest.raises(ToolError):
+        await s.backend.search_adapter('synthetic query',authority=authority,
+            request_id='revoked-adapter',turn_generation=0,min_data_seq=0,
+            deadline_monotonic=asyncio.get_running_loop().time()+2,destination=s.backend.destination)
+    with s.queue.connect(write=False) as db:
+        assert db.execute('SELECT useful FROM runs WHERE id=?',(s.run,)).fetchone()[0]==1000.
