@@ -23,14 +23,10 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ConfigDict, Field
 
-from .contracts import EvidenceSearchOutput
 from .expert_delivery_control import verified_native_slack_receipt
-from .expert_evidence_receiver import _RequestFence
 from .expert_request_control import RequestControlError
 from .expert_executor_workflow import ExpertExecutorContext
 from .expert_slack_search_reply import ExpertSlackSearchReply
-from .projects_hub_reader import ReadContext, render as render_evidence
-from .read_issuance import capture_read_output
 
 
 _LOG = logging.getLogger(__name__)
@@ -288,48 +284,12 @@ class ExpertDotEvents:
                 await asyncio.sleep(min(16,2**attempt))
 
     async def _search(self, request_id):
-        """One ordinary scoped read; its evidence is ephemeral, not a new queue."""
-        row=await asyncio.to_thread(self.control._row,request_id)
-        with self.control.corpus.connect() as db:
-            self.control._dataset_current_identity(db,row)
-        origin=json.loads(row["origin"])
-        destination=self.reply.evidence._destination(origin,row["person_id"],request_id)
-        authority=await self.reply.evidence.authority.resolve_adapter(
-            provider="slack",tenant=origin["team_id"],
-            provider_subject=origin["user_id"],destination=destination)
-        query=re.sub(r"<@"+re.escape(self.control.bot_user_id)+r"(?:\|[^>]+)?>",
-                     "",row["input_text"]).strip()
-        if not 1<=len(query)<=1000:
-            self.reply.evidence.authority.release(authority)
-            raise ValueError("original question unavailable")
-        ctx=ReadContext(request_id,0,0,time.monotonic()+3)
-        calls=[]
+        # The original Slack responder already owns authorized source search
+        # and the current-source issuance fence. Reuse it without posting.
         try:
-            with capture_read_output() as calls:
-                value=await self.reply.evidence.backend.search_adapter(query,authority=authority,
-                    request_id=request_id,turn_generation=0,min_data_seq=0,
-                    deadline_monotonic=ctx.deadline_monotonic,
-                    destination=destination,limit=5)
-            if not calls:
-                if (type(value) is EvidenceSearchOutput and value.status=="pending"
-                        and value.reason=="target_warming"):
-                    return {"status":"pending","message_ru":(
-                        value.startup.message_ru if value.startup else None)}
-                return {"status":"unavailable"}
-            if len(calls)!=1:
-                raise PermissionError("one retained source read required")
-            issued=calls[0]
-            issued.gate=_RequestFence(issued.gate,
-                lambda:time.monotonic()<ctx.deadline_monotonic)
-            issued.gated=await issued.gate.refresh(issued.gated)
-            if not issued.gate.issuance_current(issued.gated.ticket):
-                raise PermissionError("source read changed")
-            return render_evidence(issued.render(issued.gated.result),ctx)
+            return await self.reply._answer(request_id,model_only=True)
         except Exception:
             return {"status":"unavailable"}
-        finally:
-            if calls:calls[0].release()
-            else:self.reply.evidence.authority.release(authority)
 
     async def get_request(self, request_id, event_id):
         self._actor()
