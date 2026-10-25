@@ -327,6 +327,15 @@ class ExpertDotEvents:
         row=await asyncio.to_thread(self.control._row,request_id)
         if row["event_id"]!=event_id or row["trigger_event_id"]!=event_id:
             raise PermissionError("original event not correlated")
+        # A cold/unavailable search has not produced a source-grounded answer.
+        # Preserve the question unclaimed so the SAME event may be read again.
+        task=self._reads.get(request_id)
+        evidence=await task if task is not None else await self._search(request_id)
+        if not isinstance(evidence,dict):
+            evidence={"status":"unavailable"}
+        if evidence.get("status") not in ("ok","degraded") or evidence.get("context_gap") is True:
+            self._reads.pop(request_id,None)
+            return {"state":"pending","request_id":request_id,"evidence":evidence}
         try:
             lease=await asyncio.to_thread(self.control.claim,self.context.credentials,
                 request_id=request_id,lease_seconds=300)
@@ -336,10 +345,6 @@ class ExpertDotEvents:
             return {"state":lease["state"],"request_id":request_id}
         claim=await asyncio.to_thread(self.control.claim_context,self.context.credentials,
             request_id,lease["generation"],lease["execution_token"])
-        task=self._reads.get(request_id)
-        evidence=await task if task is not None else await self._search(request_id)
-        if not isinstance(evidence,dict):
-            evidence={"status":"unavailable"}
         # The exact Slack source question is returned only to the bound
         # restricted executor; no credentials or other actor context leak.
         query=re.sub(r"<@"+re.escape(self.control.bot_user_id)+r"(?:\|[^>]+)?>",
