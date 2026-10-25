@@ -151,8 +151,9 @@ async def env(database):
     await initialize_database(database, database_generation="query-fixture", writer_generation="writer-1",
                               revisions=Revisions("s1", "f1", "e1"), applied_seq=5)
     async with database.transaction():
-        await database.execute((ROOT / "sql/kaggle/003_search_scope.sql").read_text(), prepare=False)
-        await database.execute((ROOT / "sql/kaggle/004_read_fences.sql").read_text(), prepare=False)
+        # Source QUERY requires the real catalog schema and its ordered dependencies.
+        for path in sorted((ROOT / "sql/kaggle").glob("00[3-9]_*.sql")):
+            await database.execute(path.read_text(), prepare=False)
     connection = await connect()
 
     @asynccontextmanager

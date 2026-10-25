@@ -228,11 +228,15 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                     if story:
                         await execute("SELECT * FROM rkb_v4.editorial_hydrate_v1(%s::uuid[],%s::uuid[])" if editorial else
                                       "SELECT * FROM rkb_v4.story_hydrate_v1(%s::uuid[],%s::uuid[])", (ids,source_ids))
-                    elif source_ids is None:
-                        await execute("SELECT * FROM rkb_v4.hydrate(%s::uuid[])", (ids,))
                     else:
-                        await execute("SELECT * FROM rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])",
-                                      (ids, source_ids))
+                        hydration = ('rkb_v4.hydrate(%s::uuid[])' if source_ids is None else
+                                     'rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])')
+                        await execute(f"""SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
+                            jsonb_build_object('catalog',jsonb_build_object('title',c.metadata->>'title'))
+                            FROM {hydration} WITH ORDINALITY h
+                            LEFT JOIN rkb_v4.source_catalog c
+                              ON c.source_id=h.source_id AND c.source_revision=h.revision
+                            ORDER BY h.ordinality""", (ids,) if source_ids is None else (ids,source_ids))
                     rows = await cursor.fetchall()
                     if observe and (len(rows) != len(ids) or {row[0] for row in rows} != set(ids)):
                         raise ValueError('acceptance rank hydration incomplete')

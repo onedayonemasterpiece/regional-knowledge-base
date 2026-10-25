@@ -130,6 +130,10 @@ async def test_actual_pg_scope_and_current_hydration(database):
     async with database.transaction():
         await database.execute('TRUNCATE rkb_v4.sources CASCADE')
         await database.execute(scoped_fixture_sql(), prepare=False)
+        # SQL assertions above exercise SQL003; Python source hydration uses SQL009.
+        for path in sorted((ROOT / 'sql/kaggle').glob('00[2-9]_*.sql')):
+            if not path.name.startswith('003_'):
+                await database.execute(path.read_text(), prepare=False)
     connection = await connect()
     try:
         async def encode(query):

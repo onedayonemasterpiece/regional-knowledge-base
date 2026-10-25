@@ -59,6 +59,37 @@ def test_versioned_locator_is_self_contained_strict_and_not_a_capability():
             decode_envelope(json.dumps(dict(payload, **fields)).encode())
 
 
+@pytest.mark.parametrize('metadata,title', [
+    ({'source_provenance': {'catalog': {'title': 'История города'}}}, 'История города'),
+    ({'title': 'Точное название', 'source_provenance': {'catalog': {'title': 'Книга'}}},
+        'Книга'),
+    ({'source_provenance': {'catalog': {'title': '   '}}}, PASSAGE),
+    ({'source_provenance': {'catalog': 'invalid'}}, PASSAGE),
+    ({}, PASSAGE),
+])
+def test_search_evidence_and_exact_fetch_share_catalog_title_without_changing_locator(metadata,title):
+    from test_kaggle_protocol import item
+    loc = locator()
+    row = item(kind='source', id=PASSAGE, metadata=metadata, dependencies={
+        'source_ids': (SOURCE,), 'source_revisions': (loc.source,),
+        'variant_refs': (), 'grant_refs': ()})
+    common = dict(request_id='title-read', connection_generation=4, turn_generation=9,
+        status='ok', evidence=(row,), observed_data_seq=12, observed_projection_seq=12,
+        observed_visibility_epoch=loc.visibility_epoch,
+        observed_database_generation=loc.database_generation)
+    search = QueryResult(mode='hybrid', **common)
+    attempt = ReadAttempt('b' * 32)
+    thin = KaggleSourceBackend._render(search, evidence=False, attempt=attempt).results[0]
+    evidence = KaggleSourceBackend._render(search, evidence=True, attempt=attempt).evidence[0]
+    fetched = KaggleSourceBackend._render_fetch(PassageReadResult(**common),
+        locator=parse_passage_fetch_id(thin.id), attempt=attempt)
+    assert thin.title == evidence.title == fetched.title == title
+    assert thin.id == evidence.id == fetched.id == passage_fetch_id(loc)
+    assert thin.url == evidence.url == fetched.url == 'urn:rkb:passage:' + PASSAGE
+    assert fetched.text == evidence.text == row.text
+    assert fetched.metadata['source_revisions'] == [loc.source.model_dump()]
+
+
 @pytest.mark.asyncio
 async def test_worker_exact_read_pages_text_and_bibliography_without_tokenizer_or_dense():
     async def no_count(_):
