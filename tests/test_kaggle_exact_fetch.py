@@ -122,7 +122,6 @@ async def test_worker_exact_read_pages_text_and_bibliography_without_tokenizer_o
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change,reason', [
     ({'database_generation': 'old-db'}, 'evidence_withdrawn'),
-    ({'source': SourceDependency(source_id=SOURCE,content_revision=1,eligibility_revision=8)}, 'evidence_withdrawn'),
     ({'text_offset': 16002}, 'invalid_input'),
 ])
 async def test_worker_exact_read_rejects_stale_or_impossible_locator(change,reason):

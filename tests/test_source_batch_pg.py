@@ -127,7 +127,7 @@ async def test_search_fetch_id_survives_next_packet_of_same_book(image_pg_sql18)
         yield env['connection']
 
     searched = await execute_query(query(query='synthetic', min_data_seq=env['sequence'],
-        filters={'kinds': ['source'], 'source_ids': [SOURCE]}),
+        filters={'kinds': ('source',), 'source_ids': (SOURCE,)}),
         acquire=acquire, tokenizer=tokenizer(), encode=encode)
     assert searched.status == 'ok', searched.reason
     assert len(searched.evidence) == 1
