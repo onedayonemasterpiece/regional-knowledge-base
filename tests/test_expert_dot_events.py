@@ -54,7 +54,6 @@ def _instance(transport=None):
     owner.callback_host="callbacks.chatgpt.example"
     owner.transport=transport
     owner._scope="restricted-dot|bound-client"
-    owner._reads={}
     owner._wakes={}
     return owner
 
@@ -156,29 +155,91 @@ async def test_event_intent_precedes_callback_and_same_id_replay(tmp_path,monkey
 
 
 @pytest.mark.asyncio
-async def test_wake_and_search_start_in_parallel_without_extra_queue(monkeypatch):
+async def test_subscribed_wakes_all_17_saved_questions_without_speculative_search(monkeypatch):
     events=_instance()
     started=[]
-    done=asyncio.Event()
-    async def search(request_id):
-        started.append("search")
-        await done.wait()
-        return {"status":"ok","evidence":[]}
+    release=asyncio.Event()
     async def wake(request_id):
-        started.append("wake")
-        await done.wait()
+        started.append(request_id)
+        await release.wait()
+    async def unexpected_search(request_id):
+        pytest.fail("notify must not issue a speculative native search")
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
-    monkeypatch.setattr(events,"_search",search)
     monkeypatch.setattr(events,"_wake",wake)
+    monkeypatch.setattr(events,"_search",unexpected_search)
     for i in range(17):
         events.notify(f"request-{i}")
-    events.notify("request-16") # duplicate notification is not a second wake
+    events.notify("request-16")
     await asyncio.sleep(0)
-    assert len(started)==34
-    assert started.count("search")==17 and started.count("wake")==17
-    assert len(events._reads)==17 and len(events._wakes)==17
-    done.set()
-    await asyncio.gather(*events._reads.values(),*events._wakes.values())
+    assert len(started)==17
+    assert len(events._wakes)==17
+    release.set()
+    await asyncio.gather(*tuple(events._wakes.values()))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question",[
+    "Как возник Кёнигсбергский университет?",
+    "Есть ли метро или космодром в Кёнигсберге?",
+])
+async def test_get_request_returns_live_evidence_and_model_instruction_once(monkeypatch,question):
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    markers={"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
+             "state":"pending"}
+    calls=[]
+    class Control:
+        bot_user_id="U0BOT"
+        def _row(self,request_id):
+            assert request_id=="rkb-original"
+            return markers
+        def claim(self,credentials,*,request_id,lease_seconds):
+            assert (credentials,request_id,lease_seconds)==(
+                "service","rkb-original",300)
+            return {"state":"leased","generation":1,"execution_token":"x"*40}
+        def claim_context(self,credentials,request_id,generation,token):
+            return {"input_text":"<@U0BOT> "+question}
+    async def search(request_id):
+        calls.append(request_id)
+        return {"status":"ok","context_gap":False,"evidence":[{
+            "text":"Подтверждённый первоисточник",
+            "metadata":{"citation":"История Кёнигсберга, 1994",
+                        "locator":"стр. 59"}}]}
+    events.control=Control()
+    events.context=SimpleNamespace(credentials="service")
+    monkeypatch.setattr(events,"_search",search)
+    result=await events.get_request("rkb-original","Ev-correct")
+    assert result["state"]=="leased"
+    assert result["question"]==question
+    assert result["evidence"]["evidence"][0]["metadata"]=={
+        "citation":"История Кёнигсберга, 1994","locator":"стр. 59"}
+    instructions=result["instructions"]
+    for value in ("in your own words first","never substitute raw",
+                  "1–4 meaningful Russian","Источники:","metadata.citation",
+                  "locator","metro","cosmodrome",
+                  "В доступной базе подтверждений не найдено"):
+        assert value in instructions
+    assert calls==["rkb-original"]
+
+
+@pytest.mark.asyncio
+async def test_get_request_does_not_claim_during_source_warmup(monkeypatch):
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    class Control:
+        def _row(self,request_id):
+            return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct"}
+        def claim(self,*args,**kwargs):
+            pytest.fail("a pending read cannot be claimed")
+    events.control=Control()
+    async def warming(_):
+        return {"status":"pending",
+                "message_ru":"Сейчас не могу проверить, повторите вопрос через пару минут"}
+    monkeypatch.setattr(events,"_search",warming)
+    outcome=await events.get_request("rkb-original","Ev-correct")
+    assert outcome=={"state":"pending","request_id":"rkb-original",
+        "evidence":{"status":"pending",
+                    "message_ru":"Сейчас не могу проверить, повторите вопрос через пару минут"}}
 
 
 @pytest.mark.asyncio
@@ -307,15 +368,79 @@ async def test_webhook_ack_without_claim_resumes_original_pending_request(tmp_pa
     assert wakes==["still-pending"]
 
 
-def test_dot_answer_contract_requires_bibliography_and_honest_no_support():
-    from regional_knowledge.expert_dot_events import ExpertDotEvents
-    import inspect
-    # Contract is returned with each scoped request, not merely project docs.
-    body=inspect.getsource(ExpertDotEvents.get_request)
-    for piece in ("1–4", "Источники:", "metadata.citation", "locator",
-                  "метро", "cosmodrome", "В доступной базе подтверждений не найдено"):
-        assert piece in body or (piece=="метро" and "metro" in body)
+@pytest.mark.asyncio
+async def test_cold_coverage_longer_than_eight_attempts_still_wakes_without_restart(
+        tmp_path,monkeypatch):
+    db=_Corpus(tmp_path/"cold.sqlite")
+    with db.connect() as conn:
+        conn.execute("""CREATE TABLE rkb_expert_requests(
+            id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
+            reconcile_cursor TEXT,created_at REAL)""")
+        conn.execute("""INSERT INTO rkb_expert_requests
+            VALUES('cold-request','Ev-original','received',NULL,NULL,1)""")
+    stages=[]
+    class Control:
+        corpus=db
+        def confirm_dataset_coverage(self,request_id):
+            assert request_id=="cold-request"
+            stages.append("coverage")
+            return stages.count("coverage")>9
+        async def stage_received_dataset(self,request_id):
+            stages.append("stage")
+            return False
+    events=_instance(httpx.MockTransport(
+        lambda request:httpx.Response(200,json={"ok":True})))
+    events.control=Control()
+    monkeypatch.setattr(events,"_subscription",lambda:{
+        "id":"sub_test","url":"https://callbacks.chatgpt.example/events",
+        "secret":_whsec()})
+    delays=[]
+    async def no_real_sleep(seconds):
+        delays.append(seconds)
+    monkeypatch.setattr(asyncio,"sleep",no_real_sleep)
+    await events._wake("cold-request")
+    assert stages.count("coverage")==10
+    assert stages.count("stage")==9
+    assert len(delays)==9
+    assert delays[-1]==60
+    with db.connect() as conn:
+        assert conn.execute("SELECT trigger_event_id FROM rkb_expert_requests"
+                            ).fetchone()[0]=="Ev-original"
 
+
+@pytest.mark.asyncio
+async def test_webhook_5xx_beyond_five_retries_recovers_same_id_without_restart(
+        tmp_path,monkeypatch):
+    db=_Corpus(tmp_path/"callbacks.sqlite")
+    with db.connect() as conn:
+        conn.execute("""CREATE TABLE rkb_expert_requests(
+            id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
+            reconcile_cursor TEXT,created_at REAL)""")
+        conn.execute("""INSERT INTO rkb_expert_requests
+            VALUES('retry-request','Ev-stable','pending',NULL,NULL,1)""")
+    class Control:
+        corpus=db
+        def confirm_dataset_coverage(self,request_id):return True
+    events=_instance()
+    events.control=Control()
+    monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    called=[]
+    async def intermittent(record,event_id,payload):
+        called.append((event_id,payload["eventId"],payload["data"]["request_id"]))
+        return httpx.Response(503 if len(called)<=6 else 200)
+    monkeypatch.setattr(events,"_post",intermittent)
+    delays=[]
+    async def no_real_sleep(seconds):
+        delays.append(seconds)
+    monkeypatch.setattr(asyncio,"sleep",no_real_sleep)
+    await events._wake("retry-request")
+    assert len(called)==7
+    assert all(item==("Ev-stable","Ev-stable","retry-request") for item in called)
+    assert delays==[2,4,8,16,32,60]
+    with db.connect() as conn:
+        row=conn.execute("SELECT state,trigger_event_id FROM rkb_expert_requests"
+                         ).fetchone()
+        assert (row["state"],row["trigger_event_id"])==("pending","Ev-stable")
 
 
 def test_callback_dns_requires_public_address_and_rejects_mixed_resolution(monkeypatch):
