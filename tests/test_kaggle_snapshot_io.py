@@ -271,6 +271,35 @@ async def test_snapshot_io_rebind_keeps_one_operation_and_requires_current_attac
 
 
 @pytest.mark.asyncio
+async def test_page_lock_timing_excludes_snapshot_attachment_wait(original_native,monkeypatch,caplog):
+    import regional_knowledge.kaggle_original_native as original_module
+    from test_kaggle_original_intake import frame
+    caplog.set_level('INFO',logger=original_module.__name__)
+    clock=[0.]
+    monkeypatch.setattr(original_module,'time',NS(monotonic=lambda:clock[0]))
+    binding=('run','inc',1);active=[binding]
+    factory=object.__new__(NativeSnapshotFactory)
+    factory.current=lambda value:value==active[0]
+    factory.limits=NS(timeout_seconds=10)
+    io=SnapshotIo(factory=factory,tickets=None,transfer=None)
+    original=original_native.handler;original.snapshot_io=io
+    async def execute(frame):return {'physical_page_index':0}
+    monkeypatch.setattr(original,'_execute',execute)
+    try:
+        receipt=await original(frame('original_pages',{'handle':'fixture','original_sha256':'a'*64,'index':0}))
+        active[0]=None
+        await asyncio.sleep(0)  # The real I/O task now waits for its attachment.
+        task=io.operations[receipt['value']['handle']].task
+        assert not task.done()
+        clock[0]=10.;active[0]=binding
+        io.rebind(binding)
+        await task
+        events=[r for r in caplog.records if 'native_original_page stage=lock_acquired' in r.message]
+        assert len(events)==1 and events[0].args[-1]==0
+    finally:await io.aclose()
+
+
+@pytest.mark.asyncio
 async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(state,monkeypatch):
     from regional_knowledge.kaggle_schema_live import LiveSchemaMigrations
     from regional_knowledge.kaggle_schema_migrate import MigrationDenied
