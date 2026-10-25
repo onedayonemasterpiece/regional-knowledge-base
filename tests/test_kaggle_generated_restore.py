@@ -30,6 +30,41 @@ def target():
         registry_sha256=registry_sha256())
 
 
+@pytest.mark.asyncio
+async def test_prepare_waiting_for_runtime_survives_same_run_reattachment():
+    owner=DeferredRecoveryRuntime(dict(run_id='same-run',launch_nonce='same-nonce',
+        target_runtime=target().wire()),executed_source=b'fixture')
+    owner.attached(1,runtime_incarnation='same-incarnation')
+    frame=dict(run_id='same-run',launch_nonce='same-nonce',runtime_incarnation='same-incarnation',
+        connection_generation=1,phase='prepare',operation_key='same-operation',
+        id='same-job',claim='same-claim',compute_claim='same-compute',dispatch_generation=1)
+    task=asyncio.create_task(owner(frame))
+    calls=[]
+    try:
+        await asyncio.sleep(.04)
+        owner.detached(1)
+        await asyncio.sleep(.04)
+        owner.attached(2,runtime_incarnation='same-incarnation')
+        async def recovery(observed):
+            calls.append(observed)
+            return {'handle':'same-restore'}
+        owner.instance=SimpleNamespace(recovery=recovery)
+        assert await task=={'handle':'same-restore'}
+        assert calls==[dict(frame,connection_generation=2)]
+        with pytest.raises(ValueError,match='attachment changed'):
+            await owner(frame)
+        owner.instance=None
+        closing=asyncio.create_task(owner(dict(frame,connection_generation=2)))
+        await asyncio.sleep(.04)
+        owner.closed=True
+        with pytest.raises(ValueError,match='attachment changed'):
+            await closing
+        assert len(calls)==1
+    finally:
+        if not task.done():task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+
+
 def test_restore_pending_launch_requires_native_proof_not_fabricated_initialized_receipt():
     """A cold target cannot possess a new PG's native initialized receipt yet."""
     pending=replace(target(),initialized_receipt=None)
