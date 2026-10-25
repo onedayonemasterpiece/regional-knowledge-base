@@ -311,6 +311,10 @@ def test_expired_claim_is_not_resumed_or_rewritten(tmp_path):
     queue.claim(run, token, connection_generation=1)
     now[0] += 100
     queue.heartbeat(run, token, connection_generation=1)
+    # Exercise a retained pre-upgrade short lease independently of the live
+    # heartbeat, which now renews ordinary documents as well as native jobs.
+    with queue.connect() as db:
+        db.execute('update jobs set lease_until=1180.0 where id=?',(job_id,))
     now[0] += 81
     assert queue.resume_channel_claim(run, token, 1) is None
     with queue.connect(write=False) as db:

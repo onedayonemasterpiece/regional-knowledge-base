@@ -114,7 +114,7 @@ class BgeWssTransport:
             raise ValueError('async close_runtime required')
         self.close_runtime = close_runtime
         self.forward_lock = asyncio.Lock()
-        self.forwards = set()
+        self.forwards = {}
         self.resource = None
         self.last_released = None
         self.read_task = None
@@ -144,7 +144,7 @@ class BgeWssTransport:
         return frame
 
     def _claim_resource(self, frame, kind):
-        if self.resource is not None or self.forwards:
+        if self.resource is not None:
             raise ValueError('worker resource busy')
         self.last_released = None  # New assignment implicitly acknowledges release.
         if kind == 'document':
@@ -157,7 +157,8 @@ class BgeWssTransport:
         return self.resource
 
     def _maybe_release(self):
-        if not self.shared_reads or self.resource is None or self.forwards:
+        if (not self.shared_reads or self.resource is None
+                or any(owner is self.resource for owner in self.forwards.values())):
             return
         task = self.read_task if self.resource['resource_kind'] == 'read' else self.encoding
         if task is not None and task.done():
@@ -173,9 +174,9 @@ class BgeWssTransport:
         # The Task, not its consumer, owns the lock until the real sync forward
         # returns. No consumer/session cancellation is passed to this Task.
         task = asyncio.create_task(actual())
-        self.forwards.add(task)
+        self.forwards[task]=resource
         def finished(done):
-            self.forwards.discard(done)
+            self.forwards.pop(done,None)
             if not done.cancelled():
                 done.exception()
             self._maybe_release()
@@ -371,8 +372,7 @@ class BgeWssTransport:
                     raise ValueError('source command receipt bound')
             else:
                 before = time.monotonic()
-                vector = await self._forward(job['texts'][0],
-                    self.resource if self.shared_reads else None)
+                vector = await self._forward(job['texts'][0])
                 pending = {'job_id':job['id'], 'claim':job['claim'], 'space':SPACE,
                     'vectors':[vector], 'timings':{'encoder_seconds':time.monotonic()-before}}
                 if len(json.dumps(pending, allow_nan=False).encode()) > 262000:
@@ -418,10 +418,9 @@ class BgeWssTransport:
         if self.shared_reads:
             self._claim_resource(job, 'document')
         self.job = job
-        if self.shared_reads and job['kind']=='source_command':
-            # Accepted native work keeps its durable job/claim. Its BGE calls
-            # share ResidentEncoder's lock with QUERY, so PG/Python work must
-            # not reserve the channel's only read permit for the whole job.
+        if self.shared_reads:
+            # Durable job/claim/result remain singular. Actual model forwards
+            # serialize in forward_lock, independently of control/PG latency.
             self.last_released,self.resource=self.resource,None
         self.encoding = asyncio.create_task(self._encode(job))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
@@ -905,7 +904,7 @@ class BgeWssTransport:
             while self.forwards:
                 for task in tuple(self.forwards):
                     await drain(task)
-                    self.forwards.discard(task)
+                    self.forwards.pop(task,None)
             # The pool/native owner belongs to this loop. Repeated cancellation
             # must not strand an asynchronous close after asyncio.run tears down.
             if self.close_runtime is not None:

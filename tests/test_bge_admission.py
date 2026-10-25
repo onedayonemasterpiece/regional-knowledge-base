@@ -539,11 +539,21 @@ async def test_authority_projection_and_min_sequence_cannot_be_forged(state):
 @pytest.mark.asyncio
 async def test_document_release_before_result_holds_only_result_debt_and_serves_reads(state):
     s=state
+    now=[1000.];s.q.clock=lambda:now[0]
     await s.a.register_document_actor(s.auth.p.admin)
     work=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(work)
     payload=work.document_payload
     await release(s,work)
     assert s.a.status()['state']=='idle' and s.a.status()['document_result_pending']
+    second=s.q.enqueue(s.auth.p.owner.subject,'second-document',['another passage'],kind='document')
+    # Live heartbeats retain this original durable slot beyond JOB_SECONDS,
+    # even though its compute permit was released before forward/result.
+    for tick in (1060.,1120.,1180.,1240.):
+        now[0]=tick
+        s.q.heartbeat(s.run,s.token,connection_generation=1)
+        s.q.maintenance()
+        assert s.q._document_claim_waiting(payload['id'],payload['claim'])
+        assert await s.q.next_channel_work(s.run,s.token,1) is None
     assert await s.q.next_channel_work(s.run,s.token,1) is None # no redispatch/new compute claim
     await begin(s,'read-after-document-release')
     read=await s.q.next_channel_work(s.run,s.token,1)
@@ -554,6 +564,10 @@ async def test_document_release_before_result_holds_only_result_debt_and_serves_
         [[1]+[0]*1023],{},connection_generation=1)
     assert s.a.durable_result_settled(payload['id'],payload['claim'],status)
     assert not s.a.status()['document_result_pending'] and s.a.status()['resource']==read.resource
+    assert await s.a.finish_read(s.run,s.token,1,answer(read))
+    await release(s,read)
+    successor=await s.q.next_channel_work(s.run,s.token,1)
+    assert successor.document_payload['id']==second
 
 
 @pytest.mark.asyncio
