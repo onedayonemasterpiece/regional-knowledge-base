@@ -71,6 +71,7 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
         key='blob',size=1,sha256='a'*64,native_version='immutable-version'))
     if kind=='original_pages':args=dict(handle='retained-original',original_sha256='a'*64,index=0)
     producer=asyncio.create_task(bridge.request(binding,kind,args,operation_key='snapshot'))
+    issued=[]
 
     async def pump_until(predicate):
         async with asyncio.timeout(8):
@@ -87,12 +88,18 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
                     frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
                         **dict(work.document_payload),compute_claim=work.compute_claim,
                         dispatch_generation=work.dispatch_generation)
+                    if frame['phase']=='original_pages':issued.append(frame)
                     receipt=await (original(frame) if frame['phase']=='original_pages' else worker(frame))
                     await bridge.receive(response(s,frame,receipt['value']),run_id=s.run,token=s.token,generation=s.generation)
                 await release(s,work)
                 await asyncio.sleep(0)
     try:
         await pump_until(started.is_set)
+        if kind=='original_pages':
+            # A lost acknowledgement must replay the pending handle without
+            # waiting on the renderer's original-file lock or starting twice.
+            async with asyncio.timeout(.5):
+                assert (await original(issued[0]))['value']['status']=='pending'
         read=await begin(s,'while-native-io-blocked')
         await pump_until(read.result.done)
         assert (await read.result).status=='ok' and not finish_backup.is_set() and not producer.done()

@@ -172,6 +172,11 @@ class NativeOriginalIntake:
 
     async def __call__(self,frame):
         self._validate(frame);key=frame['operation_key'];request=frame['request_sha256']
+        # Replaying an already issued receipt must not wait on its renderer.
+        # No await separates the immutable fingerprint and cached-result reads.
+        if key in self._results:
+            if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
+            return self._results[key]
         async with self._lock:
             if key in self._requests:
                 if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
