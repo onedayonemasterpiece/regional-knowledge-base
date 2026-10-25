@@ -272,11 +272,7 @@ class KaggleSourceImporter:
         if len(metadata_bytes) > 16384:
             raise failure('small_import_metadata_bound')
         with self.queue.connect() as db:
-            # Deduplicate current packet intake. Older whole-book candidates
-            # remain addressable by their own IDs without a start-time rewrite.
             prior = db.execute("SELECT c.* FROM rkb_source_intake_control c WHERE person_id=? AND file_id=? AND phase<>'failed' "
-                + ("AND NOT EXISTS(SELECT 1 FROM rkb_native_source_intake_state n WHERE n.ingestion_id=c.ingestion_id "
-                   "AND n.packet_mode=0 AND n.phase NOT IN ('finalized','failed')) " if self.native_intake is not None else "")
                 + "ORDER BY updated DESC LIMIT 1", (actor, file.file_id)).fetchone()
             if prior is not None:
                 # Absence of a redundant rights declaration never rewrites an
@@ -891,52 +887,6 @@ class KaggleSourceImporter:
             row = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
             state = await asyncio.to_thread(native._state, row)
 
-        # Finalized local state alone is NOT Saved. Require the original
-        # applied source.activate outcome, exact replay identity and the
-        # independently verified Dataset-covered remote outcome bytes.
-        if (row['phase'] != 'finalized' or state is None or state['phase'] != 'finalized'
-                or state['pending_operation_key'] is not None or state['pending_kind'] is not None):
-            raise failure('native_source_terminal_intent_unverified')
-        key = native._operation(row, 'activate')
-        entry = await native._entry(key)
-        from .recovery_journal import RemoteOutcomeReceipt
-        if (entry is None or entry.command.operation_key != key
-                or entry.command.route != 'source.activate.v1'
-                or entry.command.person_id != row['person_id']
-                or entry.command.ids != {'source_id': row['source_id']}
-                or entry.database_generation != access.binding.database_generation
-                or entry.accepted is None or entry.apply_receipt is None
-                or entry.apply_receipt.status != 'applied' or entry.outcome_state != 'DURABLE'
-                or type(entry.remote_outcome) is not RemoteOutcomeReceipt
-                or (entry.remote_outcome.operation_key, entry.remote_outcome.command_sha256,
-                    entry.remote_outcome.database_generation) !=
-                   (key, entry.command_sha256, access.binding.database_generation)):
-            raise failure('native_source_accepted_outcome_not_saved')
-        from .dataset_recovery_store import DatasetRecoveryStore
-        store = self.spool.journal.store
-        if type(store) is not DatasetRecoveryStore:
-            raise failure('native_source_dataset_coverage_required')
-        published = await store.read(entry.remote_outcome.key,
-            max_bytes=self.spool.journal.max_outcome_bytes)
-        if (published is None or len(published.data) != entry.remote_outcome.length
-                or not store.remote_durable(entry.remote_outcome.key, published.data)):
-            raise failure('native_source_dataset_coverage_required')
-        try:
-            import base64
-            saved = json.loads(published.data)
-            if (canonical(saved) != published.data or saved['codec'] != 'rkb.outcome.v1'
-                    or saved['stream'] != self.spool.journal.stream
-                    or saved['operation_key'] != key
-                    or saved['command_sha256'] != entry.command_sha256
-                    or saved['sequence'] != entry.command.sequence
-                    or saved['database_generation'] != access.binding.database_generation
-                    or saved['outcome_sha256'] != entry.remote_outcome.outcome_sha256
-                    or base64.b64decode(saved['outcome_b64'], validate=True) != entry.apply_receipt.outcome
-                    or digest(entry.apply_receipt.outcome) != saved['outcome_sha256']):
-                raise ValueError
-        except (ValueError, KeyError, TypeError, UnicodeError):
-            raise failure('native_source_saved_outcome_changed') from None
-        await self._check(access.authority, access.context, access.binding)
         # Source revision 2 and accepted_reuse re-chunk require a NEW ordered
         # native SQL/activation contract. SQL013/014 explicitly disallow
         # source_id already present in rkb_v4.sources. A source-only importer
