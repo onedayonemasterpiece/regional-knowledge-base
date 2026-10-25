@@ -79,6 +79,11 @@ class ExpertSlackSocketMode:
         client.socket_mode_request_listeners.append(self.handle)
         try:
             await client.connect()
+            # Reuse the existing Socket Mode lifecycle to resume original
+            # request rows; no second background owner or scheduler.
+            dot=getattr(self.ingress._reply,'_dot_events',None)
+            if dot is not None:
+                await dot.resume_pending()
             yield self
         finally:
             try:
