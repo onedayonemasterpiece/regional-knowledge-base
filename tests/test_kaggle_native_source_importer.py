@@ -32,6 +32,7 @@ from test_kaggle_source_importer import options
 from test_participants import people
 from test_read_authority import auth, issue
 from test_recovery_journal import ConditionalMemoryStore
+from test_kaggle_original_intake import native, frame as native_frame
 
 
 @pytest_asyncio.fixture
@@ -165,6 +166,45 @@ async def stage(s, result, payload):
 async def test_original_mime_metadata_does_not_preempt_verified_intake(native_intake, mime_type):
     result=await start(native_intake,mime_type=mime_type)
     assert result.source_archive_status=='verified' and result.next_action=='continue_pages'
+
+
+@pytest.mark.asyncio
+async def test_empty_mime_unsupported_bytes_reject_without_stranding_importer(native_intake, native):
+    s=native_intake
+    s.store.client=SimpleNamespace(meta=SimpleNamespace(endpoint_url='https://archive.invalid'))
+    s.store.bucket='synthetic-originals'
+    binding=s.startup.binding
+    controller=OriginalIntakeController(queue=s.t.queue,spool=s.spool,participants=s.t.auth.p.registry,
+        object_store=SimpleNamespace(client=s.store.client,bucket=s.store.bucket),
+        binding_current=lambda b:b==binding,current_binding=lambda:binding,
+        allowed_origins=frozenset({'https://archive.invalid'}))
+    phases=[]
+    async def transport(bound,phase,args,*,operation_key):
+        assert bound==binding and phase=='original_acquire'
+        phases.append(phase)
+        reply=await native.handler(native_frame(phase,args,key=operation_key,
+            private=controller._private[operation_key]))
+        return reply['value']
+    controller._bridge=lambda b:SimpleNamespace(request=transport)
+    async def download(url,folder,*,max_bytes):
+        from regional_knowledge.original_intake import digest
+        data=b'<html>not an original book</html>'
+        path=folder/'attachment';path.write_bytes(data)
+        return SimpleNamespace(path=path,sha256=digest(data),size_bytes=len(data))
+    native.handler.downloader.download=download
+    s.importer.originals=controller
+    try:
+        for file_id in ('unsupported-first','unsupported-next'):
+            result=await start(s,file_id=file_id,mime_type='')
+            assert result.state=='failed' and result.warnings==['original_format_unsupported']
+            assert s.importer._row(s.principal.subject,result.ingestion_id)['phase']=='failed'
+            row=controller._row(s.t.auth.p.owner.subject,result.ingestion_id)
+            assert row['failure_code']=='original_format_unsupported'
+            assert row['acquisition_json'] is None and row['receipt_json'] is None
+        assert phases==['original_acquire','original_acquire']
+        assert not native.parser and not native.transfer.calls
+    finally:
+        await native.handler.aclose()
 
 
 def state(s, result):
