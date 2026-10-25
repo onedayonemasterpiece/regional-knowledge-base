@@ -114,6 +114,21 @@ In the Vibe read path, terminal blocked `telegram_transport_unhealthy` / `provid
 
 ## Acceptance and diagnosis
 
+Page timing logs distinguish the existing boundaries without changing receipts
+or requesting additional renders. `native_original_page` records the background
+original-lock wait, `parse_render_complete` (the complete decoder/parser call,
+including native text and JPEG work), and `ready` with `image_cached` and
+`text_cached`. These flags mean reuse from before this request; the first render
+is not a cache hit. This does not separate JPEG encoding from decoder startup.
+`original_page_read` records native-receipt wait (including restoration/polling),
+archive verification, and derivative-image download as separate durations.
+Correlate native job IDs with the existing `recovery_phase_dispatch/receipt`
+logs for WSS round trips. The complete `book_pages`/MCP latency also includes
+authorization and final output; do not label it pure render time or sum these
+overlapping measurements. Logs contain identifiers, durations and byte counts,
+never page text, image bytes, archive URLs or tickets. A deployed readback is
+required before claiming any live timing improvement.
+
 - Use at least three natural-language searches without hardcoded image IDs. Demonstrate exact evidence/figure association and printed-caption/model-observation separation; include a nearby unrelated same-page image negative case.
 - Fetch real images through the actual MCP connection, check actual pixels/MIME and accessible registered media without custom Telegram hash comparison, and deliver public renditions to an audience without a personal book grant. Separately test denied quote/page/original access and authorized owner/demo/expert/local_historian proof.
 - Exercise a mislabeled page crop, actual final output geometry, warm-cache withdrawal, expired demo and stale callbacks. Return usable partial results when one page is pending or denied.

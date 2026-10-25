@@ -197,8 +197,11 @@ class NativeOriginalIntake:
         if frame['phase']=='original_pages' and self.snapshot_io is not None:
             prior=self._remember_request(key,request)
             if prior is not None:return prior
+            queued=time.monotonic()
             async def render(operation):
                 async with self._lock:
+                    _LOG.info('native_original_page stage=lock_acquired run_id=%s job_id=%s wait_ms=%.3f',
+                        self.identity[0],frame['id'],(time.monotonic()-queued)*1000)
                     return await self._execute_logged(frame)
             from .kaggle_pg_snapshot_native import SnapshotError
             try:
@@ -351,6 +354,7 @@ class NativeOriginalIntake:
             if record['format']=='djvu' and cursor!=dict(block=0,offset=0,text=0):
                 raise OriginalIntakeError('original_page_cursor_invalid')
             index=args['index']
+            started=time.monotonic();cached=index in record['pages']
             if index not in record['pages']:
                 if record['format']=='djvu':
                     from .kaggle_djvu_inspect import inspect_djvu,DjvuStructureError
@@ -370,6 +374,8 @@ class NativeOriginalIntake:
                 else:
                     result=await self._parse_selected(record['path'],'page',index,
                         parser_sha256=record['parser_sha256'])
+                _LOG.info('native_original_page stage=parse_render_complete run_id=%s job_id=%s page_index=%s format=%s elapsed_ms=%.3f',
+                    self.identity[0],frame['id'],index,record['format'],(time.monotonic()-started)*1000)
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
                 if not 1<=len(image)<=256*1024:
                     raise OriginalIntakeError('original_page_render_invalid')
@@ -385,6 +391,7 @@ class NativeOriginalIntake:
                     _LOG.info('original_page state=rendered format=djvu run_id=%s ingestion_id=%s page_index=%s image_bytes=%s',
                         self.identity[0],record['spec']['ingestion_id'],index,len(image))
             artifact=record['pages'][index];key=canonical(cursor).decode()
+            text_cached=cached and key in artifact['chunks']
             if key not in artifact['chunks']:
                 result=await self._parse_selected(record['path'],'text',index,cursor=cursor,
                     parser_sha256=record['parser_sha256'])
@@ -392,6 +399,8 @@ class NativeOriginalIntake:
                     result[name]=artifact['result'][name]
                 result['native_text_info']['preview_render']=artifact['result']['preview_render']
                 result['page_receipt_sha256']=digest(canonical(result));artifact['chunks'][key]=result
+            _LOG.info('native_original_page stage=ready run_id=%s job_id=%s page_index=%s image_cached=%s text_cached=%s elapsed_ms=%.3f',
+                self.identity[0],frame['id'],index,cached,text_cached,(time.monotonic()-started)*1000)
             return artifact['chunks'][key]
         raise OriginalIntakeError('original_phase_unsupported')
 

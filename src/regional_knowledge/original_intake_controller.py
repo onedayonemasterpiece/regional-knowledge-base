@@ -315,13 +315,20 @@ class OriginalIntakeController:
             next_cursor)
 
     async def _page_data(self,binding,record,index,native_cursor,*,restore):
+        started=time.monotonic()
         args=dict(handle=record['handle'],original_sha256=record['sha256'],index=index,cursor=native_cursor)
         try:page=await self._phase(binding,'original_pages',args)
         except OriginalIntakeError as exc:
             if str(exc)!='original_retained_bytes_unavailable':raise
             record=await restore(record)
             page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']))
+        _LOG.info('original_page_read stage=native_receipt run_id=%s ingestion_id=%s page_index=%s elapsed_ms=%.3f',
+            binding.run_id,record['spec']['ingestion_id'],index,(time.monotonic()-started)*1000)
+        started=time.monotonic()
         native=await self._archive(binding,record,page=page)
+        _LOG.info('original_page_read stage=archive_verified run_id=%s ingestion_id=%s page_index=%s elapsed_ms=%.3f',
+            binding.run_id,record['spec']['ingestion_id'],index,(time.monotonic()-started)*1000)
+        started=time.monotonic()
         def derivative():
             result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
             body=result['Body']
@@ -334,6 +341,8 @@ class OriginalIntakeController:
                 return data
             finally:body.close()
         data=await _blocking(derivative)
+        _LOG.info('original_page_read stage=image_downloaded run_id=%s ingestion_id=%s page_index=%s image_bytes=%s elapsed_ms=%.3f',
+            binding.run_id,record['spec']['ingestion_id'],index,len(data),(time.monotonic()-started)*1000)
         return record,page,data
 
     def _record_issued_image(self,receipt,page):
