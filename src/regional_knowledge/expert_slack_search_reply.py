@@ -143,7 +143,12 @@ class ExpertSlackSearchReply:
         # The SAME acknowledged request is retried only while no provider
         # permit exists. A possible POST sets sending/unknown: never resend.
         if after is not None:
-            await after.wait()
+            try:
+                # The native read already has a two-second deadline. Never
+                # hold an unrelated dialog behind unbounded actor resolution.
+                await asyncio.wait_for(after.wait(),2)
+            except TimeoutError:
+                pass
         delay=2
         while True:
             try:
