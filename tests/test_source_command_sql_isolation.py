@@ -26,6 +26,64 @@ def frame(command,seal,handler):
 
 @PG
 @pytest.mark.asyncio
+async def test_materializer_runtime_error_is_retained_and_replayed_without_reconnect(image_pg_sql18):
+    import asyncio
+    from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+    from test_bge_shared_worker import Peer,query,result
+    from test_bge_wss_worker import CONFIG,module
+    from test_kaggle_bootstrap import candidate
+    env=image_pg_sql18;connection=env['connection'];doc=exact_batch(count=1)
+    assert (await accepted(env,stage_command(doc,1))).status=='applied'
+    command=packet(env,doc);handler=env['registry'].resolve(command)
+    seal=await env['journal'].seal([command],predecessor=await env['journal'].head(),writer_generation=WRITER)
+    calls=[];peer=Peer();stop=asyncio.Event()
+    @asynccontextmanager
+    async def acquire():yield connection
+    async def materializer(command,**kwargs):
+        calls.append(command.encode())
+        raise RuntimeError('synthetic deterministic materializer failure')
+    async def read(request,*,encode):return result(request)
+    async def prepare(encoder,**identity):
+        executor=WorkerSourceExecutor(acquire=acquire,registry=env['registry'],
+            database=SimpleNamespace(database_generation=DB,writer_generation=WRITER),
+            materializer=materializer,**identity)
+        return PreparedRuntime(read,candidate(),executor)
+    transport=module('bge_wss_transport')
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
+        lambda:lambda _: [1.]+[0.]*1023,lambda:{},prepare_runtime=prepare,
+        connector=peer.connect,heartbeat_seconds=.01,maximum_seconds=8,stop=stop)
+    task=asyncio.create_task(worker.run())
+    request=frame(command,seal,handler)|dict(run_id=CONFIG['run_id'],
+        launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation)
+    try:
+        await peer.wait('READY');await peer.put(request)
+        first=await peer.wait('SOURCE_COMMAND_RESULT')
+        receipt,outcome=decode_receipt(first['receipt'])
+        assert receipt.status=='rejected_precondition' and not receipt.duplicate
+        assert json.loads(base64.b64decode(outcome['result_b64']))=={'reason':'native_source_sql_rolled_back'}
+        await peer.put(dict(type='RESULT_ACK',job_id=request['id'],claim=request['claim'],status='accepted'))
+        replay=request|dict(id='replayed-source',claim='replayed-claim',compute_claim='replayed-compute')
+        await peer.put(replay)
+        second=await peer.wait('SOURCE_COMMAND_RESULT',predicate=lambda f:f['job_id']==replay['id'])
+        duplicate,_=decode_receipt(second['receipt'])
+        assert duplicate.duplicate and duplicate.outcome==receipt.outcome
+        assert calls==[command.encode()]*2
+        async with connection.transaction():
+            assert await (await connection.execute(
+                'SELECT status,outcome_bytes FROM rkb_v4.applied_ops WHERE operation_key=%s',
+                (command.operation_key,))).fetchall()==[('rejected_precondition',receipt.outcome)]
+            assert await (await connection.execute('SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone()==(2,)
+            assert await (await connection.execute('SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(0,)
+        await peer.put(dict(type='RESULT_ACK',job_id=replay['id'],claim=replay['claim'],status='duplicate'))
+        await peer.put(query(request='read-after-materializer-error'))
+        await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']=='read-after-materializer-error')
+        assert peer.sessions==1 and worker.job is None and worker.pending is None and not task.done()
+    finally:
+        stop.set();await asyncio.wait_for(task,3)
+
+
+@PG
+@pytest.mark.asyncio
 async def test_real_pg_rollback_rejection_duplicate_next_command_and_read_on_same_worker(image_pg_sql18):
     env=image_pg_sql18;connection=env['connection'];doc=exact_batch(count=1)
     assert (await accepted(env,stage_command(doc,1))).status=='applied'

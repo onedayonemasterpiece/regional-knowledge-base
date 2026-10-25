@@ -18,8 +18,8 @@ from uuid import UUID
 import psycopg
 from psycopg.pq import TransactionStatus
 
-from .kaggle_apply import ApplyExecutionError, ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
-from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef
+from .kaggle_apply import ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
+from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, StaleWriter
 from .source_import import SOURCE_IMPORT, IMPORT_DEPENDENCY, validate_import_command, source_import_handler
 
 SOURCE_WITHDRAW='source.withdraw.v1'
@@ -272,7 +272,9 @@ class WorkerSourceExecutor:
                     raise ApplyUnknown('source prepare unresolved; preserve original operation') from None
                 except psycopg.OperationalError:
                     raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
-                except psycopg.Error as error:
+                except (ApplyUnknown, PermissionError, StaleWriter):
+                    raise
+                except Exception as error:
                     reject_reason='native_source_sql_rolled_back'
                     _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s',
                         command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None))
@@ -288,11 +290,11 @@ class WorkerSourceExecutor:
                     try:
                         receipt=await apply_accepted(connection,**options,
                             **({'reject_reason':reject_reason} if reject_reason is not None else {}))
-                    except ApplyExecutionError:
-                        # apply_accepted has exited its failed PG transaction. A new
-                        # transaction records an actual no-effect receipt, never a
-                        # Python-fabricated result. An uncertain commit is ApplyUnknown
-                        # and cannot enter this branch. Duplicate lookup wins a race.
+                    except (ApplyUnknown, PermissionError, StaleWriter):
+                        raise
+                    except Exception:
+                        # The failed call has unwound. Existing committed outcomes
+                        # win before an unapplied command receives a real rejection.
                         reject_reason='native_source_sql_rolled_back'
                         receipt=await apply_accepted(connection,**options,reject_reason=reject_reason)
                         _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
