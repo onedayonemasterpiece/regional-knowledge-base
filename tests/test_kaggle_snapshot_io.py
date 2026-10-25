@@ -121,6 +121,116 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('scenario',['second_page','third_page','busy_slots'])
+async def test_original_page_waiting_never_holds_compute_and_preserves_operation(state,original_native,scenario):
+    s=state;db=database();identity=(s.run,s.nonce,'incarnation-a');active=(s.run,'incarnation-a',s.generation)
+    binding=PreReadyRecoveryBinding(s.run,active[1],s.generation,db.database_generation,db.writer_generation)
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=db;native.identity=identity;native.limits=NS(timeout_seconds=10)
+    native.current=lambda b:b==active;native._owned_candidates=set();native._capabilities=set()
+    io=SnapshotIo(factory=native,tickets=None,transfer=None)
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *a:None,workspace=lambda *a:None);worker.snapshot_io=io
+    original=original_native.handler
+    original.database=db;original.identity=identity;original.current=lambda b:b==active
+    original.attached(s.generation);original.snapshot_io=io
+    started=[asyncio.Event() for _ in range(3)];finished=[asyncio.Event() for _ in range(3)];effects=[]
+    running={'count':0,'peak':0}
+    page_running={'count':0,'peak':0}
+    def entered():
+        running['count']+=1;running['peak']=max(running['peak'],running['count'])
+    verified=[]
+    async def render(frame):
+        if frame['phase']=='original_verify':verified.append(True);return {'verified':True}
+        index=frame['arguments']['index'];effects.append(index);started[index].set()
+        page_running['count']+=1;page_running['peak']=max(page_running['peak'],page_running['count'])
+        try:
+            await finished[index].wait();return dict(physical_page_index=index)
+        finally:page_running['count']-=1
+    original._execute=render
+    captures=[]
+    async def capture(*args,**kwargs):captures.append(True);return {'applied_sequence':0}
+    native.capture=capture
+    bridge=RecoveryPhaseDispatch(s.q,database=db,identity=identity,binding_current=lambda b:b==binding,timeout_seconds=10)
+    async def transfer(*args):return None
+    bridge.original_intake=NS(dispatch_transfer=transfer)
+    pending=[];receipts=[]
+    def request(index):
+        task=asyncio.create_task(bridge.request(binding,'original_pages',dict(handle='original',original_sha256='a'*64,index=index),
+            operation_key='page:'+str(index)))
+        pending.append(task);return task
+    async def pump_until(predicate):
+        async with asyncio.timeout(3):
+            while not predicate():
+                work=await s.a.next_channel_work(s.run,s.token,s.generation)
+                if work is None:await asyncio.sleep(.001);continue
+                s.a.mark_work_sent(work)
+                if work.kind=='read':await s.a.finish_read(s.run,s.token,s.generation,answer(work))
+                else:
+                    frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+                        **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+                    receipt=await (original(frame) if frame['phase'].startswith('original_') else worker(frame))
+                    if frame['phase']=='original_pages':receipts.append((frame,receipt))
+                    await bridge.receive(response(s,frame,receipt['value']),run_id=s.run,token=s.token,generation=s.generation)
+                await release(s,work)
+                await asyncio.sleep(0)
+    occupied=asyncio.Event()
+    async def hold(operation):
+        entered()
+        try:
+            await occupied.wait();return {'complete':True}
+        finally:running['count']-=1
+    try:
+        if scenario=='busy_slots':
+            io.start('occupied-a',active,hold);io.start('occupied-b',active,hold)
+            await asyncio.sleep(0)
+        first=request(0)
+        await pump_until(lambda:bool(receipts))
+        assert receipts[0][1]['value']['status']=='pending'
+        if scenario in ('second_page','third_page'):
+            await pump_until(started[0].is_set)
+            second=request(1)
+            await pump_until(lambda:len(receipts)==2)
+            assert receipts[1][1]['value']['status']=='pending' and not started[1].is_set()
+            if scenario=='third_page':
+                third=request(2)
+                await pump_until(lambda:len(receipts)==3)
+                assert receipts[2][1]['value']['status']=='pending' and not started[2].is_set()
+                replay=request(2)  # The third page retains its exact operation key.
+        else:
+            await pump_until(started[0].is_set)
+            second=request(0)  # Same durable/native operation, never a new retry key.
+        read=await begin(s,'while-two-page-operations-wait')
+        await pump_until(read.result.done)
+        assert (await read.result).status=='ok' and not finished[0].is_set()
+        proof=asyncio.create_task(bridge.request(binding,'original_verify',dict(handle='retained-original'),operation_key='verify-while-page-blocked'))
+        pending.append(proof)
+        await pump_until(proof.done)
+        assert (await proof)=={'verified':True} and verified==[True] and not finished[0].is_set()
+        if scenario!='busy_slots':
+            # Queued pages cannot consume the slots that keep Saved advancing.
+            saved=asyncio.create_task(bridge.request(binding,'capture',dict(versions={},expected_sequence=0),operation_key='capture-during-pages'))
+            pending.append(saved)
+            await pump_until(saved.done)
+            assert (await saved)=={'applied_sequence':0} and captures==[True] and not finished[0].is_set()
+        occupied.set()
+        for event in finished:event.set()
+        await pump_until(lambda:all(task.done() for task in pending))
+        assert (await first)['physical_page_index']==0
+        assert (await second)['physical_page_index']==(0 if scenario=='busy_slots' else 1)
+        expected=[0] if scenario=='busy_slots' else [0,1,2] if scenario=='third_page' else [0,1]
+        if scenario=='third_page':assert (await third)==(await replay)=={'physical_page_index':2}
+        assert effects==expected and page_running=={'count':0,'peak':1}
+        assert running['count']==0 and running['peak']<=2
+        if scenario=='busy_slots':assert running['peak']==2
+        assert [f['operation_key'] for f,_ in receipts]==['page:'+str(index) for index in expected]
+    finally:
+        for task in pending:
+            if not task.done():task.cancel()
+        await asyncio.gather(*pending,return_exceptions=True)
+        await worker.aclose();await bridge.aclose()
+
+
+@pytest.mark.asyncio
 async def test_page_io_receipts_exceed_256_without_increasing_active_work():
     binding=('run','inc',1)
     io=SnapshotIo(factory=NS(_current=lambda b:None,limits=NS(timeout_seconds=2)),tickets=None,transfer=None)

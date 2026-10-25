@@ -35,6 +35,7 @@ _SNAPSHOT_FAILURE_CODES={
 @dataclass
 class _Operation:
     binding: tuple
+    phase: str = 'snapshot'
     attached: asyncio.Event = field(default_factory=asyncio.Event)
     task: object = None
     upload: object = None
@@ -61,15 +62,16 @@ class SnapshotIo:
             except SnapshotError:await operation.attached.wait()
         raise SnapshotError('snapshot_io_closed')
 
-    def start(self,key,binding,action):
+    def start(self,key,binding,action,*,phase='snapshot'):
         self.factory._current(binding)
         handle=sha(key.encode())
         if handle not in self.operations:
-            # Match the original owner's retained request bound: supported
-            # books can exceed 256 pages. Running I/O remains capped at two.
-            if len(self.operations)>=4096 or sum(not op.task.done() for op in self.operations.values())>=2:
+            # Page rendering already uses the original owner's lock. Its
+            # waiting tasks must not consume backup/verification I/O slots.
+            if len(self.operations)>=4096 or (phase!='original_pages'
+                    and sum(op.phase!='original_pages' and not op.task.done() for op in self.operations.values())>=2):
                 raise SnapshotError('snapshot_io_capacity')
-            operation=_Operation(binding)
+            operation=_Operation(binding,phase=phase)
             async def run():
                 async with asyncio.timeout(self.factory.limits.timeout_seconds):
                     await self._current(operation)

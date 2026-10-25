@@ -170,40 +170,49 @@ class NativeOriginalIntake:
         if frame['request_sha256']!=digest(canonical(dict(phase=frame['phase'],arguments=frame['arguments']))):
             raise OriginalIntakeError('original_request_hash')
 
+    def _remember_request(self,key,request):
+        if key in self._requests:
+            if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
+            if key in self._results:return self._results[key]
+            if key not in self._prebinding_retry:raise OriginalIntakeError('original_operation_unknown_reconcile')
+            self._prebinding_retry.remove(key)
+        if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
+        self._requests[key]=request
+
+    def _receipt(self,frame,value):
+        key=frame['operation_key']
+        result=dict(phase=frame['phase'],request_sha256=frame['request_sha256'],value=value)
+        if value.get('error')=='original_telegram_binding_required':
+            self._prebinding_retry.add(key)  # No native effect occurred.
+        else:self._results[key]=result
+        return result
+
     async def __call__(self,frame):
         self._validate(frame);key=frame['operation_key'];request=frame['request_sha256']
-        # Replaying an already issued receipt must not wait on its renderer.
-        # No await separates the immutable fingerprint and cached-result reads.
+        # No await separates validation, exact replay and a page's short I/O
+        # receipt. Only the actual file/record work waits on the original lock.
         if key in self._results:
             if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
             return self._results[key]
-        async with self._lock:
-            if key in self._requests:
-                if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
-                if key in self._results:return self._results[key]
-                if key not in self._prebinding_retry:raise OriginalIntakeError('original_operation_unknown_reconcile')
-                self._prebinding_retry.remove(key)
-            if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
-            self._requests[key]=request
-            if frame['phase']=='original_pages' and self.snapshot_io is not None:
-                # Rendering an owned derivative must not hold the shared PG/BGE
-                # permit. Reuse the retained snapshot I/O owner and status jobs.
-                async def render(operation):
-                    async with self._lock:
-                        return await self._execute_logged(frame)
-                from .kaggle_pg_snapshot_native import SnapshotError
-                try:
-                    value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],
-                        frame['connection_generation']),render)
-                except SnapshotError:
-                    _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
-                    value={'error':'original_intake_unavailable'}
-            else:value=await self._execute_logged(frame)
-            result=dict(phase=frame['phase'],request_sha256=request,value=value)
-            if value.get('error')=='original_telegram_binding_required':
-                self._prebinding_retry.add(key)  # Retain exact fingerprint, no native effect occurred.
-            else:self._results[key]=result
-            return result
+        if frame['phase']=='original_pages' and self.snapshot_io is not None:
+            prior=self._remember_request(key,request)
+            if prior is not None:return prior
+            async def render(operation):
+                async with self._lock:
+                    return await self._execute_logged(frame)
+            from .kaggle_pg_snapshot_native import SnapshotError
+            try:
+                value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],
+                    frame['connection_generation']),render,phase=frame['phase'])
+            except SnapshotError:
+                _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
+                value={'error':'original_intake_unavailable'}
+            return self._receipt(frame,value)
+        # The existing WSS compute claim already serializes these phases.
+        # They must not wait on an unrelated background page renderer.
+        prior=self._remember_request(key,request)
+        if prior is not None:return prior
+        return self._receipt(frame,await self._execute_logged(frame))
 
     async def _execute_logged(self,frame):
         started=time.monotonic();operation_ref=digest(frame['operation_key'].encode())
