@@ -144,6 +144,41 @@ async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_
 
 
 @pytest.mark.asyncio
+async def test_three_djvu_pages_inspect_original_once(native,monkeypatch):
+    import regional_knowledge.kaggle_djvu_inspect as inspector
+    import regional_knowledge.kaggle_djvu_pixels as pixels
+    from test_kaggle_djvu_inspect import fixture
+    source=fixture(3,dictionaries=1);n=native
+    path=n.handler.root/'three-pages.djvu';path.write_bytes(source)
+    inspect=inspector.inspect_djvu;inspections=[];rendered=[]
+    def counted_inspect(original):
+        inspections.append(original)
+        return inspect(original)
+    async def render(*,bundle,original_path,original_bytes,inventory,index):
+        assert original_path==path and original_bytes==len(source) and inventory.page_count==3
+        rendered.append(index)
+        return dict(format='djvu',page_count=3,physical_page_index=index,width=100,height=200,
+            preview_render=dict(width=100,height=200,scale=1,jpeg_quality=82,preview_only=True),
+            image_b64=base64.b64encode(IMAGE).decode(),image_sha256=digest(IMAGE),
+            native_cursor=dict(block=0,offset=0,text=0),next_native=None,
+            native_text='',native_blocks=[],native_text_info=dict(complete=True,requires_visual_review=True))
+    monkeypatch.setattr(inspector,'inspect_djvu',counted_inspect)
+    monkeypatch.setattr(pixels,'render_verified_djvu_page',render)
+    handle='three-pages'
+    n.handler._records[handle]=dict(path=path,sha256=digest(source),size=len(source),
+        format='djvu',page_count=3,pages={},verified={'retained':True},
+        parser_sha256=n.handler.parser_sha256,spec=spec(max_bytes=len(source)).wire())
+    try:
+        for index in range(3):
+            result=(await n.handler(frame('original_pages',dict(
+                handle=handle,original_sha256=digest(source),index=index))))['value']
+            assert result['physical_page_index']==index
+            assert result['page_id']==str(uuid5(UUID(SOURCE),f'page:1:{index}'))
+        assert inspections==[path] and rendered==[0,1,2]
+    finally:await n.handler.aclose()
+
+
+@pytest.mark.asyncio
 async def test_djvu_dispatch_without_verified_decoder_does_not_use_ambient_tools(native,djvu_archive):
     path,inventory=djvu_archive;n=native;source=path.read_bytes();handle='no-decoder'
     n.handler._records[handle]=dict(path=path,sha256=digest(source),size=len(source),format='djvu',
