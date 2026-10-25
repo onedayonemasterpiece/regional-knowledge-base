@@ -41,8 +41,6 @@ _PASSAGE_ID = 'rkb:passage:v1:'
 
 
 def _evidence_title(item) -> str:
-    if item.metadata.title:
-        return item.metadata.title
     catalog = (item.metadata.source_provenance or {}).get('catalog')
     title = catalog.get('title') if isinstance(catalog, dict) else None
     return title[:2048] if isinstance(title, str) and title.strip() else item.id

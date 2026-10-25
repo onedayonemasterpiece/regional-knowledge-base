@@ -62,7 +62,7 @@ def test_versioned_locator_is_self_contained_strict_and_not_a_capability():
 @pytest.mark.parametrize('metadata,title', [
     ({'source_provenance': {'catalog': {'title': 'История города'}}}, 'История города'),
     ({'title': 'Точное название', 'source_provenance': {'catalog': {'title': 'Книга'}}},
-        'Точное название'),
+        'Книга'),
     ({'source_provenance': {'catalog': {'title': '   '}}}, PASSAGE),
     ({'source_provenance': {'catalog': 'invalid'}}, PASSAGE),
     ({}, PASSAGE),

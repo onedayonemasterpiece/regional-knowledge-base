@@ -81,7 +81,7 @@ Revision projections immutable. После готового staging атомар
 В текущем source-read профиле существующий batched hydrate тем же SQL-запросом
 присоединяет название из `source_catalog` по source/revision. Прежний порядок
 top-K сохраняется через ordinality. Тонкий поиск, evidence и exact fetch показывают
-явный `metadata.title`, затем принятый `catalog.title`; если названия нет — прежний
+принятый `catalog.title`; если названия нет — прежний
 ID. Отдельный fetch каталога после поиска не выполняется. Это описание кода;
 живое исправление требует установки API и совместимого native read-handler.
 
