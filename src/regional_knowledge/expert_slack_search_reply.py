@@ -12,6 +12,7 @@ import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .participants import ParticipantError
+from .contracts import EvidenceSearchOutput
 from .expert_evidence_receiver import ExpertEvidenceReceiver, _RequestFence
 from .expert_slack_ingress import ExpertSlackIngress
 from .projects_hub_reader import PrivateInput, ReadContext, render as render_evidence
@@ -176,7 +177,7 @@ class ExpertSlackSearchReply:
             issued=None
             try:
                 with capture_read_output() as calls:
-                    await self.evidence.backend.search_adapter(query,authority=authority,
+                    outcome=await self.evidence.backend.search_adapter(query,authority=authority,
                         request_id=request_id,turn_generation=0,min_data_seq=0,
                         deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
             except Exception as exc:
@@ -191,16 +192,22 @@ class ExpertSlackSearchReply:
                         raise
                 text=_TEMPORARILY_UNAVAILABLE
             else:
-                if len(calls)!=1:raise PermissionError("retained source gate required")
-                issued=calls[0]
-                issued.gate=_RequestFence(issued.gate,current)
-                issued.gated=await issued.gate.refresh(issued.gated)
-                if not issued.gate.issuance_current(issued.gated.ticket):
-                    raise PermissionError("source access revoked")
-                evidence=render_evidence(issued.render(issued.gated.result),ctx)
-                text=(_TEMPORARILY_UNAVAILABLE
-                      if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
-                      else answer_from_evidence(evidence))
+                if (not calls and type(outcome) is EvidenceSearchOutput
+                        and outcome.status=="pending" and outcome.reason=="target_warming"
+                        and not outcome.evidence):
+                    # Already-authorized startup status issues no source text.
+                    text=_TEMPORARILY_UNAVAILABLE
+                else:
+                    if len(calls)!=1:raise PermissionError("retained source gate required")
+                    issued=calls[0]
+                    issued.gate=_RequestFence(issued.gate,current)
+                    issued.gated=await issued.gate.refresh(issued.gated)
+                    if not issued.gate.issuance_current(issued.gated.ticket):
+                        raise PermissionError("source access revoked")
+                    evidence=render_evidence(issued.render(issued.gated.result),ctx)
+                    text=(_TEMPORARILY_UNAVAILABLE
+                          if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
+                          else answer_from_evidence(evidence))
             permit=await asyncio.to_thread(self._claim_post,request_id)
             if permit is None:return
             try:
