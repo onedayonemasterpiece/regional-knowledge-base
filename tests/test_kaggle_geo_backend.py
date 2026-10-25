@@ -37,12 +37,15 @@ async def configured(s,*,durable=True):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state',['missing','pending','active'])
-async def test_registered_graph_fetch_routes_geo_without_bootstrap_only_after_activation(target,monkeypatch,state):
+@pytest.mark.parametrize('cursor_kind',['legacy','dataset'])
+async def test_registered_graph_fetch_routes_geo_without_bootstrap_only_after_activation(target,monkeypatch,state,cursor_kind):
     from mcp.server.mcpserver import MCPServer
     from regional_knowledge.kaggle_source_graph_tools import register_source_graph_tools
     active=state=='active'
     s=target;e,gate,geo,manifest,commands=await configured(s,durable=active)
     try:
+        if cursor_kind=='dataset':
+            await e.spool.dataset_cursor(current_binding(s.queue),control={'sequence':0,'heads':[]},current=gate.binding_current)
         gate.operation_keys=tuple(command.operation_key for command in commands)
         if state=='missing':gate.operation_keys=('missing-open','missing-activate')
         gate.invalidate()  # installed service without SourceGeoInstaller/bootstrap
@@ -70,9 +73,14 @@ def response(s,dispatched,manifest,commands):
 
 
 @pytest.mark.asyncio
-async def test_geo_roundtrip_exact_wire_shared_claim_and_final_current_output(target):
+@pytest.mark.parametrize('dataset_cursor',[False,True])
+async def test_geo_roundtrip_exact_wire_shared_claim_and_final_current_output(target,dataset_cursor):
     s=target;e,gate,backend,manifest,commands=await configured(s)
     try:
+        current=[True]
+        if dataset_cursor:
+            await e.spool.dataset_cursor(current_binding(s.queue),control={'sequence':0,'heads':[]},
+                current=lambda binding:current[0] and gate.binding_current(binding))
         async def invoke():
             with capture_read_output() as calls:
                 value=await backend.graph_fetch(uid(10),s.principal)
@@ -90,6 +98,10 @@ async def test_geo_roundtrip_exact_wire_shared_claim_and_final_current_output(ta
         assert s.admission.status()['state']=='busy' # result is not compute release
         refreshed=await calls[0].gate.refresh(calls[0].gated)
         assert calls[0].gate.issuance_current(refreshed.ticket)
+        if dataset_cursor:
+            current[0]=False
+            assert not calls[0].gate.issuance_current(refreshed.ticket)
+            with pytest.raises(PermissionError):await gate.refresh(refreshed)
         gate.release(refreshed.ticket);calls[0].release();await release(s,dispatched)
     finally:e.spool.close()
 
