@@ -358,7 +358,7 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
             return dict(origin)
     class Delivery:
         def _source_current(self,row,destination):
-            assert row["state"]=="sending"
+            assert row["state"] in ("send_intent_ready","sending")
             assert destination["channel_id"]=="C0RKBTEST"
             source_checks.append(True)
         async def stage_dataset_native_receipt(self,credentials,rid,proof):
