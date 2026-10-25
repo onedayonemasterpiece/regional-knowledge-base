@@ -419,7 +419,7 @@ class NativeSnapshotFactory:
                 raise SnapshotError('dataset_restore_versions_mismatch')
         except (ValueError,TypeError,KeyError):
             raise SnapshotError('dataset_restore_versions_mismatch') from None
-        # Existing prepare() supplies UNKNOWN operation fencing and native
+        # Existing prepare() supplies completed-session reuse and native
         # pg_verifybackup/PG17+pgvector/system ID/accepted-prefix validation.
         # It independently rehashes the archive bytes from this mounted path.
         return await self.prepare(binding,operation_key=operation_key,
@@ -431,7 +431,7 @@ class NativeSnapshotFactory:
             workspace=workspace)
 
     async def prepare(self,binding,*,operation_key,**arguments):
-        """A lost prepare ACK never authorizes creating a second candidate."""
+        """Reuse completed candidates; worker serialization owns in-flight work."""
         self._current(binding)
         if not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('native_restore_operation_key_required')
@@ -441,11 +441,9 @@ class NativeSnapshotFactory:
         if previous is not None:
             digest,session=previous
             if digest!=request:raise SnapshotError('native_restore_operation_changed')
-            if session is None:raise SnapshotError('native_restore_prepare_unknown_reconcile_owned_workspace')
             session.binding=binding
             return session
         if len(self._operations)>=2:raise SnapshotError('native_restore_operation_capacity')
-        self._operations[operation_key]=(request,None)
         async with asyncio.timeout(self.limits.timeout_seconds):
             session=await self._prepare(binding,**arguments)
         self._operations[operation_key]=(request,session)

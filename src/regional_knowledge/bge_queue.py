@@ -174,13 +174,14 @@ class BgeQueue:
                 or now>=run['useful']+IDLE_SECONDS or lost or run['status']=='failed')
 
     def _retire_recovery_jobs(self,db,now):
-        # Retired-run bookkeeping ends here. Keep native outcomes/claims as
-        # evidence; done with no result does not assert native success.
-        db.execute("""UPDATE jobs SET state='done',updated=? WHERE kind='recovery_phase' AND state!='done'
+        # One retirement path, including historical rows; no native success is
+        # fabricated, and original assignments/known outcomes remain evidence.
+        db.execute("""UPDATE jobs SET state='done',updated=?,
+            result=coalesce(result,'{"value":{"error":"run_expired"}}')
+            WHERE kind='recovery_phase' AND state!='done'
             AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))""",(now,))
 
     def _expire(self, db, now):
-        self._retire_recovery_jobs(db,now)
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             # A cold start gets at most 15 minutes to prove the completed native
             # bootstrap or become ready. Only trusted finalized pins permit the
@@ -190,10 +191,10 @@ class BgeQueue:
                 if pending(db,run['id']):
                     continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
-                self._retire_recovery_jobs(db,now)
-                db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
+                db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed' and kind!='recovery_phase'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
+        self._retire_recovery_jobs(db,now)
         db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<=?",(now,))
         self._finalize_provider_terminal_pointers(db)
 
@@ -829,7 +830,7 @@ class BgeQueue:
             # Kaggle version status, or local timeout never sets this state.
             db.execute("update runs set status='expired',channel_active=0,launch_state='terminal' where id=?",
                        (run['id'],))
-            self._retire_recovery_jobs(db,self.clock())
+            self._expire(db,self.clock())
             db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run['id'],))
             db.execute('update control set current_run=null where current_run=?',(run['id'],))
             db.execute('update control set successor=null where successor=?',(run['id'],))
@@ -983,12 +984,12 @@ class BgeQueue:
             if (current and current['status']=='ready' and not self._run_expired(current,now)
                     and now-current['started']>=ROTATE_SECONDS and not control['successor']):
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
-            # Old workers drain only their already claimed job; no more claims.
+            # A draining poll still returns no work; maintenance owns closure.
             draining=db.execute("select id from runs where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()
             from .queue_writer import pending
             for row in draining:
                 if not pending(db,row['id']):db.execute("update runs set status='expired' where id=?",(row['id'],))
-            self._retire_recovery_jobs(db,now)
+            self._expire(db,now)
             db.execute(
                 "delete from jobs where kind='query' and state='done' and updated<?",
                 (now-DONE_QUERY_RETENTION_SECONDS,),
@@ -1147,6 +1148,7 @@ class BgeQueue:
             db.execute('update runs set provider_ref=?,provider_version=coalesce(provider_version,?),launch_state=?,status=case when ? then ? else status end where id=?',
                        (provider_ref,provider_version,'failed' if failed else 'dispatched',failed,'failed',run_id))
             if failed:
+                # Keep failed distinct from expired until normal maintenance.
                 self._retire_recovery_jobs(db,self.clock())
                 # Count a known failure once. Repeated failed receipts cannot
                 # re-arm the launch budget or start infinite 60-second loops.

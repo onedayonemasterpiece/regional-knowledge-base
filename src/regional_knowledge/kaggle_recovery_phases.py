@@ -159,7 +159,7 @@ class WorkerRecoveryPhases:
                 or not callable(workspace)):
             raise TypeError('retained native factory and scoped transfer required')
         self.factory,self.download,self.workspace=factory,download,workspace
-        self._sessions={};self._results={};self._requests={};self._lock=asyncio.Lock()
+        self._sessions={};self._results={};self._lock=asyncio.Lock()
         self._ready=asyncio.Event();self._initialized=None;self._initialization_error=None;self.drill=None
         # Assigned only by the already prepared TargetRuntime. No uploaded
         # pathname, module bytes or resource reference enters this WSS phase.
@@ -205,17 +205,10 @@ class WorkerRecoveryPhases:
         self.factory._current(binding)
         key=frame['operation_key']
         async with self._lock:
-            prior=self._requests.get(key)
+            prior=self._results.get(key)
             if prior is not None:
-                if prior!=request:raise SnapshotError('recovery_phase_operation_changed')
-                if key in self._results:return self._results[key]
-                session=self._sessions.get(frame.get('arguments',{}).get('handle'))
-                if not (frame['phase'] in ('schema_migrate','schema_bundle_stage','capture_upload')
-                        or frame['phase']=='finish' and session in self.factory._finish_intents
-                        or self.drill is not None and self.drill.can_reconcile(frame['phase'],frame['arguments'])):
-                    raise SnapshotError('recovery_phase_unknown_requires_reconciliation')
-            if len(self._requests)>=4096:raise SnapshotError('recovery_phase_retention_capacity')
-            self._requests[key]=request  # UNKNOWN is retained before effects.
+                if prior['request_sha256']!=request:raise SnapshotError('recovery_phase_operation_changed')
+                return prior
             if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify','snapshot_status','capture_upload'):
                 # Expected candidate/transfer/probe refusal is the outcome of
                 # THIS durable maintenance operation, not a fatal worker
