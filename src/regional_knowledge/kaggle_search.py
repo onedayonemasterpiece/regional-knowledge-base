@@ -19,6 +19,10 @@ from .kaggle_protocol import QueryFilters
 _PENDING_ENCODERS: set[asyncio.Task] = set()
 
 
+class InvalidDenseVector(ValueError):
+    """The encoder completed, but its output cannot enter dense SQL."""
+
+
 def _observe_encoder(task: asyncio.Task) -> None:
     _PENDING_ENCODERS.discard(task)
     if not task.cancelled():
@@ -200,7 +204,11 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                     lexical = await cursor.fetchall()
                     if stage_timings is not None:
                         stage_timings["lexical_ms"] = (loop.time() - began) * 1000
-                    vector = vector_literal(await asyncio.shield(encoding))
+                    values = await asyncio.shield(encoding)
+                    try:
+                        vector = vector_literal(values)
+                    except ValueError:
+                        raise InvalidDenseVector("resident encoder returned an invalid vector") from None
                     began = loop.time()
                     if story:
                         await execute("SELECT * FROM rkb_v4.editorial_dense_candidates_v1(%s::public.vector,%s,%s::uuid[])" if editorial else

@@ -122,6 +122,46 @@ async def test_tokenizer_runtime_failure_is_unavailable_and_cancellation_propaga
         await execute_query(query(), acquire=forbidden_acquire, tokenizer=tokenizer(cancelled), encode=encode)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("values", [[1.], [float('nan')] * 1024,
+    [True] + [0.] * 1023, ['1'] + [0.] * 1023, VECTOR])
+async def test_dense_output_is_formatted_once_and_invalid_output_stays_unavailable(monkeypatch, values):
+    from test_kaggle_pg_search import FixtureConnection
+    import regional_knowledge.kaggle_query as query_module
+    import regional_knowledge.kaggle_search as search_module
+
+    connection = FixtureConnection()
+    calls = []
+    original = search_module.vector_literal
+
+    def format_vector(vector):
+        calls.append(vector)
+        return original(vector)
+
+    async def frontier(cursor, execute, request, observed):
+        observed.update(data=5, projection=5, visibility=0, database='query-fixture')
+
+    async def resident_encode(_):
+        return values
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    monkeypatch.setattr(search_module, 'vector_literal', format_vector)
+    monkeypatch.setattr(query_module, '_frontier', frontier)
+    result = await execute_query(query(), acquire=acquire, tokenizer=tokenizer(), encode=resident_encode)
+    assert calls == [values]
+    if values is VECTOR:
+        assert result.status == 'ok' and result.mode == 'hybrid'
+        assert any('dense_candidates(' in statement for statement, _ in connection.statements)
+    else:
+        assert result.status == 'unavailable' and result.reason == 'dense_unavailable'
+        assert result.evidence == ()
+        assert not any('dense_candidates(' in statement for statement, _ in connection.statements)
+    assert connection.cleaned
+
+
 def test_exact_source_dependency_coverage_is_strict_when_present():
     source = SourceDependency(source_id=SOURCE, content_revision=1, eligibility_revision=1)
     with pytest.raises(ValueError):
