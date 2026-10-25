@@ -135,6 +135,24 @@ async def start(s,metadata=None):
         source_import=options())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tool',['status','pages'])
+async def test_cold_native_binding_is_unavailable_and_preserves_intake(intake,tool):
+    s=intake;result=await start(s)
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(row) for row in db.execute('SELECT * FROM rkb_source_intake_control')]
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.t.run,))
+    with pytest.raises(ToolError) as caught:
+        if tool=='status':
+            await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+        else:
+            await s.importer.book_pages(principal=s.principal,ingestion_id=result.ingestion_id)
+    assert json.loads(str(caught.value))=={'status':'unavailable','reason':'target_runtime_not_ready'}
+    with s.t.queue.connect(write=False) as db:
+        assert [tuple(row) for row in db.execute('SELECT * FROM rkb_source_intake_control')]==before
+
+
 def stage_payload(s, result, *, text=TEXT):
     pages=[];chunks=[]
     for native in s.originals.proofs[result.ingestion_id].pages:
