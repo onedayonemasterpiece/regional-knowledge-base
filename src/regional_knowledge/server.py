@@ -399,6 +399,16 @@ class KnowledgeMCPServer(MCPServer):
         return app
 
 
+def _resume_original_dot_requests(lifespan,events):
+    """Use the existing target/Socket lifecycle; one rescan, no second worker."""
+    @asynccontextmanager
+    async def wrapped(server):
+        async with lifespan(server) as runtime:
+            await events.resume_pending()
+            yield runtime
+    return wrapped
+
+
 def build_server(
     backend: KnowledgeBackend | None = None,
     *,
@@ -475,15 +485,8 @@ def build_server(
         kwargs['lifespan']=(target_startup.lifespan if expert_slack_socket_mode is None
             else lambda server: expert_slack_socket_mode.alongside(target_startup.lifespan,server))
         if expert_dot_events is not None:
-            original_lifespan=kwargs['lifespan']
-            @asynccontextmanager
-            async def with_events(server):
-                # One resume over the existing durable request rows on BOTH
-                # HTTP and Socket transports, no second background task.
-                async with original_lifespan(server) as runtime:
-                    await expert_dot_events.resume_pending()
-                    yield runtime
-            kwargs['lifespan']=with_events
+            kwargs['lifespan']=_resume_original_dot_requests(
+                kwargs['lifespan'],expert_dot_events)
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
