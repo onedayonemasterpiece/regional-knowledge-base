@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import asyncio
 from functools import wraps
@@ -473,6 +474,20 @@ def build_server(
     if selected=='kaggle_source':
         kwargs['lifespan']=(target_startup.lifespan if expert_slack_socket_mode is None
             else lambda server: expert_slack_socket_mode.alongside(target_startup.lifespan,server))
+        if expert_dot_events is not None:
+            # One restart rescan of existing pending request rows; no new
+            # queue, poller, process, or source of acceptance.
+            original_lifespan=kwargs['lifespan']
+            @asynccontextmanager
+            async def with_dot_events(server):
+                async with original_lifespan(server) as runtime:
+                    task=asyncio.create_task(expert_dot_events.resume_pending())
+                    try:
+                        yield runtime
+                    finally:
+                        task.cancel()
+                        await asyncio.gather(task,return_exceptions=True)
+            kwargs['lifespan']=with_dot_events
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
