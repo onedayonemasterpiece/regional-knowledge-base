@@ -380,6 +380,6 @@ async def test_actual_mcp_registers_discover_events_and_scoped_tools(monkeypatch
     listing=await registered["events/list"].handler(context,types.PaginatedRequestParams())
     assert listing["events"][0]["name"]==EVENT
     assert set(listing["events"][0]["inputSchema"]["properties"])==set()
-    tools=await mcp._list_tools()
-    exposed={tool.name for tool in tools.tools}
+    tools=await mcp.list_tools()
+    exposed={tool.name for tool in tools}
     assert {"expert_request_get","expert_result_record"}<=exposed
