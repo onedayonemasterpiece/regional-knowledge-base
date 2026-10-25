@@ -34,8 +34,14 @@ from .expert_slack_search_reply import ExpertSlackSearchReply
 _LOG = logging.getLogger(__name__)
 EVENT = "rkb.expert.question.created"
 _RECORD_STATES = frozenset(("sending", "unknown", "delivered"))
-_EVENT_STATES = ("received", "pending", "leased", "result_unsealed",
-                 "result_ready", "send_intent_ready")
+_PRE_SEND_STATES = ("leased", "result_unsealed", "result_ready", "send_intent_ready")
+
+
+def _wakeable(row, now):
+    # Selection only: claim() is the existing lease/identity authority.
+    return (row["state"] in ("received", "pending")
+            or row["state"] in _PRE_SEND_STATES
+            and row["lease_until"] is not None and row["lease_until"]<=now)
 
 
 class EventParams(types.RequestParams):
@@ -265,8 +271,10 @@ class ExpertDotEvents:
             return
         with self.control.corpus.connect() as db:
             rows=db.execute("""SELECT id FROM rkb_expert_requests
-                WHERE state IN ('received','pending')
-                ORDER BY created_at,id""").fetchall()
+                WHERE state IN ('received','pending') OR
+                    (state IN ('leased','result_unsealed','result_ready',
+                               'send_intent_ready') AND lease_until<=?)
+                ORDER BY created_at,id""",(self.control.clock(),)).fetchall()
         for row in rows:
             # Restoring many saved questions must not cause a search storm;
             # the dot claim will perform its own single live read.
@@ -282,9 +290,9 @@ class ExpertDotEvents:
                 if await asyncio.to_thread(self.control.confirm_dataset_coverage,request_id):
                     break
                 with self.control.corpus.connect() as db:
-                    state=db.execute("SELECT state FROM rkb_expert_requests WHERE id=?",
+                    state=db.execute("SELECT state,lease_until FROM rkb_expert_requests WHERE id=?",
                                      (request_id,)).fetchone()
-                if state is None or state["state"] not in ("received","pending"):
+                if state is None or not _wakeable(state,self.control.clock()):
                     return
                 await self.control.stage_received_dataset(request_id)
             except (RequestControlError, OSError) as exc:
@@ -303,7 +311,7 @@ class ExpertDotEvents:
             db.execute("BEGIN IMMEDIATE")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",
                            (request_id,)).fetchone()
-            if row is None or row["state"] not in _EVENT_STATES:
+            if row is None or not _wakeable(row,self.control.clock()):
                 return
             if row["trigger_event_id"] not in (None,row["event_id"]):
                 raise PermissionError("event correlation changed")
@@ -319,9 +327,9 @@ class ExpertDotEvents:
         delay=2
         while (record := self._subscription()) is not None:
             with self.control.corpus.connect() as db:
-                current=db.execute("SELECT state FROM rkb_expert_requests WHERE id=?",
+                current=db.execute("SELECT state,lease_until FROM rkb_expert_requests WHERE id=?",
                                    (request_id,)).fetchone()
-            if current is None or current["state"] not in ("received","pending"):
+            if current is None or not _wakeable(current,self.control.clock()):
                 return
             try:response=await self._post(record,row["event_id"],payload)
             except (httpx.HTTPError,ValueError):
@@ -350,26 +358,27 @@ class ExpertDotEvents:
         row=await asyncio.to_thread(self.control._row,request_id)
         if row["event_id"]!=event_id or row["trigger_event_id"]!=event_id:
             raise PermissionError("original event not correlated")
-        # This original row is already authoritative. An old event callback
-        # must not turn a completed/claimed request into a false pending search.
-        if row["state"] not in ("received","pending"):
+        # A claimed pre-send request is not terminal after its existing lease
+        # expires. The canonical claim() recovers it with a new fenced token.
+        if not _wakeable(row,self.control.clock()):
             return {"state":row["state"],"request_id":request_id}
-        # A cold/unavailable search has not produced a source-grounded answer.
-        # Preserve the question unclaimed so the SAME event may be read again.
-        # A completed native prefetch can wait for dot *inside* the same
-        # issuance gate. Its ticket is refreshed when read; if no dot arrives
-        # before the bound, the ticket is released and this reads fresh.
-        entry=self._reads.pop(request_id,None)
-        if entry is None:
-            evidence=await self._search(request_id)
-        else:
-            task,ready=entry
-            ready.set()
-            evidence=await task
-        if not isinstance(evidence,dict):
-            evidence={"status":"unavailable"}
-        if evidence.get("status") not in ("ok","degraded") or evidence.get("context_gap") is True:
-            return {"state":"pending","request_id":request_id,"evidence":evidence}
+        # Persisted results are resumed byte-for-byte, not regenerated from a
+        # potentially different native search. A lost unsaved answer is read
+        # anew only after a fresh source issuance.
+        saved=row["state"] in ("result_unsealed","result_ready","send_intent_ready")
+        evidence=None
+        if not saved:
+            entry=self._reads.pop(request_id,None)
+            if entry is None:
+                evidence=await self._search(request_id)
+            else:
+                task,ready=entry
+                ready.set()
+                evidence=await task
+            if not isinstance(evidence,dict):
+                evidence={"status":"unavailable"}
+            if evidence.get("status") not in ("ok","degraded") or evidence.get("context_gap") is True:
+                return {"state":"pending","request_id":request_id,"evidence":evidence}
         try:
             lease=await asyncio.to_thread(self.control.claim,self.context.credentials,
                 request_id=request_id,lease_seconds=300)
@@ -383,11 +392,18 @@ class ExpertDotEvents:
         # restricted executor; no credentials or other actor context leak.
         query=re.sub(r"<@"+re.escape(self.control.bot_user_id)+r"(?:\|[^>]+)?>",
                      "",claim["input_text"]).strip()
-        return {"state":"leased","request_id":request_id,"event_id":event_id,
+        answer={"state":"leased","request_id":request_id,"event_id":event_id,
                 "generation":lease["generation"],
                 "execution_token":lease["execution_token"],
-                "question":query,"evidence":evidence,
-                "instructions":"Answer the question in your own words first; never substitute raw "
+                "question":query}
+        if saved:
+            # Original persisted answer/send-intent identity is preserved by
+            # claim(), including the original result_generation.
+            answer.update(resume_state=lease["resume_state"],
+                          saved_result=json.loads(row["result_json"])["text"])
+            return answer
+        return dict(answer,evidence=evidence,
+                instructions="Answer the question in your own words first; never substitute raw "
                     "quotes or source cards for an answer. Return ONE coherent answer "
                     "in the question language; for Russian, "
                     "use 1–4 meaningful Russian sentences followed by 'Источники:'. "
@@ -399,7 +415,7 @@ class ExpertDotEvents:
                     "'В доступной базе подтверждений не найдено' without invented sources. "
                     "Distinguish retrieval pending/unavailable ('Не удалось проверить базу сейчас') "
                     "from successful search with no supporting evidence. "
-                    "Preserve author attribution and don't invent page links."}
+                    "Preserve author attribution and don't invent page links.")
 
     async def record_result(self, request_id, event_id, generation, execution_token, text):
         self._actor()
@@ -470,7 +486,8 @@ class ExpertDotEvents:
 
         @mcp.tool(name="expert_request_get",
                   description="Claim the exact saved Slack expert request after rkb.expert.question.created; "
-                    "read current scoped evidence and retain the lease token for record_result.")
+                    "read current scoped evidence, or on expired pre-send lease reuse saved_result "
+                    "verbatim with the new token in expert_result_record.")
         async def expert_request_get(request_id:str,event_id:str)->dict:
             try:return await self.get_request(request_id,event_id)
             except (PermissionError,RequestControlError):
