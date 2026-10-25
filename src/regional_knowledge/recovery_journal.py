@@ -212,9 +212,8 @@ class RemoteOutcomeReceipt:
 class RecoveryJournal:
     def __init__(self, store: ConditionalRecoveryStore, *, stream: str,
                  max_segment_bytes: int = 1024 * 1024, max_commands: int = 128,
-                 max_outcome_bytes: int = 1024 * 1024,
-                 max_reconcile_hops: int = 128) -> None:
-        limits = (max_segment_bytes, max_commands, max_outcome_bytes, max_reconcile_hops)
+                 max_outcome_bytes: int = 1024 * 1024) -> None:
+        limits = (max_segment_bytes, max_commands, max_outcome_bytes)
         if (not isinstance(stream, str) or not stream or len(stream.encode()) > 512
                 or any(type(limit) is not int or limit < 1 for limit in limits)):
             raise ValueError("stream and positive finite limits are required")
@@ -225,7 +224,6 @@ class RecoveryJournal:
         self.max_segment_bytes = max_segment_bytes
         self.max_commands = max_commands
         self.max_outcome_bytes = max_outcome_bytes
-        self.max_reconcile_hops = max_reconcile_hops
 
     def _ref(self, key: str, data: bytes, last_sequence: int) -> ObjectRef:
         return ObjectRef(key, _hash(data), len(data), last_sequence)
@@ -353,13 +351,12 @@ class RecoveryJournal:
         return VerifiedHead(ref, value.token)
 
     async def verify_chain(self, head: VerifiedHead, *, stop: ObjectRef | None = None) -> None:
-        """Bounded restore check to genesis or an independently verified base ref.
+        """Restore check to genesis or an independently verified base ref.
 
-        Hitting the hop limit is UNKNOWN, never proof of complete recovery.
         No scanning/listing is performed during an ordinary successful append.
         """
         ref = head.reference
-        for _ in range(self.max_reconcile_hops):
+        while True:
             if stop is not None and ref == stop:
                 return
             previous, _ = await self.read_segment(ref)
@@ -370,7 +367,6 @@ class RecoveryJournal:
                     return
                 raise JournalCorrupt("verified base is not an ancestor")
             ref = previous
-        raise JournalUnknown("recovery traversal budget exhausted")
 
     def _accepted_key(self, ref: ObjectRef) -> str:
         return self.prefix + "/accepted/manifests/" + ref.sha256
@@ -434,7 +430,7 @@ class RecoveryJournal:
             return await self._accepted_commands(target)
         head = await self.head()
         ref = head.reference if head else None
-        for _ in range(self.max_reconcile_hops):
+        while True:
             if ref is None or ref.last_sequence < target.last_sequence:
                 raise JournalConflict("candidate is not in the published chain")
             if ref == target:
@@ -443,7 +439,6 @@ class RecoveryJournal:
                 raise JournalConflict("another segment owns the candidate sequence")
             previous, _ = await self._manifest(ref)
             ref = previous
-        raise JournalUnknown("acceptance index absent; bounded bootstrap_indexes is required")
 
     async def verify_accepted(self, seal: AcceptedSeal, command: ExactCommand) -> str:
         """Prove exact remote acceptance before a trusted domain executor starts.
@@ -605,9 +600,7 @@ class RecoveryJournal:
         if ref is not None and (ref.last_sequence > anchor.last_sequence
                                 or (ref.last_sequence == anchor.last_sequence and ref != anchor)):
             raise JournalCorrupt("bootstrap cursor is ahead of its anchor")
-        for _ in range(self.max_reconcile_hops):
-            if ref is None:
-                break
+        while ref is not None:
             previous, commands = await self.read_segment(ref)
             await self._index_published(ref, commands, writer_generation=writer_generation)
             ref = previous

@@ -186,7 +186,7 @@ async def test_executor_rejects_receipt_for_uploaded_unpublished_orphan():
 
 @pytest.mark.asyncio
 async def test_old_accepted_outcome_does_not_age_out_of_reconciliation_budget():
-    store, journal = fixture(max_reconcile_hops=4)
+    store, journal = fixture()
     first = await seal(journal, [command()])
     for sequence in range(2, 8):
         await seal(journal, [command(sequence)], await journal.head())
@@ -230,7 +230,7 @@ async def test_deep_json_segment_is_typed_corruption():
 
 @pytest.mark.asyncio
 async def test_head_index_crash_gap_is_repaired_before_another_append_advances():
-    store, journal = fixture(max_reconcile_hops=4)
+    store, journal = fixture()
     store.faults.append(("cas-after", "/head"))
     store.fail_head_read_after_cas = True
     with pytest.raises(JournalUnknown):
@@ -241,7 +241,7 @@ async def test_head_index_crash_gap_is_repaired_before_another_append_advances()
     assert await journal._read(journal._accepted_key(first_head.reference), 8192) is None
     _, encoded = await journal.read_segment(first_head.reference)
     first = AcceptedSeal(first_head.reference, tuple(hashlib.sha256(data).hexdigest() for data in encoded))
-    restarted = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=4)
+    restarted = RecoveryJournal(store, stream="synthetic-only")
     for sequence in range(2, 9):
         await seal(restarted, [command(sequence)], await restarted.head())
     assert await restarted._indexed(first.manifest)
@@ -290,8 +290,8 @@ async def test_unpublished_orphan_and_forged_seal_cannot_poison_acceptance_index
 
 
 @pytest.mark.asyncio
-async def test_legacy_index_bootstrap_has_durable_bounded_progress_after_restart():
-    store, journal = fixture(max_reconcile_hops=2)
+async def test_legacy_index_bootstrap_completes_full_chain_after_restart():
+    store, journal = fixture()
     first = await seal(journal, [command()])
     for sequence in range(2, 8):
         await seal(journal, [command(sequence)], await journal.head())
@@ -300,14 +300,12 @@ async def test_legacy_index_bootstrap_has_durable_bounded_progress_after_restart
         if "/accepted/" in key:
             del store.objects[key]
     store.reads.clear()
-    with pytest.raises(JournalUnknown, match="bootstrap_indexes"):
-        await journal.record_outcome(first, command=command(), database_generation="db-1",
-                                     outcome=b"recorded", writer_generation="writer-1")
-    # The fallback checks manifest links, not every intermediate segment.
-    assert sum("/segments/" in key for key in store.reads) == 1
-    for expected_complete in (False, False, False, True):
-        restarted = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=2)
-        assert await restarted.bootstrap_indexes(writer_generation="writer-1") is expected_complete
+    await journal.record_outcome(first, command=command(), database_generation="db-1",
+                                 outcome=b"recorded", writer_generation="writer-1")
+    # The fallback follows manifest links and verifies the target segment.
+    assert sum("/segments/" in key for key in store.reads) <= 2
+    restarted = RecoveryJournal(store, stream="synthetic-only")
+    assert await restarted.bootstrap_indexes(writer_generation="writer-1") is True
     assert await restarted.bootstrap_indexes(writer_generation="writer-1") is True
     store.reads.clear()
     await restarted.record_outcome(first, command=command(), database_generation="db-1",
@@ -327,7 +325,7 @@ async def test_bootstrap_lost_progress_ack_retries_verified_page_and_fences_old_
             return await super().compare_and_swap(key, data, **kwargs)
 
     store = BootstrapStore()
-    journal = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=1)
+    journal = RecoveryJournal(store, stream="synthetic-only")
     await seal(journal, [command()])
     await seal(journal, [command(2)], await journal.head())
     for key in tuple(store.objects):
@@ -338,9 +336,9 @@ async def test_bootstrap_lost_progress_ack_retries_verified_page_and_fences_old_
     store.writer = "writer-2"
     with pytest.raises(StaleWriter):
         await journal.bootstrap_indexes(writer_generation="writer-1")
-    # Repeats the already indexed page safely, then continues from persisted cursor.
-    assert await journal.bootstrap_indexes(writer_generation="writer-2") is False
-    restarted = RecoveryJournal(store, stream="synthetic-only", max_reconcile_hops=1)
+    # Repeats the already indexed chain safely after the lost checkpoint ACK.
+    assert await journal.bootstrap_indexes(writer_generation="writer-2") is True
+    restarted = RecoveryJournal(store, stream="synthetic-only")
     assert await restarted.bootstrap_indexes(writer_generation="writer-2") is True
 
 
@@ -625,8 +623,8 @@ async def test_ephemeral_query_and_invalid_bounds_are_rejected():
 
 
 @pytest.mark.asyncio
-async def test_explicit_recovery_budget_and_constant_append_reads():
-    store, journal = fixture(max_reconcile_hops=1)
+async def test_full_recovery_chain_and_constant_append_reads():
+    store, journal = fixture()
     await seal(journal, [command()])
     first = await journal.head()
     await seal(journal, [command(2)], first)
@@ -635,9 +633,24 @@ async def test_explicit_recovery_budget_and_constant_append_reads():
     await seal(journal, [command(3)], second)
     # Successful append does not read old manifest nodes or list object history.
     assert first.reference.key not in store.reads
-    with pytest.raises(JournalUnknown, match="budget"):
-        await journal.verify_chain(await journal.head())
+    await journal.verify_chain(await journal.head())
     await journal.verify_chain(await journal.head(), stop=second.reference)
+
+
+@pytest.mark.asyncio
+async def test_recovery_and_unindexed_acceptance_cross_128_segments():
+    store, journal = fixture()
+    first = await seal(journal, [command()])
+    for sequence in range(2, 132):
+        await seal(journal, [command(sequence)], await journal.head())
+    await journal.verify_chain(await journal.head())
+    del store.objects[journal._accepted_key(first.manifest)]
+    assert await journal._published(first.manifest) == first
+    for key in tuple(store.objects):
+        if "/accepted/" in key:
+            del store.objects[key]
+    assert await journal.bootstrap_indexes(writer_generation="writer-1") is True
+    assert await journal._indexed(first.manifest)
 
 
 @pytest.mark.asyncio

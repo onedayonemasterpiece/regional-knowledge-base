@@ -162,8 +162,7 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                     base=previous.head.reference if previous and previous.head else None
                     commands=[];ref=head.reference if head else None;usage=[0,0]
                     stop=None if mode=='full' else base
-                    for _ in range(j.max_reconcile_hops):
-                        if ref==stop:break
+                    while ref!=stop:
                         if ref is None:raise SpoolConflict('verified source prefix is not an exact ancestor')
                         older,raws=await j.read_segment(ref)
                         for raw in raws:
@@ -173,7 +172,6 @@ class WssSourceHistoryVerifier(NativeSourceHistoryVerifier):
                                 raise SpoolConflict('native source history budget exceeded')
                             commands.append(value)
                         ref=older
-                    if ref!=stop:raise SpoolConflict('source genesis ancestry incomplete')
                     commands.sort(key=lambda x:x[0].sequence)
                     start=0 if mode=='full' else previous.accepted_sequence
                     if [c.sequence for c,_,_ in commands]!=list(range(start+1,start+len(commands)+1)):

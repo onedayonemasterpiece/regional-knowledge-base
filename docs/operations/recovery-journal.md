@@ -191,15 +191,15 @@ are prerequisites for product routing, not solved by this library's byte caps.
 
 Existing pre-index history is not silently declared indexed. Under the existing
 ordered writer upgrade, stop older append semantics, then call
-`bootstrap_indexes(writer_generation=...)` until it returns `True`. Each call
-processes at most `max_reconcile_hops` groups. Its initial anchor comes from the
-actual head; its fenced `acceptance-index-bootstrap` checkpoint retains the exact
-next predecessor across restarts, so retrying does not restart at a moving head.
-Lost progress ACKs re-read the same checkpoint and repeat a bounded page safely.
-The checkpoint is indexing bookkeeping, not another authority or recovery base.
-While a legacy proof is absent beyond fallback bounds, the explicit error calls
-for bootstrap and preserves UNKNOWN; it does not fabricate acceptance or consume
-unlimited reads. New appends continue to repair their own predecessor first.
+`bootstrap_indexes(writer_generation=...)` until it returns `True`. The traversal
+follows verified predecessor references to genesis, without a segment-count ceiling.
+Its initial anchor comes from the actual head; its fenced
+`acceptance-index-bootstrap` checkpoint retains the exact predecessor across
+restarts. Lost progress ACKs re-read the checkpoint and safely repeat indexed
+segments. The checkpoint is indexing bookkeeping, not another authority or
+recovery base. Accepted membership is also provable from the verified published
+head chain when a legacy acceptance index is absent. New appends continue to
+repair their own predecessor first.
 
 `head()` verifies the current node and segment only. After loss/restart, run
 `verify_chain(head, stop=independently_verified_base_manifest)` or verify to
@@ -220,7 +220,7 @@ querying a replacement generation cannot settle the original SQL UNKNOWN.
 Focused tests use synthetic exact bytes and a deterministic conditional store:
 upload/CAS lost ACKs; pre-publication crashes; CAS races and forks; writer fencing;
 key/hash/revision/sequence conflicts; hole/count/byte limits; missing/corrupt
-history; recovery hop caps; old outcomes beyond the hop window; crash-gap index
+history; long recovery chains; old accepted outcomes; crash-gap index
 repair; resumable legacy bootstrap; dead-orphan binding repair; late-CAS/409
 reconciliation; and remote-outcome readback distinct from acceptance.
 No credentials, remote provider, actual accepted input, inference model, notebook,
