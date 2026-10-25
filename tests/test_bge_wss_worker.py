@@ -26,31 +26,6 @@ CONFIG = {'run_id': 'fixture-run', 'token': 'synthetic-worker-token',
           'channel': 'wss://fixture.example/bge-worker/channel', 'launch_nonce': 'fixture-nonce'}
 
 
-def test_worker_entrypoint_emits_page_info_with_default_logging_without_library_noise(tmp_path):
-    import subprocess
-    import sys
-    # A fresh interpreter retains Python's actual default WARNING setup. Only
-    # the WSS runner is replaced, so no model or provider is reached.
-    probe = '''
-import logging, runpy, sys
-from pathlib import Path
-worker = runpy.run_path(sys.argv[1])
-context = worker['main'].__globals__
-context['RUN_CONFIG'] = {'transport': 'wss', 'run_id': 'fixture-run'}
-context['Path'] = lambda value: Path(sys.argv[2])
-def run(*args, **kwargs):
-    logging.getLogger('regional_knowledge.kaggle_original_native').info('page_boundary_probe')
-    logging.getLogger('unrelated_provider').info('unrelated_info_probe')
-context['run_wss_worker'] = run
-worker['main']()
-'''
-    result = subprocess.run([sys.executable, '-c', probe,
-        str(ROOT / 'scripts/production/bge_kaggle_worker.py'), str(tmp_path / 'summary.json')],
-        capture_output=True, text=True, check=True, timeout=10)
-    assert 'page_boundary_probe' in result.stderr
-    assert 'unrelated_info_probe' not in result.stderr
-
-
 @pytest.mark.asyncio
 async def test_transport_failure_is_visible_before_native_drain_without_private_text(capsys):
     transport=module('bge_wss_transport')

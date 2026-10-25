@@ -354,7 +354,7 @@ class NativeOriginalIntake:
             if record['format']=='djvu' and cursor!=dict(block=0,offset=0,text=0):
                 raise OriginalIntakeError('original_page_cursor_invalid')
             index=args['index']
-            started=time.monotonic();cached=index in record['pages']
+            started=time.monotonic()
             if index not in record['pages']:
                 if record['format']=='djvu':
                     from .kaggle_djvu_inspect import inspect_djvu,DjvuStructureError
@@ -391,7 +391,6 @@ class NativeOriginalIntake:
                     _LOG.info('original_page state=rendered format=djvu run_id=%s ingestion_id=%s page_index=%s image_bytes=%s',
                         self.identity[0],record['spec']['ingestion_id'],index,len(image))
             artifact=record['pages'][index];key=canonical(cursor).decode()
-            text_cached=cached and key in artifact['chunks']
             if key not in artifact['chunks']:
                 result=await self._parse_selected(record['path'],'text',index,cursor=cursor,
                     parser_sha256=record['parser_sha256'])
@@ -399,8 +398,6 @@ class NativeOriginalIntake:
                     result[name]=artifact['result'][name]
                 result['native_text_info']['preview_render']=artifact['result']['preview_render']
                 result['page_receipt_sha256']=digest(canonical(result));artifact['chunks'][key]=result
-            _LOG.info('native_original_page stage=ready run_id=%s job_id=%s page_index=%s image_cached=%s text_cached=%s elapsed_ms=%.3f',
-                self.identity[0],frame['id'],index,cached,text_cached,(time.monotonic()-started)*1000)
             return artifact['chunks'][key]
         raise OriginalIntakeError('original_phase_unsupported')
 
