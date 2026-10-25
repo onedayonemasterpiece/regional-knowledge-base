@@ -79,6 +79,8 @@ async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
         await peer.put(frame)
         await peer.wait('RESOURCE_RELEASED', predicate=lambda f:
             f['resource_id']=='unresolved-job' and f['compute_claim']=='original-compute')
+        # Releasing a compute permit no longer means the durable attempt ran.
+        await asyncio.wait_for(asyncio.shield(worker.encoding),1)
         assert worker.job is not None and worker.job['claim']=='same-claim'
         assert worker.pending is None and not peer.frames('RESULT')
         assert not peer.frames('SOURCE_COMMAND_RESULT')
