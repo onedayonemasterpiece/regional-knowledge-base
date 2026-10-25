@@ -134,7 +134,7 @@ def current_binding(queue):
         raise TargetUnavailable('target runtime unavailable') from None
 
 
-PENDING_STARTUP_MESSAGE_RU = "Запускаем инфраструктуру. Срок готовности пока неизвестен."
+PENDING_STARTUP_MESSAGE_RU = "Запускаем инфраструктуру, подождите. Срок готовности пока неизвестен."
 
 
 class KaggleSourceBackend:
