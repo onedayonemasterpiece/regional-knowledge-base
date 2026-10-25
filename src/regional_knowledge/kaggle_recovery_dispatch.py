@@ -118,6 +118,8 @@ class RecoveryPhaseDispatch:
             writer_generation=self.database.writer_generation,run_id=self.identity[0],launch_nonce=self.identity[1],
             runtime_incarnation=self.identity[2]))
         job,actor=await asyncio.to_thread(self._enqueue,identity)
+        _LOG.info('recovery_phase_queued run_id=%s generation=%s phase=%s job_id=%s',
+            self.identity[0],getattr(binding,'connection_generation',None),phase,job)
         self._bindings[job]=binding;self.queue.shared_reads._event.set()
         result=await self.queue.wait_result(actor,job,self.timeout)
         if result is None:
@@ -179,6 +181,8 @@ class RecoveryPhaseDispatch:
             original=getattr(self,'original_intake',None)
             if original is None:raise PermissionError('configured original intake owner unavailable')
             payload['original_transfer']=await original.dispatch_transfer(identity,self._bindings[job_id])
+        _LOG.info('recovery_phase_dispatch run_id=%s generation=%s phase=%s job_id=%s queued_ms=%.3f',
+            run_id,generation,identity['phase'],job_id,(self.queue.clock()-job['created'])*1000)
         return payload
 
     async def issue_upload(self,frame,*,run_id,token,generation):
@@ -200,12 +204,15 @@ class RecoveryPhaseDispatch:
         return ticket.wire()
 
     async def receive(self,frame,*,run_id,token,generation):
+        arrived=self.queue.clock()
         bounded(frame['receipt'],MAX_PHASE_RESULT_BYTES)
         with self.queue.connect() as db:
             run=self._run(db,run_id,token,generation)
             job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
             if job is None or job['run_id']!=run_id or job['claim']!=frame['claim']:
                 raise StaleClaim('recovery assignment changed')
+            _LOG.info('recovery_phase_receipt run_id=%s generation=%s job_id=%s arrived_at=%.6f',
+                run_id,generation,job['id'],arrived)
             eligible=self.eligible(job,run,generation)
             if not eligible and self.rebind_current is not None:
                 # A retained result can beat periodic startup maintenance to
@@ -234,7 +241,9 @@ class RecoveryPhaseDispatch:
             if status=='accepted':db.execute("update jobs set state='done',result=?,updated=? where id=?",(encoded,self.queue.clock(),job['id']))
         self._bindings.pop(frame['job_id'],None)
         self.queue._notify_result(frame['job_id'])
-        _LOG.info('recovery_phase_settled run_id=%s phase=%s status=%s',run_id,receipt['phase'],status)
+        _LOG.info('recovery_phase_settled run_id=%s generation=%s phase=%s job_id=%s status=%s total_ms=%.3f receive_ms=%.3f',
+            run_id,generation,receipt['phase'],frame['job_id'],status,
+            (self.queue.clock()-job['created'])*1000,(self.queue.clock()-arrived)*1000)
         return dict(job_id=frame['job_id'],claim=frame['claim'],status=status)
 
     async def aclose(self):
