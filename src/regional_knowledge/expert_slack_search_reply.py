@@ -148,13 +148,22 @@ class ExpertSlackSearchReply:
         while True:
             try:
                 await self._answer(request_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOG.warning("rkb_slack_reply_deferred error_type=%s",
+                             type(exc).__name__)
+            try:
+                # Even after a known no-POST failure, the durable state
+                # decides continuation; transient read errors must not
+                # destroy the one task left after Slack ACK.
                 row=await asyncio.to_thread(self.control._row,request_id)
                 if row is None or row["state"] not in ("received","searching"):
                     return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _LOG.warning("rkb_slack_reply_deferred error_type=%s",
+                _LOG.warning("rkb_slack_state_deferred error_type=%s",
                              type(exc).__name__)
             finally:
                 if first_done is not None:
