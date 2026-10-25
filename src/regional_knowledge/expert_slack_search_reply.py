@@ -100,8 +100,18 @@ class ExpertSlackSearchReply:
         self.ingress,self.evidence,self.sender=ingress,evidence,sender
         self.control=ingress.control
         self._tasks={}
+        self._dot_events=None
+
+    def bind_dot_events(self, events):
+        if self._dot_events is not None or events.reply is not self:
+            raise ValueError('one exact RKB Events owner required')
+        self._dot_events=events
 
     def notify(self, request_id):
+        if self._dot_events is not None:
+            # Events wake and original-human search run in parallel;
+            # never post the legacy top-three snippets as a second reply.
+            return self._dot_events.notify(request_id)
         if request_id in self._tasks:return
         if len(self._tasks)>=16:raise RuntimeError("bounded Slack event wake capacity")
         task=asyncio.create_task(self._answer(request_id))
