@@ -11,6 +11,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from regional_knowledge.expert_slack_ingress import ExpertSlackIngress, PATH
+from regional_knowledge.contracts import EvidenceSearchOutput
 from regional_knowledge.expert_slack_composition import compose_expert_evidence_receiver
 from regional_knowledge.expert_slack_search_reply import (
     ExpertSlackSearchReply, SlackChatSender, answer_from_evidence,
@@ -214,6 +215,47 @@ def _delivery_row(control, request_id):
         return dict(db.execute(
             "SELECT state,delivery_attempt,delivery_id,delivery_receipt "
             "FROM rkb_expert_requests WHERE id=?", (request_id,)).fetchone())
+
+
+@pytest.mark.asyncio
+async def test_target_warming_pending_posts_one_text_only_reply(service, monkeypatch):
+    from regional_knowledge.expert_slack_search_reply import _TEMPORARILY_UNAVAILABLE
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    async def target_warming(query, **kwargs):
+        assert query == "Which event is supported by this source?"
+        assert kwargs["authority"].person_id == service.target.auth.p.other.subject
+        # Real backend returns this before any retain_read_output call.
+        return EvidenceSearchOutput(evidence=[], status="pending", reason="target_warming",
+                                    mode="lexical_degraded", main_state="starting")
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", target_warming)
+    await reply._answer(request_id)
+    saved = _delivery_row(control, request_id)
+    assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
+    assert len(posts) == 1 and posts[0]["text"] == _TEMPORARILY_UNAVAILABLE
+    assert posts[0]["client_msg_id"] == "Ev-1"
+    assert posts[0]["thread_ts"] == "1792000000.100"
+    assert control.accept(_observation())["request_id"] == request_id
+    await reply._answer(request_id)
+    assert len(posts) == 1 and _delivery_row(control, request_id) == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "reason"), [("ok", None), ("denied", "access_denied")])
+async def test_guardless_nonstartup_read_never_posts(service, monkeypatch, status, reason):
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    async def no_issued_evidence(query, **kwargs):
+        return EvidenceSearchOutput(evidence=[], status=status, reason=reason,
+                                    mode="lexical_degraded")
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", no_issued_evidence)
+    with pytest.raises(PermissionError, match="retained source gate required"):
+        await reply._answer(request_id)
+    assert posts == []
+    assert _delivery_row(control, request_id)["delivery_attempt"] == 0
 
 
 @pytest.mark.asyncio
