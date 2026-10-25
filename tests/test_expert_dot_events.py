@@ -179,6 +179,110 @@ class _Corpus:
 
 
 @pytest.mark.asyncio
+async def test_dot_pending_behind_legacy_searching_recovers_same_event_after_delivery(
+        env,monkeypatch):
+    from regional_knowledge.expert_slack_search_reply import (
+        ExpertSlackSearchReply, SlackChatSender)
+    from test_expert_delivery_control import _accepted_request
+    from test_expert_request_control import _prepare
+
+    ctl,creds,_=_prepare(env)
+    legacy=await _accepted_request(env,ctl,1,1)
+    follower=await _accepted_request(env,ctl,2,2)
+    legacy_id,dot_id=legacy["request_id"],follower["request_id"]
+    with ctl.corpus.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("UPDATE rkb_expert_requests SET state='searching' WHERE id=?",
+                   (legacy_id,))
+    assert ctl._row(legacy_id)["state"]=="searching"
+    event_id=ctl._row(dot_id)["event_id"]
+    assert ctl._row(dot_id)["state"]=="pending"
+
+    dot=_instance()
+    dot.control=ctl
+    dot.context=SimpleNamespace(credentials=creds)
+    monkeypatch.setattr(dot,"_actor",lambda:dot._scope)
+    monkeypatch.setattr(dot,"_subscription",lambda:{"state":"active"})
+    ctl.confirm_dataset_coverage=lambda request_id:True
+    callbacks=[]
+    async def ack_callback(record,event,payload):
+        callbacks.append((event,payload["data"]["request_id"]))
+        return httpx.Response(200)
+    monkeypatch.setattr(dot,"_post",ack_callback)
+    await dot._wake(dot_id)
+    assert callbacks==[(event_id,dot_id)]
+    assert ctl._row(dot_id)["trigger_event_id"]==event_id
+    searches=[]
+    async def source(request_id,ready=None):
+        searches.append(request_id)
+        return {"status":"ok","context_gap":False,
+            "evidence":[{"text":"Confirmed current history of Königsberg.",
+                         "metadata":{"citation":"Gause 1994","locator":"стр. 59"}}]}
+    monkeypatch.setattr(dot,"_search",source)
+    # Canonical fair_head cannot skip the earlier searching dialog head.
+    assert ctl.claim(creds,request_id=dot_id) in (
+        {"state":"empty"},{"state":"deferred"})
+    waiting=await dot.get_request(dot_id,event_id)
+    assert waiting=={"state":"pending","request_id":dot_id}
+    assert ctl._row(dot_id)["state"]=="pending"
+
+    # The real source-only CAS and sender finish the original predecessor.
+    reply=object.__new__(ExpertSlackSearchReply)
+    reply.control=ctl
+    posts=[]
+    def provider(request):
+        if request.url.path.endswith("auth.test"):
+            return httpx.Response(200,json={
+                "ok":True,"team_id":"T111","user_id":"UBOT"})
+        body=json.loads(request.content)
+        posts.append(body)
+        return httpx.Response(200,json={"ok":True,"channel":body["channel"],
+            "ts":"1792000090.100","message":{"text":body["text"],"user":"UBOT",
+            "thread_ts":body["thread_ts"],"client_msg_id":body["client_msg_id"]}})
+    sender=SlackChatSender(token="xoxb-synthetic",app_id="A111",
+        team_id="T111",bot_user_id="UBOT",
+        transport=httpx.MockTransport(provider))
+    async def claim_original():
+        permit=await asyncio.to_thread(reply._claim_post,legacy_id)
+        assert permit is not None
+        return dict(permit,text="Original Slack source-only reply")
+    receipt=await sender.post_once(claim=claim_original)
+    assert await asyncio.to_thread(reply._finish,
+                                   legacy_id,"sending","delivered",receipt)
+    assert ctl._row(legacy_id)["state"]=="delivered"
+    assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-1"
+    assert posts[0]["thread_ts"]=="1792000000.100"
+
+    resumed=await dot.get_request(dot_id,event_id)
+    assert resumed["state"]=="leased" and resumed["event_id"]==event_id
+    assert resumed["generation"]==1 and len(resumed["execution_token"])>=32
+    assert resumed["evidence"]["status"]=="ok"
+    assert callbacks==[(event_id,dot_id)] and searches==[dot_id,dot_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_state",["empty","deferred"])
+async def test_correlated_busy_claim_is_pending_not_terminal(monkeypatch,busy_state):
+    dot=_instance()
+    monkeypatch.setattr(dot,"_actor",lambda:dot._scope)
+    class Control:
+        bot_user_id="UBOT"
+        clock=staticmethod(lambda:1.0)
+        def _row(self,rid):
+            return {"state":"pending","event_id":"Ev-original",
+                    "trigger_event_id":"Ev-original"}
+        def claim(self,*args,**kwargs):
+            return {"state":busy_state}
+    dot.control=Control()
+    dot.context=SimpleNamespace(credentials="owned-service")
+    async def source(rid,ready=None):
+        return {"status":"ok","context_gap":False,"evidence":[{"text":"current"}]}
+    monkeypatch.setattr(dot,"_search",source)
+    assert await dot.get_request("original","Ev-original")=={
+        "state":"pending","request_id":"original"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase",[
     "leased","result_unsealed","result_ready","send_intent_ready"])
 async def test_expired_original_request_lease_resumes_through_real_claim_and_same_event(
