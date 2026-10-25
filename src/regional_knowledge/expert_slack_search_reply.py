@@ -171,11 +171,13 @@ class ExpertSlackSearchReply:
             if state=="delivered":request_order.advance(db,row["dialog_id"])
             return True
 
-    async def _answer(self, request_id):
-        row=await asyncio.to_thread(self._row,request_id,("received","searching"),begin=True)
+    async def _answer(self, request_id, *, model_only=False):
+        states=("received","pending","leased") if model_only else ("received","searching")
+        row=await asyncio.to_thread(self._row,request_id,states,begin=not model_only)
         if row is None:return
         origin=json.loads(row["origin"])
-        current=lambda:self._row(request_id,("searching","sending")) is not None
+        current=lambda:self._row(request_id,
+            ("received","pending","leased") if model_only else ("searching","sending")) is not None
         destination=self.evidence._destination(origin,row["person_id"],request_id)
         authority=await self.evidence.authority.resolve_adapter(
             provider="slack",tenant=origin["team_id"],provider_subject=origin["user_id"],
@@ -194,7 +196,8 @@ class ExpertSlackSearchReply:
                 with capture_read_output() as calls:
                     outcome=await self.evidence.backend.search_adapter(query,authority=authority,
                         request_id=request_id,turn_generation=0,min_data_seq=0,
-                        deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
+                        deadline_monotonic=ctx.deadline_monotonic,destination=destination,
+                        limit=5 if model_only else 3)
             except Exception as exc:
                 # A read that has not issued evidence can return one honest
                 # text-only failure, but never turn an access denial into a post.
@@ -226,9 +229,16 @@ class ExpertSlackSearchReply:
                     if not issued.gate.issuance_current(issued.gated.ticket):
                         raise PermissionError("source access revoked")
                     evidence=render_evidence(issued.render(issued.gated.result),ctx)
+                    if model_only:
+                        return evidence
                     text=(_error_reply(evidence.get("reason"))
                           if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
                           else answer_from_evidence(evidence))
+            if model_only:
+                return {"status":"pending","message_ru":text} if (
+                    not calls and 'outcome' in locals()
+                    and type(outcome) is EvidenceSearchOutput
+                    and outcome.status=="pending") else {"status":"unavailable"}
             permit=await asyncio.to_thread(self._claim_post,request_id)
             if permit is None:return
             try:
