@@ -78,7 +78,7 @@ def _public_dns(host):
             raise ValueError("callback DNS is not public")
     except (OSError,ValueError):
         raise ValueError("callback DNS must resolve only to public addresses") from None
-    return sorted(found)[0]
+    return tuple(sorted(found,key=lambda value:(ipaddress.ip_address(value).version!=4,value)))
 
 
 def _event_definition():
@@ -148,23 +148,27 @@ class ExpertDotEvents:
     async def _post(self,record,event_id,payload):
         body=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode()
         headers=_signed_headers(record["secret"],record["id"],event_id,body)
-        target=record["url"]
-        extensions=None
+        targets=[(record["url"],None)]
         if self.transport is None:
-            # Connect to the already validated PUBLIC IP, not a second DNS
-            # resolution. Preserve original Host and SNI for TLS validation.
-            parsed=urlsplit(target)
+            # No second DNS lookup: try verified public IPs in the usual
+            # IPv4/IPv6 order, retaining original Host and TLS SNI. A failed
+            # TCP/TLS connection has not sent the callback HTTP request.
+            parsed=urlsplit(record["url"])
             host=parsed.hostname
-            ip=await asyncio.to_thread(_public_dns,host)
-            target=urlunsplit(("https",f"[{ip}]" if ":" in ip else ip,
-                               parsed.path,parsed.query,""))
+            addresses=await asyncio.to_thread(_public_dns,host)
+            targets=[(urlunsplit(("https",f"[{ip}]" if ":" in ip else ip,
+                        parsed.path,parsed.query,"")),{"sni_hostname":host})
+                     for ip in addresses]
             headers["host"]=host
-            extensions={"sni_hostname":host}
         async with httpx.AsyncClient(transport=self.transport,timeout=8,
                                      follow_redirects=False,trust_env=False) as client:
-            response=await client.post(target,content=body,headers=headers,
-                                       extensions=extensions)
-        return response
+            for index,(target,extensions) in enumerate(targets):
+                try:
+                    return await client.post(target,content=body,headers=headers,
+                                             extensions=extensions)
+                except httpx.ConnectError:
+                    if index==len(targets)-1:
+                        raise
 
     async def subscribe(self,params):
         self._actor()
@@ -221,11 +225,13 @@ class ExpertDotEvents:
         self.oauth.store.mutate(stop)
         return {}
 
-    def notify(self, request_id):
-        """Prefetch and wake independently; hold only the original read ticket."""
+    def notify(self, request_id, *, prefetch=True):
+        """Always wake; cap only speculative reads, never accepted questions."""
         if self._subscription() is None:
             return
-        if request_id not in self._reads:
+        # The original source-only Slack route already caps speculative work
+        # at 16. Further accepted questions still wake and read on demand.
+        if prefetch and request_id not in self._reads and len(self._reads)<16:
             ready=asyncio.Event()
             task=asyncio.create_task(self._search(request_id,ready))
             entry=(task,ready)
@@ -260,7 +266,9 @@ class ExpertDotEvents:
                 WHERE state IN ('received','pending')
                 ORDER BY created_at,id""").fetchall()
         for row in rows:
-            self.notify(row["id"])
+            # Restoring many saved questions must not cause a search storm;
+            # the dot claim will perform its own single live read.
+            self.notify(row["id"],prefetch=False)
 
     async def _wake(self, request_id):
         # Continue this SAME wake while the original request is pending.
