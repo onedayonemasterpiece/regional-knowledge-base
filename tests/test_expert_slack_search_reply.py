@@ -2,6 +2,7 @@
 
 All events/Slack responses are synthetic; no provider, PG, deployment or grants.
 """
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -410,6 +411,7 @@ async def test_legacy_post_claim_follows_auth_and_current_issuance_without_false
     ctl,receiver,reply,rid,posts=_temporary_reply_harness(service)
     paths=[]
     allowed={"token":True,"source":True,"deny":True}
+    first_auth=asyncio.Event()
     reply.sender.current=lambda:allowed["token"]
 
     class IssuanceGate:
@@ -440,6 +442,7 @@ async def test_legacy_post_claim_follows_auth_and_current_issuance_without_false
         paths.append(request.url.path)
         if request.url.path.endswith("/auth.test"):
             if allowed["deny"]:
+                first_auth.set()
                 if denial=="token_revoked":
                     allowed["token"]=False
                 elif denial=="source_revoked":
@@ -456,22 +459,65 @@ async def test_legacy_post_claim_follows_auth_and_current_issuance_without_false
                 "thread_ts":body["thread_ts"],"client_msg_id":body["client_msg_id"]}})
     reply.sender.transport=httpx.MockTransport(provider)
 
-    with pytest.raises(PermissionError):
-        await reply._answer(rid)
+    # A SINGLE original Slack event and 200 ACK must carry the request
+    # through a transient sender refusal without a second event/caller.
+    reply.ingress.bind_search_reply(reply)
+    app=Starlette(routes=[Route(PATH,reply.ingress.__call__,methods=["POST"])])
+    raw,head=_event()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as http:
+        accepted=await http.post(PATH,content=raw,headers=head)
+    assert accepted.status_code==200 and accepted.json()=={"ok":True}
+    await asyncio.wait_for(first_auth.wait(),3)
+    await asyncio.sleep(0.1)  # First failed sender already returned to task.
     saved=_delivery_row(ctl,rid)
     assert saved["state"]=="searching" and saved["delivery_attempt"]==0
     assert saved["delivery_id"] is None and saved["delivery_receipt"] is None
     assert posts==[] and paths==["/api/auth.test"]
 
-    # Same original request can be sent after transient local revocation clears.
+    # Restore the source/token; the original task performs the next attempt.
     allowed.update(token=True,source=True,deny=False)
-    await reply._answer(rid)
+    await asyncio.wait_for(reply._tasks[rid],6)
+    await asyncio.sleep(0)  # Existing task completion callback.
     delivered=_delivery_row(ctl,rid)
     assert delivered["state"]=="delivered" and delivered["delivery_attempt"]==1
     assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-1"
+    assert posts[0]["thread_ts"]=="1792000000.100"
     assert paths==["/api/auth.test","/api/auth.test","/api/chat.postMessage"]
-    await reply._answer(rid)
-    assert len(posts)==1 and _delivery_row(ctl,rid)==delivered
+    assert reply._tasks=={}
+    # No second ACK/request and no additional provider message.
+    assert _delivery_row(ctl,rid)==delivered
+
+
+@pytest.mark.asyncio
+async def test_legacy_rebind_resumes_saved_searching_without_new_slack_event(
+        service,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    ctl,receiver,reply,rid,posts=_temporary_reply_harness(service)
+    # Preserve the single original ACKed request as it would survive restart.
+    assert reply._row(rid,("received",),begin=True) is not None
+    sender=_sender(transport=reply.sender.transport)
+    replacement_ingress=ExpertSlackIngress(ctl,signing_secret="test-signing-secret",
+                                           clock=lambda:1792000001)
+    restarted=ExpertSlackSearchReply(ingress=replacement_ingress,evidence=receiver,
+                                      sender=sender)
+    replacement_ingress.bind_search_reply(restarted)
+    async def unavailable(query,**kw):
+        raise ToolError('{"status":"unavailable","reason":"deadline_exceeded"}')
+    monkeypatch.setattr(receiver.backend,"search_adapter",unavailable)
+    # No HTTP POST, no Socket event or manual _answer invocation after restart.
+    await restarted.resume_pending()
+    assert list(restarted._tasks)==[rid]
+    await asyncio.wait_for(restarted._tasks[rid],3)
+    await asyncio.sleep(0)
+    row=_delivery_row(ctl,rid)
+    assert row["state"]=="delivered" and row["delivery_attempt"]==1
+    assert len(posts)==1
+    assert posts[0]["client_msg_id"]=="Ev-1"
+    assert posts[0]["thread_ts"]=="1792000000.100"
+    await restarted.resume_pending()
+    assert restarted._tasks=={}
+    assert len(posts)==1
 
 
 @pytest.mark.asyncio
