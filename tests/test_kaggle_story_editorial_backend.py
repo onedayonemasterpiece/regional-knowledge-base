@@ -264,3 +264,58 @@ async def test_fresh_post_count_preflight_detects_concurrent_story_revision_befo
         await context(s,task,second_revision=2)
     assert s.counts==[(operation().body,)] and not s.workflow._documents
     with s.t.queue.connect(write=False) as db:assert db.execute('SELECT count(*) FROM jobs').fetchone()[0]==0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('applied', [False, True])
+async def test_story_edit_waits_for_packet_apply_but_not_dataset_checkpoint(editorial, applied):
+    from regional_knowledge.source_batch import resolved_command, CODEC
+    from regional_knowledge.kaggle_native_source_bindings import native_source_handler
+    from test_control_spool import receipt
+    from test_source_stage import INGESTION, REQUEST
+    s=editorial;t=s.t
+    with t.queue.connect() as db:
+        row=db.execute('SELECT expected_json,observed_json FROM bge_runtime_expectations WHERE run_id=?',(t.run,)).fetchone()
+        values=[]
+        for raw in row:
+            value=json.loads(raw);value.update(schema_version=14)
+            values.append(json.dumps(value))
+        db.execute('UPDATE bge_runtime_expectations SET expected_json=?,observed_json=? WHERE run_id=?',(*values,t.run))
+    s.spool.registry=HandlerRegistry([
+        native_source_handler(route,check_sha256='a'*64,apply_sha256='b'*64)
+        for route in ('source.activate.v1','story.edit.v1','story.access.v1','source.withdraw.v1','source.batch.v1')
+    ])
+    packet=resolved_command(source_id=record()['source']['source_id'],
+        payload=dict(codec=CODEC,ingestion_id=INGESTION,batch_index=0,batch_count=1,
+            last_batch_sha256='a'*64,materializer_sha256='f'*64),
+        sequence=1,operation_key='pending-dataset-packet',person_id=t.auth.p.owner.subject,
+        request_id=REQUEST,logical_time='2026-10-25T12:00:00Z')
+    frozen,data,selected=s.spool._validate(packet,'synthetic-db')
+    await s.spool._write(s.spool._stage,frozen,data,selected,'synthetic-db')
+    await s.spool.seal(t.auth.p.admin,packet.operation_key,
+        predecessor=None,writer_generation='writer-1')
+    if applied:
+        await s.spool.record_apply(packet.operation_key,receipt(packet,database='synthetic-db'))
+    assert (await s.spool.scope_state())['pending']
+    assert (await s.spool.read_facts(None)).pending is not applied
+    assert (await s.spool.get(packet.operation_key)).outcome_state=='NOT_SENT'
+
+    args=dict(story_id=STORY,expected_revision=1,idempotency_key='edit-after-packet',operation=operation())
+    first=await context(s,asyncio.create_task(s.workflow.mutate(t.principal,**args)))
+    assert first['reason']=='exact_narrative_vector_pending'
+    vector=await t.queue.next_channel_work(t.run,t.token,t.generation)
+    assert vector.kind=='document'
+    t.admission.mark_work_sent(vector);payload=vector.document_payload
+    assert t.queue.complete(t.run,t.token,payload['id'],payload['claim'],SPACE,
+        [[1.]+[0.]*1023],{},connection_generation=t.generation)=='accepted'
+    await release(t,vector)
+    edit=asyncio.create_task(s.workflow.mutate(t.principal,**args))
+    if not applied:
+        with pytest.raises(ToolError,match='prior_write_pending'):
+            await context(s,edit)
+    else:
+        result=await context(s,edit)
+        entry=await s.spool.get(result['operation_id'])
+        assert entry.accepted and entry.command.route=='story.edit.v1'
+        assert entry.command.sequence==packet.sequence+1
+        assert (await s.spool.get(packet.operation_key)).outcome_state=='NOT_SENT'

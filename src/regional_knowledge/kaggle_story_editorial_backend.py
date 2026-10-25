@@ -260,7 +260,8 @@ class KaggleStoryEditorial:
                                 if not self.gate.issuance_current(proof['gated'].ticket):raise failure('source_context_changed')
                                 scope=await self.spool.scope_state();head=await self.spool.journal.head()
                                 sequence=head.reference.last_sequence if head else 0
-                                if scope['pending'] or scope['unknown'] or scope['accepted_sequence']!=scope['sequence'] or sequence!=scope['accepted_sequence']:
+                                facts=await self.spool.read_facts(None)
+                                if facts.pending or scope['unknown'] or scope['accepted_sequence']!=scope['sequence'] or sequence!=scope['accepted_sequence']:
                                     raise failure('prior_write_pending')
                                 revisions=self._revisions(access['binding'])
                                 builder=(resolved_current_story_edit_command if operation is not None else resolved_current_story_access_command) if revisions in (DOMAIN_REVISIONS,ACTIVATION_REVISIONS) else (
