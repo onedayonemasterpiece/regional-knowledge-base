@@ -11,7 +11,8 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from regional_knowledge.expert_slack_ingress import ExpertSlackIngress, PATH
-from regional_knowledge.contracts import EvidenceSearchOutput
+from regional_knowledge.contracts import EvidenceSearchOutput, StartupStatus
+from regional_knowledge.kaggle_public_backend import PENDING_STARTUP_MESSAGE_RU
 from regional_knowledge.expert_slack_composition import compose_expert_evidence_receiver
 from regional_knowledge.expert_slack_search_reply import (
     ExpertSlackSearchReply, SlackChatSender, answer_from_evidence,
@@ -218,9 +219,8 @@ def _delivery_row(control, request_id):
 
 
 @pytest.mark.asyncio
-async def test_target_warming_pending_posts_one_text_only_reply(service, monkeypatch):
-    from regional_knowledge.expert_slack_search_reply import _TEMPORARILY_UNAVAILABLE
-
+@pytest.mark.parametrize("eta_seconds", [300, None])
+async def test_target_warming_pending_posts_one_text_only_reply(service, monkeypatch, eta_seconds):
     control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
 
     async def target_warming(query, **kwargs):
@@ -228,13 +228,20 @@ async def test_target_warming_pending_posts_one_text_only_reply(service, monkeyp
         assert kwargs["authority"].person_id == service.target.auth.p.other.subject
         # Real backend returns this before any retain_read_output call.
         return EvidenceSearchOutput(evidence=[], status="pending", reason="target_warming",
-                                    mode="lexical_degraded", main_state="starting")
+                                    mode="lexical_degraded", main_state="starting",
+                                    startup=StartupStatus(startup_ref="r"*51, status="pending",
+                                        reason="target_warming", eta_seconds=eta_seconds,
+                                        message_ru=PENDING_STARTUP_MESSAGE_RU))
 
     monkeypatch.setattr(receiver.backend, "search_adapter", target_warming)
     await reply._answer(request_id)
     saved = _delivery_row(control, request_id)
     assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
-    assert len(posts) == 1 and posts[0]["text"] == _TEMPORARILY_UNAVAILABLE
+    expected = ("Запускаем инфраструктуру, подождите. Первый поиск займёт дольше обычного; "
+                "следующие запросы будут быстрыми.")
+    if eta_seconds is not None:
+        expected += "\nОжидание: примерно 300 с."
+    assert len(posts) == 1 and posts[0]["text"] == expected
     assert posts[0]["client_msg_id"] == "Ev-1"
     assert posts[0]["thread_ts"] == "1792000000.100"
     assert control.accept(_observation())["request_id"] == request_id
@@ -259,9 +266,8 @@ async def test_guardless_nonstartup_read_never_posts(service, monkeypatch, statu
 
 
 @pytest.mark.asyncio
-async def test_transient_preclaim_failure_sends_one_generic_via_existing_permit(service, monkeypatch):
+async def test_transient_preclaim_failure_sends_error_code_via_existing_permit(service, monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
-    from regional_knowledge.expert_slack_search_reply import _TEMPORARILY_UNAVAILABLE
 
     control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
 
@@ -276,15 +282,32 @@ async def test_transient_preclaim_failure_sends_one_generic_via_existing_permit(
     assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
     assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is not None
     assert len(posts) == 1
-    assert posts[0]["text"] == _TEMPORARILY_UNAVAILABLE
+    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/deadline_exceeded"
     assert posts[0]["client_msg_id"] == "Ev-1"
     assert posts[0]["thread_ts"] == "1792000000.100"
-    assert "deadline_exceeded" not in posts[0]["text"]
 
     # A duplicate signed Slack event and any repeated notify are readback-only.
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)
     assert len(posts) == 1 and _delivery_row(control, request_id) == saved
+
+
+@pytest.mark.asyncio
+async def test_error_code_never_reflects_untrusted_exception_detail(service, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    async def transient(query, **kwargs):
+        raise ToolError(json.dumps({"status": "unavailable", "reason": "secret\\nunsafe",
+                                    "private_detail": "not for Slack"}))
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", transient)
+    await reply._answer(request_id)
+    assert _delivery_row(control, request_id)["state"] == "delivered"
+    assert len(posts) == 1
+    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/not_ready"
+    assert "secret" not in posts[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -336,8 +359,7 @@ async def test_preclaim_auth_or_source_veto_never_posts_generic(service, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_guarded_context_gap_returns_generic_without_exposing_source(service, monkeypatch):
-    from regional_knowledge.expert_slack_search_reply import _TEMPORARILY_UNAVAILABLE
+async def test_guarded_context_gap_returns_error_code_without_exposing_source(service, monkeypatch):
     from regional_knowledge.read_issuance import retain_read_output
 
     control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
@@ -373,7 +395,7 @@ async def test_guarded_context_gap_returns_generic_without_exposing_source(servi
     monkeypatch.setattr(receiver.backend, "search_adapter", incomplete)
     await reply._answer(request_id)
     assert _delivery_row(control, request_id)["state"] == "delivered"
-    assert len(posts) == 1 and posts[0]["text"] == _TEMPORARILY_UNAVAILABLE
+    assert len(posts) == 1 and posts[0]["text"] == "Ошибка поиска. Код: unavailable/not_ready"
     assert "unverified source" not in posts[0]["text"]
     assert gate.refreshes == gate.releases == 1 and gate.checked >= 2
 
@@ -395,6 +417,7 @@ async def test_generic_post_unknown_never_resends_after_provider_lost_ack(servic
     assert saved["state"] == "unknown" and saved["delivery_attempt"] == 1
     assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is None
     assert len(posts) == 1
+    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/target_warming"
 
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)
