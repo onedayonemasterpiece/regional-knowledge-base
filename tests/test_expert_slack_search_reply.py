@@ -592,13 +592,14 @@ async def test_transient_post_attempt_sqlite_state_read_keeps_original_ack_task(
     ctl,receiver,reply,rid,posts=_temporary_reply_harness(service)
     reply.ingress.bind_search_reply(reply)
     checked=asyncio.Event()
+    loop=asyncio.get_running_loop()
     allowed={"bot":False,"fail_read":True}
     paths=[]
     original_row=ctl._row
     def transient_row(request_id):
         if not allowed["bot"] and allowed["fail_read"]:
             allowed["fail_read"]=False
-            checked.set()
+            loop.call_soon_threadsafe(checked.set)
             raise sqlite3.OperationalError("database is locked")
         return original_row(request_id)
     monkeypatch.setattr(ctl,"_row",transient_row)
