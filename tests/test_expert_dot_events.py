@@ -229,30 +229,35 @@ async def test_finished_native_prefetch_reaches_dot_without_second_search(monkey
             return {"input_text":"<@U0BOT> Как возникла Альбертина?"}
     events.control=Control()
     events.context=SimpleNamespace(credentials="service")
-    search_calls=[]
+    adapter_calls=[]
     search_finished=asyncio.Event()
-    async def native_search(request_id,ready=None):
-        search_calls.append(request_id)
-        search_finished.set()  # Native lookup finished before the event was read.
-        if ready is not None:
-            await ready.wait()  # Existing guarded source ticket remains unrendered.
-        return {"status":"ok","context_gap":False,
-                "evidence":[{"text":"Альбертина",
-                    "metadata":{"citation":"История университета",
-                                "locator":"стр. 59"}}]}
+    class Backend:
+        async def search_adapter(self,query):
+            adapter_calls.append(query)
+            search_finished.set()  # Native search has finished before dot reads.
+            return {"status":"ok","context_gap":False,
+                    "evidence":[{"text":"Альбертина",
+                        "metadata":{"citation":"История университета",
+                                    "locator":"стр. 59"}}]}
+    class Reply:
+        async def _answer(self,request_id,*,model_only,ready_for_dot):
+            assert model_only is True
+            evidence=await Backend().search_adapter(request_id)
+            await ready_for_dot.wait()  # Retain the already-issued source gate.
+            return evidence
+    events.reply=Reply()
     wake_calls=[]
     async def wake(request_id):wake_calls.append(request_id)
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
-    monkeypatch.setattr(events,"_search",native_search)
     monkeypatch.setattr(events,"_wake",wake)
     events.notify("request-accepted")
     await search_finished.wait()
-    assert search_calls==["request-accepted"]
+    assert adapter_calls==["request-accepted"]
     await asyncio.sleep(0)
     value=await events.get_request("request-accepted","Ev-correct")
     assert value["state"]=="leased"
     assert value["evidence"]["evidence"][0]["metadata"]["locator"]=="стр. 59"
-    assert search_calls==["request-accepted"]
+    assert adapter_calls==["request-accepted"]
     assert wake_calls==["request-accepted"]
 
 
@@ -280,18 +285,22 @@ async def test_get_request_returns_live_evidence_and_model_instruction_once(monk
             return {"input_text":"<@U0BOT> "+question}
     async def search(request_id):
         calls.append(request_id)
-        return {"status":"ok","context_gap":False,"evidence":[{
+        evidence=[] if "метро" in question else [{
             "text":"Подтверждённый первоисточник",
             "metadata":{"citation":"История Кёнигсберга, 1994",
-                        "locator":"стр. 59"}}]}
+                        "locator":"стр. 59"}}]
+        return {"status":"ok","context_gap":False,"evidence":evidence}
     events.control=Control()
     events.context=SimpleNamespace(credentials="service")
     monkeypatch.setattr(events,"_search",search)
     result=await events.get_request("rkb-original","Ev-correct")
     assert result["state"]=="leased"
     assert result["question"]==question
-    assert result["evidence"]["evidence"][0]["metadata"]=={
-        "citation":"История Кёнигсберга, 1994","locator":"стр. 59"}
+    if "метро" in question:
+        assert result["evidence"]["evidence"]==[]
+    else:
+        assert result["evidence"]["evidence"][0]["metadata"]=={
+            "citation":"История Кёнигсберга, 1994","locator":"стр. 59"}
     instructions=result["instructions"]
     for value in ("in your own words first","never substitute raw",
                   "1–4 meaningful Russian","Источники:","metadata.citation",
