@@ -25,7 +25,7 @@ from .kaggle_apply import Revisions
 from .kaggle_import_contracts import PublicImportRights, SourceResearchInput, TargetSourceImportInput
 from .kaggle_import_output import OwnerImportOutputGate
 from .kaggle_import_tokenizer import HfImportTokenCounter
-from .kaggle_public_backend import current_binding
+from .kaggle_public_backend import current_binding, TargetUnavailable
 from .original_intake import OriginalIntakeError, TERMINAL_REJECTIONS, VerifiedOriginalReceipt
 from .participants import RequestAuthority
 from .source_import import MAX_IMPORT_BYTES
@@ -169,7 +169,12 @@ class KaggleSourceImporter:
                 raise PermissionError('current owner import authority required')
             context = RequestAuthority(Principal(subject=authority.person_id, client_id=authority.client_id,
                 issuer=authority.issuer, access_token=''), route='owner')
-            binding = await asyncio.to_thread(current_binding, self.queue)
+            try:
+                binding = await asyncio.to_thread(current_binding, self.queue)
+            except TargetUnavailable:
+                # No import execution has begun; this is an ordinary cold run,
+                # not an unknown mutation outcome or an internal failure.
+                raise failure('target_runtime_not_ready') from None
             access = ImportAccess(authority, context, binding)
             await self._check(authority, context, binding)
             yield access
