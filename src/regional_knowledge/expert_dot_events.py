@@ -48,6 +48,7 @@ class EventParams(types.RequestParams):
     delivery: dict
     cursor: str | None = None
     ttl_ms: int | None = Field(default=86400000, alias="ttlMs", gt=0)
+    max_age_ms: int | None = Field(default=None, alias="maxAgeMs", ge=0)
 
 
 def _secret(value):
@@ -267,16 +268,24 @@ class ExpertDotEvents:
             "timestamp":datetime.fromtimestamp(row["created_at"],timezone.utc
                         ).isoformat().replace("+00:00","Z"),
             "cursor":None,"data":{"request_id":row["id"],"event_id":row["event_id"]}}
-        # A lost callback response is reconciled by replaying the SAME eventId.
-        try:response=await self._post(record,row["event_id"],payload)
-        except (httpx.HTTPError,ValueError):
-            return
-        if 200<=response.status_code<300:
-            with self.control.corpus.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("""UPDATE rkb_expert_requests SET reconcile_cursor='event_accepted'
-                    WHERE id=? AND event_id=? AND trigger_event_id=?""",
-                    (request_id,row["event_id"],row["event_id"]))
+        # Bounded retries of the SAME event ID; the row, not another queue,
+        # survives process failure. 4xx denial is not retried.
+        for attempt in range(5):
+            try:response=await self._post(record,row["event_id"],payload)
+            except (httpx.HTTPError,ValueError):
+                response=None
+            if response is not None and 200<=response.status_code<300:
+                with self.control.corpus.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("""UPDATE rkb_expert_requests SET reconcile_cursor='event_accepted'
+                        WHERE id=? AND event_id=? AND trigger_event_id=?""",
+                        (request_id,row["event_id"],row["event_id"]))
+                return
+            if response is not None and response.status_code<500 \
+                    and response.status_code not in (408,425,429):
+                return
+            if attempt<4:
+                await asyncio.sleep(min(16,2**attempt))
 
     async def _search(self, request_id):
         """One ordinary scoped read; its evidence is ephemeral, not a new queue."""
