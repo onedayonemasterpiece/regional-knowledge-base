@@ -22,10 +22,9 @@ import threading
 from types import MappingProxyType
 
 from .bge_contract import REVISION, SPACE, TOKENIZER_SHA256
-from .kaggle_readiness import ArtifactRequirement, RUNTIME_HASHES, MAX_LAUNCH_CONFIG_BYTES
+from .kaggle_readiness import ArtifactRequirement, RUNTIME_HASHES
 from .kaggle_query import PinnedTokenizer
 from .kaggle_worker_query import KaggleWorkerQuery
-from .kaggle_stage0 import MAX_PREPARED_FILES
 from .kaggle_schema_migrate import latest_schema_version
 
 REQUIRED_DEPENDENCIES = frozenset({'torch', 'transformers', 'tokenizers', 'huggingface-hub',
@@ -108,7 +107,7 @@ def verify_artifacts(root, entries, *, max_total_bytes):
         entries = tuple(entries)
         if (not root.is_absolute() or root.resolve(strict=True) != root or not root.is_dir()
                 or type(max_total_bytes) is not int or max_total_bytes < 1
-                or not 1 <= len(entries) <= MAX_PREPARED_FILES or any(type(e) is not PreparedArtifact for e in entries)
+                or not entries or any(type(e) is not PreparedArtifact for e in entries)
                 or len({e.requirement.name for e in entries}) != len(entries)
                 or sum(e.requirement.size for e in entries) > max_total_bytes):
             raise BootstrapUnavailable('artifact_inventory_invalid')
@@ -404,8 +403,6 @@ async def prepare_resident_runtime(encoder, *, acquire, probe_database, launch_c
                 raise BootstrapUnavailable('dependency_inventory_invalid')
             dependencies = observe_dependencies(packages)
             config_bytes = _json(launch_config)
-            if len(config_bytes) > MAX_LAUNCH_CONFIG_BYTES:
-                raise BootstrapUnavailable('launch_config_bound')
             return {'code': verified.role_hash({'code'}), 'launch_config': _sha(config_bytes),
                 'executed_source': _file_hash(source, source.stat().st_size), 'dependency': _sha(_json(dependencies)),
                 'model': _sha(_json({'revision': REVISION, 'space': SPACE,

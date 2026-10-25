@@ -12,10 +12,11 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from regional_knowledge.bge_admission import AdmissionLimit
 from regional_knowledge.bge_queue import BgeQueue, StaleAttachment
 from regional_knowledge.bge_contract import SPACE
-from regional_knowledge.kaggle_protocol import Query, QueryResult, TrustedActorContext
+from regional_knowledge.kaggle_protocol import (
+    Query, QueryResult, TrustedActorContext, PassageReadRequest, PassageContinuation, SourceDependency,
+)
 from regional_knowledge.kaggle_readiness import CapabilityReceipt, RunIdentity, TerminalObservation
 from regional_knowledge.read_authority import ReadAuthorityError
 from regional_knowledge.participant_contracts import AccountBegin,AccountConfirm
@@ -295,7 +296,7 @@ async def test_delayed_old_result_snapshot_cannot_regress_current_attachment(sta
 
 
 @pytest.mark.asyncio
-async def test_restart_requires_same_owned_incarnation_baseline_and_recovers_busy_debt(state):
+async def test_restart_recovers_same_incarnation_then_owned_current_run_handover(state):
     s=state
     await begin(s,'lost-context')
     work=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(work)
@@ -312,16 +313,16 @@ async def test_restart_requires_same_owned_incarnation_baseline_and_recovers_bus
         await a.resource_released(s.run,s.token,generation,runtime_incarnation='incarnation-a',
             resource_kind='read',resource_id='lost-context',compute_claim=work.compute_claim,dispatch_generation=1)
         assert a.status()['state']=='idle'
-        # Persisted ownership survives an idle local controller too: switching
-        # the current run never turns an old resource's UNKNOWN into free.
+        # Existing current-run fencing authorizes a new baseline after handover;
+        # provider compute closure remains independent.
         with reopened.connect() as db:
             new_run=reopened._new_run(db,1000.)
             db.execute('update control set current_run=? where id=1',(new_run,))
         new_token=(reopened.path.parent/'bge-worker-credentials'/new_run).read_text()
         nonce=reopened.prepare_channel(new_run)
         g=reopened.attach_channel(new_run,new_token,nonce,'incarnation-new')['connection_generation']
-        with pytest.raises(StaleAttachment):
-            await a.resource_state(new_run,new_token,g,runtime_incarnation='incarnation-new',state='idle')
+        await a.resource_state(new_run,new_token,g,runtime_incarnation='incarnation-new',state='idle')
+        assert a.status()['state']=='idle'
     finally:a.close()
 
 
@@ -366,9 +367,7 @@ async def test_distinct_providers_share_person_turn_and_do_not_outvote_second_pe
     owner_tokens=await issue(s.auth.provider)
     owner=await s.auth.resolver.resolve_oauth(owner_tokens.access_token,destination=s.auth.destination)
     for i in range(8):await begin(s,f'many-{i}',context=contexts[i%2],dialog=f'dialog-{i}')
-    with pytest.raises(AdmissionLimit) as limited:
-        await begin(s,'ninth-provider-request',context=contexts[1],dialog='another-dialog')
-    assert limited.value.code=='person_read_capacity'
+    await begin(s,'ninth-provider-request',context=contexts[1],dialog='another-dialog')
     await begin(s,'second-person',context=owner)
     served=[]
     for _ in range(2):
@@ -379,17 +378,35 @@ async def test_distinct_providers_share_person_turn_and_do_not_outvote_second_pe
 
 
 @pytest.mark.asyncio
-async def test_dialog_pending_cap_reclaimed_on_cancel_without_releasing_compute(state):
+async def test_dialog_pending_queue_reclaimed_on_cancel_without_releasing_compute(state):
     s=state
     first=await begin(s,'dialog-first')
     await begin(s,'dialog-second')
-    with pytest.raises(AdmissionLimit) as limited:await begin(s,'dialog-third')
-    assert limited.value.code=='dialog_read_capacity'
+    await begin(s,'dialog-third')
     work=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(work)
     s.a.cancel_read(first)
     await begin(s,'dialog-replacement')
-    assert s.a.status()['pending_reads']==2 and s.a.status()['state']=='busy'
+    assert s.a.status()['pending_reads']==3 and s.a.status()['state']=='busy'
     assert await s.q.next_channel_work(s.run,s.token,1) is None
+
+
+@pytest.mark.asyncio
+async def test_one_mcp_destination_queues_four_searches_and_twelve_fetches(state):
+    s=state
+    # Public MCP passes destination.key for every tool call, not a unique dialog per call.
+    shared_dialog=s.context.destination.key
+    locator=PassageContinuation(database_generation='synthetic-pg',
+        source=SourceDependency(source_id='synthetic-source',content_revision=1,eligibility_revision=1),
+        passage_id='synthetic-passage',visibility_epoch=0,text_offset=0,bibliography_offset=0)
+    searches=[query(s.context,f'parallel-search-{i}') for i in range(4)]
+    fetches=[PassageReadRequest(request_id=f'parallel-fetch-{i}',
+        connection_generation=s.generation,turn_generation=0,locator=locator,
+        actor=searches[0].actor,min_data_seq=0,deadline_ms=2000) for i in range(12)]
+    tickets=await asyncio.gather(*(s.a.begin_read(s.context,read,
+        dialog_ref=shared_dialog,deadline=time.monotonic()+1.9) for read in [*searches,*fetches]))
+    assert len(tickets)==16
+    assert s.a.status()['pending_reads']==16
+    assert all(not ticket.result.done() for ticket in tickets)
 
 
 @pytest.mark.asyncio
@@ -614,3 +631,35 @@ async def test_exact_native_terminal_required_to_change_owned_run(state):
     with s.q.connect(write=False) as db:
         assert db.execute('select run_id from bge_shared_admission').fetchone()[0] is None
         assert db.execute('select status from runs where id=?',(s.run,)).fetchone()[0]=='expired'
+
+
+@pytest.mark.asyncio
+async def test_noncurrent_successor_cannot_clear_ram_before_owned_baseline(state):
+    s=state
+    ticket=await begin(s,'owned-inflight')
+    work=await s.q.next_channel_work(s.run,s.token,1)
+    s.a.mark_work_sent(work)
+    attachment=s.a._attachment
+    slot=s.a._slot_version
+    with s.q.connect() as db:
+        successor=s.q._new_run(db,1000.)
+        db.execute('update control set successor=? where id=1',(successor,))
+    token=(s.q.path.parent/'bge-worker-credentials'/successor).read_text()
+    nonce=s.q.prepare_channel(successor)
+    generation=s.q.attach_channel(successor,token,nonce,'successor')['connection_generation']
+    with pytest.raises(StaleAttachment):
+        await s.a.resource_state(successor,token,generation,runtime_incarnation='successor',state='idle')
+    assert await s.q.next_channel_work(successor,token,generation) is None
+    assert s.a._work is work and s.a._sent
+    assert s.a._attachment==attachment and s.a._slot_version is slot
+    assert not ticket.result.done()
+    with s.q.connect() as db:
+        db.execute('update control set current_run=?,successor=null where id=1',(successor,))
+    assert await s.q.next_channel_work(successor,token,generation) is None
+    assert s.a._work is work and not ticket.result.done()
+    await s.a.resource_state(successor,token,generation,runtime_incarnation='successor',state='idle')
+    assert ticket.result.cancelled()
+    assert s.a._work is None and not s.a._sent
+    with s.q.connect(write=False) as db:
+        owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
+    assert tuple(owner)==(successor,'successor')

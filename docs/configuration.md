@@ -34,7 +34,7 @@ Precompiled artifact закреплён source SHA/toolchain/dependency lock/has
 | PG base cadence | **4 h при изменениях**, раньше по replay budget/byte pressure/planned handover; без изменений skip. |
 | Independent-from-Kaggle backup | Подтверждённая Dataset version копируется в Yandex S3 раз в неделю; exact version/date и old+candidate overlap до проверки. Старый online tail не подменяет Dataset primary. |
 | Useful idle | **30 min** от полезного спроса; socket Ping/Pong не продлевает этот таймер. |
-| Lifecycle budgets | Конечный per-run wall budget и stage deadlines; начальный control-loss grace 10 min. Stop/readback не заменяется TTL; неизвестный исход удерживает capacity. |
+| Lifecycle budgets | Конечный per-run wall budget и stage deadlines; начальный control-loss grace 10 min. Stop/readback не заменяется TTL. |
 | Provider reconciliation | Один controller; начальные start/stop polls ≥30 s, healthy 5 min, error backoff до2 min с jitter/Retry-After. Это настраиваемые defaults, не provider SLA; WSS progress приходит сразу. |
 | Writer / claim / connection | Разные short leases/generations, heartbeat и deadlines; численные lease limits калибруются под bounded stages, не под 30 min idle. |
 | Memory / concurrency | Один BGE process, bounded PG pool и parallelism, measured stage permits, минимум один search reserve во время import. |

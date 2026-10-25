@@ -333,3 +333,14 @@ failed or release compute ownership.
 Book intake checks the exact receipts for that book's prior packets. Accepted,
 queued work for another book keeps its journal position without blocking intake;
 an unknown outcome anywhere still blocks a new packet.
+
+Every received MCP tool call renews the current notebook's useful-idle clock,
+including a call that is rejected or fails. Idle shutdown means 30 minutes with
+no tool requests. Heartbeat liveness and the maximum run lifetime remain
+independent; request activity cannot revive a worker that has disappeared.
+
+The periodic checkpoint deadline starts at the provider creation time of the
+exact verified Saved Dataset version. An API restart does not reset that age;
+quiet work-cycle and planned-stop checkpoints retain their existing triggers.
+Unavailable version metadata makes a pending checkpoint due immediately; an
+auxiliary clock read cannot postpone durability.

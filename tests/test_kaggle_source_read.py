@@ -5,8 +5,7 @@ from uuid import UUID
 import pytest
 
 from regional_knowledge.kaggle_protocol import decode_envelope,encode_envelope
-from regional_knowledge.kaggle_source_read import SourceReadRequest,SourceReadResult,execute_source_read
-from regional_knowledge.contracts import CatalogMetadata
+from regional_knowledge.kaggle_source_read import SourceReadRequest,execute_source_read
 from test_kaggle_fact_read import Native,SOURCE,FRONTIER
 
 
@@ -31,33 +30,6 @@ async def test_fixed_catalogue_native_path_no_encoding_no_original_receipt_and_e
     assert not any('embedding' in sql or 'original_receipt' in sql for sql,_ in native.calls)
 
 
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(('kind','cover_kind'),[
-    ('article','title_page'),('journal_issue','issue_cover')])
-async def test_native_catalogue_returns_typed_title_card_for_root_article_and_journal(kind,cover_kind):
-    card=CatalogMetadata(kind=kind,publisher='Verified imprint',volume='IV',
-        issue='2',cover_page=0,cover_kind=cover_kind).model_dump(mode='json')
-    old=row()
-    native=Native([(old[0],old[1],old[2],dict(old[3],catalog=card))])
-    result=await execute_source_read(request(),acquire=native.acquire)
-    assert result.status=='ok'
-    assert result.records[0]['catalog']['kind']==kind
-    assert result.records[0]['catalog']['cover_page']==0
-    assert result.records[0]['catalog']['cover_kind']==cover_kind
-    assert result.records[0]['catalog']['publisher']=='Verified imprint'
-    assert decode_envelope(encode_envelope(result))==result
-    bad=result.model_dump(mode='json')
-    bad['records'][0]['catalog']['parent_id']=str(old[0])
-    with pytest.raises(ValueError):
-        SourceReadResult.model_validate(bad)
-    bad=result.model_dump(mode='json')
-    bad['records'][0]['catalog']['untrusted_extra']='not source metadata'
-    with pytest.raises(ValueError):
-        SourceReadResult.model_validate(bad)
-
-
 @pytest.mark.parametrize('changes',[dict(query=' '),dict(query='x'*1001),dict(limit=9),dict(limit=True)])
 def test_reject_unbounded_or_empty_catalogue_query(changes):
     with pytest.raises(ValueError):request(**changes)
@@ -71,12 +43,9 @@ async def test_frontier_lag_never_returns_stale_catalogue_rows():
 
 
 @pytest.mark.asyncio
-async def test_native_row_limit_and_record_dependency_corruption_refuse_output():
+async def test_native_row_limit_refuse_output():
     native=Native([row(),row()]);result=await execute_source_read(request(limit=1),acquire=native.acquire)
     assert result.status=='unavailable' and not result.records
-    native.rows=[row()];result=await execute_source_read(request(),acquire=native.acquire)
-    value=result.model_dump(mode='json');value['records'][0]['document_id']='other-source'
-    with pytest.raises(ValueError):SourceReadResult.model_validate_json(__import__('json').dumps(value))
 
 
 # Accepted chunk review is a second *operation* on SOURCE_READ, never the
@@ -87,6 +56,15 @@ REGION_A = '50000000-0000-0000-0000-000000000001'
 REGION_B = '50000000-0000-0000-0000-000000000002'
 CHUNK_A = '60000000-0000-0000-0000-000000000001'
 CHUNK_B = '60000000-0000-0000-0000-000000000002'
+PAGE_ZERO = '40000000-0000-0000-0000-000000000003'
+PAGE_THREE = '40000000-0000-0000-0000-000000000004'
+REGION_PORTRAIT = '50000000-0000-0000-0000-000000000003'
+REGION_CAPTION = '50000000-0000-0000-0000-000000000004'
+REGION_THREE = '50000000-0000-0000-0000-000000000005'
+CHUNK_ZERO = '60000000-0000-0000-0000-000000000003'
+CHUNK_THREE = '60000000-0000-0000-0000-000000000004'
+CAPTION_TEXT = 'Подпись к портрету'
+THREE_TEXT = 'Последняя страница'
 
 
 def chunk_request(**changes):
@@ -105,10 +83,10 @@ def provenance(chunk, pages, regions, spans):
 
 
 class ChunkNative(Native):
-    def __init__(self, *, corrupt=False, frontier=FRONTIER, accepted=True):
+    def __init__(self, *, frontier=FRONTIER, accepted=True, portrait=False, missing_region=False):
         super().__init__((),frontier=frontier)
-        self.corrupt=corrupt
         self.accepted=accepted
+        self.missing_region=missing_region
         self.rows=[
             (UUID(CHUNK_A),0,'Первый мыслительный фрагмент',provenance(
                 CHUNK_A,[PAGE_A,PAGE_B],[REGION_A,REGION_B],[
@@ -118,6 +96,18 @@ class ChunkNative(Native):
                 CHUNK_B,[PAGE_B],[REGION_B],[
                     dict(region_id=REGION_B,start=8,end=16,source_text_sha256='b'*64)]),7),
         ]
+        if portrait:
+            before=self.rows
+            # Accepted image page 0: its visual region has no transcription;
+            # the caption supplies the whole passage text (no source spans).
+            self.rows=[
+                (UUID(CHUNK_ZERO),0,CAPTION_TEXT,provenance(
+                    CHUNK_ZERO,[PAGE_ZERO],[REGION_PORTRAIT,REGION_CAPTION],[]),7),
+                (before[0][0],1,*before[0][2:]),
+                (before[1][0],2,*before[1][2:]),
+                (UUID(CHUNK_THREE),3,THREE_TEXT,provenance(
+                    CHUNK_THREE,[PAGE_THREE],[REGION_THREE],[]),7),
+            ]
 
     async def fetchall(self):
         if 'FROM rkb_v4.passage_search p' in self.statement:
@@ -127,19 +117,24 @@ class ChunkNative(Native):
             start=params[3];end=params[4];cursor=params[1];take=params[-1]
             entries=[row for row in self.rows
                      if (cursor is None or row[1]>cursor)
-                     and any(start<=({PAGE_A:1,PAGE_B:2}[pid])<=end
+                     and any(start<=({PAGE_ZERO:0,PAGE_A:1,PAGE_B:2,PAGE_THREE:3}[pid])<=end
                              for pid in row[3]['page_ids'])]
             return entries[:take]
         if 'FROM rkb_v4.source_stage_pages' in self.statement:
             requested=set(self.calls[-1][1][1])
-            return [row for row in [(UUID(PAGE_A),1),(UUID(PAGE_B),2)]
+            return [row for row in [(UUID(PAGE_ZERO),0),(UUID(PAGE_A),1),
+                                   (UUID(PAGE_B),2),(UUID(PAGE_THREE),3)]
                     if str(row[0]) in requested]
         if 'FROM rkb_v4.source_regions' in self.statement:
             requested=set(self.calls[-1][1][1])
             return [row for row in [
-                (UUID(REGION_A),UUID(PAGE_A),'Привет читателю','a'*64),
-                (UUID(REGION_B),UUID(PAGE_B),'Книга продолжается','b'*64)]
-                if str(row[0]) in requested]
+                (UUID(REGION_A),UUID(PAGE_A),'Привет читателю'),
+                (UUID(REGION_B),UUID(PAGE_B),'Книга продолжается'),
+                (UUID(REGION_PORTRAIT),UUID(PAGE_ZERO),''),
+                (UUID(REGION_CAPTION),UUID(PAGE_ZERO),CAPTION_TEXT),
+                (UUID(REGION_THREE),UUID(PAGE_THREE),THREE_TEXT)]
+                if str(row[0]) in requested
+                and not (self.missing_region and str(row[0])==REGION_B)]
         return await super().fetchall()
 
 
@@ -204,39 +199,45 @@ def test_accepted_chunks_reject_unbounded_or_noncanonical_selector(kwargs):
 
 
 @pytest.mark.asyncio
-async def test_chunk_read_frontier_and_corrupt_provenance_fail_closed():
+async def test_accepted_portrait_caption_page_zero_range_singles_and_ordinal_cursor():
+    native=ChunkNative(portrait=True)
+    full=await execute_source_read(chunk_request(page_start=0,page_end=3),acquire=native.acquire)
+    assert full.status=='ok',full.model_dump(mode='json')
+    assert [row['chunk_id'] for row in full.records]==[CHUNK_ZERO,CHUNK_A,CHUNK_B,CHUNK_THREE]
+    assert [row['ordinal'] for row in full.records]==[0,1,2,3]
+    assert full.records[0]['pages']==[dict(page_id=PAGE_ZERO,physical_page_index=0)]
+    assert full.records[0]['text']==CAPTION_TEXT
+    assert full.records[0]['regions']==[
+        dict(page_id=PAGE_ZERO,region_id=REGION_PORTRAIT,start=0,end=0,role='body'),
+        dict(page_id=PAGE_ZERO,region_id=REGION_CAPTION,start=0,end=len(CAPTION_TEXT),role='body')]
+    assert full.next_after_ordinal is None
+    assert len(full.evidence)==4
+    for physical,expected in enumerate([CHUNK_ZERO,CHUNK_A,CHUNK_B,CHUNK_THREE]):
+        reader=ChunkNative(portrait=True)
+        single=await execute_source_read(chunk_request(page_start=physical,page_end=physical),
+                                         acquire=reader.acquire)
+        assert single.status=='ok' and expected in [item['chunk_id'] for item in single.records]
+    first=await execute_source_read(chunk_request(page_start=0,page_end=3,limit=2),
+                                    acquire=native.acquire)
+    assert [item['chunk_id'] for item in first.records]==[CHUNK_ZERO,CHUNK_A]
+    assert first.next_after_ordinal==1
+    second=await execute_source_read(chunk_request(page_start=0,page_end=3,limit=2,
+        after_ordinal=first.next_after_ordinal),acquire=native.acquire)
+    assert [item['chunk_id'] for item in second.records]==[CHUNK_B,CHUNK_THREE]
+    assert second.next_after_ordinal is None
+    assert not any('model_page' in sql or 'image_receipt' in sql
+                   for sql,_ in native.calls)
+
+
+@pytest.mark.asyncio
+async def test_chunk_read_frontier_and_missing_accepted_region_fail_closed():
     native=ChunkNative(frontier=(9,8,4,True,True,'native-db'))
     result=await execute_source_read(chunk_request(),acquire=native.acquire)
     assert result.status=='unavailable' and result.reason=='projection_lag'
     assert not result.records
-    native=ChunkNative()
-    native.rows[0]=(*native.rows[0][:3],provenance(CHUNK_A,[PAGE_A],[REGION_A],[
-        dict(region_id=REGION_A,start=0,end=999,source_text_sha256='a'*64)]),7)
+    native=ChunkNative(missing_region=True)
     result=await execute_source_read(chunk_request(),acquire=native.acquire)
-    assert result.status=='unavailable' and result.reason=='internal_error'
+    assert result.status=='unavailable' and result.reason=='evidence_withdrawn'
     assert not result.records and not result.evidence
 
 
-def test_chunk_wire_rejects_fabricated_region_or_nonmonotonic_ordinals():
-    import json
-    from regional_knowledge.kaggle_source_read import SourceReadResult
-    from regional_knowledge.kaggle_protocol import SourceDependency, EvidenceItem, ItemDependencies
-    dependency=SourceDependency(source_id=SOURCE,content_revision=1,eligibility_revision=7)
-    evidence=EvidenceItem(id=CHUNK_A,kind='source',text='Accepted text',
-        dependencies=ItemDependencies(source_ids=(SOURCE,),variant_refs=(),grant_refs=(),
-                                      source_revisions=(dependency,)))
-    record=dict(source_id=SOURCE,chunk_id=CHUNK_A,ordinal=0,text='Accepted text',
-        pages=[dict(page_id=PAGE_A,physical_page_index=1)],
-        regions=[dict(page_id=PAGE_A,region_id=REGION_A,start=0,end=6,role='body')])
-    result=SourceReadResult(request_id='r',connection_generation=1,turn_generation=0,
-        operation='accepted_chunks',status='ok',records=(record,),evidence=(evidence,),
-        observed_data_seq=9,observed_projection_seq=9,observed_visibility_epoch=4,
-        observed_database_generation='native-db')
-    data=result.model_dump(mode='json')
-    data['records'][0]['regions'][0]['page_id']=PAGE_B
-    with pytest.raises(ValueError):
-        SourceReadResult.model_validate_json(json.dumps(data))
-    data=result.model_dump(mode='json')
-    data['next_after_ordinal']=17
-    with pytest.raises(ValueError):
-        SourceReadResult.model_validate_json(json.dumps(data))

@@ -418,6 +418,11 @@ class BgeWssTransport:
         if self.shared_reads:
             self._claim_resource(job, 'document')
         self.job = job
+        if self.shared_reads and job['kind']=='source_command':
+            # Accepted native work keeps its durable job/claim. Its BGE calls
+            # share ResidentEncoder's lock with QUERY, so PG/Python work must
+            # not reserve the channel's only read permit for the whole job.
+            self.last_released,self.resource=self.resource,None
         self.encoding = asyncio.create_task(self._encode(job))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 

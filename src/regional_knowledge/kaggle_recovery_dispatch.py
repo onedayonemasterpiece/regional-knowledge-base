@@ -196,8 +196,6 @@ class RecoveryPhaseDispatch:
             if (identity['phase'] not in ('capture','capture_upload') or frame['operation_key']!=identity['operation_key']
                     or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity):
                 raise PermissionError('snapshot transfer capture binding changed')
-            self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],
-                frame['compute_claim'],frame['dispatch_generation'])
             binding=self._bindings[job['id']]
         ticket=await self.snapshot_tickets.issue_upload(binding,frame['operation_key'],size=frame['size'],sha256=frame['sha256'])
         if not self.current(binding):raise PermissionError('snapshot transfer binding expired')
@@ -219,8 +217,6 @@ class RecoveryPhaseDispatch:
             if not eligible:raise StaleClaim('recovery assignment changed')
             if tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity:
                 raise PermissionError('recovery receipt runtime changed')
-            self.queue.shared_reads.require_durable_resource(run_id,self.identity[2],generation,job['id'],
-                frame['compute_claim'],frame['dispatch_generation'])
             identity=json.loads(job['identity']);receipt=frame['receipt']
             if (not isinstance(receipt,dict) or set(receipt)!={'phase','request_sha256','value'}
                     or receipt['phase']!=identity['phase'] or receipt['request_sha256']!=identity['request_sha256']):

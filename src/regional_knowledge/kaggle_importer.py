@@ -255,25 +255,11 @@ class KaggleSourceImporter:
     async def _start(self, access, *, file, metadata, source_import):
         if file is None:
             raise failure('attached_source_required', status='invalid_query')
-        mime = (file.mime_type or '').lower().split(';', 1)[0]
-        if mime not in {'application/pdf', 'application/x-pdf','image/vnd.djvu','image/x.djvu',
-                'application/x-djvu','application/vnd.djvu','application/octet-stream'}:
-            raise failure('target_pdf_or_djvu_only')
         if not metadata.get('title') or metadata.get('duplicate_policy', 'reuse') != 'reuse' or metadata.get('catalog_update'):
             raise failure('new_small_source_metadata_required', status='invalid_query')
-        # All three typed root-source kinds reuse the SAME verified original,
-        # owner-only source ID, stage/accepted journal and reader. An article
-        # referring to regions of a parent issue is a component, NOT a new
-        # independently uploaded source; never fabricate its original here.
-        from .contracts import CatalogMetadata
-        raw_catalog = metadata.get('catalog')
-        if raw_catalog is not None:
-            try: catalog = CatalogMetadata.model_validate(raw_catalog)
-            except ValueError:
-                raise failure('target_source_components_unavailable',status='invalid_query') from None
-            if (catalog.kind not in ('book','article','journal_issue')
-                    or catalog.parent_id is not None or catalog.region_ids):
-                raise failure('target_source_components_unavailable',status='invalid_query')
+        catalog = metadata.get('catalog') or {}
+        if catalog.get('parent_id') or catalog.get('region_ids') or catalog.get('kind', 'book') != 'book':
+            raise failure('target_source_components_unavailable')
         actor = access.authority.person_id
         metadata_bytes = canonical(metadata)
         rights = (canonical(source_import.public_rights.model_dump(mode='json')).decode()
@@ -356,13 +342,14 @@ class KaggleSourceImporter:
         neither restaged nor given a new activation/revision or inference.
         """
         await self._check(access.authority, access.context, access.binding)
-        if (output.state != 'finalized' or output.ingestion_id != row['ingestion_id']
+        if (output.state not in ('staged','finalized') or output.ingestion_id != row['ingestion_id']
                 or output.document_id != row['source_id']):
             raise failure('native_research_status_identity_changed')
         current = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
-        if current['phase'] != 'finalized':
+        if current['phase'] != ('staging' if output.state=='staged' else 'finalized'):
             raise failure('native_research_terminal_state_changed')
         if not current['research_json']:
+            if output.state=='staged': return output
             raise failure('native_research_accepted_frontier_missing')
         try:
             research = SourceResearchInput.model_validate_json(current['research_json'])
@@ -385,14 +372,10 @@ class KaggleSourceImporter:
             raise failure('native_research_continuation_unreachable')
         if 'batch_size' in args and (type(args['batch_size']) is not int or args['batch_size'] != 1):
             raise failure('native_research_continuation_unreachable')
-        # Recover an exact existing owner-bound archived original instead of
-        # asking the user to upload it again. The actual next book_pages call
-        # independently checks current actor, source, render/pixel provenance.
-        if await self._receipt(access, current) is None:
-            raise failure('native_research_archived_original_unavailable')
+        if cursor is None and output.state=='staged': cursor=await self.native_intake.applied_page_cursor(access,current)
         await self._check(access.authority, access.context, access.binding)
         return output.model_copy(update={
-            'next_action': 'continue_pages', 'next_cursor': cursor,
+            'next_action': 'continue_pages', **({'next_cursor':cursor} if cursor is not None else {}),
             'message': output.message + '; model-authored source research remains pending: '
                        'resume the saved book_pages continuation with this ingestion_id',
             'warnings': list(dict.fromkeys([*output.warnings, 'model_authored_research_pending']))})
@@ -1002,7 +985,7 @@ class KaggleSourceImporter:
                             else:
                                 output = await self._original_pending(row,status)
                 if (command == 'status' and getattr(self, 'native_intake', None) is not None
-                        and output.state == 'finalized'):
+                        and (output.state == 'finalized' or output.state == 'staged' and output.next_action == 'continue_pages' and not output.warnings)):
                     output = await self._native_research_status(access, row, output)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64

@@ -43,6 +43,7 @@ from .contracts import (
     DocumentAccessOutput,
     EvidenceSearchOutput,
     FetchOutput,
+    FetchChunksOutput,
     Principal,
     ProfileOutput,
     SearchOutput,
@@ -236,6 +237,14 @@ def _book_mcp_error(exc: Exception) -> ToolError:
     elif isinstance(exc, (ConnectionError, OSError)):
         status, reason, error_class = "unknown", "transport_unavailable", "transport"
     # For every other exception the operation's effect is UNKNOWN, not rejected.
+    if error_class == "internal":
+        frames = []
+        origin = exc.__traceback__
+        while origin is not None:
+            frames.append((origin.tb_frame.f_code.co_name, origin.tb_lineno))
+            origin = origin.tb_next
+        logging.getLogger(__name__).error("book_tool_failure error_type=%s frames=%s",
+            type(exc).__name__, frames)
     response = {"status": status, "reason": reason, "error_class": error_class}
     if reason == "stage_file_schema" and isinstance(exc, ToolError):
         hints = _book_stage_schema_hints(exc)
@@ -297,6 +306,12 @@ class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
     async def call_tool(self, name, arguments, context=None):
+        activity=getattr(self,'_bge_request_activity',None)
+        if activity is not None:
+            try:
+                await asyncio.to_thread(activity)
+            except Exception:
+                logging.getLogger(__name__).warning('bge_request_activity state=unavailable tool=%s',name)
         allowed = {'search','fetch','knowledge_search','profile'}
         if getattr(self,'_target_story_available',False):
             allowed.update({'story_search','story_get','story_history','story_variants'})
@@ -323,6 +338,23 @@ class KnowledgeMCPServer(MCPServer):
         with capture_read_output() as calls:
             result = await super().call_tool(name, arguments, context)
             if calls:
+                if name == 'fetch':
+                    # FastMCP wraps this typed union in {result: ...}.
+                    # The final current-source issuance rerenders the backend
+                    # value; preserve the identical wire shape *after* refresh.
+                    original_render = calls[0].render
+
+                    def render_fetch_issued(value):
+                        output = original_render(value)
+                        if isinstance(output, dict):
+                            output = FetchChunksOutput.model_validate(output)
+                        if output.status != 'ok':
+                            # Keep existing isError/status/reason behavior on
+                            # withdrawn or unavailable exact evidence.
+                            return output
+                        return {'result': output.model_dump(mode='json')}
+
+                    calls[0].render = render_fetch_issued
                 bind_request_output(context, calls)
             return result
 
@@ -481,15 +513,20 @@ def build_server(
             "RKB_RESOURCE_URL, or RKB_DEV_NOAUTH=1 for local tests only."
         )
 
-    # A single shared model-side contract for both legacy and Kaggle MCP profiles.
-    # The server supplies evidence only; neither backend runs a synthesis LLM.
+    # Model-side source-backed answer guidance shared by both MCP profiles.
     _answer_instructions = (
-            "For a factual question, use available search/fetch evidence to produce ONE direct answer in the language of the user's question, including Russian answers grounded in German originals. Do not return a ranked list of quotes or internal UUIDs as the answer. Default to a concise answer followed by 'Источники: ' and the verified author, title, year and ISBN if present in the catalogue; never invent missing bibliographic fields. Show exact pages, short verbatim quotes and source fragments when explicitly requested ('подробно', 'покажи страницы', 'цитата'), preserving printed-page versus scan-number distinction. Search candidates are not proof: each asserted name, date, place or measurement needs a genuinely supporting source passage, not nearby thematic overlap or model knowledge. If accessible search succeeded but the requested fact is unsupported, say 'В доступной базе подтверждений не найдено' and do not list irrelevant hits as citations or fabricate a source. If search is pending, unavailable, timed out, revoked or context_gap, say 'Не удалось проверить базу сейчас'; this is NOT a successful empty search and must never be reported as 'не найдено'. When genuine sources conflict, state the positions and their attribution separately, use disagreement_search and disagreement_get if registered and authorized, and distinguish a versioned model synthesis from verified expert endorsement; never manufacture consensus. Respect current source rights and visibility on every read and answer. "
+        " For a factual question, give ONE direct answer in the language of the user's question, grounded in search/fetch evidence; a hit list or opaque UUID is not an answer. "
+        "When a question names a specific author or book, never attribute another author's passage to it. "
+        "Verify claims using fetch evidence; cite only matching passages and then add a brief source list (for Russian questions, 'Источники:'). "
+        "If retrieval succeeds but finds no relevant supporting passage, say so (for Russian, 'В доступной базе подтверждений не найдено'), without inventing a claim. "
+        "Distinguish insufficient evidence from pending, timeout or unavailable retrieval (for Russian, 'Не удалось проверить базу сейчас'). "
+        "When requested, give quotations and pages only when verified; distinguish printed-page numbers from scan numbers. "
+        "Attribute contested interpretations to their authors; use disagreement_search/disagreement_get only when registered and relevant. "
     )
+
     mcp = KnowledgeMCPServer(
         "Regional Knowledge Base",
         instructions=(
-            _answer_instructions +
             "Search and retrieve sourced regional knowledge. Use search before fetch. "
             "When a user asks to add an attached PDF/DjVu book, start ingestion and carry "
             "it through book_pages, model review/stage, validate and finalize by following "
@@ -562,16 +599,15 @@ def build_server(
             "local entities and external POI references explicitly; name matches remain search "
             "candidates. For already accepted material, graph_stage adds mentions and relations "
             "without reimporting, re-chunking or re-embedding the source. " +
-            "Never infer that a source is public."
+            "Never infer that a source is public." + _answer_instructions
         ) if selected!='kaggle_source' else (
-            _answer_instructions +
             "The Kaggle native importer accepts an owner-authorized PDF/DjVu original up to 128 MiB and 2500 physical pages, subject to verified original intake. Ordinary owner-only start is shared-searchable without a mandatory per-book public_rights declaration; the owner's legal attestation is retained. Authentication does not grant another actor access to private Case, original or scan proof. Use exactly the ordinary workflow: book_ingest(start) with the attached original, then book_pages (default 1 page, maximum requested 4; the renderer may return just one actual ImageContent), model visual/source review, book_ingest(stage) with up to four reviewed pages and source passage evidence (page_id and region_key with a current chunk_key or an already accepted chunk_id), repeat with returned cursor/next_action, then book_ingest(finalize) only to record that reading ended. One accepted native text packet becomes searchable by registered search, knowledge_search or fetch after its actual apply, not merely after a pending stage request. There is no whole-book activation or extra validation step before the first page can be found. A rejected page can be corrected and retried in the same ingestion; an independently accepted earlier page remains searchable. Optional story, fact, illustration, map and POI enrichment may remain pending or reject without rolling back accepted source text. "
             "Build semantically coherent source chunks with model-chosen boundaries at changes of thought, typically about 256 BGE tokens (roughly 800-1000 characters when appropriate; a guideline rather than a hard limit), within the existing exact token bound; a printed paragraph, physical page or stage packet is not a mandatory chunk boundary. Preserve whole sentences: split a long or visually unbroken paragraph at a complete sentence when the idea changes, using exact span_refs and source_text offsets; combine short adjacent paragraphs about the same idea into one appropriately sized chunk using source-backed region_refs or span_refs. Read continuing text with book_pages; one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages, not one oversized chunk. If a completed thought spans pages and fits current limits, one chunk may use ordered region_refs OR exact span_refs from both real page_ids and source regions; preserve original page/region/span provenance and never invent unseen continuation or force a whole packet into one chunk. "
             "If book_ingest(status) returns next_action=continue_tail, use its tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end; start/end are exact Unicode codepoint offsets in the original source region) for the contiguous uncovered body suffix on the last accepted packet page. Read the next page with book_pages at next_cursor; the model then chooses small, sentence-complete semantic chunks with ordered exact span_refs or region_refs across the accepted prior tail and newly issued, reviewed page(s), retaining prior page/region/span provenance. For span_refs supply page_id, region_key, start and end; the server derives source_text_sha256 from the known region text, so the model must not calculate or supply a hash. Stage only newly issued, visually reviewed page(s) in a 1-4-page packet: do not re-stage the accepted prior page, split sentences, invent missing text, use system-chosen split/merge boundaries, or finalize while status still indicates continue_tail. "
             "During the same page review, record source-mentioned places in book_ingest(stage).entity_candidates as poi_ref entities with exact_source_spelling and source passage evidence. A new name for the same model-identified place is an alias, not a new entity. Preserve source-supported German and other historical names in aliases; set language, alias_type (such as historical, former or current) and time_scope only when supported by the book or cited research_sources, leaving unsupported values unset. Add a modern Russian name only when the book or cited research_sources (URL and note) supports that alias; keep external research separate from book evidence. Review all source-mentioned place classes: streets, squares, quarters, buildings, churches, castles, fortifications, gates, bridges, islands, rivers, villages and districts of the region. For lost or demolished sites, record the supported state in place_context; do not guess dates, coordinates or modern addresses. "
             "Mark knowledge_reviewed and story_candidates_reviewed only after actually considering the page. "
             "story_candidates holds at most 12 per stage; when the pages hold more episodes and facts than that, stage fewer pages per packet instead of dropping or merging them. "
-            "Story body: write basic_variant.body for an ordinary reader or visitor; the same saved text is read, voiced and posted. One body tells one thing about a concrete person, place or event, usually 2-6 connected sentences. Open with the subject and what happened, not with the book: no 'the author writes', 'Gause reports', 'according to the book', 'in footnote N', 'the source/fragment does not name'; page, footnote and author belong in evidence_refs. Inside the body attribute only an opinion, estimate, legend, recollection or disputed account ('по мнению Гаузе', 'как вспоминал Наунин'); state plain dated facts directly. Place such attribution after the claim it qualifies, never as the opening words of a body. This holds for contested or painful periods too: state established events (a pogrom, a siege, a deportation) directly, attribute only the author's judgment or explanation after the event, and never cite a footnote number in the body. Keep the concrete source detail that makes the episode worth telling: who acted and how, what was at stake, a first or only, a named leader, a printed turn of phrase; it outranks secondary figures. "
+            "Story body: write basic_variant.body for an ordinary reader or visitor; the same saved text is read, voiced and posted. One body tells one thing about a concrete person, place or event, usually 2-6 connected sentences. Open with the subject and what happened, not with the book: no 'the author writes', 'Gause reports', 'according to the book', 'in footnote N', 'the editor's note says', 'the edition states', 'the source/fragment does not name'; page, footnote and author belong in evidence_refs. Inside the body attribute only an opinion, estimate, legend, recollection or disputed account ('по мнению Гаузе', 'как вспоминал Наунин'); state plain dated facts directly. Place such attribution after the claim it qualifies, never as the opening words of a body. This holds for contested or painful periods too: state established events (a pogrom, a siege, a deportation) directly, attribute only the author's judgment or explanation after the event, and never cite a footnote number in the body. Keep the concrete source detail that makes the episode worth telling: who acted and how, what was at stake, a first or only, a named leader, a printed turn of phrase; it outranks secondary figures. "
             "For a place, keep source-grounded details that explain it to a visitor: the origin of a name (coat of arms, patron or older language), a documented change of use, and what the source says survived. When a building's changing uses form one coherent episode with a source-backed development or outcome, include that in the body; when they are merely a dated list, keep them as facts/observations instead of forcing a Story. The source's 'today', 'до наших дней' or 'сохранилась до наших дней' refers to the author's time, not 2026: use attribution such as 'по Гаузе, сохранилась до его времени' or a year only when the source actually gives it; never invent a calendar year or assert present-day survival without contemporary evidence. "
             "Say where and when the episode happened whenever the source does (city, district, street, school, building, decade), so the reader can place it in the region; memoirs and biographies most easily lose this setting. When the source does not say where or when, do not invent it; treat a legend or burial tradition as attributed tradition, never as established historical fact. "
             "Copy every date, name, number, unit and historical place name you use exactly as printed. Each sentence advances the same thought; end with the known outcome, or the honest limit in the story's own terms ('Why they withdrew is unknown; Gause suggests ...'). Do not split one episode into a body plus separate facts_only candidates: the outcome, name, consequence or open question that closes it belongs in the same body. One episode is one body even when its steps sit in separate paragraphs: a problem, the decision, its execution and result belong together. A single dated fact without development (a street laid out, a bridge built) stays a fact; the v8 exception covers only firsts and inventions. Add no motive, cause, emotion, dialogue or present-day site absent from the evidence; 'after' is not 'because'. A title beginning How/Why must be answered by the body. A list of figures, names or institutions is not a story: keep it as facts and observations without a body; there is no story quota. A first or an invention stated in one sentence still deserves a short body when the adjacent sentences continue the same thread; never pad it beyond them. Review the whole page for episodes, including ones inside long paragraphs about something else (a famous visitor, a demolished landmark, a first performance, an invention, a legend or burial tradition, an everyday custom such as where a traveller slept or what a trade was nicknamed). If an episode continues onto the next page, fetch that page with book_pages and stage both pages in one packet (up to 4) so the body is written once with its ending; use needs_context only when the missing part is still out of reach, and name it. "
@@ -580,7 +616,7 @@ def build_server(
             "On the first cover, title, title-verso and imprint pages, populate the existing book metadata from the actual printing: metadata.title, metadata.authors, metadata.publication_year and metadata.language; metadata.catalog.kind (book/journal_issue/article), editors, translators, publisher, date, edition, identifiers and topics (themes). Set metadata.catalog.cover_page to the observed zero-based physical page index together with metadata.catalog.cover_kind (cover, title_page or issue_cover). Do not invent unknown authors, editors, dates, identifiers, book type, topics or cover details; leave unsupported fields unset. "
             "When the evidence does not support such a body, omit basic_variant and explicitly mark narrative_outcome=needs_context or facts_only. Do not invent source text, geometry, identity or story body. "
             "On first stage supply source_import.research with state=pending and an exact owned book_pages continuation (tool=book_pages; arguments.ingestion_id, cursor, batch_size=1), or state=complete with empty continuation only when actually finished. Reuse the exact research state on retries. processing, wait, UNKNOWN and pending are not proof of apply, Saved, or search visibility; follow status/next_action rather than tight polling or minting another source. Completion of reading is not completion of research or editorial acceptance. Use only tools actually registered for the current client profile: ordinary search, knowledge_search and fetch for relevant source evidence. When disagreement_search is registered, search existing actor-authorized Case candidates by subject, place or source in the SAME page review; follow next_after_case when has_more, and use disagreement_get on a selected, authorized Case before disagreement_edit(add_evidence). If no suitable Case exists, use disagreement_edit(create) followed by add_evidence only when those tools and permissions are available. Bounded lexical candidates are not automatic contradiction matching or proof that no Case exists; a text match never grants Case/source access. Preserve the original operation_key after UNKNOWN and never call pending Saved. Keep all actor/source/Case permissions and exact receipts. Never infer a source is public merely from a related place or accepted text."
-            "If search or knowledge_search returns pending with startup_ref, pass startup.message_ru to the user immediately. If startup.eta_seconds is absent, give no numeric ETA. Check startup_status with the same startup_ref no more often than every 30 seconds while pending; after ready issue a NEW search. The prior pending read was not queued: do not mint a second launch or retry UNKNOWN effects. "
+            "If search or knowledge_search returns pending with startup_ref, pass startup.message_ru to the user immediately. If startup.eta_seconds is absent, give no numeric ETA. Check startup_status with the same startup_ref no more often than every 30 seconds while pending; after ready issue a NEW search. The prior pending read was not queued: do not mint a second launch or retry UNKNOWN effects. " + _answer_instructions
         ),
         **kwargs,
     )
@@ -589,10 +625,10 @@ def build_server(
         embedded_provider.register_routes(mcp)
 
     mcp._target_source_profile=selected=='kaggle_source'
-    # Do not advertise an image result without the trusted, installed native
-    # source gate AND its independent real archive byte-issuer owner.
+    # Public previews use the existing source issuer and page renderer.
     mcp._target_media_available=(selected=='kaggle_source'
-        and getattr(backend,'public_media_gate',None) is not None)
+        and (getattr(backend,'illustration_renderer',None) is not None
+             or getattr(backend,'public_media_gate',None) is not None))
     mcp._target_import_available = selected=='kaggle_source' and getattr(target_startup,'importer',None) is not None
     mcp._target_story_available = (selected=='kaggle_source' and target_startup.gate.story_supported())
     mcp._target_facts_available = (selected=='kaggle_source' and target_startup.gate.facts_supported())
@@ -617,6 +653,7 @@ def build_server(
             if worker_queue.path.resolve() != Path(os.environ['RKB_BGE_QUEUE_PATH']).resolve():
                 raise RuntimeError('backend and channel must share the same owned queue')
         register_routes(mcp,worker_queue)
+        mcp._bge_request_activity=worker_queue.record_request_activity
         # PR301 adds this optional native route argument. Both merge orders
         # keep one bounded product sink and leave legacy channels unchanged.
         from inspect import signature
@@ -1276,7 +1313,7 @@ def build_server(
         page_end: Annotated[int | None, Field(ge=0, le=2499)] = None,
         after_ordinal: Annotated[int | None, Field(ge=0)] = None,
         limit: Annotated[int, Field(ge=1, le=8)] = 8,
-    ) -> FetchOutput | dict[str,Any]:
+    ) -> FetchOutput | FetchChunksOutput:
         # Both read modes resolve the same principal and use the same final
         # authorized output-issuance boundary. No legacy cross-backend fallback.
         from .product_telemetry import observe_async
@@ -1285,9 +1322,9 @@ def build_server(
                 raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
             if selected != 'kaggle_source':
                 raise ToolError('{"status":"unavailable","reason":"native_chunks_unavailable"}')
-            return await observe_async("fetch", lambda: backend.fetch_chunks(
+            return FetchChunksOutput.model_validate(await observe_async("fetch", lambda: backend.fetch_chunks(
                 _principal(),source_id=source_id,page_start=page_start,page_end=page_end,
-                after_ordinal=after_ordinal,limit=limit))
+                after_ordinal=after_ordinal,limit=limit)))
         if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
@@ -1702,6 +1739,9 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
     if target_startup is None and os.getenv('RKB_BACKEND_PROFILE','').strip()=='kaggle_source':
         from .kaggle_source_owners import configured_source_service
         target_startup=configured_source_service()
+    if target_startup is not None:
+        from .kaggle_illustration_preview import configure_illustration_preview
+        configure_illustration_preview(target_startup)
     reader_config=os.getenv('RKB_PROJECTS_HUB_READER_CONFIG','').strip()
     if reader_config and projects_hub_receiver is None:
         if target_startup is None:
@@ -1784,6 +1824,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         log_level=mcp.settings.log_level.lower(),
         timeout_graceful_shutdown=10,
     )
+    if target_startup is not None and target_startup.restart_requested:
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":

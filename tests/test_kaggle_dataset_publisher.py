@@ -28,7 +28,7 @@ class FakeApi:
             exc = RuntimeError('not found')
             exc.status_code = 404
             raise exc
-        return NS(current_version_number=self.version, is_private=self.private)
+        return NS(current_version_number=self.version, is_private=self.private, versions=getattr(self,"versions",[]))
 
     def get_dataset_metadata(self, request):
         return NS(info=NS(description=self.description))
@@ -129,3 +129,52 @@ def test_403_requires_independent_owned_inventory_absence():
     with pytest.raises(DatasetPublicationError, match='metadata_denied'):
         p.observe()
     assert api.mutations == ['reserve']
+
+
+def test_saved_time_uses_exact_verified_version_and_native_naive_utc():
+    from datetime import datetime, timezone
+    api, publisher, _ = setup()
+    api.version = 3
+    api.private = False  # Clock metadata does not duplicate visibility policy.
+    api.versions = [NS(version_number=3, creation_date=datetime(2026, 10, 24, 12)),
+                    NS(version_number=2, creation_date=datetime(2026, 10, 24, 11))]
+    assert publisher.version_created_at(2) == datetime(2026, 10, 24, 11, tzinfo=timezone.utc).timestamp()
+    assert not api.mutations[1:]
+    with pytest.raises(DatasetPublicationError, match='dataset_saved_version_time_unavailable'):
+        publisher.version_created_at(1)
+
+
+def test_read_control_above_64_mib_streams_and_checks_exact_sha():
+    from regional_knowledge.kaggle_dataset_base import DatasetFile
+    from regional_knowledge.kaggle_pg_snapshot_native import sha
+
+    body = b'j' * (64 * 1024**2 + 19)
+    observed = []
+
+    class Response:
+        status_code = 200
+
+        def iter_content(self, chunk_size):
+            assert chunk_size == 65536
+            for offset in range(0, len(body), chunk_size):
+                yield body[offset:offset + chunk_size]
+
+        def close(self):
+            observed.append('closed')
+
+    class Api:
+        @contextmanager
+        def build_kaggle_client(self):
+            class Reader:
+                def download_dataset(self, request):
+                    assert request.dataset_version_number == 7
+                    assert request.file_name == 'journal-control.json'
+                    return Response()
+            yield NS(datasets=NS(dataset_api_client=Reader()))
+
+    publisher = KaggleDatasetPublisher(Api(), provider_ref='owner/rkb-pg', owner='owner')
+    file = DatasetFile('journal-control.json', len(body), sha(body))
+    assert publisher.read_control(file, version=7) == body
+    assert observed == ['closed']
+    with pytest.raises(DatasetPublicationError, match='dataset_control_read_bytes_changed'):
+        publisher.read_control(DatasetFile(file.name, file.size, sha(b'wrong')), version=7)

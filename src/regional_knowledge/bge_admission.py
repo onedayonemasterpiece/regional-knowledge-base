@@ -95,21 +95,16 @@ def _identity(value):
 
 class SharedReadAdmission:
     def __init__(self, queue, read_authority, *, monotonic_clock=time.monotonic,
-                 max_reads=256, max_person_reads=8, max_dialog_reads=2, max_read_streak=8):
+                 max_reads=256, max_read_streak=8):
         if not isinstance(read_authority,ReadAuthority):
             raise TypeError('existing ReadAuthority required')
         if type(max_reads) is not int or not 1<=max_reads<=256:
             raise ValueError('bounded read capacity required')
         if type(max_read_streak) is not int or not 1<=max_read_streak<=256:
             raise ValueError('bounded document progress interval required')
-        for value in (max_person_reads,max_dialog_reads):
-            if type(value) is not int or not 1<=value<=256:
-                raise ValueError('bounded canonical person/dialog RAM capacity required')
         self.queue,self.authority=queue,read_authority
         self.clock=monotonic_clock
         self.max_reads,self.max_read_streak=max_reads,max_read_streak
-        self.max_person_reads=min(max_person_reads,max_reads)
-        self.max_dialog_reads=min(max_dialog_reads,self.max_person_reads)
         self._lock=asyncio.Lock()
         self._event=asyncio.Event()
         self._loop=None
@@ -211,10 +206,6 @@ class SharedReadAdmission:
         key=(query.connection_generation,query.request_id)
         if key in self._reads:raise ValueError('duplicate active read identity')
         if len(self._reads)>=self.max_reads:raise AdmissionLimit('read_capacity')
-        person_reads=[r for r in self._reads.values() if r.authority.person_id==authority.person_id]
-        if len(person_reads)>=self.max_person_reads:raise AdmissionLimit('person_read_capacity')
-        if sum(r.dialog==dialog_ref for r in person_reads)>=self.max_dialog_reads:
-            raise AdmissionLimit('dialog_read_capacity')
         future=asyncio.get_running_loop().create_future()
         ticket=ReadTicket(query.request_id,query.connection_generation,query.turn_generation,future)
         timer=asyncio.get_running_loop().call_later(max(0,deadline-self.clock()),self._cancel,key)
@@ -298,22 +289,9 @@ class SharedReadAdmission:
         run,owner,docs,resumed=await asyncio.to_thread(self.queue._admission_snapshot,run_id,token,generation,
                                                     document_actors=tuple(self._documents),command_actors=tuple(self._commands),
                                                     editorial_documents=tuple(self._editorial_documents))
-        if owner['run_id'] is not None and (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation']):
-            raise StaleAttachment('prior compute resource remains unknown')
-        if (observe and self._work is not None and self._sent
-                and self._work.resource.run_id!=run_id):
-            prior=self._work.resource
-            # The standalone provider reconciler may have retired the old
-            # resource while this RAM controller stayed alive. Only its durable
-            # exact-incarnation native receipt can release the sent compute
-            # debt. No extra receipt read occurs on ordinary same-run queries.
-            retired=await asyncio.to_thread(self.queue.provider_reservation_retired,
-                                           prior.run_id,prior.runtime_incarnation)
-            if retired:
-                self._work=None;self._sent=False;self._state='unknown'
-                self._last_release=None;self._document_result=None
-                self._changed_slot()
-        if observe:self._observe_attachment(run,generation)
+        owned=(owner['run_id'],owner['incarnation'])==(run_id,run['runtime_incarnation'])
+        if not observe and not owned:raise StaleAttachment('read result requires the owned resource')
+        if observe and owned:self._observe_attachment(run,generation)
         return run,owner,docs,resumed
 
     @staticmethod
@@ -329,7 +307,9 @@ class SharedReadAdmission:
                              probe_nonce=None):
         self._active()
         async with self._lock:
-            run,owner,_,resumed=await self._snapshot(run_id,token,connection_generation)
+            run,owner,_,resumed=await asyncio.to_thread(self.queue._admission_snapshot,run_id,token,connection_generation,
+                document_actors=tuple(self._documents),command_actors=tuple(self._commands),
+                editorial_documents=tuple(self._editorial_documents))
             if run['runtime_incarnation']!=runtime_incarnation:raise StaleAttachment('resource incarnation mismatch')
             if state not in {'idle','busy'}:raise ValueError('invalid resource state')
             if state=='idle' and any(v is not None for v in (resource_kind,resource_id,compute_claim,dispatch_generation)):
@@ -346,13 +326,13 @@ class SharedReadAdmission:
                         and self._probe[2] is self._slot_version
                         and (owner['run_id'],owner['incarnation'])==(run_id,runtime_incarnation))
                 if not probed:raise StaleAttachment('stale resource probe')
-            # Persist ownership only at its first baseline. The worker reports
-            # busy/idle for every assignment, so repeating this transaction
-            # would make ordinary QUERY wait for the SQLite writer. _snapshot
-            # already authenticates the current attachment and exact owner;
-            # the one controller lock serializes terminal/owner transitions.
-            if owner['run_id'] is None:
+            if (owner['run_id'],owner['incarnation'])!=(run_id,runtime_incarnation):
                 await asyncio.to_thread(self.queue._admission_bind,run_id,token,connection_generation,runtime_incarnation)
+            if self._work is not None and self._work.resource.run_id!=run_id:
+                self._work=None;self._sent=False;self._state='unknown'
+                self._last_release=None;self._document_result=None
+                self._changed_slot()
+            self._observe_attachment(run,connection_generation)
             if probed and (self._probe is not probe_record or probe_record[2] is not self._slot_version):
                 raise StaleAttachment('resource changed during probe reconciliation')
             if self._work is not None:
@@ -434,12 +414,6 @@ class SharedReadAdmission:
             self._document_result=None;self._event.set()
             return True
         return False
-
-    def require_durable_resource(self,run_id,incarnation,generation,job_id,compute_claim,dispatch_generation):
-        self._active()
-        descriptor=self._descriptor(run_id,incarnation,generation,'document',job_id,compute_claim,dispatch_generation)
-        if descriptor!=self._last_release and not (self._work is not None and self._sent and self._work.resource==descriptor):
-            raise StaleAttachment('source receipt has no actual admitted resource binding')
 
     async def next_channel_work(self, run_id, token, connection_generation):
         self._active()

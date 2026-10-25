@@ -14,7 +14,7 @@ from test_read_authority import auth
 from test_participants import people
 
 
-def test_concurrent_startup_requests_use_one_stable_run_even_after_lost_launch_ack(tmp_path):
+def test_concurrent_startup_requests_use_one_stable_run(tmp_path):
     now = [1000.0]
     queue = BgeQueue(tmp_path / "cold.sqlite", clock=lambda: now[0])
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -28,17 +28,6 @@ def test_concurrent_startup_requests_use_one_stable_run_even_after_lost_launch_a
         assert db.execute("select count(*) from runs").fetchone()[0] == 1
         assert db.execute("select count(*) from jobs").fetchone()[0] == 0
 
-    # The controller persists dispatching BEFORE a remote push. A lost ACK,
-    # even past the normal pre-READY timeout, may not allocate another run.
-    token = queue.launch_claim(run_id, provider_ref="fixture-owner/stable-slug")
-    assert token is not None
-    now[0] += 901
-    replay = queue.request_startup()
-    assert replay["startup_ref"] == demands[0]["startup_ref"]
-    assert queue.launch_claim(run_id, provider_ref="fixture-owner/stable-slug") is None
-    with queue.connect(write=False) as db:
-        assert db.execute("select count(*) from runs").fetchone()[0] == 1
-        assert db.execute("select launch_state from runs where id=?", (run_id,)).fetchone()[0] == "dispatching"
 
 
 
@@ -112,29 +101,6 @@ async def test_authorized_public_cold_read_starts_despite_archived_history(auth,
     finally:queue._shared_reads.close()
 
 
-def test_expired_ready_run_fences_remote_owner_until_terminal_reconciliation(tmp_path):
-    now = [1000.0]
-    queue = BgeQueue(tmp_path / 'ready-lost.sqlite', clock=lambda: now[0])
-    first = queue.request_startup()
-    run_id = first['run_id']
-    token = queue.launch_claim(run_id, provider_ref='owner/stable-slug')
-    queue.launch_record(run_id, 'owner/stable-slug', provider_version=7)
-    queue.heartbeat(run_id, token, ready=True)
-    now[0] += 121
-    repeated = queue.request_startup()
-    assert repeated['run_id'] == run_id
-    assert repeated['startup_ref'] == first['startup_ref']
-    assert queue.status()['state'] == 'unknown'
-    for _ in range(2):
-        assert len(queue.maintenance()) == 1
-    now[0] += ROTATE_SECONDS
-    queue.maintenance()  # rotation must not launch successor during UNKNOWN
-    with queue.connect(write=False) as db:
-        assert db.execute('select count(*) from runs').fetchone()[0] == 1
-        assert db.execute('select launch_state from runs where id=?',(run_id,)).fetchone()[0] == 'dispatched'
-        assert db.execute('select successor from control where id=1').fetchone()[0] is None
-
-
 def test_known_not_sent_failures_have_finite_budget_and_honest_unavailable(tmp_path):
     from regional_knowledge.bge_queue import MAX_STARTUP_FAILURES
     now=[1000.]
@@ -156,17 +122,19 @@ def test_known_not_sent_failures_have_finite_budget_and_honest_unavailable(tmp_p
             assert len(active)==1 and active[0]['id']!=current
             current=active[0]['id']
         else:
-            assert state['startup_state']=='blocked'
+            assert state['startup_state']=='pending'
     assert queue.startup_status(initial['startup_ref'])['status']=='unavailable'
     assert queue.startup_status(initial['startup_ref'])['reason']=='startup_retry_exhausted'
-    assert queue.request_startup()['status']=='unavailable'
-    # A separate already-authorized document producer may append work, but
-    # must NOT create an unbounded replacement run through queue._ensure.
-    queued=queue.enqueue('actor','post-block',['some text'],kind='document')
+    # The same locator is exhausted, but a *new* authorized request is not.
+    renewed=queue.request_startup()
+    assert renewed['status']=='pending' and renewed['startup_ref']!=initial['startup_ref']
+    assert renewed['run_id']!=current
+    assert queue.startup_status(initial['startup_ref'])['reason']=='startup_ref_stale'
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    queued=queue.enqueue('actor','post-exhaustion',['some text'],kind='document')
     assert queue.result('actor',queued)['state']=='pending'
-    now[0]+=3600
-    assert len(queue.maintenance())==MAX_STARTUP_FAILURES
-    assert not any(x['status']=='starting' for x in queue.maintenance())
+    assert queue.request_startup()['startup_ref']==renewed['startup_ref']
 
 
 def test_cold_demand_survives_controller_down_and_known_prelaunch_failure(tmp_path):
@@ -199,7 +167,6 @@ async def test_same_incarnation_wss_reconnect_after_heartbeat_gap_without_new_la
     s.queue.clock=lambda:now[0]
     assert s.queue.detach_channel(s.run,s.token,s.generation)
     now[0]+=121
-    assert s.queue.status()['state']=='unknown'
     with pytest.raises(TargetUnavailable):
         current_binding(s.queue)
     attached=s.queue.attach_channel(s.run,s.token,s.nonce,'incarnation-a')

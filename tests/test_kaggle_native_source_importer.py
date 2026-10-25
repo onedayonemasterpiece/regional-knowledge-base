@@ -32,6 +32,7 @@ from test_kaggle_source_importer import options
 from test_participants import people
 from test_read_authority import auth, issue
 from test_recovery_journal import ConditionalMemoryStore
+from test_kaggle_original_intake import native, frame as native_frame
 
 
 @pytest_asyncio.fixture
@@ -119,11 +120,11 @@ async def native_intake(target, tmp_path):
     spool.close()
 
 
-async def start(s, *, file_id='synthetic-174-djvu', metadata=None):
+async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu'):
     return await s.importer.book_ingest(command='start',principal=s.principal,
         file=ChatFile(file_id=file_id,download_url='https://files.example.test/174.djvu?private=fixture',
-            mime_type='image/vnd.djvu',file_name='synthetic-174.djvu'),
-        payload=metadata or dict(title='Synthetic 174-page scanned source',authors=['Synthetic author'],
+            mime_type=mime_type,file_name='synthetic-174.djvu'),
+        payload=dict(title='Synthetic 174-page scanned source',authors=['Synthetic author'],
             publication_year=1901,language='de',catalog={'kind':'book','publisher':'Synthetic publisher'}),
         source_import=options())
 
@@ -158,6 +159,52 @@ async def call(s, result, command, **kwargs):
 async def stage(s, result, payload):
     return await call(s,result,'stage',payload=payload,
         source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending'))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mime_type', ['image/x-djvu', 'application/djvu', ''])
+async def test_original_mime_metadata_does_not_preempt_verified_intake(native_intake, mime_type):
+    result=await start(native_intake,mime_type=mime_type)
+    assert result.source_archive_status=='verified' and result.next_action=='continue_pages'
+
+
+@pytest.mark.asyncio
+async def test_empty_mime_unsupported_bytes_reject_without_stranding_importer(native_intake, native):
+    s=native_intake
+    s.store.client=SimpleNamespace(meta=SimpleNamespace(endpoint_url='https://archive.invalid'))
+    s.store.bucket='synthetic-originals'
+    binding=s.startup.binding
+    controller=OriginalIntakeController(queue=s.t.queue,spool=s.spool,participants=s.t.auth.p.registry,
+        object_store=SimpleNamespace(client=s.store.client,bucket=s.store.bucket),
+        binding_current=lambda b:b==binding,current_binding=lambda:binding,
+        allowed_origins=frozenset({'https://archive.invalid'}))
+    phases=[]
+    async def transport(bound,phase,args,*,operation_key):
+        assert bound==binding and phase=='original_acquire'
+        phases.append(phase)
+        reply=await native.handler(native_frame(phase,args,key=operation_key,
+            private=controller._private[operation_key]))
+        return reply['value']
+    controller._bridge=lambda b:SimpleNamespace(request=transport)
+    async def download(url,folder,*,max_bytes):
+        from regional_knowledge.original_intake import digest
+        data=b'<html>not an original book</html>'
+        path=folder/'attachment';path.write_bytes(data)
+        return SimpleNamespace(path=path,sha256=digest(data),size_bytes=len(data))
+    native.handler.downloader.download=download
+    s.importer.originals=controller
+    try:
+        for file_id in ('unsupported-first','unsupported-next'):
+            result=await start(s,file_id=file_id,mime_type='')
+            assert result.state=='failed' and result.warnings==['original_format_unsupported']
+            assert s.importer._row(s.principal.subject,result.ingestion_id)['phase']=='failed'
+            row=controller._row(s.t.auth.p.owner.subject,result.ingestion_id)
+            assert row['failure_code']=='original_format_unsupported'
+            assert row['acquisition_json'] is None and row['receipt_json'] is None
+        assert phases==['original_acquire','original_acquire']
+        assert not native.parser and not native.transfer.calls
+    finally:
+        await native.handler.aclose()
 
 
 def state(s, result):
@@ -210,59 +257,73 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
     return entry
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('authored_cursor',[None,'4'])
+async def test_status_after_pause_returns_next_unaccepted_physical_page(native_intake,authored_cursor):
+    s=native_intake
+    book=await start(s)
+    payload=batch(s,book,first=0,count=4)
+    if authored_cursor is None:
+        assert (await stage(s,book,payload)).next_action=='wait'
+    else:
+        from regional_knowledge.kaggle_import_contracts import TargetSourceImportInput
+        research=TargetSourceImportInput.model_validate({'research':dict(state='pending',
+            continuation=dict(tool='book_pages',arguments=dict(
+                ingestion_id=book.ingestion_id,cursor=authored_cursor,batch_size=1)))})
+        assert (await call(s,book,'stage',payload=payload,source_import=research)).next_action=='wait'
+    for component in ('stage','text','semantic'):
+        await finish(s,book)
+        status=await call(s,book,'status')
+    assert status.state=='staged' and status.next_action=='continue_pages'
+    assert status.next_cursor=='4'  # APPLIED physical 0–3; resumed book_pages starts at 4
+    count=operation_count(s)
+    # A later fresh status must recover the same continuation from durable
+    # stage/research data without stage replay or a new import.
+    resumed=await call(s,book,'status')
+    assert resumed.next_cursor=='4' and resumed.next_action=='continue_pages'
+    assert operation_count(s)==count
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    assert row['stage_json'] is None  # no second model payload table
+
+@pytest.mark.asyncio
+async def test_applied_page_status_needs_no_second_original_head(native_intake, monkeypatch):
+    s=native_intake
+    book=await start(s)
+    assert (await stage(s,book,batch(s,book,first=0,count=4))).next_action=='wait'
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+
+    verified_calls=[]
+    async def unavailable_original_head(context, ingestion_id):
+        verified_calls.append(ingestion_id)
+        raise OriginalIntakeError('object_storage_head_unavailable')
+    monkeypatch.setattr(s.originals,'verified',unavailable_original_head)
+    before=operation_count(s)
+    resumed=await call(s,book,'status')
+    assert resumed.state=='staged' and resumed.next_action=='continue_pages'
+    assert resumed.next_cursor=='4' and verified_calls==[]
+    assert operation_count(s)==before
+    # The actual page read must still prove the archived original.
+    with pytest.raises(ToolError,match='native_original_page_unavailable'):
+        await s.importer.book_pages(principal=s.principal,ingestion_id=book.ingestion_id,cursor='4')
+    assert verified_calls==[book.ingestion_id]
+
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('kind','cover_kind'),[
-    ('article','title_page'),('journal_issue','issue_cover')])
-async def test_native_root_article_or_journal_start_stage_accepted_without_second_importer(
-        native_intake,kind,cover_kind):
-    # Ordinary owned original receipt, stage, and immutable accepted text
-    # semantics are the SAME as for book, not legacy component manager output.
+async def test_resume_cursor_ignores_newer_stage_not_yet_applied(native_intake):
     s=native_intake
-    metadata=dict(title='Synthetic '+kind+' title',authors=['Synthetic author'],
-        publication_year=1901,language='de',catalog=dict(kind=kind,publisher='Publisher',
-            volume='IV',issue='2',cover_page=0,cover_kind=cover_kind))
-    first=await start(s,metadata=metadata)
-    assert first.state=='staged' and first.next_action=='continue_pages'
-    reviewed=batch(s,first,count=1)
-    assert (await stage(s,first,reviewed)).state=='processing'
-    accepted_stage=await pending(s,first)
-    doc=json.loads(accepted_stage.command.payload)
-    assert doc['source']['metadata']['catalog']['kind']==kind
-    assert doc['source']['metadata']['catalog']['cover_kind']==cover_kind
-    assert doc['source']['metadata']['catalog']['cover_page']==0
-    frozen=accepted_stage.command_bytes
-    await finish(s,first)
-    assert (await call(s,first,'status')).state=='processing'
-    assert (await pending(s,first)).command.route=='source.batch.v1'
-    await finish(s,first)
-    assert (await call(s,first,'status')).state=='processing'
-    assert (await pending(s,first)).command.route=='source.batch.v1'
-    await finish(s,first)
-    assert (await call(s,first,'status')).state=='staged'
-    # Retrying the same packet must not allocate another durable stage command.
-    assert (await stage(s,first,reviewed)).state=='staged'
-    assert (await s.spool.get(accepted_stage.command.operation_key)).command_bytes==frozen
-    assert operation_count(s)==3
-    assert len(s.originals.calls)==1
-    assert not s.token_calls
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('catalog',[
-    dict(kind='article',parent_id='00000000-0000-0000-0000-000000000005'),
-    dict(kind='article',region_ids=['00000000-0000-0000-0000-000000000006']),
-    dict(kind='journal_issue',region_ids=['00000000-0000-0000-0000-000000000006']),
-    dict(kind='not_registered'),
-])
-async def test_native_start_refuses_fake_issue_component_or_unknown_kind_before_original(
-        native_intake,catalog):
-    s=native_intake
-    with pytest.raises(ToolError):
-        await start(s,metadata=dict(title='Unsupported component',catalog=catalog))
-    assert not s.originals.calls
-    assert operation_count(s)==0
+    book=await start(s)
+    assert (await stage(s,book,batch(s,book,first=0,count=4))).state=='processing'
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    assert (await call(s,book,'status')).next_cursor=='4'
+    assert (await stage(s,book,batch(s,book,first=4,count=2))).state=='processing'
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    assert await s.importer.native_intake.applied_page_cursor(None,row)=='4'
+    assert (await call(s,book,'status')).next_action=='wait'
 
 
 @pytest.mark.asyncio
@@ -462,7 +523,7 @@ async def test_normal_start_keeps_inactive_legacy_rows_and_accepted_bytes_unchan
 
 
 @pytest.mark.asyncio
-async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying_it(native_intake):
+async def test_new_upload_can_stage_after_foreign_uncertain_legacy_operation(native_intake):
     s=native_intake;old=await start(s)
     row=s.importer._row(s.principal.subject,old.ingestion_id)
     s.importer.native_intake._state(row,create=True)
@@ -479,8 +540,11 @@ async def test_new_upload_preserves_uncertain_legacy_operation_without_replaying
     assert state(s,old)==before_state
     assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
     assert len(s.originals.calls)==2
-    with pytest.raises(ToolError,match='prior_write_pending'):
-        await stage(s,again,batch(s,again,count=1))
+    assert (await stage(s,again,batch(s,again,count=1))).state=='processing'
+    next_entry=await pending(s,again)
+    assert next_entry.command.sequence==entry.command.sequence+1
+    assert (await s.spool.get(entry.command.operation_key)).command_bytes==entry.command_bytes
+    assert (await s.spool.get(entry.command.operation_key)).apply_state=='SENT_UNKNOWN'
     with s.t.queue.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 2
 
@@ -597,18 +661,18 @@ async def test_verified_foreign_terminal_domain_does_not_hold_ordinary_book_stag
     scope=await s.spool.scope_state()
     old=await s.spool.get(command.operation_key)
     assert scope['pending'] and old.outcome_state!='DURABLE' and old.remote_outcome is None
-    if phase in ('accepted','applied','rejected_precondition'):
+    if phase!='unaccepted':
         assert scope['accepted_sequence']==1
-        assert s.startup.coverage.applied_sequence==(0 if phase=='accepted' else 1)
+        assert s.startup.coverage.applied_sequence==(1 if phase in ('applied','rejected_precondition','outcome_unknown') else 0)
         assert old.accepted is not None
-        assert (old.apply_receipt is None)==(phase=='accepted')
+        assert (old.apply_receipt is None)==(phase in ('accepted','apply_unknown'))
         assert old.command_bytes==command.encode()
         result=await stage(s,book,pages)
         assert result.state=='processing'
         next_entry=await pending(s,book)
         assert next_entry.command.sequence==2 and next_entry.command.route==STAGE_ROUTE
         assert (await s.spool.get(command.operation_key)).command_bytes==command.encode()
-        assert (await s.spool.get(command.operation_key)).outcome_state=='NOT_SENT'
+        assert (await s.spool.get(command.operation_key)).outcome_state==('SENT_UNKNOWN' if phase=='outcome_unknown' else 'NOT_SENT')
     else:
         with pytest.raises(ToolError,match='prior_write_pending'):
             await stage(s,book,pages)
@@ -721,10 +785,44 @@ async def test_status_releases_verified_upload_and_current_file_dedup_survives_o
     row=s.importer._row(s.principal.subject,first.ingestion_id)
     # Crash seam: receipt was persisted before its acquiring -> staging save.
     s.importer._save(row,phase='acquiring')
-    assert (await call(s,first,'status')).source_archive_status=='verified'
+    initial=await call(s,first,'status')
+    assert initial.source_archive_status=='verified' and initial.next_cursor is None
     assert s.importer._row(s.principal.subject,first.ingestion_id)['phase']=='staging'
     second=await start(s,file_id='second-upload')
     assert second.ingestion_id!=first.ingestion_id
     repeated=await start(s,file_id='first-upload')
     assert (repeated.ingestion_id,repeated.document_id)==(first.ingestion_id,first.document_id)
     assert s.importer._row(s.principal.subject,second.ingestion_id)['phase']=='staging'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('component',['text','semantic'])
+async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intake,component):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    assert (await stage(s,book,payload)).state=='processing'
+    await finish(s,book)
+    assert (await call(s,book,'status')).state=='processing'
+    if component=='semantic':
+        await finish(s,book)
+        assert (await call(s,book,'status')).state=='processing'
+    rejected=await finish(s,book,status='rejected_precondition')
+    assert (await call(s,book,'status')).state=='staged'
+    assert state(s,book)['rejected_batch_index']==0
+    before=operation_count(s)
+    # Identical model input now asks for a real retry, not the old rejection.
+    assert (await stage(s,book,payload)).state=='processing'
+    retry=await pending(s,book)
+    assert retry.command.route==STAGE_ROUTE
+    assert retry.command.sequence==rejected.command.sequence+1
+    assert retry.command.operation_key!=rejected.command.operation_key
+    assert json.loads(retry.command.payload)['model_payload']==payload
+    assert operation_count(s)==before+1
+    old=await s.spool.get(rejected.command.operation_key)
+    assert old.command_bytes==rejected.command_bytes and old.apply_state=='REJECTED_PRECONDITION'
+    for _ in range(3):
+        await finish(s,book)
+        result=await call(s,book,'status')
+    assert result.state=='staged' and state(s,book)['rejected_batch_index'] is None
+    after=operation_count(s)
+    assert (await stage(s,book,payload)).state=='staged'
+    assert operation_count(s)==after  # Success/lost-ACK retries still deduplicate.

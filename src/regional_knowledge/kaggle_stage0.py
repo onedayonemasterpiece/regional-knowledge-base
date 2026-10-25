@@ -27,10 +27,6 @@ import urllib.request
 TRUSTED_ROOT = Path('/kaggle/working')
 TRUSTED_INPUT_ROOT = Path('/kaggle/input')
 MAX_FILES = 128
-# Native import source plus PDF/Telegram dependencies adds immutable code members.
-# GEO's new source module and SQL035 extend the previously saturated 192-entry
-# prepared inventory by two; download and wheel budgets remain 128.
-MAX_PREPARED_FILES = 194
 MAX_FILE_BYTES = 16 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
 CHUNK_BYTES = 1024 * 1024
@@ -249,7 +245,7 @@ def _inventory(prepared):
     if (type(prepared) is not dict or set(prepared)!={'root','entries','max_total_bytes'}
             or type(prepared['root']) is not str or prepared['root'] != str(TRUSTED_ROOT)
             or type(prepared['entries']) not in (list,tuple)
-            or not 1<=len(prepared['entries'])<=MAX_PREPARED_FILES):
+            or not prepared['entries']):
         raise ValueError('stage0_prepared_inventory_required')
     _integer(prepared['max_total_bytes'],1,MAX_TOTAL_BYTES)
     inventory={}

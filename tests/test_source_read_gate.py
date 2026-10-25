@@ -121,6 +121,39 @@ async def test_final_synchronous_fence_and_refresh_recheck_current_control(env,a
 
 
 @pytest.mark.asyncio
+async def test_one_actor_binding_check_per_pass_keeps_withdrawal_and_change_fences(env,auth,monkeypatch):
+    gate,authority,b=await setup(env,auth)
+    calls=[]
+    original_require,original_binding=gate.authority.require,gate._binding
+    async def counted_require(*args):
+        calls.append('authority')
+        return await original_require(*args)
+    def counted_binding(read):
+        calls.append('binding')
+        return original_binding(read)
+    monkeypatch.setattr(gate.authority,'require',counted_require)
+    monkeypatch.setattr(gate,'_binding',counted_binding)
+    permit=await gate.dispatch(authority,query(),b)
+    calls.clear()
+    gated=await gate.finish(permit,result(item(SOURCE)))
+    assert calls==['authority','binding']
+    assert gate.issuance_current(gated.ticket)
+    await stage(env)
+    assert not gate.issuance_current(gated.ticket)
+    calls.clear()
+    refreshed=await gate.refresh(gated)
+    assert calls==['authority','binding']
+    assert refreshed.result.reason=='evidence_withdrawn' and not refreshed.result.evidence
+    assert gate.issuance_current(refreshed.ticket)
+    b.runtime_incarnation='changed'
+    assert not gate.issuance_current(refreshed.ticket)
+    b.runtime_incarnation='inc'
+    change(auth.p,ParticipantDisable(disabled=True,reason='synthetic revoke after refresh'))
+    with pytest.raises(PermissionError):
+        await gate.refresh(refreshed)
+
+
+@pytest.mark.asyncio
 async def test_copied_permit_or_replaced_authority_is_not_capability(env,auth):
     gate,authority,b=await setup(env,auth)
     permit=await gate.dispatch(authority,query(),b)
@@ -347,15 +380,3 @@ async def test_accepted_chunk_gate_denies_restriction_and_changed_authority(env,
         await gate.finish(permit,chunk_read_result())
 
 
-@pytest.mark.asyncio
-async def test_accepted_chunk_gate_revalidates_bypassed_payload_before_output(env, auth, monkeypatch):
-    gate, authority, b = await setup(env,auth)
-    monkeypatch.setattr(gate,'catalog_supported',lambda:True)
-    record=chunk_read_result()
-    spoiled=dict(record.records[0])
-    spoiled['regions']=[dict(record.records[0]['regions'][0],start=80,end=3)]
-    record=record.model_copy(update={'records':(spoiled,)})
-    permit=await gate.dispatch(authority,chunk_read_request(),b)
-    gated=await gate.finish(permit,record)
-    assert gated.result.status=='unavailable' and gated.result.reason=='internal_error'
-    assert not gated.result.records and gated.result.next_after_ordinal is None

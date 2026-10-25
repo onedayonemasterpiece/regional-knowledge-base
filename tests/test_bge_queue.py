@@ -159,7 +159,7 @@ def test_legacy_unverified_heartbeat_does_not_reset_failure_budget(tmp_path):
             run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
     with queue.connect(write=False) as db:
         state=db.execute('select startup_state,startup_failures from control where id=1').fetchone()
-    assert tuple(state)==('blocked',3)
+    assert tuple(state)==(None,3)
 
 
 def test_legacy_document_demand_without_startup_ref_cannot_retry_forever(tmp_path):
@@ -186,13 +186,22 @@ def test_legacy_document_demand_without_startup_ref_cannot_retry_forever(tmp_pat
             assert ready!=run
             run=ready
         else:
-            assert control['startup_state']=='blocked'
-    assert queue.status()['state']=='blocked'
+            assert control['startup_state'] is None
+    assert queue.status()['reason']=='startup_retry_exhausted'
     assert queue.result('indexer',job)['state']=='pending'
-    queue.enqueue('indexer','second',['another safe passage'],kind='document')
+    # Replaying the old demand cannot silently consume a fourth launch.
+    assert queue.enqueue('indexer','owned-document',['synthetic passage'],kind='document')==job
     now[0]+=600
     assert len(queue.maintenance())==MAX_STARTUP_FAILURES
     assert not any(x['status']=='starting' for x in queue.maintenance())
+    # A distinct incoming import renews only its own finite startup budget.
+    second=queue.enqueue('indexer','second',['another safe passage'],kind='document')
+    assert second!=job
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    new_run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
+    assert new_run!=run
+    assert queue.launch_claim(new_run,provider_ref='owner/stable-slug') is not None
 
 
 def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
@@ -212,19 +221,20 @@ def test_authorized_cold_search_cannot_reset_legacy_failure_budget(tmp_path):
         assert db.execute('select startup_failures from control where id=1').fetchone()[0]==MAX_STARTUP_FAILURES-1
     queue.launch_claim(run,provider_ref='owner/stable-slug')
     queue.launch_record(run,'owner/stable-slug',failed=True)
-    assert queue.request_startup()['status']=='unavailable'
     assert queue.startup_status(first['startup_ref'])['reason']=='startup_retry_exhausted'
+    # A distinct import must close the exhausted search locator too.
+    fresh=queue.enqueue('indexer','new-import',['new passage'],kind='document')
+    assert queue.result('indexer',fresh)['state']=='pending'
+    assert queue.startup_status(first['startup_ref'])['reason']=='startup_ref_stale'
+    renewed=queue.request_startup()
+    assert renewed['status']=='pending'
+    assert renewed['startup_ref']!=first['startup_ref']
+    assert renewed['run_id']!=run
+    assert queue.startup_status(first['startup_ref'])['reason']=='startup_ref_stale'
+    with queue.connect(write=False) as db:
+        assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
+    assert queue.launch_claim(renewed['run_id'],provider_ref='owner/stable-slug') is not None
 
-
-def test_startup_failure_cooldown_preserves_jobs_and_does_not_relaunch_ambiguously(tmp_path):
-    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
-    job=queue.enqueue('actor','one',['query']);run,token=run_details(queue)
-    assert queue.launch_claim(run)==token and queue.launch_claim(run) is None
-    queue.launch_record(run,'owner/slug',failed=True)
-    assert queue.status()['state']=='failed' and queue.result('actor',job)['state']=='pending'
-    now[0]+=59;queue.maintenance();assert queue.status()['state']=='failed'
-    now[0]+=2;queue.maintenance();assert queue.status()['state']=='starting'
-    successor,_=run_details(queue);assert successor!=run
 
 def test_fusion_preserves_independent_alias_diagnostics_and_deduplicates():
     from regional_knowledge.rank_fusion import fuse
@@ -360,3 +370,33 @@ def test_exact_authenticated_stop_eligibility_old_new_and_nine_hours(tmp_path):
         db.execute('UPDATE runs SET useful=?,heartbeat=? WHERE id=?',
             (now[0],now[0],new))
     assert q.stop_eligible(new,new_token,new_generation)
+
+
+def test_request_activity_renews_idle_but_never_worker_heartbeat(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    queue.enqueue('actor','one',['query']);run,token=run_details(queue)
+    queue.heartbeat(run,token,ready=True)
+    for _ in range(21):
+        now[0]+=90
+        assert queue.record_request_activity()
+        queue.heartbeat(run,token)
+    assert queue.status()['lease_remaining_seconds']==IDLE_SECONDS
+    now[0]+=121
+    assert queue.record_request_activity()
+    with pytest.raises(PermissionError):queue.heartbeat(run,token)
+
+
+def test_execution_clock_starts_at_single_launch_claim_after_preparation(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    run=queue.request_startup()['run_id']
+    now[0]+=500
+    assert queue.launch_claim(run,provider_ref='fixture/stable')
+    with queue.connect(write=False) as db:
+        r=db.execute('select * from runs where id=?',(run,)).fetchone()
+        assert r['started']==1500.
+        assert not queue._run_expired(r,now[0]+899)
+        assert queue._run_expired(r,now[0]+900.001)
+    now[0]+=100
+    assert queue.launch_claim(run,provider_ref='fixture/stable') is None
+    with queue.connect(write=False) as db:
+        assert db.execute('select started from runs where id=?',(run,)).fetchone()[0]==1500.

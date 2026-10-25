@@ -200,7 +200,7 @@ class NativeSourceHistoryVerifier:
         if dep.scope_class=='public_source':
             expected_route=('source.import' if command.route.startswith('source.import.')
                 or command.route in INACTIVE_SOURCE_ROUTES|{'source.activate.v1','source.batch.v1','source.finish.v1'} else
-                {'source.withdraw.v1':'source.withdraw','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
+                {'source.withdraw.v1':'source.withdraw','source.catalog.v1':'source.catalog','story.edit.v1':'story.edit','story.access.v1':'story.access'}.get(command.route))
             if expected_route not in self.routes or dep.scope_owner!='shared' or 'source_id' not in dep.resource_keys:
                 raise SpoolConflict('unclassified accepted source dependency')
             _uuid(command.ids['source_id'])
@@ -382,8 +382,7 @@ class NativeSourceHistoryVerifier:
         """Bounded affected-head update in the existing spool, not a second view."""
         s=self.spool
         with s._db(write=True) as db:
-            used=db.execute('SELECT used_bytes FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]
-            pending_delta=unknown_delta=0;maximum=0
+            used=s._used_bytes(db)
             for c in changes:
                 old=db.execute('SELECT sequence,command_sha256,restriction,pending,unknown,reserved_bytes '
                     'FROM rkb_control_source_heads WHERE source_id=?',(c.source_id,)).fetchone()
@@ -392,17 +391,11 @@ class NativeSourceHistoryVerifier:
                     used+=size
                     if used>s.max_bytes:raise SpoolConflict('incremental compact source heads exceed spool budget')
                 seq,ch=(old[0],old[1]) if old and old[0]>c.sequence else (c.sequence,c.command_sha256)
-                restriction=bool(c.restriction or old and old[2]);maximum=max(maximum,seq)
-                pending_delta+=int(c.pending)-(old[3] if old else 0)
-                unknown_delta+=int(c.unknown)-(old[4] if old else 0)
+                restriction=bool(c.restriction or old and old[2])
                 db.execute('INSERT INTO rkb_control_source_heads VALUES(?,?,?,?,?,?,?) '
                     'ON CONFLICT(source_id) DO UPDATE SET sequence=excluded.sequence,command_sha256=excluded.command_sha256,'
                     'restriction=excluded.restriction,pending=excluded.pending,unknown=excluded.unknown',
                     (c.source_id,seq,ch,int(restriction),int(c.pending),int(c.unknown),size))
-            db.execute('UPDATE rkb_control_spool_meta SET used_bytes=? WHERE id=1',(used,))
-            db.execute('UPDATE rkb_control_source_head_meta SET sequence=max(sequence,?),'
-                'pending_count=pending_count+?,unknown_count=unknown_count+? WHERE id=1',
-                (maximum,pending_delta,unknown_delta))
 
     async def _head_unchanged(self,head):
         # The retained verified token names these exact previously checked

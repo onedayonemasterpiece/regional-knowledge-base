@@ -178,3 +178,182 @@ def test_revoked_slack_nonowner_grant_cannot_obtain_send_permit(service):
     with s.target.auth.p.corpus.connect() as db:
         row=db.execute("SELECT state,delivery_attempt FROM rkb_expert_requests WHERE id=?",(rid,)).fetchone()
         assert row["state"]=="searching" and row["delivery_attempt"]==0
+
+
+def _temporary_reply_harness(s, *, lost_ack=False):
+    """Owner-approved synthetic non-owner route; no real Slack calls or data."""
+    control, _, _, ingress = _owned_ingress(s)
+    receiver = compose_expert_evidence_receiver(
+        target_startup=s.startup, expert_slack_ingress=ingress)
+    posts = []
+
+    def transport(request):
+        if request.url.path.endswith("/auth.test"):
+            return httpx.Response(200, json={
+                "ok": True, "team_id": "T111", "user_id": "UBOT"})
+        assert request.url.path.endswith("/chat.postMessage")
+        body = json.loads(request.content)
+        posts.append(body)
+        if lost_ack:
+            raise httpx.ReadTimeout("synthetic lost ACK", request=request)
+        return httpx.Response(200, json={
+            "ok": True, "channel": body["channel"], "ts": "1792000008.200",
+            "message": {"text": body["text"], "user": "UBOT",
+                        "thread_ts": body["thread_ts"],
+                        "client_msg_id": body["client_msg_id"]}})
+
+    reply = ExpertSlackSearchReply(
+        ingress=ingress, evidence=receiver,
+        sender=_sender(transport=httpx.MockTransport(transport)))
+    request_id = control.accept(_observation())["request_id"]
+    return control, receiver, reply, request_id, posts
+
+
+def _delivery_row(control, request_id):
+    with control.corpus.connect() as db:
+        return dict(db.execute(
+            "SELECT state,delivery_attempt,delivery_id,delivery_receipt "
+            "FROM rkb_expert_requests WHERE id=?", (request_id,)).fetchone())
+
+
+@pytest.mark.asyncio
+async def test_transient_preclaim_failure_sends_one_generic_via_existing_permit(service, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from regional_knowledge.expert_slack_search_reply import _TEMPORARILY_UNAVAILABLE
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    async def transient(query, **kwargs):
+        assert query == "Which event is supported by this source?"
+        assert kwargs["authority"].person_id == service.target.auth.p.other.subject
+        raise ToolError('{"status":"unavailable","reason":"deadline_exceeded"}')
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", transient)
+    await reply._answer(request_id)
+    saved = _delivery_row(control, request_id)
+    assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
+    assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is not None
+    assert len(posts) == 1
+    assert posts[0]["text"] == _TEMPORARILY_UNAVAILABLE
+    assert posts[0]["client_msg_id"] == "Ev-1"
+    assert posts[0]["thread_ts"] == "1792000000.100"
+    assert "deadline_exceeded" not in posts[0]["text"]
+
+    # A duplicate signed Slack event and any repeated notify are readback-only.
+    assert control.accept(_observation())["request_id"] == request_id
+    await reply._answer(request_id)
+    assert len(posts) == 1 and _delivery_row(control, request_id) == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("veto", ("explicit_denied", "revoked_grant", "source_issuance"))
+async def test_preclaim_auth_or_source_veto_never_posts_generic(service, monkeypatch, veto):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from regional_knowledge.participant_contracts import ParticipantGrant
+    from regional_knowledge.participants import ParticipantError
+    from regional_knowledge.read_issuance import retain_read_output
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    class RefusingSourceGate:
+        def __init__(self):
+            self.releases = 0
+
+        async def refresh(self, gated):
+            return gated
+
+        def issuance_current(self, ticket):
+            return False
+
+        def release(self, ticket):
+            self.releases += 1
+
+    gate = RefusingSourceGate()
+
+    async def refused(query, **kwargs):
+        if veto == "explicit_denied":
+            raise ToolError('{"status":"denied","reason":"access_denied"}')
+        if veto == "revoked_grant":
+            change(service.target.auth.p, ParticipantGrant(
+                capability="public_search", granted=False,
+                reason="Synthetic non-owner grant revoked before post"))
+            raise ToolError('{"status":"unavailable","reason":"deadline_exceeded"}')
+        gated = SimpleNamespace(ticket=object(), result={"status": "ok"})
+        assert retain_read_output(gate, gated, lambda result: result)
+        return None
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", refused)
+    with pytest.raises((ToolError, PermissionError, ParticipantError)):
+        await reply._answer(request_id)
+    row = _delivery_row(control, request_id)
+    assert row["state"] == "searching" and row["delivery_attempt"] == 0
+    assert row["delivery_id"] is None and row["delivery_receipt"] is None
+    assert posts == []
+    if veto == "source_issuance":
+        assert gate.releases == 1
+
+
+@pytest.mark.asyncio
+async def test_guarded_context_gap_returns_generic_without_exposing_source(service, monkeypatch):
+    from regional_knowledge.expert_slack_search_reply import _TEMPORARILY_UNAVAILABLE
+    from regional_knowledge.read_issuance import retain_read_output
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    class CurrentGate:
+        def __init__(self):
+            self.refreshes = self.checked = self.releases = 0
+
+        async def refresh(self, gated):
+            self.refreshes += 1
+            return gated
+
+        def issuance_current(self, ticket):
+            self.checked += 1
+            return True
+
+        def release(self, ticket):
+            self.releases += 1
+
+    gate = CurrentGate()
+    result = {
+        "status": "unavailable", "reason": "not_ready",
+        "mode": "lexical_degraded", "prior_write_pending": False,
+        "evidence": [{"text": "unverified source, never render"}],
+        "observed_data_seq": 5, "observed_projection_seq": 5,
+    }
+
+    async def incomplete(query, **kwargs):
+        assert retain_read_output(gate, SimpleNamespace(ticket=object(), result=result),
+                                  lambda value: value)
+        return None
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", incomplete)
+    await reply._answer(request_id)
+    assert _delivery_row(control, request_id)["state"] == "delivered"
+    assert len(posts) == 1 and posts[0]["text"] == _TEMPORARILY_UNAVAILABLE
+    assert "unverified source" not in posts[0]["text"]
+    assert gate.refreshes == gate.releases == 1 and gate.checked >= 2
+
+
+@pytest.mark.asyncio
+async def test_generic_post_unknown_never_resends_after_provider_lost_ack(service, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(
+        service, lost_ack=True)
+
+    async def transient(query, **kwargs):
+        raise ToolError('{"status":"unavailable","reason":"target_warming"}')
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", transient)
+    with pytest.raises(httpx.ReadTimeout):
+        await reply._answer(request_id)
+    saved = _delivery_row(control, request_id)
+    assert saved["state"] == "unknown" and saved["delivery_attempt"] == 1
+    assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is None
+    assert len(posts) == 1
+
+    assert control.accept(_observation())["request_id"] == request_id
+    await reply._answer(request_id)
+    assert len(posts) == 1 and _delivery_row(control, request_id) == saved

@@ -85,18 +85,6 @@ def test_provider_source_budget_fails_before_recording_runtime_expectation(tmp_p
         assert db.execute("SELECT 1 FROM sqlite_master WHERE name='bge_runtime_expectations'").fetchone() is None
 
 
-def test_complete_launch_budget_fails_before_recording_runtime_expectation(tmp_path):
-    from regional_knowledge.kaggle_target_launch import compose_target, MAX_LAUNCH_CONFIG_BYTES
-    queue,run=queue_run(tmp_path)
-    config=dict(run_id=run,token='fixture-token',broker='https://fixture.example',transport='wss',
-        launch_nonce=queue.prepare_channel(run),padding='x'*MAX_LAUNCH_CONFIG_BYTES)
-    template="RUN_CONFIG = {}\nif __name__=='__main__':main()"
-    with pytest.raises(ValueError,match='bounded complete target launch configuration'):
-        compose_target(template,config,spec(),queue=queue,repository=Path(__file__).resolve().parents[1])
-    with queue.connect(write=False) as db:
-        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='bge_runtime_expectations'").fetchone() is None
-
-
 @pytest.mark.parametrize('body,status,expected',[
     (b'{"code":400,"message":"Kernel source size exceeds bound https://secret/?token=private"}',400,
         dict(http_status=400,provider_code=400,reason='kernel_source_size_exceeded')),

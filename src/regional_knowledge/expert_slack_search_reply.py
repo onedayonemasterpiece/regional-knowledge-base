@@ -9,7 +9,9 @@ import re
 import time
 
 import httpx
+from mcp.server.mcpserver.exceptions import ToolError
 
+from .participants import ParticipantError
 from .expert_evidence_receiver import ExpertEvidenceReceiver, _RequestFence
 from .expert_slack_ingress import ExpertSlackIngress
 from .projects_hub_reader import PrivateInput, ReadContext, render as render_evidence
@@ -18,6 +20,7 @@ from . import request_order
 
 _LOG = logging.getLogger(__name__)
 _PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
+_TEMPORARILY_UNAVAILABLE = "Сейчас не могу проверить, повторите вопрос через пару минут"
 
 
 def answer_from_evidence(result):
@@ -170,22 +173,40 @@ class ExpertSlackSearchReply:
                          "",row["input_text"]).strip()
             if not 1<=len(query)<=1000:raise ValueError("bounded query required")
             ctx=ReadContext(request_id,0,0,time.monotonic()+10)
-            with capture_read_output() as calls:
-                await self.evidence.backend.search_adapter(query,authority=authority,
-                    request_id=request_id,turn_generation=0,min_data_seq=0,
-                    deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
-            if len(calls)!=1:raise PermissionError("retained source gate required")
-            issued=calls[0]
-            issued.gate=_RequestFence(issued.gate,current)
-            issued.gated=await issued.gate.refresh(issued.gated)
-            if not issued.gate.issuance_current(issued.gated.ticket):
-                raise PermissionError("source access revoked")
-            text=answer_from_evidence(render_evidence(issued.render(issued.gated.result),ctx))
+            issued=None
+            try:
+                with capture_read_output() as calls:
+                    await self.evidence.backend.search_adapter(query,authority=authority,
+                        request_id=request_id,turn_generation=0,min_data_seq=0,
+                        deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
+            except Exception as exc:
+                # A read that has not issued evidence can return one honest
+                # text-only failure, but never turn an access denial into a post.
+                if calls or isinstance(exc,(PermissionError,ParticipantError)):
+                    raise
+                if isinstance(exc,ToolError):
+                    try:details=json.loads(str(exc))
+                    except (ValueError,TypeError):raise
+                    if type(details) is not dict or details.get("status") not in ("unavailable","pending"):
+                        raise
+                text=_TEMPORARILY_UNAVAILABLE
+            else:
+                if len(calls)!=1:raise PermissionError("retained source gate required")
+                issued=calls[0]
+                issued.gate=_RequestFence(issued.gate,current)
+                issued.gated=await issued.gate.refresh(issued.gated)
+                if not issued.gate.issuance_current(issued.gated.ticket):
+                    raise PermissionError("source access revoked")
+                evidence=render_evidence(issued.render(issued.gated.result),ctx)
+                text=(_TEMPORARILY_UNAVAILABLE
+                      if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
+                      else answer_from_evidence(evidence))
             permit=await asyncio.to_thread(self._claim_post,request_id)
             if permit is None:return
             try:
                 receipt=await self.sender.post_once(**permit,text=text,
-                    current=lambda:current() and issued.gate.issuance_current(issued.gated.ticket))
+                    current=lambda:current() and (issued is None
+                        or issued.gate.issuance_current(issued.gated.ticket)))
             except BaseException:
                 await asyncio.to_thread(self._finish,request_id,"sending","unknown")
                 raise

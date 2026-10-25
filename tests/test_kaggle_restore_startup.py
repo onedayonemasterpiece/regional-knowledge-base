@@ -187,6 +187,58 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                 page_task.cancel()
                 await asyncio.gather(page_task,return_exceptions=True)
         await restarted.aclose()
+        if dataset_input:
+            import json,os,signal
+            from test_kaggle_run_rotation import restore_target
+            from regional_knowledge.kaggle_launch_config import successor_target
+            from regional_knowledge.kaggle_source_owners import configured_source_service
+            from regional_knowledge.object_store import S3ObjectStore
+            from regional_knowledge.kaggle_readiness import SearchRuntimeExpectation
+            with e.q.connect() as db:
+                successor=e.q._new_run(db,e.q.clock())
+                db.execute('UPDATE control SET current_run=? WHERE id=1',(successor,))
+            pins=SearchRuntimeExpectation(dict(e.expected.hashes),'synthetic-db',checkpoint.base_sequence)
+            e.q.expect_search_runtime(successor,pins)
+            frozen=successor_target(e.q,restore_target(checkpoint).wire(),successor)
+            killed=[]
+            monkeypatch.setattr(os,'kill',lambda pid,sig:killed.append((pid,sig)))
+            startup.running=True
+            assert not await startup.refresh()
+            assert killed==[(os.getpid(),signal.SIGINT)] and startup.restart_requested
+            assert startup.config.writer_owner.run_id==e.run  # No hot rebinding.
+            await startup.source_dispatch.aclose()
+            startup.config.spool.close();startup.config.writer_owner.close();startup.admission.close()
+            # Ordinary startup uses the SAME unchanged former-run config.
+            path=e.q.path.parent/'source-service.json'
+            path.write_text(json.dumps(dict(codec='rkb.source-service.v1',run_id=e.run,stream=e.j.stream,
+                database=database.wire(),registry_sha256='a'*64,observer_sha256='c'*64,
+                source_restore=plan.wire(),source_import=imports.wire())))
+            path.chmod(0o600)
+            store=object.__new__(S3ObjectStore);store.client=e.old.c;store.bucket=e.s.bucket
+            monkeypatch.setenv('RKB_KAGGLE_SOURCE_CONFIG',str(path))
+            monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(e.q.path))
+            monkeypatch.setattr('regional_knowledge.personal_auth_cli._runtime',lambda:(e.old.auth.provider,None))
+            monkeypatch.setattr('regional_knowledge.supabase_backend._object_store_from_env',lambda:store)
+            fresh=configured_source_service()
+            try:
+                assert fresh.config.writer_owner.run_id==successor
+                assert fresh.config.writer_generation==frozen.database.writer_generation==successor
+                assert fresh.restorer.config.dataset_checkpoint==checkpoint
+                assert fresh.config.import_launch_config_sha256==pins.hashes['launch_config']
+                assert not fresh.reads_current()
+                # Another process restart reconstructs the same operation key
+                # and pins, rather than choosing a later Saved or a new writer.
+                frozen_plan=fresh.config.source_restore
+            finally:
+                await fresh.restorer.aclose();await fresh.source_dispatch.aclose()
+                fresh.config.spool.close();fresh.config.writer_owner.close();fresh.admission.close()
+            again=configured_source_service()
+            try:
+                assert again.config.source_restore==frozen_plan
+                assert again.config.writer_owner.run_id==successor
+            finally:
+                await again.restorer.aclose();await again.source_dispatch.aclose()
+                again.config.spool.close();again.config.writer_owner.close();again.admission.close()
     finally:
         if not task.done():task.cancel()
         await asyncio.gather(task,return_exceptions=True)

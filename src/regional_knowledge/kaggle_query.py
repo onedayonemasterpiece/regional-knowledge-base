@@ -94,41 +94,6 @@ async def _frontier(cursor, execute, query, observed, *, require_dense=True):
         raise ReadUnavailable("projection_lag")
 
 
-def _source_label(hit: SearchEvidence):
-    """Bounded human catalogue citation; unknown fields are NEVER inferred from UUIDs."""
-    meta = hit.catalog_metadata if type(hit.catalog_metadata) is dict else {}
-    card = meta.get("catalog") if type(meta.get("catalog")) is dict else {}
-    def clean(value, maximum=500):
-        if type(value) is not str:
-            return ""
-        return " ".join(value.split())[:maximum]
-    raw_authors = meta.get("authors")
-    authors = ", ".join(clean(a, 150) for a in raw_authors[:5] if clean(a, 150)) if type(raw_authors) is list else ""
-    title = clean(meta.get("title"))
-    year = meta.get("publication_year")
-    if type(year) is not int or not 1 <= year <= 3000:
-        year = None
-    # Legacy SQL001-only fixtures have no authenticated typed catalogue.
-    # Do not inject untrusted, potentially control-heavy raw bibliography into
-    # the bounded metadata/title field or mislabel it as a verified source card.
-    if not title and not authors:
-        return None, None, None, None
-    pieces = [v for v in (authors, title) if v]
-    if year is not None:
-        pieces.append(str(year))
-    label = ". ".join(pieces)
-    printed = clean(hit.printed_page_number, 60)
-    if printed:
-        label += ", с. " + printed
-    elif type(hit.physical_page_index) is int and 0 <= hit.physical_page_index <= 2499:
-        label += ", скан №" + str(hit.physical_page_index + 1)
-    kind = (card.get("kind") if card.get("kind") in ("book", "journal_issue", "article")
-            else "book")  # Current accepted root without a kind predates article/journal intake.
-    lang = clean(meta.get("language"), 80) or None
-    passage_lang = hit.passage_language if hit.passage_language in ("ru","de","simple") else None
-    return label[:2048], kind, lang, passage_lang
-
-
 def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
           database_generation: str, text_offset=0, bibliography_offset=0, text_budget=8000):
     # Characters are Unicode offsets into the exact immutable passage/bibliography.
@@ -145,11 +110,8 @@ def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
                                   text_offset=next_text, bibliography_offset=next_bib) if excerpt else None
     # This is a typed immutable-row locator, never an opaque capability or URL.
     continuation = f"passage:{hit.passage_id}:r{hit.revision}:t{next_text}:b{next_bib}" if excerpt else None
-    title, source_kind, source_language, passage_language = _source_label(hit)
     return EvidenceItem(id=hit.passage_id, kind="source", text=text,
-        metadata=EvidenceMetadata(title=title, citation=citation, locator=hit.locator,
-            source_provenance=hit.source_provenance, source_kind=source_kind,
-            source_language=source_language, passage_language=passage_language),
+        metadata=EvidenceMetadata(citation=citation, locator=hit.locator,source_provenance=hit.source_provenance),
         dependencies=ItemDependencies(source_ids=(hit.source_id,), variant_refs=(), grant_refs=(),
                                       source_revisions=(source,)),
         text_form="excerpt" if excerpt else "complete", continuation=continuation,
@@ -157,7 +119,7 @@ def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
 
 
 async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, encode,
-                        telemetry: asyncio.Queue | None = None, catalog_titles: bool = False) -> QueryResult:
+                        telemetry: asyncio.Queue | None = None) -> QueryResult:
     """Acquire from the existing pool; return one bounded typed QUERY_RESULT.
 
     acquire is an existing async pool-lease context manager factory. Input is an
@@ -240,7 +202,7 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                     if acceptance:
                         from .kaggle_search import acceptance_search
                     searched = await (acceptance_search if acceptance else fused_search)(connection, query.query, encode=checked_encode,
-                        **({} if acceptance else {'top_k':query.evidence_limit,'catalog_titles':catalog_titles}), filters=query.filters,
+                        **({} if acceptance else {'top_k':query.evidence_limit}), filters=query.filters,
                         timeout_seconds=max(.000001, deadline - loop.time()),
                         snapshot_guard=guard, snapshot_finish=finish, stage_timings=stages)
                     stages["search_ms"] = (loop.time() - mark) * 1000
@@ -294,13 +256,14 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
             emit_executor_stage(telemetry, query, stages)
 
 
-async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False) -> PassageReadResult:
+async def execute_passage_read(request: PassageReadRequest, *, acquire, source_provenance=False, public_illustrations=False) -> PassageReadResult:
     if type(request) is not PassageReadRequest:
         raise TypeError("validated PassageReadRequest required")
-    return await read_continuation(request, request.locator, acquire=acquire,source_provenance=source_provenance)
+    return await read_continuation(request, request.locator, acquire=acquire,
+        source_provenance=source_provenance,public_illustrations=public_illustrations)
 
 
-async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False) -> PassageRead:
+async def read_continuation(query: Query | PassageReadRequest, locator: PassageContinuation, *, acquire,source_provenance=False,public_illustrations=False) -> PassageRead:
     """Internal continuation resolver after renewed upstream authorization.
 
     An unchanged immutable passage/source/eligibility fence is required. The
@@ -352,17 +315,23 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                             (locator.passage_id, locator.source.source_id, locator.source.content_revision))
                         row = await cursor.fetchone()
                         if (row is None or row[6] != locator.source.eligibility_revision
-                                or observed["database"] != locator.database_generation
-                                or observed["visibility"] != locator.visibility_epoch):
+                                or observed["database"] != locator.database_generation):
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
+                        illustrations, illustrations_has_more = (), False
                         if source_provenance:
                             await execute('SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([locator.passage_id],))
                             metadata=await cursor.fetchone()
                             if metadata is None or type(metadata[0]) is not dict:
                                 raise ReadUnavailable('not_ready')
+                            provenance = dict(metadata[0])
+                            if public_illustrations:
+                                from .kaggle_passage_illustrations import read_passage_illustrations
+                                illustrations, illustrations_has_more = await read_passage_illustrations(
+                                    cursor, execute, source_id=locator.source.source_id,
+                                    passage_id=locator.passage_id)
                             from dataclasses import replace
-                            hit=replace(hit,source_provenance=metadata[0])
+                            hit=replace(hit,source_provenance=provenance)
                         if locator.text_offset>len(hit.body) or locator.bibliography_offset>len(hit.bibliography):
                             raise ReadUnavailable("invalid_input")
                         if locator.text_offset==len(hit.body) and locator.bibliography_offset==len(hit.bibliography):
@@ -374,6 +343,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                                       database_generation=observed["database"],
                                       text_offset=text_start, bibliography_offset=locator.bibliography_offset)
                         result = PassageRead(**_identity(query), status="ok",
+                            illustrations=illustrations, illustrations_has_more=illustrations_has_more,
                             evidence=(entry,), observed_data_seq=observed["data"],
                             observed_projection_seq=observed["projection"], observed_visibility_epoch=observed["visibility"],
                             observed_database_generation=observed["database"])

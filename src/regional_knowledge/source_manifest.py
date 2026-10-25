@@ -55,13 +55,12 @@ def _metadata(value):
         _text(author, 4000, empty=True)
     if value['publication_year'] is not None:
         _integer(value['publication_year'], 1, 3000)
-    # Catalogue values are preserved verbatim for independently verified
-    # books, articles and journal issues. Parent issue/region-based articles
-    # retain their separate exact component contract; never relabel a source.
+    # Catalogue values are preserved verbatim. Dependency-bearing components
+    # are not supported by the initial new-book workflow, never dropped.
     catalog = value['catalog']
     if catalog is not None:
         _keys(catalog, 'kind parent_id region_ids subtitle editors translators compilers publisher date edition volume issue identifiers form purpose searchable topics annotation annotation_origin annotation_page cover_page cover_kind physical_page_start physical_page_end')
-        if catalog['kind'] not in ('book','article','journal_issue') or catalog['parent_id'] is not None or catalog['region_ids'] != []:
+        if catalog['kind'] != 'book' or catalog['parent_id'] is not None or catalog['region_ids'] != []:
             raise ValueError('source component dependencies require a separate contract')
         for key, bound in (('subtitle',500),('publisher',500),('date',80),('edition',100),('volume',100),
                            ('issue',100),('form',100),('purpose',100),('annotation',4000)):

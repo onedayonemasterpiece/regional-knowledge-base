@@ -81,7 +81,7 @@ class KaggleWorkerQuery:
     tokenizer: PinnedTokenizer
     telemetry: asyncio.Queue | None = None
     source_provenance: bool = False
-    catalog_titles: bool = False  # SQL034+ hydrated catalogue; no second search RPC
+    public_illustrations: bool = False
 
     def __post_init__(self):
         if not callable(self.acquire):
@@ -185,10 +185,10 @@ class KaggleWorkerQuery:
                 result=await execute_story_read(query,acquire=self.acquire)
             else:
                 result = (await execute_passage_read(query, acquire=self.acquire,
-                    **({'source_provenance':True} if self.source_provenance else {})) if exact else
+                    **({'source_provenance':True} if self.source_provenance else {}),
+                    **({'public_illustrations':True} if self.public_illustrations else {})) if exact else
                 await execute_query(query, acquire=self.acquire, tokenizer=self.tokenizer,
-                                    encode=encode, telemetry=self.telemetry,
-                                    catalog_titles=self.catalog_titles))
+                                    encode=encode, telemetry=self.telemetry))
             result_type = AcceptanceReadResult if acceptance else SourceGraphReadResult if graph else EditorialReadResult if editorial else CaseReadResult if case else GeoReadResult if geo else SourceReadResult if source else FactReadResult if fact else StoryReadResult if story else PassageReadResult if exact else QueryResult
             if type(result) is not result_type or any(getattr(result, key) != getattr(identity, key)
                     for key in ('request_id', 'connection_generation', 'turn_generation')):

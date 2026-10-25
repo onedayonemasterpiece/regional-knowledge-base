@@ -118,12 +118,20 @@ async def test_expected_domain_toolerror_preserves_actual_status_reason(
     (ToolError(_SECRET), "unknown", "domain_error", "domain"),
 ])
 async def test_untrusted_exception_never_leaks_or_becomes_final_rejection(
-        registered_books, tool, error, status, reason, kind):
+        registered_books, tool, error, status, reason, kind, caplog):
     server, backend = registered_books
     backend.error = error
     envelope = await error_envelope(server, tool)
     assert envelope == {"status": status, "reason": reason, "error_class": kind}
     assert len(backend.calls) == 1
+    diagnostics = [r.getMessage() for r in caplog.records
+                   if r.name == server_module.__name__ and 'book_tool_failure' in r.getMessage()]
+    assert bool(diagnostics) == (kind == 'internal')
+    for diagnostic in diagnostics:
+        assert type(error).__name__ in diagnostic
+        assert tool in diagnostic
+        assert _SECRET not in diagnostic
+        assert 'PRIVATE_TOKEN_DO_NOT_LOG' not in diagnostic
 
 
 @pytest.mark.asyncio

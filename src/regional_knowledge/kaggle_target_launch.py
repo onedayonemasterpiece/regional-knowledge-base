@@ -8,10 +8,9 @@ import zlib
 
 from .bge_contract import REVISION, SPACE
 from .kaggle_owned_pg import canonical,digest
-from .kaggle_readiness import SearchRuntimeExpectation, MAX_LAUNCH_CONFIG_BYTES
+from .kaggle_readiness import SearchRuntimeExpectation
 from .kaggle_target_runtime import TargetLaunchSpec
 from .recovery_journal import RecoveryJournal
-from .kaggle_stage0 import MAX_PREPARED_FILES
 
 MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_search',
     'kaggle_readiness','kaggle_worker_query','kaggle_warm_read','kaggle_warm_maintenance','kaggle_database_probe','kaggle_bootstrap',
@@ -24,7 +23,8 @@ MODULES = ('__init__','bge_contract','kaggle_protocol','kaggle_query','kaggle_se
     'story_editorial','disagreement_contracts','disagreement_native','geo_migration','geo_manifest_commands','kaggle_dataset_base',
     'kaggle_case_contracts','kaggle_case_read','kaggle_geo_contracts','kaggle_geo_read',
     'kaggle_domain_bindings','kaggle_domain_schema','kaggle_editorial_contracts','kaggle_editorial_read','source_graph','entity_graph','contracts','kaggle_source_graph_read','kaggle_source_geo_mvp','stage_graph','poi_reference','kaggle_recovery_composition','kaggle_snapshot_drill','kaggle_acceptance_contracts','source_stage','source_activation','source_graph_native','source_catalog_command','kaggle_native_source_bindings',
-    'kaggle_source_materializer','kaggle_source_batch','source_batch','source_batch_selection','source_batch_context','source_packet_tails','kaggle_import_contracts','rights','search_material','region_policy','continuation_context')
+    'kaggle_source_materializer','kaggle_source_batch','source_batch','source_batch_selection','source_batch_context','source_packet_tails','kaggle_import_contracts','rights','search_material','region_policy','continuation_context',
+    'kaggle_passage_illustrations')
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_BUNDLE_JSON_BYTES = 3 * 1024 * 1024
 MAX_NOTEBOOK_SOURCE_BYTES = 1_000_000
@@ -44,7 +44,7 @@ def source_bundle(repository):
     # A short directory label avoids repeating the complete manifest digest in
     # every inventory path. Integrity still checks each file's full SHA-256;
     # a label collision fails that check instead of accepting different bytes.
-    relative = 'rkb-'+bundle_id[:16]
+    relative = 'r-'+bundle_id[:16]
     # Source members are UTF-8 Python/SQL. Compress their text directly; the
     # outer base64 still transports the compressed bytes in the notebook.
     encoded = {name:data.decode('utf-8') for name,data in sorted(files.items())}
@@ -118,7 +118,7 @@ def compose_target(template,config,target,*,queue,repository):
     relative,files,code_entries = source_bundle(repository)
     root = Path(target.artifact_root)
     entries = [dict(e) for e in target.artifacts] + code_entries
-    if len({e['name'] for e in entries}) != len(entries) or len(entries)>MAX_PREPARED_FILES:
+    if len({e['name'] for e in entries}) != len(entries):
         raise ValueError('unique bounded final artifact inventory required')
     intent = read_empty_intent(queue,config['run_id'])
     if target.database.mode == 'NEW_EMPTY_GENERATION':
@@ -132,15 +132,13 @@ def compose_target(template,config,target,*,queue,repository):
     runtime_wire.pop('stage0',None)  # One copy, consumed only by load_encoder.
     # The complete external+source inventory is verified once in prepared_model.
     # Runtime consumes that retained VerifiedArtifacts object, never this second
-    # copy. The complete launch has its own finite metadata budget below.
+    # copy.
     runtime_wire.pop('artifacts',None)
     config.update(shared_reads=True,prepared_model=dict(root=str(root),entries=entries,
         max_total_bytes=sum(e['size'] for e in entries)),target_runtime=dict(
         **runtime_wire,sql_root=str(root/relative/'sql'),initialization_intent=intent))
     if target.stage0 is not None:
         config['stage0']=target.stage0.wire()
-    if len(canonical(config))>MAX_LAUNCH_CONFIG_BYTES:
-        raise ValueError('bounded complete target launch configuration required')
     # This extractor only writes predetermined bounded source files. It runs
     # before control; model imports, pool creation and initdb occur after ATTACH.
     entry = '''

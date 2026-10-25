@@ -236,9 +236,6 @@ class EvidenceMetadata(Contract):
     citation: Annotated[str, Field(max_length=8192)] | None = None
     locator: Annotated[str, Field(max_length=2048)] | None = None
     source_provenance: dict | None = None
-    source_kind: Literal["book", "journal_issue", "article"] | None = None
-    source_language: Annotated[str, Field(max_length=80)] | None = None
-    passage_language: Literal["ru", "de", "simple"] | None = None
 
     @model_validator(mode='after')
     def bounded_provenance(self):
@@ -332,6 +329,8 @@ class PassageReadResult(ReadIdentity):
     protocol_version: Literal[2] = PROTOCOL_VERSION
     status: Literal["ok", "unavailable", "invalid_query", "denied", "cancelled"]
     evidence: tuple[EvidenceItem, ...] = Field(default=(), max_length=1)
+    illustrations: tuple[dict, ...] = Field(default=(), max_length=200)
+    illustrations_has_more: bool = False
     observed_data_seq: Nonnegative | None
     observed_projection_seq: Nonnegative | None
     observed_visibility_epoch: Nonnegative | None = None
@@ -349,7 +348,7 @@ class PassageReadResult(ReadIdentity):
                         self.observed_projection_seq, self.observed_visibility_epoch,
                         self.observed_database_generation))):
                 raise ValueError("exact read requires one item and observed source frontier")
-        elif self.evidence or self.reason is None:
+        elif self.evidence or self.illustrations or self.illustrations_has_more or self.reason is None:
             raise ValueError("failed exact read requires reason and no evidence")
         return self
 

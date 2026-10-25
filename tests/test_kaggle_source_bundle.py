@@ -14,7 +14,7 @@ from regional_knowledge.kaggle_target_launch import MODULES, source_bundle
 def test_compact_notebook_bundle_label_preserves_full_per_file_digests():
     import hashlib
     label,files,entries=source_bundle(Path(__file__).resolve().parents[1])
-    assert label.startswith('rkb-') and len(label)==len('rkb-')+16
+    assert label.startswith('r-') and len(label)==len('r-')+16
     for entry in entries:
         assert entry['name'].startswith(label+'/')
         relative=entry['name'][len(label)+1:]
@@ -94,7 +94,7 @@ async def main():
  n._execute=execute
  expected=dict(physical_page_index=0,native_text='Synthetic bundled page')
  cursor=canonical(dict(block=0,offset=0,text=0)).decode()
- n._records['retained']=dict(sha256='a'*64,page_count=1,verified={},pages={0:dict(chunks={cursor:expected})})
+ n._records['retained']=dict(sha256='a'*64,format='pdf',page_count=1,verified={},pages={0:dict(chunks={cursor:expected})})
  result=await n(frame('retained'))
  assert result['value']==expected
  assert await n(frame('retained'))==result

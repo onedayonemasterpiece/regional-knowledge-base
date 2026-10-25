@@ -269,7 +269,7 @@ class SourceReadGate:
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
-        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else ((q.source_id,) if q.operation=='accepted_chunks' else None) if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
+        scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else ((q.source_id,) if q.source_id is not None else None) if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
         guard_sources=set(sources)
         if scope is not None:guard_sources.update(scope)
@@ -318,8 +318,7 @@ class SourceReadGate:
                     any(e['variant_id']<=q.after_variant_id for e in result.record['entries'])):
             raise SourceGateDenied('exact story provenance differs')
         if exact and not acceptance and not graph and not story and not fact and not catalog and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
-                or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
-                or result.observed_visibility_epoch != q.locator.visibility_epoch):
+                or result.evidence[0].dependencies.source_revisions != (q.locator.source,)):
             raise SourceGateDenied('exact source provenance differs')
         # Native PG resolves active revisions, visibility and source eligibility
         # in its read snapshot. The controller checks the exact result/binding,
@@ -357,11 +356,6 @@ class SourceReadGate:
                 result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
                     'status': 'degraded', 'reason': 'evidence_withdrawn',
                     'prior_write_pending': False, 'evidence': retained, 'continuation': None})
-        # Authority is rechecked again after the local read's await. The final
-        # synchronous fence below also rejects mutations during that recheck.
-        await self.authority.require(read.authority, 'public_search')
-        if not self._binding(read):
-            raise SourceGateDenied('runtime binding changed during output check')
         selected_sources={source for item in result.evidence
             for source in item.dependencies.source_ids}
         selected_sources.update(record['source_id'] for record in getattr(result,'records',())
@@ -383,7 +377,8 @@ class SourceReadGate:
                 {'mode': None, 'continuation': None} if type(result) is QueryResult else
                 {'record':None} if type(result) in (StoryReadResult,EditorialReadResult) else
                 {'records':(),'next_cursor':None} if type(result) in (FactReadResult,SourceGraphReadResult) else
-                {'records':(),'next_after_ordinal':None} if type(result) is SourceReadResult else {}),
+                {'records':(),'next_after_ordinal':None} if type(result) is SourceReadResult else
+                {'illustrations':(),'illustrations_has_more':False} if type(result) is PassageReadResult else {}),
             'reason': reason, 'evidence': (),
             'prior_write_pending': reason == 'prior_write_pending'})
 

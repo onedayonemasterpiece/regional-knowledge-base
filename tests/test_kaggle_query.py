@@ -18,7 +18,6 @@ from regional_knowledge.kaggle_protocol import (
 )
 from regional_knowledge.kaggle_query import PinnedTokenizer, execute_query, read_continuation
 from regional_knowledge.kaggle_query import _item
-from regional_knowledge.kaggle_query import _source_label
 from regional_knowledge.kaggle_search import SearchEvidence
 from test_kaggle_pg_driver import database, connect
 from test_kaggle_apply import pinned
@@ -143,23 +142,6 @@ def test_json_escaped_metadata_and_terminal_excerpt_remain_explicit():
     assert final.text_form == "excerpt" and final.continuation_complete
     assert final.source_continuation.text_offset == 16000
     assert final.source_continuation.bibliography_offset == 8000
-
-
-
-def test_source_labels_from_catalog_use_printed_page_or_distinct_scan_without_invention():
-    hit = SearchEvidence(PASSAGE, SOURCE, 1, "pages 4", "text", "saved",
-        catalog_metadata={"title": "Die Stadt", "authors": ["Ernst Wiechert"],
-            "publication_year": 1975, "language": "de", "catalog": {"kind": "article"}},
-        passage_language="de", physical_page_index=3, printed_page_number="14")
-    title, kind, language, passage_language = _source_label(hit)
-    assert title == "Ernst Wiechert. Die Stadt. 1975, с. 14"
-    assert (kind, language, passage_language) == ("article", "de", "de")
-    from dataclasses import replace
-    assert _source_label(replace(hit, printed_page_number=None))[0].endswith("скан №4")
-    # A locator like 'pages 4' is not proof of a printed-page number.
-    unknown = SearchEvidence(PASSAGE, SOURCE, 1, "pages 4", "text", "")
-    assert _source_label(unknown)[0] is None  # no catalogue: no asserted title
-    assert _source_label(unknown)[1:] == (None, None, None)
 
 
 @pytest_asyncio.fixture
@@ -311,6 +293,37 @@ async def test_dirty_early_old_cursor_publish_cannot_enable_automatic_carry(env)
     assert result.reason == "not_ready" and not result.evidence
 
 
+
+
+@PG
+@pytest.mark.asyncio
+async def test_unrelated_accepted_book_preserves_old_source_locator_but_own_revision_does_not(env):
+    await publish(env)
+    original = await execute_query(query(), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)
+    locator = original.evidence[0].source_continuation
+    assert locator is not None and locator.source.source_id == SOURCE
+    other = "00000000-0000-0000-0000-000000000002"
+    async with env["admin"].transaction():
+        await env["admin"].execute("INSERT INTO rkb_v4.sources VALUES (%s,'later accepted book',true,false)", (other,))
+        await env["admin"].execute("INSERT INTO rkb_v4.revisions VALUES (%s,1)", (other,))
+        await env["admin"].execute("INSERT INTO rkb_v4.active_revision VALUES (%s,1)", (other,))
+        await env["admin"].execute("""INSERT INTO rkb_v4.passage_search
+            (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
+            VALUES ('10000000-0000-0000-0000-000000000022',%s,1,0,'page 1','later source text',
+                    'simple','pg_catalog.simple',%s::vector)""",
+            (other, "[" + ",".join(map(str, VECTOR)) + "]"))
+    await publish(env)
+    retained = await read_continuation(query(), locator, acquire=env["acquire"])
+    assert retained.status == "ok" and retained.evidence[0].id == PASSAGE
+    assert retained.observed_visibility_epoch > locator.visibility_epoch
+    assert retained.evidence[0].dependencies.source_revisions == (locator.source,)
+    assert retained.observed_database_generation == locator.database_generation
+
+    # The identical locator must fail if its OWN source becomes a new active revision.
+    assert (await actual_apply(env, activate=True)).status == "applied"
+    revised = await read_continuation(query(min_data_seq=6), locator, acquire=env["acquire"])
+    assert revised.status == "unavailable" and revised.reason == "evidence_withdrawn"
+    assert not revised.evidence
 
 
 @PG

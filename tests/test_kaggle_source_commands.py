@@ -221,9 +221,9 @@ async def test_concurrent_channel_pollers_reserve_one_remote_publication(accepte
 
 
 @pytest.mark.asyncio
-async def test_source_receipt_rejects_forged_resource_and_exact_outcome(accepted):
+async def test_source_receipt_rejects_forged_durable_claim_and_exact_outcome(accepted):
     e=accepted;s=e.s;_,work,frame=await dispatch(e)
-    wrong=response(e,work,frame);wrong['compute_claim']='forged'
+    wrong=response(e,work,frame);wrong['claim']='forged'
     with pytest.raises(PermissionError):await e.bridge.receive(wrong,run_id=s.run,token=s.token,generation=s.generation)
     wrong=response(e,work,frame);wrong['receipt']['database_generation']='other-db'
     with pytest.raises(PermissionError):await e.bridge.receive(wrong,run_id=s.run,token=s.token,generation=s.generation)
@@ -596,3 +596,126 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
         assert s.q.result(s.auth.p.owner.subject,first)['state']=='pending'
         assert (await e.spool.get(e.command.operation_key)).remote_outcome is None
         assert s.q.result(s.auth.p.owner.subject,second)['state']=='pending'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recover',[True,False])
+async def test_worker_reconciles_lost_apply_ack_once_on_fresh_connection(accepted,monkeypatch,recover):
+    from regional_knowledge.kaggle_apply import ApplyUnknown
+    e=accepted;_,_,frame=await dispatch(e);connections=[];commands=[]
+    @asynccontextmanager
+    async def acquire():
+        connection=object();connections.append(connection);yield connection
+    async def apply(connection,**options):
+        commands.append(options['command'].encode())
+        assert connection is connections[-1]
+        assert await options['journal'].verify_accepted(options['seal'],options['command'])==digest(e.command.encode())
+        if len(commands)==1 or not recover:
+            raise ApplyUnknown('lost commit ACK')
+        return native_receipt(e.command,e.handler,duplicate=True)
+    monkeypatch.setattr('regional_knowledge.kaggle_source_commands.apply_accepted',apply)
+    executor=WorkerSourceExecutor(acquire=acquire,registry=e.registry,database=spec().database,
+        run_id=e.s.run,launch_nonce=e.s.nonce,runtime_incarnation='incarnation-a')
+    if recover:
+        receipt,_=decode_receipt(await executor(frame))
+        assert receipt.duplicate is True
+    else:
+        with pytest.raises(ApplyUnknown):await executor(frame)
+    assert len(connections)==2 and connections[0] is not connections[1]
+    assert commands==[e.command.encode(),e.command.encode()]
+
+
+@pytest.mark.asyncio
+async def test_lost_rejection_ack_cannot_retry_as_effect(accepted,monkeypatch):
+    from regional_knowledge.kaggle_apply import ApplyUnknown,ApplyExecutionError
+    e=accepted;_,_,frame=await dispatch(e);reasons=[];connections=[]
+    @asynccontextmanager
+    async def acquire():
+        connection=object();connections.append(connection);yield connection
+    async def apply(connection,**options):
+        reasons.append(options.get('reject_reason'))
+        if len(reasons)==1:raise ApplyExecutionError('rolled back')
+        if len(reasons)==2:raise ApplyUnknown('lost rejection ACK')
+        return native_receipt(e.command,e.handler,duplicate=True)
+    monkeypatch.setattr('regional_knowledge.kaggle_source_commands.apply_accepted',apply)
+    executor=WorkerSourceExecutor(acquire=acquire,registry=e.registry,database=spec().database,
+        run_id=e.s.run,launch_nonce=e.s.nonce,runtime_incarnation='incarnation-a')
+    await executor(frame)
+    assert reasons==[None,'native_source_sql_rolled_back','native_source_sql_rolled_back']
+    assert len(connections)==2
+
+
+@pytest.mark.asyncio
+async def test_source_release_allows_read_and_keeps_original_native_receipt(accepted):
+    from test_bge_admission import begin,answer,release as release_read
+    e=accepted;s=e.s;job,native,frame=await dispatch(e)
+    await release(e,native)
+    ticket=await begin(s,'beside-source')
+    read=await s.a.next_channel_work(s.run,s.token,s.generation)
+    assert read.query is not None
+    s.a.mark_work_sent(read)
+    assert await s.a.finish_read(s.run,s.token,s.generation,answer(read))
+    assert (await ticket.result).status=='ok'
+    await release_read(s,read)
+    assert s.a._last_release==read.resource # QUERY overwrote source's transient release.
+    generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+    await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle')
+    late=response(e,native,frame);late['connection_generation']=generation
+    await e.bridge.receive(late,run_id=s.run,token=s.token,generation=generation)
+    assert (await e.spool.get(e.command.operation_key)).apply_state=='APPLIED'
+
+
+@pytest.mark.asyncio
+async def test_source_reconnect_before_first_release_retains_original_permit(accepted):
+    e=accepted;s=e.s;_,native,frame=await dispatch(e)
+    generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+    assert s.a.status()['state']=='busy'
+    r=native.resource
+    assert await s.a.resource_released(s.run,s.token,generation,
+        runtime_incarnation=r.runtime_incarnation,resource_kind=r.resource_kind,
+        resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle')
+    late=response(e,native,frame);late['connection_generation']=generation
+    await e.bridge.receive(late,run_id=s.run,token=s.token,generation=generation)
+    assert (await e.spool.get(e.command.operation_key)).apply_state=='APPLIED'
+
+
+@pytest.mark.asyncio
+async def test_worker_query_and_reconnect_do_not_wait_for_native_pg_work(monkeypatch):
+    from test_bge_shared_worker import query
+    transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event()
+    entered=asyncio.Event();finish=asyncio.Event();native_calls=[]
+    monkeypatch.setattr(transport.random,'uniform',lambda *_:.001)
+    async def read(frame,*,encode):
+        await encode(frame['query'])
+        return result(frame)
+    async def source(frame):
+        native_calls.append(frame['id']);entered.set();await finish.wait()
+        return dict(native='retained receipt')
+    async def prepare(encoder,**identity):return PreparedRuntime(read,candidate(),source)
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,
+        lambda:{},prepare_runtime=prepare,connector=peer.connect,stop=stop,
+        heartbeat_seconds=.01,maximum_seconds=10)
+    task=asyncio.create_task(worker.run())
+    try:
+        await peer.wait('READY')
+        frame=dict(type='DISPATCH',id='held-source',claim='source-claim',kind='source_command',
+            run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],runtime_incarnation=worker.incarnation,
+            command_sha256='a'*64,command_b64='synthetic',accepted={},handler_sha256='b'*64,
+            database_generation='db',writer_generation='writer',compute_claim='source-permit',dispatch_generation=1)
+        await peer.put(frame);await asyncio.wait_for(entered.wait(),2)
+        await peer.wait('RESOURCE_RELEASED',predicate=lambda x:x['resource_id']=='held-source')
+        await peer.put(query(request='beside-source'))
+        await peer.wait('QUERY_RESULT',predicate=lambda x:x['request_id']=='beside-source')
+        await peer.wait('RESOURCE_RELEASED',predicate=lambda x:x['resource_id']=='beside-source')
+        assert not finish.is_set() and worker.job['id']=='held-source'
+        await peer.disconnect()
+        await peer.wait('RESOURCE_RELEASED',generation=2,predicate=lambda x:x['resource_id']=='beside-source')
+        assert not any(x['resource_id']=='held-source' for x in peer.frames('RESOURCE_RELEASED',2))
+        await peer.put(query(generation=2,request='after-reconnect',claim='second-query'))
+        await peer.wait('QUERY_RESULT',generation=2,predicate=lambda x:x['request_id']=='after-reconnect')
+        finish.set();receipt=await peer.wait('SOURCE_COMMAND_RESULT',generation=2)
+        assert receipt['compute_claim']=='source-permit' and receipt['dispatch_generation']==1
+        assert native_calls==['held-source']
+    finally:
+        finish.set();stop.set();await task

@@ -321,7 +321,7 @@ class QueueWriterAuthority:
                 self._runtime(db)
                 if db.execute('SELECT 1 FROM rkb_writer_control').fetchone():raise StaleWriter('writer binding appeared')
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_control_spool_meta'").fetchone():
-                    if db.execute('SELECT operation_count FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]:
+                    if db.execute('SELECT sequence FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]:
                         raise StaleWriter('initial writer intake is not empty')
                 values=(self.run_id,self.database_generation,self.writer_generation,self.stream)
                 db.execute('INSERT INTO rkb_writer_control VALUES(1,?,?,?,?,1,1,NULL,?)',(*values,self._store_identity))

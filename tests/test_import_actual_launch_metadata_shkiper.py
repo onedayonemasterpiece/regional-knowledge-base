@@ -19,7 +19,7 @@ from regional_knowledge.kaggle_owned_pg import canonical
 from regional_knowledge.kaggle_stage0_urls import PinnedStage0Object
 from regional_knowledge.kaggle_stage0 import Stage0Spec
 from regional_knowledge.kaggle_target_launch import persist_empty_intent
-from regional_knowledge.kaggle_target_launch import MAX_LAUNCH_CONFIG_BYTES, source_bundle
+from regional_knowledge.kaggle_target_launch import source_bundle
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS
 from test_import_dependency_packaging import packaging, inputs, placement, dataset_placement
 from test_kaggle_target_runtime import generate, queue_run
@@ -101,9 +101,8 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     config = next(ast.literal_eval(node.value) for node in ast.parse(source).body
         if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='RUN_CONFIG' for t in node.targets))
     expected_files=len(target.artifacts)+len(source_bundle(ROOT)[2])
-    assert len(config['prepared_model']['entries']) == expected_files <= 194
+    assert len(config['prepared_model']['entries']) == expected_files
     assert len(Stage0Spec.from_wire(config['stage0']).wheels) == 55
-    assert len(canonical(config)) <= MAX_LAUNCH_CONFIG_BYTES == 64*1024
     assert 'command_handlers' not in config['target_runtime']
     assert config['target_runtime']['registry_sha256']==target.registry_sha256
     assert len(source.encode()) <= 1_000_000

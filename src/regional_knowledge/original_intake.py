@@ -58,7 +58,7 @@ class OriginalIntakeSpec:
         for value in (self.source_id,self.ingestion_id,self.request_id):uuid_value(value)
         text(self.file_id)
         if self.file_name is not None:text(self.file_name,512)
-        if self.mime_type is not None:text(self.mime_type,128)
+        if self.mime_type is not None and self.mime_type != '':text(self.mime_type,128)
         if type(self.revision) is not int or self.revision!=1 or type(self.max_bytes) is not int or not 1<=self.max_bytes<=512*1024*1024:
             raise OriginalIntakeError('original_bounds_invalid')
         if self.expected_sha256 is not None:hash_value(self.expected_sha256)

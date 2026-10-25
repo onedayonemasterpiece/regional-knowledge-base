@@ -123,7 +123,7 @@ class DatasetCheckpoint:
         # Reuse the same file and Dataset validation, without guessing a future
         # notebook version. Its real version is attached by the controller.
         self.for_execution(run_id='validation', notebook_version=1)
-        if type(self.journal) is not DatasetFile or self.journal.size>64*MAX_CONTROL_BYTES:
+        if type(self.journal) is not DatasetFile:
             raise DatasetBaseUnavailable('dataset_journal_pin_invalid')
 
     @property

@@ -140,3 +140,5 @@ code. The authenticated server's 4403 authority rejection terminates the worker
 without reconnecting. Other disconnects retain the existing bounded reconnect
 and exact pending result. Cleanup drains started native work; worker exit does
 not itself prove provider terminal state or a Saved Dataset checkpoint.
+
+The bootstrap and execution clock begins at the single successful launch claim, after local release preparation and Dataset preflight. Creating a pending demand does not consume the worker bootstrap budget. Repeated claims do not move this clock.

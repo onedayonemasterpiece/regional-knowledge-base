@@ -30,6 +30,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
         journal=pin('journal-control.json',journal))
     class Publisher:
         ref=p.publisher.ref
+        def version_created_at(self,version):return 0.
         def read_control(self,file,*,version):
             assert version==2
             return {'base-manifest.json':manifest,'source-control.json':control,'journal-control.json':journal}[file.name]
@@ -65,7 +66,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
         coverage=proof,history=NS(schema_version=16,catalog_hash=versions['catalog_sha256']),
         restorer=NS(dispatch=NS(request=request)),binding_current=lambda binding:True)
-    owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0],quiet_seconds=30)
+    owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0],wall_clock=lambda:clock[0],quiet_seconds=30)
     assert not await owner.refresh('binding')
     clock[0]=29
     assert not await owner.refresh('binding') and not calls
@@ -76,7 +77,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
     assert store.latest_checkpoint.dataset_version==1
     # A restarted owner resumes that exact published package; it cannot publish
     # version 3 just because version 2's native readback response was lost.
-    again=SourceDatasetCheckpoints(startup,clock=lambda:clock[0])
+    again=SourceDatasetCheckpoints(startup,clock=lambda:clock[0],wall_clock=lambda:clock[0])
     assert await again.refresh('binding')
     assert store.latest_checkpoint==checkpoint
     assert calls==['capture_and_publish','native_verify','native_verify']
@@ -123,6 +124,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
     from regional_knowledge.kaggle_dataset_publisher import DatasetUpload
     from regional_knowledge.recovery_journal import RecoveryJournal
     p=prepared(tmp_path);p.clock=[0.];p.alive=True;p.calls=[];p.uploads={};p.saved={}
+    p.saved_times={}
     p.fail_finalize=False;p.fail_verify=False;p.bad_verify=False;p.on_verify=None
     p.q.clock=lambda:0.
     p.binding=NS(run_id='run',runtime_incarnation='inc',writer_generation='writer')
@@ -143,6 +145,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
     original=p.publisher
     class Publisher:
         ref=original.ref
+        def version_created_at(self,version):return p.saved_times.get(version,0.)
         def reserve(self,*,name,size,sha256,now):
             return DatasetUpload(name,size,sha256,'token-'+sha256,'https://storage.googleapis.com/fixture')
         def observe(self):return max(p.saved,default=1)
@@ -150,6 +153,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
             p.calls.append('finalize')
             assert previous_version==self.observe()
             version=previous_version+1
+            p.saved_times[version]=p.clock[0]
             p.saved[version]=(operation,files,{f.name:p.uploads.get(f.name) for f in files})
             if p.fail_finalize:
                 p.fail_finalize=False;raise TimeoutError('provider committed; response lost')
@@ -189,7 +193,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
         restorer=NS(complete=True,physical=NS(journal=spool.journal,
             limits=NS(max_receipts=100,max_control_bytes=1024*1024)),dispatch=NS(request=request)),
         binding_current=lambda binding:p.alive and binding is p.binding)
-    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],interval_seconds=interval,quiet_seconds=quiet)
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],wall_clock=lambda:p.clock[0],interval_seconds=interval,quiet_seconds=quiet)
     return p
 
 
@@ -205,6 +209,7 @@ async def test_control_bytes_at_unchanged_pg_cursor_are_grouped_not_per_write_or
     p=control_cycle(tmp_path,monkeypatch)
     assert not await p.owner.refresh(p.binding,planned_stop=True) and not p.calls
     p.clock[0]=1000
+    p.saved_times[1]=1000  # Recent genesis; this test exercises quiet grouping.
     keys=[await put_control(p,str(i)) for i in range(3)]
     assert not await p.owner.refresh(p.binding) and not p.calls
     p.clock[0]=1029
@@ -228,7 +233,7 @@ async def test_control_only_lost_ack_resumes_same_operation_version_after_restar
     await p.owner.refresh(p.binding);p.clock[0]=31
     with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
     assert not p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==1
-    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],wall_clock=lambda:p.clock[0])
     assert await p.owner.refresh(p.binding)
     assert p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==2
     assert p.calls.count('capture')==p.calls.count('finalize')==1
@@ -388,7 +393,7 @@ async def test_failed_dataset_verify_does_not_promote_saved_seq_or_discard_tail(
     assert p.owner.saved_seq==7 and p.store.latest_checkpoint.dataset_version==1
     assert not p.store.remote_durable(key,b'pending')
     # The ordinary controller restart path resumes the very same version.
-    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0])
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],wall_clock=lambda:p.clock[0])
     assert await p.owner.refresh(p.binding)
     assert p.store.remote_durable(key,b'pending')
     assert p.owner.saved_seq==7
@@ -423,4 +428,38 @@ async def test_existing_successor_reservation_forces_checkpoint_before_writer_ha
         db.execute("UPDATE control SET successor='successor-run' WHERE id=1")
     assert await p.owner.refresh(p.binding)
     assert p.store.remote_durable(key,b'pending')
+    assert p.calls==['capture','finalize','verify']
+
+
+@pytest.mark.asyncio
+async def test_api_restart_cannot_reset_saved_version_deadline(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    await put_control(p)
+    assert not await p.owner.refresh(p.binding)
+    p.clock[0]=1799
+    await put_control(p,data=b'new write just before restart')
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],
+        wall_clock=lambda:p.clock[0],interval_seconds=1800,quiet_seconds=900)
+    assert not await p.owner.refresh(p.binding) and not p.calls
+    p.clock[0]=1800
+    await put_control(p,data=b'another write after restart')
+    assert await p.owner.refresh(p.binding)
+    assert p.owner.saved_seq==7 and p.calls.count('capture')==1
+    # The next verified Saved version establishes the next deadline.
+    p.clock[0]=1801
+    await put_control(p,data=b'next cycle')
+    p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],
+        wall_clock=lambda:p.clock[0],interval_seconds=1800,quiet_seconds=900)
+    assert not await p.owner.refresh(p.binding)
+    assert p.calls.count('capture')==1
+
+
+@pytest.mark.asyncio
+async def test_missing_saved_timestamp_triggers_checkpoint_now(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch)
+    key=await put_control(p)
+    def unavailable(version):raise TimeoutError('provider unavailable')
+    monkeypatch.setattr(p.store.publisher,'version_created_at',unavailable)
+    assert await p.owner.refresh(p.binding)
+    assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
     assert p.calls==['capture','finalize','verify']

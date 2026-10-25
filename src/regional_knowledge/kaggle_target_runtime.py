@@ -207,6 +207,7 @@ class TargetRuntime:
             raise TypeError('existing owner Telegram downloader required')
         self.telegram_original_downloader=telegram_original_downloader
         self.original_intake_handler=None
+        self.native_bundle=None
         self.read_handler_slot=None  # Same model/pool retained across compatible patch.
         self.identity = None
         self.closed = False
@@ -307,6 +308,9 @@ class TargetRuntime:
             **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}),
             source_materializer=self._native_source_materializer(encoder))
         self.recovery_worker=worker
+        self.native_bundle=native_bundle
+        if self.original_intake_handler is not None:
+            self.original_intake_handler.native_bundle=native_bundle
         from .kaggle_recovery_phases import WorkerRecoveryPhases
         if type(worker) is WorkerRecoveryPhases:
             self._bind_schema_migrations(worker,encoder,acquire)
@@ -415,6 +419,7 @@ class TargetRuntime:
             from .kaggle_environment import bootstrap_stage
             with bootstrap_stage(run_id,'native_pg_start'):
                 await self.owner.start_empty(**options)
+            self.native_bundle=native_bundle
         self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
             open=False,timeout=2,max_waiting=4)
         await self.pool.open(wait=True,timeout=10)
@@ -432,7 +437,7 @@ class TargetRuntime:
         if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True,
-                catalog_titles=self.database.schema_version>=34)
+                public_illustrations=self.database.schema_version>=37)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],
@@ -479,6 +484,7 @@ class TargetRuntime:
             try:
                 original_handler=NativeOriginalIntake(config=OriginalIntakeConfig.from_wire(self.target['original_intake']),
                     database=self.database,identity=identity,workspace=workspace,
+                    native_bundle=self.native_bundle,
                     telegram_downloader=self.telegram_original_downloader,current=lambda binding:
                         not self.closed and binding[:2]==(run_id,runtime_incarnation))
             except BaseException:

@@ -259,11 +259,16 @@ class WorkerSourceExecutor:
                     break
                 except psycopg.errors.QueryCanceled as error:
                     if (command.route=='source.batch.v1' and error.sqlstate=='57014'
-                            and attempt==0 and observed and observed[-1].canceled
+                            and observed and observed[-1].canceled
                             and observed[-1].rollback_verified):
-                        _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
+                        if attempt==0:
+                            _LOG.warning('source_prepare_57014 rolled_back_retry route=%s sequence=%s',
+                                command.route,command.sequence)
+                            continue
+                        reject_reason='native_source_sql_rolled_back'
+                        _LOG.warning('source_prepare_57014 rolled_back_rejection route=%s sequence=%s',
                             command.route,command.sequence)
-                        continue
+                        break
                     raise ApplyUnknown('source prepare unresolved; preserve original operation') from None
                 except psycopg.OperationalError:
                     raise ApplyUnknown('native source preparation outcome unknown; resume original operation') from None
@@ -274,20 +279,31 @@ class WorkerSourceExecutor:
                     break
                 else:
                     break
-        async with self.acquire() as connection:
-            options=dict(journal=proof,seal=seal,command=command,
-                database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
-                registry=self.registry,max_outcome_bytes=8192)
+        for apply_attempt in range(2):
             try:
-                receipt=await apply_accepted(connection,**options,
-                    **({'reject_reason':reject_reason} if reject_reason is not None else {}))
-            except ApplyExecutionError:
-                # apply_accepted has exited its failed PG transaction. A new
-                # transaction records an actual no-effect receipt, never a
-                # Python-fabricated result. An uncertain commit is ApplyUnknown
-                # and cannot enter this branch. Duplicate lookup wins a race.
-                receipt=await apply_accepted(connection,**options,reject_reason='native_source_sql_rolled_back')
-                _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
+                async with self.acquire() as connection:
+                    options=dict(journal=proof,seal=seal,command=command,
+                        database_generation=self.database.database_generation,writer_generation=self.database.writer_generation,
+                        registry=self.registry,max_outcome_bytes=8192)
+                    try:
+                        receipt=await apply_accepted(connection,**options,
+                            **({'reject_reason':reject_reason} if reject_reason is not None else {}))
+                    except ApplyExecutionError:
+                        # apply_accepted has exited its failed PG transaction. A new
+                        # transaction records an actual no-effect receipt, never a
+                        # Python-fabricated result. An uncertain commit is ApplyUnknown
+                        # and cannot enter this branch. Duplicate lookup wins a race.
+                        reject_reason='native_source_sql_rolled_back'
+                        receipt=await apply_accepted(connection,**options,reject_reason=reject_reason)
+                        _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
+                            command.route,command.sequence)
+                break
+            except ApplyUnknown:
+                if apply_attempt:
+                    raise
+                # Reuse the accepted command and native duplicate lookup on a
+                # fresh connection. Never rerun model/vector preparation.
+                _LOG.warning('native_source_apply state=reconcile_same_operation route=%s sequence=%s',
                     command.route,command.sequence)
         return receipt_wire(receipt)
 
@@ -380,8 +396,6 @@ class AcceptedSourceDispatch:
         run,job=await asyncio.to_thread(self.queue._source_claim,self,run_id,token,generation,frame['job_id'])
         entry,identity=await self._entry(job,verify=False)
         self._current(run,identity,generation)
-        self.queue.shared_reads.require_durable_resource(run_id,run['runtime_incarnation'],generation,
-            job['id'],frame['compute_claim'],frame['dispatch_generation'])
         if (frame['claim']!=job['claim'] or frame.get('run_id')!=run_id
                 or frame.get('launch_nonce')!=run['launch_nonce']
                 or frame.get('runtime_incarnation')!=run['runtime_incarnation']):

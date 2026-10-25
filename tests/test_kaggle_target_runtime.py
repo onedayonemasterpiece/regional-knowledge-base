@@ -20,6 +20,7 @@ from regional_knowledge.recovery_journal import JournalUnknown
 from test_bge_wss_worker import CONFIG, ROOT, Wire, module
 from test_kaggle_bootstrap import candidate
 from test_recovery_journal import fixture as journal_fixture, command
+from test_kaggle_djvu_pixels import archive as djvu_archive, bundle as djvu_bundle, native_fixture
 
 
 def spec(*,fresh=False):
@@ -151,7 +152,7 @@ def test_generated_entrypoint_executes_lifecycle_with_stubs(tmp_path,monkeypatch
     # whose final hash is persisted above retains its actual Kaggle paths.
     class Redirect(ast.NodeTransformer):
         def visit_Constant(self,node):
-            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/rkb-'):
+            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/r-'):
                 return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
             return node
     exec(compile(ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[]))),
@@ -218,9 +219,19 @@ async def test_controller_intent_includes_the_selected_native_story_migration(tm
 
 
 @pytest.mark.asyncio
-async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp_path):
+@pytest.mark.parametrize('originals',[False,True])
+async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp_path,monkeypatch,originals):
     events=[];loop=asyncio.get_running_loop()
     target=spec()
+    if originals:
+        from regional_knowledge import kaggle_original_native as original
+        monkeypatch.setattr(original,'PRIVATE_ROOT',tmp_path)
+        monkeypatch.setattr(original.importlib.metadata,'version',lambda _: '0.0')
+        monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda:tmp_path)
+        target=replace(target,dependency_packages=(*target.dependency_packages,'PyMuPDF'))
+        target=replace(target,stage0=stage0(target),original_intake=original.OriginalIntakeConfig(
+            allowed_origins=('https://archive.invalid',),
+            parser_packages=(('PyMuPDF','0.0'),),max_bytes=128,seconds=1))
     config=dict(CONFIG,target_runtime=dict(target.wire(),sql_root='/unused'))
     class Owner:
         def __init__(self,spec): pass
@@ -251,6 +262,10 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
     args=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],runtime_incarnation='incarnation')
     prepared=await runtime.prepare(SimpleNamespace(artifacts=None),**args)
     assert await runtime.prepare(None,**args) is prepared
+    if originals:
+        from regional_knowledge.kaggle_original_native import NativeOriginalIntake
+        assert type(prepared.original_intake_handler) is NativeOriginalIntake
+        assert prepared.original_intake_handler is runtime.original_intake_handler
     assert await prepared.query_handler({},encode=None)=={'ok':True}
     # Regression for the actual PreparedRuntime -> invoke -> ReadHandlerSlot
     # composition: SQL_HEALTH's optional lease_current must reach the handler.
@@ -278,7 +293,8 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
 
 
 @pytest.mark.asyncio
-async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maintenance(monkeypatch,tmp_path):
+@pytest.mark.parametrize('originals',[False,True])
+async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maintenance(monkeypatch,tmp_path,originals):
     """Real NEW_EMPTY TargetRuntime order: prepare → native recovery hookup.
 
     No fake warm attachment from previous order is inherited; no second
@@ -290,6 +306,14 @@ async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maint
     from test_kaggle_worker_query import pinned
     events=[]
     launch=spec(fresh=True)
+    if originals:
+        from regional_knowledge import kaggle_original_native as original_module
+        monkeypatch.setattr(original_module,'PRIVATE_ROOT',tmp_path)
+        monkeypatch.setattr(original_module.importlib.metadata,'version',lambda _: '0.0')
+        monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda:tmp_path)
+        launch=replace(launch,dependency_packages=(*launch.dependency_packages,'PyMuPDF'))
+        launch=replace(launch,stage0=stage0(launch),original_intake=original_module.OriginalIntakeConfig(
+            allowed_origins=('https://archive.invalid',),parser_packages=(('PyMuPDF','0.0'),),max_bytes=128,seconds=1))
     config=dict(CONFIG,target_runtime=dict(launch.wire(),sql_root='/unused'))
     class Owner:
         def __init__(self,_):pass
@@ -333,11 +357,14 @@ async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maint
         worker.aclose=close
         return worker
     monkeypatch.setattr('regional_knowledge.kaggle_recovery_phases.build_recovery_worker',fake_build)
+    decoder_bundle=SimpleNamespace(root=tmp_path)
     worker=await runtime.configure_recovery(encoder,**identity,
-        native_bundle=SimpleNamespace(root=tmp_path),tools={},
+        native_bundle=decoder_bundle,tools={},
         native_uid=1000,native_gid=1000,current=lambda _:True,
         workspace_private_current=lambda _:True,workspace=lambda *a:None)
     assert worker is runtime.recovery_worker
+    assert runtime.native_bundle is decoder_bundle
+    if originals:assert runtime.original_intake_handler.native_bundle is decoder_bundle
     assert worker.read_handler_slot is slot
     assert type(worker.read_handler_control) is WarmHandlerMaintenance
     assert worker.read_handler_control.slot is slot
@@ -627,6 +654,93 @@ async def test_runtime_extracts_bundle_after_encoder_and_forwards_retained_recei
     await runtime.prepare(encoder,**args);await runtime.prepare(None,**args)
     await runtime.aclose()
     assert events==['extract','owned','pool','close']
+
+
+@pytest.mark.asyncio
+async def test_prepared_runtime_reads_djvu_original_through_its_actual_intake(
+        tmp_path,monkeypatch,djvu_archive,djvu_bundle):
+    """Real prepare → recovery bundle → original acquire/verify → page dispatch.
+
+    SQL/HTTP and ELF execution are synthetic peers; the intake, DjVu inventory,
+    selected-page pixel adapter, JPEG encoder and retained receipts are real.
+    """
+    pytest.importorskip('pymupdf')
+    from regional_knowledge import kaggle_original_native as original_module
+    from regional_knowledge import kaggle_djvu_pixels as pixels
+    from test_kaggle_original_intake import frame as original_frame, Transfer, ticket, spec as original_spec
+    data=djvu_archive[0].read_bytes()
+    monkeypatch.setattr(original_module,'PRIVATE_ROOT',tmp_path)
+    monkeypatch.setattr(pixels,'PRIVATE_ROOT',tmp_path)
+    monkeypatch.setattr(original_module.importlib.metadata,'version',lambda _: '0.0')
+    monkeypatch.setattr('regional_knowledge.kaggle_owned_pg.ensure_private_runtime_root',lambda:tmp_path)
+    launch=spec(fresh=True)
+    launch=replace(launch,dependency_packages=(*launch.dependency_packages,'PyMuPDF'))
+    launch=replace(launch,stage0=stage0(launch),original_intake=original_module.OriginalIntakeConfig(
+        ('https://archive.invalid',),(('PyMuPDF','0.0'),),max_bytes=len(data)))
+    class Owner:
+        def __init__(self,_):pass
+        async def start_empty(self,**kw):pass
+        async def aclose(self):pass
+    class Pool:
+        def __init__(self,**kw):pass
+        async def open(self,**kw):pass
+        async def close(self,**kw):pass
+        def connection(self):pass
+    async def prepare(encoder,**kw):
+        async def read(frame,*,encode):return {}
+        return PreparedRuntime(read,candidate())
+    async def close():pass
+    async def build(**kw):
+        assert kw['native_bundle'] is djvu_bundle
+        return SimpleNamespace(aclose=close)
+    monkeypatch.setattr('regional_knowledge.kaggle_recovery_phases.build_recovery_worker',build)
+    runtime=TargetRuntime(dict(CONFIG,target_runtime=dict(launch.wire(),sql_root='/unused')),
+        executed_source='/fixture',owner_factory=Owner,pool_factory=Pool,prepare=prepare)
+    encoder=SimpleNamespace(artifacts=SimpleNamespace(root=djvu_bundle.root,
+        role_hash=lambda _: 'f'*64))
+    identity=dict(run_id=CONFIG['run_id'],launch_nonce=CONFIG['launch_nonce'],runtime_incarnation='djvu-inc')
+    prepared=await runtime.prepare(encoder,**identity)
+    await runtime.configure_recovery(encoder,**identity,native_bundle=djvu_bundle,tools={},
+        native_uid=1000,native_gid=1000,current=lambda _:True,
+        workspace_private_current=lambda _:True,workspace=lambda *a:None)
+    intake=prepared.original_intake_handler
+    assert intake is runtime.original_intake_handler and intake.native_bundle is djvu_bundle
+    class Download:
+        async def download(self,url,folder,*,max_bytes):
+            assert max_bytes==len(data)
+            path=folder/'original.djvu';path.write_bytes(data)
+            return SimpleNamespace(path=path,sha256=digest(data),size_bytes=len(data))
+    # The isolated child intentionally accepts only /kaggle/temp paths.
+    # Keep this fixture in managed artifacts and run its exact inspector
+    # directly; page dispatch must never use this metadata callback.
+    async def inspect_original(path,action,index=0):
+        from regional_knowledge.kaggle_djvu_inspect import inspect_djvu
+        assert action=='inspect'
+        inventory=inspect_djvu(path)
+        return dict(format='djvu',page_count=inventory.page_count)
+    intake.downloader=Download();intake.parser=inspect_original
+    intake.transfer=Transfer();intake.attached(1)
+    def dispatch(phase,args,private=None):
+        f=original_frame(phase,args,private=private)
+        f.update(**identity,database_generation=runtime.database.database_generation,
+            writer_generation=runtime.database.writer_generation)
+        return f
+    acquired=(await intake(dispatch('original_acquire',
+        dict(spec=original_spec(max_bytes=len(data),max_pages=2).wire()),
+        private={'download_url':'https://attachment.invalid/private'})))['value']
+    assert 'error' not in acquired,acquired
+    assert acquired['format']=='djvu' and acquired['page_count']==2
+    args=dict(handle=acquired['handle'],original_sha256=acquired['sha256'])
+    upload=dispatch('original_archive',args);upload['original_transfer']={'ticket':ticket(upload,acquired)}
+    await intake(upload)
+    verify=dispatch('original_verify',args);verify['original_transfer']={'ticket':ticket(verify,acquired,'GET')}
+    assert (await intake(verify))['value']['sha256']==digest(data)
+    page=(await intake(dispatch('original_pages',dict(args,index=1))))['value']
+    assert 'error' not in page and page['format']=='djvu' and page['physical_page_index']==1
+    assert page['image_size']>0 and page['image_sha256']
+    assert page['native_text_info']['encoding_notice']=='image_only_djvu_no_native_layer'
+    assert intake._records[args['handle']]['pages'][1]['path'].read_bytes().startswith(b'\xff\xd8')
+    await runtime.aclose()
 
 
 @pytest.mark.asyncio

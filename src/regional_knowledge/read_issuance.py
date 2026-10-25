@@ -217,7 +217,11 @@ class ReadIssuanceMiddleware:
                         raise ValueError('response bound')
                     if issued.gate.issuance_current(issued.gated.ticket):
                         payload = rendered if typed_denied is not None else rendered.get('structuredContent', {})
-                        status, reason = payload.get('status', 'ok'), payload.get('reason')
+                        # Native image CallToolResult has no structuredContent.
+                        # Its current gated result already owns the final status.
+                        native = getattr(issued.gated, 'result', None)
+                        status = payload.get('status', getattr(native, 'status', 'ok'))
+                        reason = payload.get('reason', getattr(native, 'reason', None))
                         break
                 else:
                     raise PermissionError('evidence changed during issuance')

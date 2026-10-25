@@ -101,6 +101,9 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     # This is the server's global MCP initialize guidance, not a tools/list
     # description. The native and legacy init workflows must not mix.
     assert native.instructions.startswith("The Kaggle native importer accepts")
+    assert "ONE direct answer" in native.instructions
+    assert "names a specific author or book" in native.instructions
+    assert "В доступной базе подтверждений не найдено" in native.instructions
     for native_init in (
         "book_pages (default 1 page, maximum requested 4",
         "book_ingest(stage) with up to four reviewed pages",

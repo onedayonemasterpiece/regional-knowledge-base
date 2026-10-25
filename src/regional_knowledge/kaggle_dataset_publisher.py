@@ -135,12 +135,34 @@ class KaggleDatasetPublisher:
             raise DatasetPublicationError('dataset_private_version_unproven')
         return version
 
+    def version_created_at(self, version):
+        """Provider timestamp of the exact verified Saved version, not latest."""
+        from datetime import datetime, timezone
+        from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetRequest
+        if type(version) is not int or version < 1:
+            raise ValueError('exact_saved_dataset_version_required')
+        request = ApiGetDatasetRequest()
+        request.owner_slug, request.dataset_slug = self.owner, self.slug
+        try:
+            with self.api.build_kaggle_client() as client:
+                value = client.datasets.dataset_api_client.get_dataset(request)
+            matches = [v for v in _field(value, 'versions', []) or []
+                       if _field(v, 'version_number') == version]
+            if len(matches) != 1:
+                raise ValueError
+            created = _field(matches[0], 'creation_date')
+            if not isinstance(created, datetime):
+                raise ValueError
+            # The installed native SDK returns naive UTC datetimes.
+            return created.replace(tzinfo=timezone.utc).timestamp() if created.tzinfo is None else created.timestamp()
+        except Exception:
+            raise DatasetPublicationError('dataset_saved_version_time_unavailable') from None
+
     def read_control(self, file, *, version):
-        """Read only the fixed bounded checkpoint metadata; never a PG archive."""
+        """Read only the fixed checkpoint metadata; never a PG archive."""
         from kagglesdk.datasets.types.dataset_api_service import ApiDownloadDatasetRequest
         if (file.name not in {'base-manifest.json','source-control.json',
-                'journal-control.json'} or file.size>64*1024**2
-                or type(version) is not int or version<1):
+                'journal-control.json'} or type(version) is not int or version<1):
             raise DatasetPublicationError('dataset_control_read_scope')
         request=ApiDownloadDatasetRequest()
         request.owner_slug,request.dataset_slug=self.owner,self.slug
