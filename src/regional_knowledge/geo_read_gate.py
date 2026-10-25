@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 import time
 
-from .control_spool import ControlSpool
+from .control_spool import ControlSpool,SpoolError
 from .geo_manifest_commands import validate_geo_manifest_command,geo_manifest_handler,GEO_REVISIONS,_name_projection
 from .geo_migration import canonical,normalized
 from .kaggle_geo_contracts import GeoReadRequest,GeoReadResult,decode_item
@@ -138,6 +138,9 @@ class GeoReadGate:
         if not self.installation_current(binding,keys):
             try:await self.establish(keys,binding=binding)
             except SourceGateDenied:return False
+            except SpoolError as error:
+                if type(error) is SpoolError and error.args==('control operation not found',):return False
+                raise
         if not self._places:
             proof=self._manifest
             opening=await self.spool.get(keys[0]);command=opening.command

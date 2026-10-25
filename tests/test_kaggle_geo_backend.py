@@ -36,13 +36,15 @@ async def configured(s,*,durable=True):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('active',[False,True])
-async def test_registered_graph_fetch_routes_geo_without_bootstrap_only_after_activation(target,monkeypatch,active):
+@pytest.mark.parametrize('state',['missing','pending','active'])
+async def test_registered_graph_fetch_routes_geo_without_bootstrap_only_after_activation(target,monkeypatch,state):
     from mcp.server.mcpserver import MCPServer
     from regional_knowledge.kaggle_source_graph_tools import register_source_graph_tools
+    active=state=='active'
     s=target;e,gate,geo,manifest,commands=await configured(s,durable=active)
     try:
         gate.operation_keys=tuple(command.operation_key for command in commands)
+        if state=='missing':gate.operation_keys=('missing-open','missing-activate')
         gate.invalidate()  # installed service without SourceGeoInstaller/bootstrap
         if not active:
             # A manifest loaded by an installer alone must not select GEO.
