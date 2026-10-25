@@ -110,6 +110,7 @@ class ExpertDotEvents:
         self.callback_host=callback_host.lower()
         self.transport=transport
         self._wakes={}
+        self._reads={}
         self._scope=context.mcp_subject+"|"+context.mcp_client_id
 
     def _actor(self):
@@ -210,22 +211,35 @@ class ExpertDotEvents:
         return {}
 
     def notify(self, request_id):
-        """Wake dot through the original saved request; search only when dot reads."""
-        if self._subscription() is None or request_id in self._wakes:
+        """Prefetch and wake independently; hold only the original read ticket."""
+        if self._subscription() is None:
             return
-        # No speculative search: it could finish before dot reads, then
-        # require a second native read or hold private evidence after release.
-        task=asyncio.create_task(self._wake(request_id))
-        self._wakes[request_id]=task
-        def finished(done):
-            if self._wakes.get(request_id) is done:
-                self._wakes.pop(request_id,None)
-            try:done.result()
-            except asyncio.CancelledError:pass
-            except Exception as exc:
-                _LOG.warning("rkb_dot_wake status=deferred error_type=%s",
-                             type(exc).__name__)
-        task.add_done_callback(finished)
+        if request_id not in self._reads:
+            ready=asyncio.Event()
+            task=asyncio.create_task(self._search(request_id,ready))
+            entry=(task,ready)
+            self._reads[request_id]=entry
+            def read_finished(done):
+                if self._reads.get(request_id) is entry:
+                    self._reads.pop(request_id,None)
+                try:done.result()
+                except asyncio.CancelledError:pass
+                except Exception as exc:
+                    _LOG.warning("rkb_dot_prefetch status=deferred error_type=%s",
+                                 type(exc).__name__)
+            task.add_done_callback(read_finished)
+        if request_id not in self._wakes:
+            task=asyncio.create_task(self._wake(request_id))
+            self._wakes[request_id]=task
+            def wake_finished(done):
+                if self._wakes.get(request_id) is done:
+                    self._wakes.pop(request_id,None)
+                try:done.result()
+                except asyncio.CancelledError:pass
+                except Exception as exc:
+                    _LOG.warning("rkb_dot_wake status=deferred error_type=%s",
+                                 type(exc).__name__)
+            task.add_done_callback(wake_finished)
 
     async def resume_pending(self):
         if self._subscription() is None:
@@ -296,11 +310,12 @@ class ExpertDotEvents:
             await asyncio.sleep(delay)
             delay=min(60,delay*2)
 
-    async def _search(self, request_id):
-        # The original Slack responder already owns authorized source search
-        # and the current-source issuance fence. Reuse it without posting.
+    async def _search(self, request_id, ready=None):
+        # Existing source issuance remains current until dot reads it, with a
+        # short bound when dot never claims; no second search/cache authority.
         try:
-            return await self.reply._answer(request_id,model_only=True)
+            return await self.reply._answer(
+                request_id,model_only=True,ready_for_dot=ready)
         except Exception:
             return {"status":"unavailable"}
 
@@ -311,9 +326,16 @@ class ExpertDotEvents:
             raise PermissionError("original event not correlated")
         # A cold/unavailable search has not produced a source-grounded answer.
         # Preserve the question unclaimed so the SAME event may be read again.
-        # Read once under the existing live issuance gate, after the event is
-        # consumed. No discarded prefetch, plaintext cache or stale ticket.
-        evidence=await self._search(request_id)
+        # A completed native prefetch can wait for dot *inside* the same
+        # issuance gate. Its ticket is refreshed when read; if no dot arrives
+        # before the bound, the ticket is released and this reads fresh.
+        entry=self._reads.pop(request_id,None)
+        if entry is None:
+            evidence=await self._search(request_id)
+        else:
+            task,ready=entry
+            ready.set()
+            evidence=await task
         if not isinstance(evidence,dict):
             evidence={"status":"unavailable"}
         if evidence.get("status") not in ("ok","degraded") or evidence.get("context_gap") is True:
