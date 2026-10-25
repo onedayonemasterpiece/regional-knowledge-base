@@ -181,8 +181,15 @@ class DeferredRecoveryRuntime:
         # Model/Stage0 and owner verification may still be in progress. Keep
         # the same assignment; no ordinary read becomes available while waiting.
         async with asyncio.timeout(self.spec.seconds):
-            while self.instance is None:
-                if not self.current(binding):raise ValueError('recovery dispatch attachment changed')
+            identity=self.identity
+            while self.instance is None or not self.current(binding):
+                if self.closed or self.identity!=identity:
+                    raise ValueError('recovery dispatch attachment changed')
+                if self.generation is not None and self.generation!=binding[2]:
+                    # No native effect has started: retain the exact job/claim
+                    # while the same runtime reconnects during Stage0/model load.
+                    binding=(binding[0],binding[1],self.generation)
+                    frame=dict(frame,connection_generation=self.generation)
                 await asyncio.sleep(.02)
             from .kaggle_pg_snapshot_native import SnapshotError
             for _ in range(3):
