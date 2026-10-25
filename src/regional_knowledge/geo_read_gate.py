@@ -1,29 +1,22 @@
 """Current private GEO output from native history and exact accepted manifest bytes.
 
-Only compact item hashes are retained on Dev. No legacy corpus, geometry owner,
+Native PostgreSQL owns item bytes and membership; Dev checks activation and authority. No legacy corpus, geometry owner,
 model output, identity store or independent queue/admission is created here.
 """
 from __future__ import annotations
 
-import asyncio
-import base64
 from dataclasses import dataclass
-import hashlib
-import json
-import logging
 import time
-from types import MappingProxyType
 
 from .control_spool import ControlSpool
-from .geo_manifest_commands import validate_geo_manifest_command,plan_geo_manifest,geo_manifest_handler,GEO_REVISIONS,_name_projection
-from .geo_migration import GeoMigrationManifest,canonical,normalized
+from .geo_manifest_commands import validate_geo_manifest_command,geo_manifest_handler,GEO_REVISIONS,_name_projection
+from .geo_migration import canonical,normalized
 from .kaggle_geo_contracts import GeoReadRequest,GeoReadResult,decode_item
 from .kaggle_protocol import TrustedActorContext
 from .read_authority import ReadAuthority
 from .source_read_gate import binding_key,SourceGateDenied
 from .source_history_verifier import _Coverage
 
-_LOG=logging.getLogger(__name__)
 
 
 @dataclass(frozen=True,eq=False)
@@ -45,8 +38,6 @@ class GeoGatedResult:
 class _Manifest:
     database:str
     manifest_id:str
-    hashes:object
-    provenance_members:object
     activation_sequence:int
     operation:str
     command_sha256:str
@@ -65,14 +56,15 @@ class _Read:
 
 
 class GeoReadGate:
-    def __init__(self,read_authority,spool,*,binding_current,ttl_seconds=30,max_retained=256,clock=time.monotonic):
+    def __init__(self,read_authority,spool,*,binding_current,operation_keys=(),ttl_seconds=30,max_retained=256,clock=time.monotonic):
         if not isinstance(read_authority,ReadAuthority) or not isinstance(spool,ControlSpool) or not callable(binding_current):
             raise TypeError('same canonical authority, control spool and runtime binding required')
         if type(ttl_seconds) not in (int,float) or not 0<ttl_seconds<=120 or type(max_retained) is not int or not 1<=max_retained<=1024:
             raise ValueError('bounded GEO output capacity required')
         self.authority,self.spool,self.binding_current=read_authority,spool,binding_current
+        self.operation_keys=operation_keys
         self.ttl_seconds,self.max_retained,self.clock=ttl_seconds,max_retained,clock
-        self._manifest=None;self._permits={};self._tickets={}
+        self._manifest=None;self._places=frozenset();self._permits={};self._tickets={}
 
     def _history_current(self,binding,sequence):
         anchor=self.spool._source_anchor
@@ -104,87 +96,21 @@ class GeoReadGate:
         return validate_geo_manifest_command(command)
 
     async def establish(self,operation_keys,*,binding):
-        """Maintenance-only proof extraction from this actual spool/journal/native prefix.
-
-        No caller manifest dictionary, receipt or boolean grants read authority.
-        UNKNOWN/missing/outcome-only operations never activate a compact proof.
-        """
+        """Use the existing applied activation and current native history."""
         if type(operation_keys) is not tuple or not 2<=len(operation_keys)<=256 or len(set(operation_keys))!=len(operation_keys):
             raise ValueError('bounded exact manifest operation keys required')
         self._manifest=None
-        async with asyncio.timeout(10):
-            async with self.spool._lock:
-                if not self.supported():raise SourceGateDenied('native GEO semantics unavailable')
-                entries=[];used=0
-                for key in operation_keys:
-                    entry=await self.spool.get(key);c=entry.command
-                    if (entry.seal_state!='ACCEPTED' or entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE'
-                            or entry.accepted is None or entry.apply_receipt is None or entry.remote_outcome is None
-                            or entry.database_generation!=binding.database_generation):raise SourceGateDenied('GEO outcome not durable')
-                    payload=self._manifest_command(c)
-                    handler=self.spool.registry.resolve(c)
-                    if entry.handler_sha256!=handler.fingerprint:
-                        from .kaggle_source_commands import verify_historical_receipt
-                        if not verify_historical_receipt(c,entry.handler_sha256,entry.apply_receipt):
-                            raise SourceGateDenied('GEO historical handler receipt differs')
-                    digest=await self.spool.journal.verify_accepted(entry.accepted,c)
-                    if digest!=entry.command_sha256:raise SourceGateDenied('GEO accepted bytes differ')
-                    receipt=entry.apply_receipt
-                    if (receipt.status!='applied' or receipt.command_sha256!=digest or receipt.sequence!=c.sequence
-                            or receipt.database_generation!=binding.database_generation
-                            or hashlib.sha256(receipt.outcome).hexdigest()!=receipt.outcome_sha256):raise SourceGateDenied('GEO native receipt differs')
-                    expected=canonical(dict(codec='rkb.outcome.v1',stream=self.spool.journal.stream,
-                        command_sha256=digest,sequence=c.sequence,operation_key=c.operation_key,
-                        database_generation=binding.database_generation,outcome_b64=base64.b64encode(receipt.outcome).decode(),
-                        outcome_sha256=receipt.outcome_sha256,outcome_length=len(receipt.outcome)))
-                    remote_key=self.spool.journal.prefix+'/outcomes/'+hashlib.sha256(c.operation_key.encode()).hexdigest()
-                    if (entry.remote_outcome.key,entry.remote_outcome.command_sha256,entry.remote_outcome.outcome_sha256,entry.remote_outcome.database_generation)!=(
-                            remote_key,digest,receipt.outcome_sha256,binding.database_generation):raise SourceGateDenied('GEO remote receipt binding differs')
-                    remote=await self.spool.journal._read(remote_key,self.spool.journal.max_outcome_bytes)
-                    if remote is None or remote.data!=expected or entry.remote_outcome.length!=len(expected):
-                        raise SourceGateDenied('GEO remote outcome differs')
-                    used+=len(c.encode())
-                    if used>12*1024*1024:raise SourceGateDenied('GEO proof byte budget')
-                    entries.append((entry,c,payload))
-                sequences=[c.sequence for _,c,_ in entries]
-                # A versioned repair can replace a rejected batch after other
-                # accepted commands. Exact accepted/applied/durable bytes and
-                # complete manifest reconstruction remain mandatory below.
-                if (len(set(sequences))!=len(sequences) or sequences[0]!=min(sequences)
-                        or sequences[-1]!=max(sequences)):
-                    raise SourceGateDenied('GEO manifest phase boundaries differ')
-                first,last=entries[0],entries[-1]
-                if first[2]['action']!='open' or last[2]['action']!='activate' or any(p['action']!='batch' for _,_,p in entries[1:-1]):
-                    raise SourceGateDenied('GEO manifest phase ordering differs')
-                started=time.monotonic()
-                try:
-                    proof=await asyncio.to_thread(self._manifest_proof,entries,binding.database_generation,operation_keys)
-                finally:
-                    _LOG.info('geo_manifest_proof phase=plan elapsed_ms=%.3f commands=%d database_generation=%s',
-                        (time.monotonic()-started)*1000,len(entries),binding.database_generation)
-                # Thread completion can outlive its original native binding.
-                # Only the event-loop owner publishes a still-current proof.
-                if not self._history_current(binding,last[1].sequence):
-                    raise SourceGateDenied('GEO native accepted manifest differs')
-                self._manifest=proof
-                return proof.manifest_id
-
-    @staticmethod
-    def _manifest_proof(entries,database_generation,operation_keys):
-        """Pure bounded reconstruction; no spool or runtime authority changes."""
-        first,last=entries[0],entries[-1];c=last[1];header=first[2]
-        bodies=[base64.b64decode(item['wire_b64']) for _,_,payload in entries[1:-1] for item in payload['items']]
-        raw=base64.b64decode(header['header_prefix_b64'])+b','.join(bodies)+base64.b64decode(header['header_suffix_b64'])
-        if len(raw)>4*1024*1024:raise SourceGateDenied('GEO manifest byte budget')
-        manifest=GeoMigrationManifest.from_wire(json.loads(raw)).require_ready();plan=plan_geo_manifest(manifest)
-        if (canonical(manifest.wire())!=raw or tuple(p.payload for _,p,_ in entries)!=plan.payloads
-                or any(p.ids!={'manifest_id':plan.manifest_id} or p.person_id!=c.person_id
-                    or p.expected_revisions['manifest_index_sha256']!=plan.index_sha256 for _,p,_ in entries)):
+        entry=await self.spool.get(operation_keys[-1]);command=entry.command
+        if (not self.supported() or command.route!='geo.manifest.install.v1'
+                or self._manifest_command(command)['action']!='activate'
+                or entry.apply_state!='APPLIED' or entry.outcome_state!='DURABLE'
+                or entry.database_generation!=binding.database_generation):
+            raise SourceGateDenied('GEO activation not durable')
+        if not self._history_current(binding,command.sequence):
             raise SourceGateDenied('GEO native accepted manifest differs')
-        return _Manifest(database_generation,plan.manifest_id,
-            MappingProxyType({item.key:hashlib.sha256(canonical(item.wire())).hexdigest() for item in manifest.items}),
-            MappingProxyType({item.stable_id:frozenset(item.payload.provenance_keys) for item in manifest.items if item.payload.kind=='place'}),
-            c.sequence,c.operation_key,last[0].command_sha256,operation_keys)
+        self._manifest=_Manifest(binding.database_generation,command.ids['manifest_id'],
+            command.sequence,command.operation_key,entry.command_sha256,operation_keys)
+        return self._manifest.manifest_id
 
     def installation_current(self,binding,operation_keys):
         """Only an established durable manifest and its native prefix open import."""
@@ -201,7 +127,7 @@ class GeoReadGate:
         # substitutes for dispatch/finish/final issuance authority checks.
         from .geo_migration import exact_uuid
         exact_uuid(entity_id)
-        return self._manifest is not None and ('place:'+entity_id) in self._manifest.hashes
+        return entity_id in self._places
 
     def _expire(self):
         for values in (self._permits,self._tickets):
@@ -215,6 +141,8 @@ class GeoReadGate:
     async def dispatch(self,authority,query,binding):
         self._expire();await self.authority.require(authority,'public_search')
         if authority.public_only:raise SourceGateDenied('private GEO requires personal destination')
+        if self.operation_keys and (self._manifest is None or self._manifest.database!=binding.database_generation):
+            await self.establish(self.operation_keys,binding=binding)
         if (type(query) is not GeoReadRequest or self._manifest is None or not self.supported()
                 or len(self._permits)+len(self._tickets)>=self.max_retained):raise SourceGateDenied('GEO proof unavailable')
         actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
@@ -238,7 +166,7 @@ class GeoReadGate:
                 if (record.manifest_id,record.activation_sequence,record.activation_operation_key,record.activation_command_sha256)!=(
                         proof.manifest_id,proof.activation_sequence,proof.operation,proof.command_sha256):raise SourceGateDenied('GEO activation receipt differs')
                 item,digest=decode_item(record.wire_b64)
-                if proof.hashes.get(item.key)!=digest or item.owner_person_id!=read.authority.person_id:
+                if item.owner_person_id!=read.authority.person_id:
                     raise SourceGateDenied('GEO item bytes/private owner differ')
                 if q.action=='identity':
                     if item.payload.kind!='place' or (q.entity_id is not None and item.stable_id!=q.entity_id) or (
@@ -246,7 +174,7 @@ class GeoReadGate:
                     if q.name is not None:
                         if record.matched_wire_b64 is None:raise SourceGateDenied('GEO name proof missing')
                         matched,matched_hash=decode_item(record.matched_wire_b64)
-                        if (proof.hashes.get(matched.key)!=matched_hash or matched.owner_person_id!=item.owner_person_id
+                        if (matched.owner_person_id!=item.owner_person_id
                                 or normalized(q.name) not in _name_projection(matched)
                                 or (matched.key!=item.key and 'place:'+item.stable_id not in matched.dependencies)):
                             raise SourceGateDenied('GEO exact name proof differs')
@@ -254,8 +182,6 @@ class GeoReadGate:
                             raise SourceGateDenied('GEO source time scope differs')
                 elif (item.payload.kind!=q.category or not (('place:'+q.entity_id) in item.dependencies
                         or q.category=='provenance')):raise SourceGateDenied('GEO member scope differs')
-                if q.action=='members' and q.category=='provenance':
-                    if item.key not in proof.provenance_members.get(q.entity_id,()):raise SourceGateDenied('GEO exact provenance membership differs')
         read.result=result;return result
 
     async def finish(self,permit,result):
