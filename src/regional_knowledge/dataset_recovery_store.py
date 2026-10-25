@@ -205,7 +205,7 @@ class DatasetRecoveryStore:
             row=db.execute('SELECT token FROM rkb_dataset_recovery_objects WHERE storage=? AND key=?',
                 (self.storage_identity,key)).fetchone()
             if (row is not None if immutable else (row['token'] if row else None)!=expected_token):return False
-            size=db.execute('SELECT coalesce(sum(length(data)),0) FROM rkb_dataset_recovery_objects WHERE storage=?',
+            size=db.execute('SELECT coalesce(sum(length(data)),0) FROM rkb_dataset_recovery_objects WHERE storage=? AND covered_version IS NULL',
                 (self.storage_identity,)).fetchone()[0]
             if size+len(data)>512*1024**2:raise JournalLimit('dataset_pending_control_spool_budget')
             # Opaque SQLite row version. Never described as a Kaggle receipt.

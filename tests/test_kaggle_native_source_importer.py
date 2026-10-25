@@ -258,6 +258,53 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
 
 
 @pytest.mark.asyncio
+async def test_journal_budget_counts_unsaved_tail_and_retains_import_progress(native_intake):
+    from dataclasses import replace
+    from regional_knowledge.control_spool import SpoolFull
+    s = native_intake
+    book = await start(s)
+    assert (await stage(s, book, batch(s, book, count=4))).next_action == 'wait'
+    for component in range(3):
+        entry = await finish(s, book)
+        if component < 2:
+            await call(s, book, 'status')
+    old_key = state(s, book)['pending_operation_key']
+    with s.t.queue.connect(write=False) as db:
+        retained = db.execute('SELECT operation_key,command_bytes,outcome_bytes,outcome_state,reserved_bytes '
+                              'FROM rkb_control_operations ORDER BY sequence').fetchall()
+        heads = db.execute('SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads').fetchone()[0]
+        used = s.spool._used_bytes(db)
+    assert len(retained) == 3
+    assert {r['outcome_state'] for r in retained} == {'DURABLE'}
+    assert used == heads
+    # Fit one new reservation, but not that reservation plus the three retained outcomes.
+    s.spool.max_bytes = heads + max(r['reserved_bytes'] for r in retained) + 16384
+    assert s.spool.max_bytes < 4 * 1024**2
+    # Exercise the same real SQLite records as an unsaved budget fixture,
+    # without changing command bytes, apply receipts or the importer pointer.
+    candidate = replace(entry.command, sequence=entry.command.sequence + 1,
+                        operation_key='unsaved-budget-probe')
+    frozen, data, handler = s.spool._validate(candidate, 'synthetic-db')
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE rkb_control_operations SET outcome_state='NOT_SENT'")
+        assert s.spool._used_bytes(db) > heads + 3 * 32768
+    with pytest.raises(SpoolFull, match='budget exhausted'):
+        await s.spool._write(s.spool._stage, frozen, data, handler, 'synthetic-db')
+    assert operation_count(s) == 3
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE rkb_control_operations SET outcome_state='DURABLE'")
+    assert (await s.spool.get(old_key)).command.operation_key == old_key
+    status = await call(s, book, 'status')
+    assert status.next_action == 'continue_pages' and status.next_cursor == '4'
+    assert (await stage(s, book, batch(s, book, first=4, count=4))).next_action == 'wait'
+    assert operation_count(s) == 4
+    with s.t.queue.connect(write=False) as db:
+        after = db.execute('SELECT operation_key,command_bytes,outcome_bytes,outcome_state,reserved_bytes '
+                           'FROM rkb_control_operations ORDER BY sequence LIMIT 3').fetchall()
+    assert [tuple(r) for r in after] == [tuple(r) for r in retained]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('authored_cursor',[None,'4'])
 async def test_status_after_pause_returns_next_unaccepted_physical_page(native_intake,authored_cursor):
     s=native_intake
