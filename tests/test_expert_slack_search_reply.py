@@ -636,6 +636,72 @@ async def test_transient_post_attempt_sqlite_state_read_keeps_original_ack_task(
 
 
 @pytest.mark.asyncio
+async def test_unrelated_restart_resolve_adapter_stall_does_not_hold_other_dialogs(
+        service,monkeypatch):
+    ctl,receiver,reply,first,posts=_temporary_reply_harness(service)
+    # Same original persisted journal, but distinct Slack conversation heads.
+    ctl.clock=lambda:1792000002.0
+    other=ctl.accept(_observation(n=2,thread="1792000000.200"))["request_id"]
+    stalled=asyncio.Event()
+    release=asyncio.Event()
+    next_native=asyncio.Event()
+    original_resolver=receiver.authority.resolve_adapter
+    count=0
+    async def blocked_resolver(**kwargs):
+        nonlocal count
+        count+=1
+        if count==1:
+            stalled.set()
+            await release.wait()  # Existing authorizer is stalled before native read.
+        return await original_resolver(**kwargs)
+    monkeypatch.setattr(receiver.authority,"resolve_adapter",blocked_resolver)
+    native_calls=[]
+    active=0
+    peak=0
+    async def native_search(query,**kwargs):
+        nonlocal active,peak
+        active+=1
+        peak=max(peak,active)
+        native_calls.append(kwargs["request_id"])
+        if kwargs["request_id"]==other:
+            next_native.set()
+        try:
+            await asyncio.sleep(.003)
+            return EvidenceSearchOutput(evidence=[],status="pending",
+                reason="target_warming",mode="lexical_degraded",
+                main_state="starting",startup=StartupStatus(
+                    startup_ref="r"*51,status="pending",reason="target_warming",
+                    eta_seconds=300,message_ru=PENDING_STARTUP_MESSAGE_RU))
+        finally:
+            active-=1
+    monkeypatch.setattr(receiver.backend,"search_adapter",native_search)
+    await reply.resume_pending()
+    assert len(reply._tasks)==2
+    pending=dict(reply._tasks)
+    try:
+        await asyncio.wait_for(stalled.wait(),3)
+        # The earlier unrelated resolve_adapter is still blocked. After the
+        # existing native read deadline, the second dialog must make progress.
+        await asyncio.wait_for(next_native.wait(),7)
+        await asyncio.wait_for(pending[other],4)
+        assert first not in native_calls
+        assert native_calls==[other] and peak==1
+        assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-2"
+        assert _delivery_row(ctl,other)["state"]=="delivered"
+        assert _delivery_row(ctl,first)["state"]=="searching"
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*pending.values()),7)
+    await asyncio.sleep(0)
+    assert peak==1 and set(native_calls)=={first,other}
+    assert len(posts)==2 and {x["client_msg_id"] for x in posts}=={
+        "Ev-1","Ev-2"}
+    assert reply._tasks=={}
+    await reply.resume_pending()
+    assert reply._tasks=={} and len(posts)==2
+
+
+@pytest.mark.asyncio
 async def test_restart_65_acknowledged_legacy_questions_paces_native_first_reads(
         service,monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
