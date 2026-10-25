@@ -16,6 +16,8 @@ Original archive pending означает wait/resume соответствующ
 
 ## Передача исходника без Dev bulk proxy
 
+Для image-only DjVu `book_pages` использует существующий DjVuLibre из проверенного native bundle в Kaggle. Приём и проверка оригинала ещё не означают готовность пикселей: рендерится только запрошенная физическая страница, а пустой native text требует визуального чтения моделью. Ambient decoder и локальный OCR не подменяют этот путь. DjVu с текстовым слоем или неподдержанной ориентацией остаётся явно недоступным, пока адаптер не умеет сохранять соответствующий текст и преобразование координат.
+
 Полный контракт — [handoff§5.5](prompts/rkb-scalable-kaggle-implementation-20261019.md). Существующие book_ingest и top-level file/openai/fileParams сохраняются. Разрешённый client download URL читает непосредственно Kaggle; sandbox/opaque ID требует настоящего supported adapter. Это внешний reference, который controller не умеет перевыпускать: source_ref_expired возвращает reattach той же pending operation. Reprocess работает с verified durable original. Direct client PUT включается только по поддержанной capability/readback; при её отсутствии baseline fileParams не исчезает.
 
 Upload attempts имеют разные immutable keys и один transfer ID; exact provider readback/size/full hash precede atomic first-verified binding. Lost ACK не создаёт второй import. Private visibility, URL/redirect/archive/byte bounds и защита notebook outputs обязательны. Temporary staging не удаляется до durable archive/recovery refs; новый Kaggle Dataset не нужен каждой книге/порции. Page ImageContent и source fidelity остаются прежними.
