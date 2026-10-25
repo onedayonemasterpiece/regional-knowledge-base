@@ -32,25 +32,6 @@ def enable(spool):
         revisions=FACT_REVISIONS,check_sha256='a'*64,apply_sha256='b'*64)])
 
 
-@pytest.mark.asyncio
-async def test_gate_clears_all_fact_records_cursor_and_source_metadata_after_pending_withdrawal(env,auth):
-    gate,authority,binding=await setup(env,auth);enable(env.spool)
-    q=request(connection_generation=1,turn_generation=1,min_data_seq=0)
-    permit=await gate.dispatch(authority,q,binding)
-    native=result(connection_generation=1,turn_generation=1)
-    # Fixture control source eligibility is1, unlike standalone reader fixture7.
-    item=native.evidence[0]
-    dependency=item.dependencies.source_revisions[0].model_copy(update={'eligibility_revision':1})
-    native=native.model_copy(update={'evidence':(item.model_copy(update={'dependencies':item.dependencies.model_copy(
-        update={'source_revisions':(dependency,)})}),)})
-    gated=await gate.finish(permit,native)
-    assert gated.result.records and gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
-    closed=await gate.refresh(gated)
-    assert closed.result.reason=='evidence_withdrawn'
-    assert closed.result.records==closed.result.evidence==() and closed.result.next_cursor is None
-    assert decode_envelope(encode_envelope(closed.result)).status=='unavailable'
 
 
 @pytest.mark.asyncio

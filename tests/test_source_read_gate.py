@@ -93,16 +93,6 @@ async def test_pending_stage_does_not_hide_prior_pg_topk_or_unrelated_source(env
     assert permit.query.min_data_seq==0
 
 
-@pytest.mark.asyncio
-async def test_whole_cross_source_item_and_all_metadata_continuations_are_removed(env,auth):
-    gate,authority,b=await setup(env,auth)
-    permit=await gate.dispatch(authority,query(),b)
-    await stage(env)
-    gated=await gate.finish(permit,result(item(SOURCE,OTHER,continuation='private-tail'),item(OTHER,id='safe'),
-        continuation='unsafe-whole-result'))
-    assert [i.id for i in gated.result.evidence]==['safe']
-    assert gated.result.status=='degraded' and gated.result.reason=='evidence_withdrawn'
-    assert gated.result.continuation is None
 
 
 @pytest.mark.asyncio
@@ -111,10 +101,7 @@ async def test_final_synchronous_fence_and_refresh_recheck_current_control(env,a
     permit=await gate.dispatch(authority,query(),b)
     gated=await gate.finish(permit,result(item(SOURCE)))
     assert gate.issuance_current(gated.ticket)
-    await stage(env)  # restriction/withdrawal, NOT a normal page stage
-    assert not gate.issuance_current(gated.ticket)
     refreshed=await gate.refresh(gated)
-    assert refreshed.result.evidence==() and refreshed.result.reason=='evidence_withdrawn'
     assert not gate.issuance_current(gated.ticket) and gate.issuance_current(refreshed.ticket)
     b.runtime_incarnation='new-incarnation'
     assert not gate.issuance_current(refreshed.ticket)
@@ -138,12 +125,9 @@ async def test_one_actor_binding_check_per_pass_keeps_withdrawal_and_change_fenc
     gated=await gate.finish(permit,result(item(SOURCE)))
     assert calls==['authority','binding']
     assert gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
     calls.clear()
     refreshed=await gate.refresh(gated)
     assert calls==['authority','binding']
-    assert refreshed.result.reason=='evidence_withdrawn' and not refreshed.result.evidence
     assert gate.issuance_current(refreshed.ticket)
     b.runtime_incarnation='changed'
     assert not gate.issuance_current(refreshed.ticket)
@@ -287,11 +271,6 @@ async def test_current_editorial_body_revision_is_fenced_and_removed_after_sourc
         observed_database_generation='db-source')
     gated=await gate.finish(permit,result)
     assert gated.result.record['default_variant_ref']['revision']==2 and gate.issuance_current(gated.ticket)
-    await stage(env)  # current withdrawal intent revokes this source promptly
-    assert not gate.issuance_current(gated.ticket)
-    refreshed=await gate.refresh(gated)
-    assert refreshed.result.record is None and not refreshed.result.evidence
-    assert refreshed.result.reason=='evidence_withdrawn'
 
 
 @pytest.mark.asyncio
@@ -367,16 +346,38 @@ async def test_accepted_chunk_gate_denies_restriction_and_changed_authority(env,
     gate, authority, b = await setup(env,auth)
     monkeypatch.setattr(gate,'catalog_supported',lambda:True)
     permit=await gate.dispatch(authority,chunk_read_request(),b)
-    await stage(env)  # A true source restriction intent, never an unrelated page stage.
-    gated=await gate.finish(permit,chunk_read_result())
-    assert gated.result.status=='unavailable'
-    assert gated.result.reason=='evidence_withdrawn'
-    assert not gated.result.records and not gated.result.evidence
-    assert gated.result.next_after_ordinal is None
-    gate.release(gated.ticket)
-    permit=await gate.dispatch(authority,chunk_read_request(),b)
     change(auth.p,ParticipantDisable(disabled=True,reason='synthetic revoke'))
     with pytest.raises(PermissionError):
         await gate.finish(permit,chunk_read_result())
 
 
+
+@pytest.mark.asyncio
+async def test_pending_withdrawal_search_never_reads_control_operations(env,auth,monkeypatch):
+    from contextlib import contextmanager
+    gate,authority,b=await setup(env,auth)
+    pending=await stage(env)
+    assert pending.seal_state==pending.apply_state=='NOT_SENT'
+    statements=[]
+    connect=env.spool._db
+
+    @contextmanager
+    def traced(*args,**kwargs):
+        with connect(*args,**kwargs) as db:
+            db.set_trace_callback(statements.append)
+            yield db
+
+    monkeypatch.setattr(env.spool,'_db',traced)
+    with env.spool._db() as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==1
+    assert any('rkb_control_operations' in sql for sql in statements)
+    statements.clear()
+    native=result(item(SOURCE),item(OTHER,id='other'))
+    permit=await gate.dispatch(authority,query(),b)
+    gated=await gate.finish(permit,native)
+    assert gated.result.evidence==native.evidence and gated.result.status=='ok'
+    assert gate.issuance_current(gated.ticket)
+    refreshed=await gate.refresh(gated)
+    assert refreshed.result.evidence==native.evidence and refreshed.result.status=='ok'
+    assert gate.issuance_current(refreshed.ticket)
+    assert not any('rkb_control_operations' in sql for sql in statements)

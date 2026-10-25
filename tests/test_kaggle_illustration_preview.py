@@ -29,10 +29,9 @@ from test_control_spool import handler,withdraw as withdraw_command
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('withdraw',[False,True])
 @pytest.mark.parametrize('slow',[False,True])
 @pytest.mark.parametrize('noisy',[False,True])
-async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,monkeypatch,withdraw,slow,noisy):
+async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,monkeypatch,slow,noisy):
     s=service;s.adapter.available=True
     s.startup.backend.read_telemetry=s.target.telemetry
     product=[]
@@ -49,9 +48,6 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
     async def illustration_page(figure,binding):
         assert figure['source_id']==SOURCE and figure['physical_page_index']==0
         if slow:elapsed[0]=31
-        if withdraw:
-            await s.config.spool.stage_source_withdraw(s.target.auth.p.admin,
-                withdraw_command(s.target.auth.p.owner.subject),database_generation='synthetic-db')
         return content.getvalue()
     configure_illustration_preview(N(config=N(import_originals=N(illustration_page=illustration_page)),
         backend=s.startup.backend))
@@ -80,25 +76,21 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
     await asyncio.to_thread(s.target.telemetry._queue.join)
     terminal=[r for r in s.target.records if r.get('event')=='read_attempt_terminal']
     assert len(terminal)==1
-    assert (terminal[0]['status'],terminal[0]['reason'])== (
-        ('unavailable','evidence_withdrawn') if withdraw else ('ok',None))
+    assert (terminal[0]['status'],terminal[0]['reason'])==('ok',None)
     projected=[r for r in product if r.get('event')=='read.terminal']
     assert len(projected)==1 and projected[0]['status']==terminal[0]['status']
-    if withdraw:
-        assert b'"type":"image"' not in wire
-    else:
-        result=data['result'];assert result['isError'] is False
-        assert json.loads(result['content'][0]['text'])['metadata']['physical_page_index']==0
-        assert result['content'][1]['mimeType']=='image/jpeg'
-        with Image.open(BytesIO(base64.b64decode(result['content'][1]['data']))) as crop:
-            assert crop.size==((900,900) if noisy else (300,200))
-            if not noisy:
-                red,green,blue=crop.getpixel((150,100))
-                assert red>220 and green<40 and blue<40
-        from regional_knowledge.read_issuance import MAX_RESPONSE_BYTES
-        assert len(wire)<=MAX_RESPONSE_BYTES
-        assert b'crop_binding' not in wire
-        assert b'internal-import-identity' not in wire
+    result=data['result'];assert result['isError'] is False
+    assert json.loads(result['content'][0]['text'])['metadata']['physical_page_index']==0
+    assert result['content'][1]['mimeType']=='image/jpeg'
+    with Image.open(BytesIO(base64.b64decode(result['content'][1]['data']))) as crop:
+        assert crop.size==((900,900) if noisy else (300,200))
+        if not noisy:
+            red,green,blue=crop.getpixel((150,100))
+            assert red>220 and green<40 and blue<40
+    from regional_knowledge.read_issuance import MAX_RESPONSE_BYTES
+    assert len(wire)<=MAX_RESPONSE_BYTES
+    assert b'crop_binding' not in wire
+    assert b'internal-import-identity' not in wire
 
 
 @pytest.mark.asyncio

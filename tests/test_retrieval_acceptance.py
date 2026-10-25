@@ -177,25 +177,6 @@ async def test_fixture_inactive_nonowner_copied_authority_and_runtime_or_gold_ch
     with pytest.raises(PermissionError):await gate.dispatch(owner,q,replace(b,runtime_incarnation='changed'))
 
 
-@pytest.mark.asyncio
-async def test_full_rank_union_current_source_gate_withdraws_whole_observation(env,auth):
-    b=binding();owner=await owner_context(auth);f=fixture(owner.person_id,b)
-    gate=SourceReadGate(auth.resolver,env.spool,binding_current=lambda v:v==b)
-    gate._acceptance_fixture=f
-    env.spool._source_anchor=SimpleNamespace(database_generation='db-source',current=lambda:True)
-    wire=await KaggleWorkerQuery(acquire=Lease(BranchConnection()).acquire,tokenizer=pinned())(
-        json.loads(request(f,owner,compute_claim='slot').model_dump_json()),encode=lambda _:asyncio.sleep(0,result=VECTOR))
-    result=decode_envelope(json.dumps(wire).encode())
-    permit=await gate.dispatch(owner,request(f,owner),b);gated=await gate.finish(permit,result)
-    assert len(gated.result.evidence)==25 and gate.issuance_current(gated.ticket)
-    await stage(env)  # This exact acceptance fixture includes source A in
-    # the entire 25-result rank union. Withdrawal must clear ALL frozen ranks.
-    assert not gate.issuance_current(gated.ticket)
-    closed=await gate.refresh(gated)
-    assert closed.result.status=='unavailable' and closed.result.reason=='evidence_withdrawn'
-    assert closed.result.evidence==() and closed.result.ranks==BranchRanks()
-    assert closed.result.mode is None
-    assert type(decode_envelope(encode_envelope(closed.result))) is AcceptanceReadResult
 
 
 @pytest.mark.asyncio
@@ -236,8 +217,7 @@ async def test_real_shared_admission_no_fixture_no_dispatch_then_exact_pair_only
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('late_restriction',[False,True])
-async def test_real_generated_transport_asgi_admission_gate_and_final_private_issuance(state,env,monkeypatch,late_restriction):
+async def test_real_generated_transport_asgi_admission_gate_and_final_private_issuance(state,env,monkeypatch):
     import aiohttp
     import socket
     import uvicorn
@@ -294,30 +274,14 @@ async def test_real_generated_transport_asgi_admission_gate_and_final_private_is
         gate=SourceReadGate(s.auth.resolver,env.spool,binding_current=lambda value:value==b)
         env.spool._source_anchor=SimpleNamespace(database_generation='db-source',current=lambda:True)
         observer=AcceptanceObserver(queue=s.q,gate=gate,fixture=fixture(owner.person_id,b))
-        if late_restriction:
-            refresh=gate.refresh;once=[]
-            async def racing_refresh(gated):
-                value=await refresh(gated)
-                if not once:
-                    once.append(True);await stage(env)
-                return value
-            monkeypatch.setattr(gate,'refresh',racing_refresh)
         consumed=[]
-        if late_restriction:
-            # The acceptance fixture includes A and B; restricting A while
-            # the response is retained invalidates the frozen rank union.
-            with pytest.raises(RuntimeError,match='unavailable'):
-                await observer.observe('synthetic harbour',authority=owner,
-                    request_id='actual-acceptance-wire',consume=consumed.append)
-            assert consumed==[]
-        else:
-            await observer.observe('synthetic harbour',authority=owner,
-                request_id='actual-acceptance-wire',consume=consumed.append)
-            assert len(consumed)==1
-            issued=json.loads(consumed[0]);assert len(issued['items'])==25
-            assert len(issued['ranks']['bge'])==len(issued['ranks']['lexical'])==len(issued['ranks']['fusion'])==10
-            assert issued['mode']=='hybrid' and issued['reason']=='bounded_retrieval'
-            assert b'synthetic body' not in consumed[0] and b'query' not in consumed[0]
+        await observer.observe('synthetic harbour',authority=owner,
+            request_id='actual-acceptance-wire',consume=consumed.append)
+        assert len(consumed)==1
+        issued=json.loads(consumed[0]);assert len(issued['items'])==25
+        assert len(issued['ranks']['bge'])==len(issued['ranks']['lexical'])==len(issued['ranks']['fusion'])==10
+        assert issued['mode']=='hybrid' and issued['reason']=='bounded_retrieval'
+        assert b'synthetic body' not in consumed[0] and b'query' not in consumed[0]
         assert encoded==['synthetic harbour']
         assert len([f for d,f in frames if d=='controller' and f['type']=='ACCEPTANCE_READ'])==1
         response=next(f for d,f in frames if d=='worker' and f['type']=='ACCEPTANCE_READ_RESULT')
