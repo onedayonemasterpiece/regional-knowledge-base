@@ -154,6 +154,7 @@ class OriginalIntakeController:
             if (receipt.get('key'),receipt.get('size'),receipt.get('sha256'))!=(key,size,sha256):
                 raise OriginalIntakeError('original_archive_receipt_changed')
             version=await self._head(key,size,receipt.get('native_version'))
+        if page is not None:return dict(key=key,native_version=version)
         operation=digest(canonical(dict(phase='original_verify',args=args)))
         ticket=await self._ticket(binding,operation,'GET',key,size,sha256,version)
         receipt=await self._phase(binding,'original_verify',args,{'ticket':ticket})
