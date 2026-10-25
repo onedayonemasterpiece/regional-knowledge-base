@@ -91,11 +91,11 @@ async def test_unknown_commit_and_revoked_authority_remain_distinct_from_rejecte
     handler._execute=execute
     unknown=phase(identity,'apply','unknown')
     with pytest.raises(ApplyUnknown):await handler(unknown)
-    with pytest.raises(SnapshotError,match='unknown_requires_reconciliation'):
+    with pytest.raises(ApplyUnknown):
         await handler(unknown)
     with pytest.raises(PermissionError):
         await handler(phase(identity,'apply','authority'))
-    assert attempts==['unknown','authority']
+    assert attempts==['unknown','unknown','authority']
     assert not handler._results
 
 

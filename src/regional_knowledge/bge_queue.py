@@ -173,6 +173,14 @@ class BgeQueue:
         return (run['status']=='expired' or now>=run['started']+MAX_LIFETIME
                 or now>=run['useful']+IDLE_SECONDS or lost or run['status']=='failed')
 
+    def _retire_recovery_jobs(self,db,now):
+        # One retirement path, including historical rows; no native success is
+        # fabricated, and original assignments/known outcomes remain evidence.
+        db.execute("""UPDATE jobs SET state='done',updated=?,
+            result=coalesce(result,'{"value":{"error":"run_expired"}}')
+            WHERE kind='recovery_phase' AND state!='done'
+            AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))""",(now,))
+
     def _expire(self, db, now):
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             # A cold start gets at most 15 minutes to prove the completed native
@@ -186,12 +194,7 @@ class BgeQueue:
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed' and kind!='recovery_phase'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
-        # One retirement path, including historical rows; no native success is
-        # fabricated, and original assignments/known outcomes remain evidence.
-        db.execute("""UPDATE jobs SET state='done',updated=?,
-            result=coalesce(result,'{"value":{"error":"run_expired"}}')
-            WHERE kind='recovery_phase' AND state!='done'
-            AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))""",(now,))
+        self._retire_recovery_jobs(db,now)
         db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<=?",(now,))
         self._finalize_provider_terminal_pointers(db)
 
@@ -1145,13 +1148,12 @@ class BgeQueue:
             db.execute('update runs set provider_ref=?,provider_version=coalesce(provider_version,?),launch_state=?,status=case when ? then ? else status end where id=?',
                        (provider_ref,provider_version,'failed' if failed else 'dispatched',failed,'failed',run_id))
             if failed:
-                # Expiry clears run pointers; retain this transaction's demand
-                # snapshot for the existing finite startup-failure accounting.
-                control=db.execute('select current_run,startup_ref,startup_state from control where id=1').fetchone()
-                self._expire(db,self.clock())
+                # Keep failed distinct from expired until normal maintenance.
+                self._retire_recovery_jobs(db,self.clock())
                 # Count a known failure once. Repeated failed receipts cannot
                 # re-arm the launch budget or start infinite 60-second loops.
                 if row and row['status']!='failed':
+                    control=db.execute('select current_run,startup_ref,startup_state from control where id=1').fetchone()
                     outstanding=bool(db.execute('select 1 from jobs where '+LIVE_JOBS+' limit 1').fetchone())
                     # A normal useful-idle shutdown is NOT fresh demand. Do
                     # not resurrect an already satisfied startup merely
@@ -1165,11 +1167,11 @@ class BgeQueue:
                             # preparation-failure attempt.
                             db.execute('''UPDATE control SET startup_failures=startup_failures+1,
                                 startup_state=CASE WHEN startup_ref IS NOT NULL THEN 'pending'
-                                    ELSE startup_state END WHERE id=1''')
+                                    ELSE startup_state END WHERE current_run=?''',(run_id,))
                         elif control['startup_state']=='ready' and outstanding and control['startup_ref'] is not None:
                             # Reopen only unsettled demand, with fresh
                             # permissions on next read; old incarnation is
                             # still fenced until separate execution proof.
-                            db.execute("update control set startup_state='pending' where id=1")
+                            db.execute("update control set startup_state='pending' where current_run=?",(run_id,))
                 db.execute('update runs set heartbeat=? where id=?',(self.clock(),run_id))
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed'",(run_id,))

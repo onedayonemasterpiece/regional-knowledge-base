@@ -25,6 +25,29 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
+async def test_native_prepare_retries_failed_same_key_and_reuses_completed_session():
+    factory=object.__new__(NativeSnapshotFactory)
+    factory.identity=('r','n','i');factory._current=lambda binding:None
+    factory._operations={};factory.limits=SimpleNamespace(timeout_seconds=1)
+    calls=[];session=SimpleNamespace(binding=None)
+    async def prepare(binding,**arguments):
+        calls.append(arguments)
+        if len(calls)==1:raise ConnectionError('native preparation unavailable')
+        return session
+    factory._prepare=prepare
+    args=dict(expected_manifest_sha256='a'*64,control_bytes=b'control')
+    with pytest.raises(ConnectionError):
+        await factory.prepare(('r','i',1),operation_key='restore',**args)
+    assert not factory._operations
+    assert await factory.prepare(('r','i',1),operation_key='restore',**args) is session
+    assert await factory.prepare(('r','i',2),operation_key='restore',**args) is session
+    assert session.binding==('r','i',2) and len(calls)==2
+    with pytest.raises(SnapshotError,match='operation_changed'):
+        await factory.prepare(('r','i',2),operation_key='restore',**(args|{'control_bytes':b'changed'}))
+    assert len(calls)==2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('old_status,kind,retired',[
     ('failed','recovery_phase',True),('expired','recovery_phase',True),
     ('starting','recovery_phase',False),('failed','document',False)])
