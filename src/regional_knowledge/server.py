@@ -332,6 +332,8 @@ class KnowledgeMCPServer(MCPServer):
             allowed.add('book_find')
         if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
         if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
+        if getattr(self,'_target_dot_events',False):
+            allowed.update({'expert_request_get','expert_result_record'})
         if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
         from .read_issuance import capture_read_output, bind_request_output
@@ -413,6 +415,7 @@ def build_server(
     expert_result_receiver=None,
     expert_recovery_receiver=None,
     expert_slack_socket_mode=None,
+    expert_dot_events=None,
 ) -> MCPServer:
     selected=backend_profile or os.getenv('RKB_BACKEND_PROFILE','').strip() or (
         'kaggle_source' if target_startup is not None else 'legacy')
@@ -641,6 +644,13 @@ def build_server(
     mcp._target_geo_available = (selected=='kaggle_source' and getattr(target_startup,'geo_backend',None) is not None)
     mcp._target_startup=target_startup
     mcp._current_read_output_required = bool(getattr(backend, 'current_read_output_required', False))
+    if expert_dot_events is not None:
+        from .expert_dot_events import ExpertDotEvents
+        if (selected!='kaggle_source' or type(expert_dot_events) is not ExpertDotEvents
+                or expert_slack_ingress is None
+                or expert_dot_events.control is not expert_slack_ingress.control):
+            raise RuntimeError('dot Events must share the original Slack and target authority')
+        expert_dot_events.register(mcp)
     worker_queue = getattr(backend, 'worker_queue', None)
     if worker_queue is not None or os.getenv('RKB_BGE_QUEUE_PATH'):
         from .bge_queue import BgeQueue
@@ -1802,6 +1812,17 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
             context=expert_executor_context)
         from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
         expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
+    expert_dot_events=None
+    if (expert_executor_context is not None
+            and expert_executor_context.mcp_subject is not None):
+        if expert_slack_ingress is None or expert_slack_ingress._reply is None:
+            raise RuntimeError('dot Events requires the already configured Slack bot sender')
+        from .expert_dot_events import ExpertDotEvents
+        expert_dot_events=ExpertDotEvents(context=expert_executor_context,
+            reply=expert_slack_ingress._reply,result_receiver=expert_result_receiver,
+            oauth_provider=target_startup.config.oauth_provider,
+            callback_host=expert_executor_context.mcp_callback_host)
+        expert_slack_ingress._reply.bind_dot_events(expert_dot_events)
     mcp=build_server(profile=profile,target_startup=target_startup,
         projects_hub_receiver=projects_hub_receiver,
         expert_slack_ingress=expert_slack_ingress,
@@ -1809,7 +1830,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         expert_claim_receiver=expert_claim_receiver,
         expert_result_receiver=expert_result_receiver,
         expert_recovery_receiver=expert_recovery_receiver,
-        expert_slack_socket_mode=expert_slack_socket_mode)
+        expert_slack_socket_mode=expert_slack_socket_mode,
+        expert_dot_events=expert_dot_events)
     # The MCP SDK's .run() configures Uvicorn without a graceful timeout.
     # Keep its actual ASGI app/lifespan and bound only the HTTP connection drain.
     uvicorn.run(
