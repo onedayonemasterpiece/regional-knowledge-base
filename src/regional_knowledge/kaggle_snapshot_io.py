@@ -65,7 +65,9 @@ class SnapshotIo:
         self.factory._current(binding)
         handle=sha(key.encode())
         if handle not in self.operations:
-            if len(self.operations)>=256 or sum(not op.task.done() for op in self.operations.values())>=2:
+            # Match the original owner's retained request bound: supported
+            # books can exceed 256 pages. Running I/O remains capped at two.
+            if len(self.operations)>=4096 or sum(not op.task.done() for op in self.operations.values())>=2:
                 raise SnapshotError('snapshot_io_capacity')
             operation=_Operation(binding)
             async def run():

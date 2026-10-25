@@ -121,6 +121,27 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
 
 
 @pytest.mark.asyncio
+async def test_page_io_receipts_exceed_256_without_increasing_active_work():
+    binding=('run','inc',1)
+    io=SnapshotIo(factory=NS(_current=lambda b:None,limits=NS(timeout_seconds=2)),tickets=None,transfer=None)
+    async def completed(operation):return {'page':True}
+    gate=asyncio.Event()
+    async def blocked(operation):await gate.wait();return {'page':True}
+    try:
+        first=None
+        for index in range(257):
+            receipt=io.start('page:'+str(index),binding,completed)
+            if first is None:first=receipt
+            await io.operations[receipt['handle']].task
+        assert io.status(first['handle'],binding)=={'status':'complete','value':{'page':True}}
+        one=io.start('blocked-one',binding,blocked);io.start('blocked-two',binding,blocked)
+        with pytest.raises(SnapshotError,match='snapshot_io_capacity'):
+            io.start('third',binding,blocked)
+        assert io.start('blocked-one',binding,blocked)==one
+    finally:await io.aclose()
+
+
+@pytest.mark.asyncio
 async def test_snapshot_io_rebind_keeps_one_operation_and_requires_current_attachment():
     active=[('run','inc',1)]
     native=NS(_current=lambda b:None if b==active[0] else (_ for _ in ()).throw(SnapshotError('detached')),
