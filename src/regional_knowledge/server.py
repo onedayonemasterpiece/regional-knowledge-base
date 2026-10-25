@@ -484,9 +484,13 @@ def build_server(
     if selected=='kaggle_source':
         kwargs['lifespan']=(target_startup.lifespan if expert_slack_socket_mode is None
             else lambda server: expert_slack_socket_mode.alongside(target_startup.lifespan,server))
-        if expert_dot_events is not None:
+        responder=(expert_slack_ingress._reply if expert_slack_ingress is not None
+                   and expert_slack_ingress._reply is not None else expert_dot_events)
+        if responder is not None:
+            # One existing lifespan for HTTP and Socket Mode. The bound reply
+            # resumes dot when subscribed, otherwise original Slack rows.
             kwargs['lifespan']=_resume_original_dot_requests(
-                kwargs['lifespan'],expert_dot_events)
+                kwargs['lifespan'],responder)
     embedded_provider: RegionalOAuthProvider | None = None
     if auth_mode == "embedded":
         if not issuer or not resource_url:
