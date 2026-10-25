@@ -97,7 +97,7 @@ async def test_real_callback_connect_pins_public_ip_but_checks_original_tls_host
     import regional_knowledge.expert_dot_events as module
     observed=[]
     monkeypatch.setattr(module,"_public_dns",lambda host:
-                        "8.8.8.8" if host=="callbacks.chatgpt.example" else
+                        ("8.8.8.8",) if host=="callbacks.chatgpt.example" else
                         pytest.fail("unexpected callback host"))
     class FakeClient:
         def __init__(self,**kwargs):
@@ -122,6 +122,33 @@ async def test_real_callback_connect_pins_public_ip_but_checks_original_tls_host
     assert extensions=={"sni_hostname":"callbacks.chatgpt.example"}
     assert headers["X-MCP-Subscription-Id"]=="sub-original"
     assert body=={"eventId":"Ev-original"}
+
+
+@pytest.mark.asyncio
+async def test_validated_dual_stack_callback_falls_back_after_connect_failure(monkeypatch):
+    import regional_knowledge.expert_dot_events as module
+    monkeypatch.setattr(module,"_public_dns",lambda host:
+                        ("8.8.8.8","2606:4700:4700::1111"))
+    calls=[]
+    class FakeClient:
+        def __init__(self,**kw):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*exc):pass
+        async def post(self,url,*,content,headers,extensions):
+            calls.append(url)
+            assert headers["host"]=="callbacks.chatgpt.example"
+            assert extensions=={"sni_hostname":"callbacks.chatgpt.example"}
+            if len(calls)==1:
+                raise httpx.ConnectError("first public address unreachable")
+            return httpx.Response(200)
+    monkeypatch.setattr(module.httpx,"AsyncClient",FakeClient)
+    events=_instance()
+    response=await events._post({"id":"sub-original",
+                "url":"https://callbacks.chatgpt.example/events","secret":_whsec()},
+                "Ev-original",{"eventId":"Ev-original"})
+    assert response.status_code==200
+    assert calls==["https://8.8.8.8/events",
+                   "https://[2606:4700:4700::1111]/events"]
 
 
 @pytest.mark.asyncio
@@ -206,13 +233,42 @@ async def test_parallel_search_and_wake_for_17_saved_requests_without_loss(monke
         events.notify(f"request-{i}")
     events.notify("request-16")
     await asyncio.sleep(0)
-    assert len(started)==34
-    assert sum(1 for kind,_ in started if kind=="search")==17
+    assert len(started)==33
+    assert sum(1 for kind,_ in started if kind=="search")==16
     assert sum(1 for kind,_ in started if kind=="wake")==17
-    assert len(events._reads)==17 and len(events._wakes)==17
+    assert len(events._reads)==16 and len(events._wakes)==17
     release.set()
     await asyncio.gather(*(entry[0] for entry in events._reads.values()),
                          *events._wakes.values())
+
+
+@pytest.mark.asyncio
+async def test_resume_65_accepted_questions_wakes_all_without_native_prefetch(
+        tmp_path,monkeypatch):
+    db=_Corpus(tmp_path/"resume-65.sqlite")
+    with db.connect() as conn:
+        conn.execute("""CREATE TABLE rkb_expert_requests(
+            id TEXT PRIMARY KEY,state TEXT,created_at REAL)""")
+        conn.executemany("INSERT INTO rkb_expert_requests VALUES(?,?,?)",
+                         [(f"request-{i}","pending",i) for i in range(65)])
+    events=_instance()
+    events.control=SimpleNamespace(corpus=db)
+    monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    async def unexpected_search(request_id,ready=None):
+        pytest.fail("resume must not flood native with speculative searches")
+    monkeypatch.setattr(events,"_search",unexpected_search)
+    done=asyncio.Event()
+    wakes=[]
+    async def wake(request_id):
+        wakes.append(request_id)
+        await done.wait()
+    monkeypatch.setattr(events,"_wake",wake)
+    await events.resume_pending()
+    await asyncio.sleep(0)
+    assert len(wakes)==65 and len(set(wakes))==65
+    assert len(events._wakes)==65 and not events._reads
+    done.set()
+    await asyncio.gather(*tuple(events._wakes.values()))
 
 
 @pytest.mark.asyncio
@@ -521,9 +577,10 @@ async def test_webhook_ack_without_claim_resumes_original_pending_request(tmp_pa
     events.control=SimpleNamespace(corpus=db)
     wakes=[]
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
-    monkeypatch.setattr(events,"notify",lambda request_id:wakes.append(request_id))
+    monkeypatch.setattr(events,"notify",lambda request_id,*,prefetch=True:
+                        wakes.append((request_id,prefetch)))
     await events.resume_pending()
-    assert wakes==["still-pending"]
+    assert wakes==[("still-pending",False)]
 
 
 @pytest.mark.asyncio
