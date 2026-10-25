@@ -157,6 +157,77 @@ async def install(env,h,ordinal,*,vector=VECTOR):
 
 @PG
 @pytest.mark.asyncio
+@pytest.mark.parametrize('scoped', [False, True])
+async def test_native_search_and_exact_fetch_display_the_accepted_catalog_title(image_pg,scoped):
+    from contextlib import asynccontextmanager
+    from regional_knowledge.kaggle_protocol import Query, QueryResult, PassageReadRequest, PassageReadResult
+    from regional_knowledge.kaggle_public_backend import KaggleSourceBackend, parse_passage_fetch_id
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from regional_knowledge.kaggle_search import fused_search
+    from regional_knowledge.query_telemetry import ReadAttempt
+    from test_kaggle_pg_driver import connect
+    from test_kaggle_worker_query import pinned as read_tokenizer
+    env=image_pg;chain,head,doc=synthetic_knowledge(2)
+    await stage_all(env,chain)
+    h=await prepare(env,chain,head,doc)
+    assert (await accepted(env,stage_command(seal(len(chain),head),env['sequence']+1,SEAL_ROUTE))).status=='applied'
+    payload=activation_payload(chain,head)
+    for ordinal in range(2):
+        await install(env,h,ordinal)
+        assert (await accepted(env,next_command(payload,env['sequence']+1,ordinal=ordinal))).status=='applied'
+    assert (await accepted(env,next_command(payload,env['sequence']+1))).status=='applied'
+    statements=[]
+    class ObservedCursor(psycopg.AsyncCursor):
+        async def execute(self,query,params=None,**kwargs):
+            statements.append(str(query))
+            return await super().execute(query,params,**kwargs)
+    @asynccontextmanager
+    async def acquire():
+        connection=await connect()
+        connection.cursor_factory=ObservedCursor
+        try:yield connection
+        finally:await connection.close()
+    encoded=[]
+    async def encode(text):
+        encoded.append(text)
+        return [1.]+[0.]*1023
+    worker=KaggleWorkerQuery(acquire=acquire,tokenizer=read_tokenizer(),source_provenance=True)
+    query=Query(request_id='catalog-search',connection_generation=4,turn_generation=9,
+        compute_claim='fixture-compute',query='Synthetic model-authored source',
+        actor=dict(person_id=PERSON,audience='personal',auth_epoch=1,visibility_epoch=1),
+        filters=dict(kinds=('source',),source_ids=(SOURCE,) if scoped else None),
+        evidence_limit=2,min_data_seq=env['sequence'],deadline_ms=2000)
+    result=QueryResult.model_validate_json(json.dumps(await worker(query.model_dump(mode='json'),encode=encode)))
+    assert result.status=='ok' and len(result.evidence)==2
+    assert all(row.dependencies.source_ids==(SOURCE,) for row in result.evidence)
+    assert sum('FROM rkb_v4.hydrate' in statement for statement in statements)==1
+    assert sum('source_catalog' in statement for statement in statements)==1
+    assert not any('source_passage_metadata_v1' in statement for statement in statements)
+    attempt=ReadAttempt('c'*32)
+    rows=KaggleSourceBackend._render(result,evidence=False,attempt=attempt).results
+    thin=rows[0]
+    evidence=KaggleSourceBackend._render(result,evidence=True,attempt=attempt).evidence[0]
+    locator=parse_passage_fetch_id(thin.id)
+    request=PassageReadRequest(request_id='catalog-fetch',connection_generation=4,turn_generation=9,
+        compute_claim='fixture-compute',actor=query.actor,locator=locator,
+        min_data_seq=env['sequence'],deadline_ms=2000)
+    exact=PassageReadResult.model_validate_json(json.dumps(await worker(request.model_dump(mode='json'),encode=encode)))
+    assert exact.status=='ok'
+    fetched=KaggleSourceBackend._render_fetch(exact,locator=locator,attempt=attempt)
+    title=doc['image_manifest']['metadata']['title']
+    assert all(row.title==title for row in rows)
+    assert thin.title==evidence.title==fetched.title==title
+    assert thin.id==evidence.id==fetched.id and thin.url==fetched.url
+    assert evidence.text==fetched.text==result.evidence[0].text
+    assert len(encoded)==1  # Exact fetch does not repeat search or inference.
+    async with acquire() as connection:
+        baseline=await fused_search(connection,query.query,encode=encode,top_k=2,filters=query.filters)
+    assert [row.id for row in result.evidence]==[row.passage_id for row in baseline.evidence]
+    assert [row.text for row in result.evidence]==[row.body for row in baseline.evidence]
+
+
+@PG
+@pytest.mark.asyncio
 async def test_174_page_multi_region_manifest_prepares_with_existing_five_second_budget(image_pg_sql18):
     from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
     env=image_pg_sql18

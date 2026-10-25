@@ -75,7 +75,15 @@ Revision projections immutable. После готового staging атомар
 1. Dev проверяет principal/current grants и получает permit общей authority; Kaggle проверяет scope, revision/visibility и допустимую freshness.
 2. В том же notebook запускаются lexical/alias SQL и query encode одного resident BGE. Независимые SQL branches не ждут encode; dense SQL использует полученный vector локально.
 3. Здесь же выполняются bounded dedup/RRF и один batched hydrate top-K exact evidence с обязательной библиографией. Полный corpus и промежуточные vectors не пересылаются Dev.
+
 4. Kaggle проверяет current source eligibility, Dev — current person/grant/turn fence перед выдачей. При отзыве или недоборе допускается bounded refill либо честный partial/degraded в оставшемся budget; это не новое полное retry окно.
+
+В текущем source-read профиле существующий batched hydrate тем же SQL-запросом
+присоединяет название из `source_catalog` по source/revision. Прежний порядок
+top-K сохраняется через ordinality. Тонкий поиск, evidence и exact fetch показывают
+явный `metadata.title`, затем принятый `catalog.title`; если названия нет — прежний
+ID. Отдельный fetch каталога после поиска не выполняется. Это описание кода;
+живое исправление требует установки API и совместимого native read-handler.
 
 Нельзя каждый раз строить allowed-map всех книг, отправлять весь каталог JSON в vector query, вычислять все story similarities в Python или делать запрос на каждый title/evidence. Поиск active accepted book text не требует per-book owner ACL. Private drafts и mutation scopes сохраняются отдельно.
 
