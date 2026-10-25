@@ -205,8 +205,10 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     request="request-one"
     marker="6a7ac5a1-0e00-4b72-a41d-849908f38435"
-    origin={"event_id":"Ev-one","trigger_event_id":"Ev-one","state":"leased"}
+    origin={"event_id":"Ev-one","trigger_event_id":"Ev-one","state":"leased",
+            "origin":json.dumps({"channel_id":"C0RKBTEST"})}
     posts=[]
+    source_checks=[]
     class Control:
         app_id="A0RKBTEST"
         team_id="T0RKBTEST"
@@ -215,6 +217,10 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
             assert rid==request
             return dict(origin)
     class Delivery:
+        def _source_current(self,row,destination):
+            assert row["state"]=="sending"
+            assert destination["channel_id"]=="C0RKBTEST"
+            source_checks.append(True)
         async def stage_dataset_native_receipt(self,credentials,rid,proof):
             assert proof.channel_id=="C0RKBTEST"
             assert proof.thread_ts=="1792920000.123456"
@@ -238,6 +244,10 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
             return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
     class Sender:
         async def post_once(self,**kw):
+            # SlackChatSender checks current immediately before/after auth.test.
+            assert kw["current"]()
+            await asyncio.sleep(0)
+            assert kw["current"]()
             assert kw["event_id"]==marker
             assert kw["channel"]=="C0RKBTEST"
             assert kw["thread"]=="1792920000.123456"
@@ -252,6 +262,7 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
         "Содержательный ответ.\nИсточники: подтверждённый текст.")
     assert result=={"state":"delivered","request_id":request,"retry_send_allowed":False}
     assert posts==["result_saved","claimed","posted","receipt_staged"]
+    assert source_checks==[True,True]
     repeated=await events.record_result(request,"Ev-one",1,"x"*40,"same text")
     assert repeated["state"]=="delivered"
     assert posts==["result_saved","claimed","posted","receipt_staged"]
