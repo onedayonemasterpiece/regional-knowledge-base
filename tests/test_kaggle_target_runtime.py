@@ -349,6 +349,12 @@ async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maint
         assert kwargs['identity']==tuple(identity.values())
         events.append('recovery-worker-attached')
         worker=object.__new__(WorkerRecoveryPhases)
+        async def close_io():
+            if originals:
+                assert not runtime.original_intake_handler.closed
+                assert runtime.original_intake_handler.root.exists()
+            events.append('io-close')
+        worker.snapshot_io=SimpleNamespace(aclose=close_io)
         worker.read_handler_slot=None;worker.read_handler_control=None
         worker.download=lambda *args,**kw:None
         worker.workspace=lambda *args,**kw:None
@@ -365,6 +371,7 @@ async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maint
     assert worker is runtime.recovery_worker
     assert runtime.native_bundle is decoder_bundle
     if originals:assert runtime.original_intake_handler.native_bundle is decoder_bundle
+    if originals:assert runtime.original_intake_handler.snapshot_io is worker.snapshot_io
     assert worker.read_handler_slot is slot
     assert type(worker.read_handler_control) is WarmHandlerMaintenance
     assert worker.read_handler_control.slot is slot
@@ -375,6 +382,7 @@ async def test_new_empty_prepare_before_configure_recovery_binds_same_warm_maint
     assert events==['initdb-once','pool-created','pool-open','prepared-once',
                     'recovery-worker-attached']
     await runtime.aclose()
+    assert events.index('io-close')<events.index('pool-close')
     assert events[-3:]==['pool-close','recovery-close','owned-close']
 
 
@@ -692,7 +700,7 @@ async def test_prepared_runtime_reads_djvu_original_through_its_actual_intake(
     async def close():pass
     async def build(**kw):
         assert kw['native_bundle'] is djvu_bundle
-        return SimpleNamespace(aclose=close)
+        return SimpleNamespace(aclose=close,snapshot_io=None)
     monkeypatch.setattr('regional_knowledge.kaggle_recovery_phases.build_recovery_worker',build)
     runtime=TargetRuntime(dict(CONFIG,target_runtime=dict(launch.wire(),sql_root='/unused')),
         executed_source='/fixture',owner_factory=Owner,pool_factory=Pool,prepare=prepare)

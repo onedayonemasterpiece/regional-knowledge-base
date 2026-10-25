@@ -148,6 +148,7 @@ def test_real_generated_restore_entrypoint_waits_native_capability_and_refuses_w
             identity if not wrong_identity else (identity[0],identity[1],'wrong-incarnation'),None,None,0,b'',None)
         factory._capabilities.add(cap)
         class Worker:
+            snapshot_io=None
             async def wait_initialized(self,*identity):
                 await ready.wait();return cap
             async def __call__(self,frame):
@@ -253,6 +254,7 @@ def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload
     retained_factory=SimpleNamespace(_current=lambda binding:None)
     class Runtime:
         def __init__(self,config,**kwargs):
+            self.original_intake_handler=None
             self.recovery_worker=None;self.read_handler_slot=ReadHandlerSlot(
                 KaggleWorkerQuery(acquire=lambda:None,tokenizer=pinned(),
                     source_provenance=True),
@@ -271,6 +273,7 @@ def test_generated_fresh_snapshot_owner_configures_after_pg_without_model_reload
             assert actual is encoder and events==['prepare-owned-PG-A']
             events.append('same-model-capture-owner')
             worker=object.__new__(WorkerRecoveryPhases)
+            worker.snapshot_io=None
             worker.factory=retained_factory
             worker.read_handler_slot=None;worker.read_handler_control=None
             worker.download=lambda *a,**k:None

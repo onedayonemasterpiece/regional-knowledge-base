@@ -12,11 +12,12 @@ from regional_knowledge.kaggle_snapshot_io import SnapshotIo
 from regional_knowledge.native_snapshot_transfer import SnapshotTicket
 from test_bge_admission import state,auth,people,begin,answer,release
 from test_kaggle_recovery_phases import database,response
+from test_kaggle_original_intake import native as original_native
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind',['capture','dataset_verify'])
-async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_blocked(state,tmp_path,kind):
+@pytest.mark.parametrize('kind',['capture','dataset_verify','original_pages'])
+async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_blocked(state,tmp_path,kind,original_native):
     s=state;db=database();binding=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,
         db.database_generation,db.writer_generation)
     active=(s.run,'incarnation-a',s.generation)
@@ -55,10 +56,20 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
         effects.append('download');started.set();await finish_backup.wait()
         return dict(dataset_version=2,base_sequence=0)
     worker._dataset_verify=verify
+    original=original_native.handler
+    original.database=db;original.identity=native.identity;original.current=lambda b:b==active
+    original.attached(s.generation);original.snapshot_io=io
+    async def pages(frame):
+        effects.append('page');started.set();await finish_backup.wait()
+        return dict(physical_page_index=0)
+    original._execute=pages
     bridge=RecoveryPhaseDispatch(s.q,database=db,identity=native.identity,binding_current=lambda b:b==binding,
         snapshot_tickets=tickets,timeout_seconds=10)
+    async def dispatch_transfer(*args):return None
+    bridge.original_intake=NS(dispatch_transfer=dispatch_transfer)
     args=dict(versions={},expected_sequence=0) if kind=='capture' else dict(blob=dict(
         key='blob',size=1,sha256='a'*64,native_version='immutable-version'))
+    if kind=='original_pages':args=dict(handle='retained-original',original_sha256='a'*64,index=0)
     producer=asyncio.create_task(bridge.request(binding,kind,args,operation_key='snapshot'))
 
     async def pump_until(predicate):
@@ -76,7 +87,7 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
                     frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
                         **dict(work.document_payload),compute_claim=work.compute_claim,
                         dispatch_generation=work.dispatch_generation)
-                    receipt=await worker(frame)
+                    receipt=await (original(frame) if frame['phase']=='original_pages' else worker(frame))
                     await bridge.receive(response(s,frame,receipt['value']),run_id=s.run,token=s.token,generation=s.generation)
                 await release(s,work)
                 await asyncio.sleep(0)
@@ -94,8 +105,8 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
             finish_upload.set()
         await pump_until(producer.done)
         result=await producer
-        assert result.get('applied_sequence',result.get('base_sequence'))==0
-        assert effects==(['backup','grant','upload'] if kind=='capture' else ['download'])
+        assert result.get('applied_sequence',result.get('base_sequence',result.get('physical_page_index')))==0
+        assert effects==({'capture':['backup','grant','upload'],'dataset_verify':['download'],'original_pages':['page']}[kind])
     finally:
         if not producer.done():producer.cancel()
         await asyncio.gather(producer,return_exceptions=True)
