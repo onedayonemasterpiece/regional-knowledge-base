@@ -590,6 +590,52 @@ async def test_durable_recovery_releases_compute_while_retaining_one_job(phase):
 
 
 @pytest.mark.asyncio
+async def test_failed_recovery_phase_is_acknowledged_and_next_dispatch_executes():
+    transport = module('bge_wss_transport')
+    peer, stop, executions = Peer(), asyncio.Event(), []
+
+    async def read(frame, *, encode):
+        return result(frame)
+
+    async def native(frame):
+        executions.append(frame['id'])
+        if frame['id'] == 'failed-phase':
+            raise RuntimeError('private native failure')
+        return dict(phase=frame['phase'], request_sha256=frame['request_sha256'], value={'status':'complete'})
+
+    worker = transport.BgeWssTransport(dict(CONFIG, shared_reads=True),
+        lambda:lambda _: [1.] + [0.] * 1023, lambda:{}, query_handler=read,
+        recovery_handler=native, connector=peer.connect, heartbeat_seconds=.01,
+        maximum_seconds=5, stop=stop)
+    task = asyncio.create_task(worker.run())
+    dispatch = dict(type='DISPATCH', id='failed-phase', claim='failed-claim', kind='recovery_phase',
+        compute_claim='failed-compute', dispatch_generation=1, run_id=CONFIG['run_id'],
+        launch_nonce=CONFIG['launch_nonce'], runtime_incarnation=worker.incarnation,
+        database_generation='fixture-db', writer_generation='fixture-writer',
+        phase='verify', operation_key='failed-operation', request_sha256='c' * 64, arguments={})
+    try:
+        await peer.wait('READY')
+        await peer.put(dispatch)
+        failed = await peer.wait('RECOVERY_PHASE_RESULT')
+        assert failed['receipt'] == dict(phase='verify', request_sha256='c' * 64,
+            value={'error':'native_phase_failed','retryable':True})
+        assert worker.job['id'] == 'failed-phase'
+        await peer.put(dict(type='RESULT_ACK', job_id='failed-phase', claim='failed-claim', status='accepted'))
+        await peer.put(dict(dispatch, id='next-phase', claim='next-claim', compute_claim='next-compute',
+            operation_key='next-operation'))
+        completed = await peer.wait('RECOVERY_PHASE_RESULT', predicate=lambda f:f['job_id'] == 'next-phase')
+        assert completed['receipt']['value'] == {'status':'complete'}
+        assert executions == ['failed-phase', 'next-phase'] and peer.sessions == 1
+        await peer.put(dict(type='RESULT_ACK', job_id='next-phase', claim='next-claim', status='accepted'))
+        await peer.put(dict(type='RESOURCE_PROBE', probe_nonce='after-native-failure'))
+        await peer.wait('RESOURCE_STATE', predicate=lambda f:f.get('probe_nonce') == 'after-native-failure')
+        assert worker.job is None and worker.pending is None and not task.done()
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 3)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('with_encode',[False,True])
 async def test_durable_document_forward_does_not_exclude_reads_or_overlap_model_calls(with_encode):
     entered=threading.Event();finish=threading.Event();calls=[];active=0;peak=0

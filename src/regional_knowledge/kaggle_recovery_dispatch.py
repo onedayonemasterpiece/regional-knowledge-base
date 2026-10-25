@@ -99,19 +99,17 @@ class RecoveryPhaseDispatch:
         self.bind_attachment(binding)
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
-        if phase=='schema_migrate':
-            # A known rolled-back busy/timeout may use a fresh job. Unknown or
-            # successful results keep their original identity and are replayed.
-            root=operation_key
-            with self.queue.connect(write=False) as db:
-                for attempt in range(256):
-                    row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
-                        ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
-                    if row is None or row['state']!='done':break
-                    value=json.loads(row['result'])['value']
-                    if value.get('status')!='rejected' or not value.get('retryable'):break
-                    operation_key=root+':retry:'+str(attempt+1)
-                else:raise SnapshotError('migration_retry_budget')
+        root=operation_key
+        with self.queue.connect(write=False) as db:
+            for attempt in range(256):
+                row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
+                    ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
+                if row is None or row['state']!='done':break
+                value=json.loads(row['result'])['value']
+                if not value.get('retryable') or not (value.get('error') or
+                        phase=='schema_migrate' and value.get('status')=='rejected'):break
+                operation_key=root+':retry:'+str(attempt+1)
+            else:raise SnapshotError('migration_retry_budget')
         arguments=json.loads(encode(arguments));request_hash=sha(encode({'phase':phase,'arguments':arguments}))
         identity=bounded(dict(phase=phase,arguments=arguments,operation_key=operation_key,
             request_sha256=request_hash,database_generation=self.database.database_generation,

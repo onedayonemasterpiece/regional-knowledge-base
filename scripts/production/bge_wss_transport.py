@@ -350,9 +350,8 @@ class BgeWssTransport:
     async def _encode(self, job):
         """One exception boundary for every durable native or vector job.
 
-        A post-dispatch failure has an unknown effect. Retain the exact job and
-        claim without a fabricated result; only its finished compute permit
-        may be released for independent reads.
+        Retryable phases settle normally; source commands reconcile the same
+        accepted operation through the existing reconnect and applied ledger.
         """
         try:
             if job['kind'] in ('source_command', 'recovery_phase'):
@@ -386,27 +385,17 @@ class BgeWssTransport:
             from regional_knowledge.recovery_journal import StaleWriter
             if isinstance(error, StaleWriter):
                 raise
+            if job['kind'] == 'recovery_phase':
+                self.pending = dict(job_id=job['id'], claim=job['claim'],
+                    receipt=dict(phase=job['phase'], request_sha256=job['request_sha256'],
+                        value={'error':'native_phase_failed','retryable':True}),
+                    **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
+                        'compute_claim', 'dispatch_generation')})
+                self.changed.set()
+                return
             if job['kind'] == 'source_command':
-                from regional_knowledge.kaggle_apply import ApplyUnknown, ApplyExecutionError
-                if isinstance(error, (ApplyUnknown, ApplyExecutionError)):
-                    # Preserve the existing domain-specific unresolved receipt
-                    # and safe validated operation key; never emit two events.
-                    import base64
-                    operation_key = None
-                    try:
-                        command = json.loads(base64.b64decode(job['command_b64'], validate=True))
-                        candidate = command.get('operation_key') if type(command) is dict else None
-                        if (type(candidate) is str and 1 <= len(candidate) <= 256
-                                and all(c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:'
-                                        for c in candidate)):
-                            operation_key = candidate
-                    except (KeyError, ValueError, TypeError, UnicodeError, RecursionError):
-                        pass
-                    print(json.dumps({'event':'source_command_outcome_unresolved',
-                        'job_id':job['id'], 'operation_key':operation_key,
-                        'error_class':type(error).__name__},
-                        separators=(',', ':')), flush=True)
-                    return
+                self.job = None
+                raise ConnectionError('source command requires outcome reconciliation') from error
             # Unexpected effects are not proof of failure or permission to
             # reexecute. This one bounded safe event excludes payload and text.
             print(json.dumps({'event':'native_job_outcome_unresolved',
@@ -842,9 +831,9 @@ class BgeWssTransport:
                 self._lifetime_timeout=lifetime
                 while not self.stop.is_set():
                     self._failure(self.loading)
-                    self._failure(self.encoding)
                     connected=False
                     try:
+                        self._failure(self.encoding)
                         self._bootstrap_event('wss_connect_start',attempt=self._reconnect_attempt+1)
                         async with (self.connector() if self.connector else native_connect()) as socket:
                             connected=True
@@ -858,6 +847,8 @@ class BgeWssTransport:
                     except BgeChannelStopped:
                         raise
                     except (ConnectionError, OSError, TimeoutError, aiohttp.ClientError) as error:
+                        if self.encoding is not None and self.encoding.done() and self.job is None:
+                            self.encoding = None
                         self._bootstrap_event('wss_session_failed' if connected else 'wss_connect_failed',error_type=type(error).__name__,
                             http_status=getattr(error,'status',None))
                         self._reconnect_attempt += 1
