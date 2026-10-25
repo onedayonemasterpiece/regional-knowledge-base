@@ -109,6 +109,7 @@ class _EncryptedStateStore:
             "personal_audit": {},
             "service_credentials": {},
             "service_audit": {},
+            "dot_event_subscriptions": {},
         }
 
     def _load_or_create_key(self) -> bytes:
