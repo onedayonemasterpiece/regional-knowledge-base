@@ -357,11 +357,6 @@ class SourceReadGate:
                 result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
                     'status': 'degraded', 'reason': 'evidence_withdrawn',
                     'prior_write_pending': False, 'evidence': retained, 'continuation': None})
-        # Authority is rechecked again after the local read's await. The final
-        # synchronous fence below also rejects mutations during that recheck.
-        await self.authority.require(read.authority, 'public_search')
-        if not self._binding(read):
-            raise SourceGateDenied('runtime binding changed during output check')
         selected_sources={source for item in result.evidence
             for source in item.dependencies.source_ids}
         selected_sources.update(record['source_id'] for record in getattr(result,'records',())
