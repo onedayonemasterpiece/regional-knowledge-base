@@ -66,7 +66,6 @@ class SourceGeoInstaller:
                 startup.config.source_snapshot is None and startup.config.source_restore is None):
             raise ValueError('same fixed GEO/recovery/writer owners required')
         self.manifest=read_manifest(config);self.plan=plan_geo_manifest(self.manifest)
-        startup.geo_gate._places=frozenset(item.stable_id for item in self.manifest.items if item.payload.kind=='place')
         self.keys=tuple('geo-bootstrap11:'+self.plan.manifest_id+':'+str(n) for n in range(len(self.plan.payloads)))
         self.effective_keys=self.keys
         if startup.config.geo_manifest_operation_keys!=self.keys:

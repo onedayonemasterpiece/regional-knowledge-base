@@ -46,7 +46,7 @@ def register_source_graph_tools(mcp,backend,geo_backend,principal):
         # This is only fixed routing by an immutable, already-verified ID index.
         # Each branch independently resolves/rechecks canonical authority and
         # current proof; a branch failure is never retried under another scope.
-        if geo_backend is not None and geo_backend.geo_gate.knows_entity(entity_id):
+        if geo_backend is not None and await geo_backend.geo_gate.knows_entity(entity_id):
             mapped={'aliases':'alias','relations':'relation','mentions':'provenance'}.get(category,category)
             return await geo_backend.graph_fetch(entity_id,principal(),limit=limit,cursor=cursor,category=mapped,
                 discovery_job_id=discovery_job_id)

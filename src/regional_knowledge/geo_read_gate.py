@@ -5,10 +5,13 @@ model output, identity store or independent queue/admission is created here.
 """
 from __future__ import annotations
 
+import asyncio
+import base64
+import json
 from dataclasses import dataclass
 import time
 
-from .control_spool import ControlSpool
+from .control_spool import ControlSpool,SpoolError
 from .geo_manifest_commands import validate_geo_manifest_command,geo_manifest_handler,GEO_REVISIONS,_name_projection
 from .geo_migration import canonical,normalized
 from .kaggle_geo_contracts import GeoReadRequest,GeoReadResult,decode_item
@@ -122,11 +125,35 @@ class GeoReadGate:
                 self._history_current(binding,proof.activation_sequence))
         except Exception:return False
 
-    def knows_entity(self,entity_id):
-        # Route selection only. This confers no read permission and never
-        # substitutes for dispatch/finish/final issuance authority checks.
+    async def knows_entity(self,entity_id):
+        # Route selection only, from the existing open-command key index.
+        # Activation is required even if an installer has loaded its manifest.
         from .geo_migration import exact_uuid
+        from .kaggle_public_backend import current_binding,TargetUnavailable
         exact_uuid(entity_id)
+        try:binding=await asyncio.to_thread(current_binding,self.spool.queue)
+        except TargetUnavailable:return False
+        keys=self.operation_keys or (self._manifest.operation_keys if self._manifest else ())
+        if not keys:return False
+        if not self.installation_current(binding,keys):
+            try:await self.establish(keys,binding=binding)
+            except SourceGateDenied:return False
+            except SpoolError as error:
+                if type(error) is SpoolError and error.args==('control operation not found',):return False
+                raise
+        if not self._places:
+            proof=self._manifest
+            opening=await self.spool.get(keys[0]);command=opening.command
+            payload=json.loads(command.payload)
+            if (command.route!='geo.manifest.install.v1' or payload.get('action')!='open'
+                    or opening.database_generation!=binding.database_generation
+                    or command.ids.get('manifest_id')!=proof.manifest_id):
+                raise SourceGateDenied('GEO routing index differs')
+            index=json.loads(base64.b64decode(payload['index_b64'],validate=True))
+            places=frozenset(item['key'][6:] for item in index if item['key'].startswith('place:'))
+            if self._manifest is not proof or not self.installation_current(binding,keys):
+                raise SourceGateDenied('GEO routing activation changed')
+            self._places=places
         return entity_id in self._places
 
     def _expire(self):
@@ -204,4 +231,4 @@ class GeoReadGate:
 
     def release(self,ticket):self._tickets.pop(ticket,None)
     def abandon(self,permit):self._permits.pop(permit,None)
-    def invalidate(self):self._manifest=None;self._permits.clear();self._tickets.clear()
+    def invalidate(self):self._manifest=None;self._places=frozenset();self._permits.clear();self._tickets.clear()
