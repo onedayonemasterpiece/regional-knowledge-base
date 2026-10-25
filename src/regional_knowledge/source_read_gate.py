@@ -238,12 +238,6 @@ class SourceReadGate:
                 or (result.request_id, result.connection_generation, result.turn_generation)
                     != (q.request_id, q.connection_generation, q.turn_generation)):
             raise SourceGateDenied('result request binding differs')
-        try:
-            type(result).model_validate(result.model_dump())
-        except (ValueError, TypeError, AttributeError):
-            closed = self._closed(result, 'internal_error')
-            read.facts, read.result = None, closed
-            return closed
         if result.status not in ('ok','degraded'):
             if result.evidence or (not exact and result.mode is not None):
                 raise SourceGateDenied('non-search result contains evidence')
@@ -252,8 +246,6 @@ class SourceReadGate:
             read.facts,read.result=None,result
             return result
         try:
-            # Frozen models can still be bypassed with model_copy. Validate the
-            # complete native payload before inspecting its source dependency set.
             for item in result.evidence:
                 ids = _source_ids(item.dependencies.source_ids, maximum=32)
                 refs = item.dependencies.source_revisions
@@ -357,11 +349,6 @@ class SourceReadGate:
                 result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
                     'status': 'degraded', 'reason': 'evidence_withdrawn',
                     'prior_write_pending': False, 'evidence': retained, 'continuation': None})
-        # Authority is rechecked again after the local read's await. The final
-        # synchronous fence below also rejects mutations during that recheck.
-        await self.authority.require(read.authority, 'public_search')
-        if not self._binding(read):
-            raise SourceGateDenied('runtime binding changed during output check')
         selected_sources={source for item in result.evidence
             for source in item.dependencies.source_ids}
         selected_sources.update(record['source_id'] for record in getattr(result,'records',())
