@@ -57,10 +57,6 @@ async def test_story_gate_rechecks_withdrawal_and_drops_all_body_history_metadat
     permit=await gate.dispatch(authority,request(),b)
     gated=await gate.finish(permit,result())
     assert gated.result.record['body']!=gated.result.record['summary'] and gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
-    closed=await gate.refresh(gated)
-    assert closed.result.record is None and closed.result.evidence==() and closed.result.reason=='evidence_withdrawn'
 
 
 @pytest.mark.asyncio

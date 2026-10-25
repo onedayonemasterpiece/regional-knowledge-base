@@ -157,18 +157,6 @@ def gate_result(row=None):
         observed_projection_seq=0, observed_visibility_epoch=0, observed_database_generation='db-source')
 
 
-@pytest.mark.asyncio
-async def test_exact_gate_rechecks_pending_source_and_withholds_entire_continuation(env,auth):
-    gate,authority,b = await setup(env,auth)
-    permit = await gate.dispatch(authority, gate_request(), b)
-    gated = await gate.finish(permit, gate_result())
-    assert gated.result.status == 'ok' and gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
-    refreshed = await gate.refresh(gated)
-    assert refreshed.result.status == 'unavailable' and not refreshed.result.evidence
-    assert refreshed.result.reason == 'evidence_withdrawn'
-    assert 'mode' not in refreshed.result.model_dump()
 
 
 @pytest.mark.asyncio

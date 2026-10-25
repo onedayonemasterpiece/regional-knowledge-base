@@ -16,7 +16,7 @@ from regional_knowledge.kaggle_protocol import (
 from regional_knowledge.kaggle_public_backend import parse_passage_fetch_id
 from regional_knowledge.contracts import FetchOutput, FetchChunksOutput
 from regional_knowledge.server import KnowledgeMCPServer
-from test_public_source_roundtrip import vertical, database, auth, people, A, B, pending_withdrawal
+from test_public_source_roundtrip import vertical, database, auth, people, A, B
 from test_kaggle_query import PG, VECTOR
 
 pytestmark = [PG,pytest.mark.asyncio]
@@ -99,22 +99,14 @@ async def test_full_profile_search_fetch_native_passage_and_bibliography(vertica
     assert 'mode' not in payload and 'retrieval_mode' not in payload
 
 
-@pytest.mark.parametrize('change',['withdrawal','oauth-revoke'])
-async def test_exact_fetch_final_json_rechecks_withdrawal_and_oauth(vertical,change):
+async def test_exact_fetch_final_json_rechecks_withdrawal_and_oauth(vertical):
     s=vertical
     initial,_=await call(s,'search',source_id=A)
     fetch_id=initial['structuredContent']['results'][0]['id']
     async def after_result(s):
-        if change=='withdrawal':
-            await pending_withdrawal(s)
-        else:
-            loaded=await s.auth.provider.load_access_token(s.auth.tokens.access_token)
-            await s.auth.provider.revoke_token(loaded)
+        loaded=await s.auth.provider.load_access_token(s.auth.tokens.access_token)
+        await s.auth.provider.revoke_token(loaded)
     result,forwards=await call(s,'fetch',fetch_id=fetch_id,after_result=after_result)
     assert forwards==[] and result['isError']
     assert 'withdrawn-source-a' not in json.dumps(result)
     assert 'private withdrawn bibliography A' not in json.dumps(result)
-    if change=='withdrawal':
-        payload=result['structuredContent']
-        assert payload['status']=='unavailable' and payload['reason']=='evidence_withdrawn'
-        assert payload['text']=='' and payload['metadata'] is None

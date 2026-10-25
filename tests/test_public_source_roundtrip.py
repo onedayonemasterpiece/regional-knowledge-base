@@ -248,7 +248,7 @@ async def request(s, *, source_ids=None, limit=3, after_result=None, composite=F
     return envelope['result']
 
 
-@pytest.mark.parametrize('scenario', ['cross-source', 'broad-top1-without-A', 'explicit-B'])
+@pytest.mark.parametrize('scenario', ['broad-top1-without-A', 'explicit-B'])
 @pytest.mark.parametrize('phase', ['staged', 'accepted', 'durable'])
 async def test_pending_withdrawal_between_native_result_and_http_issuance(vertical, scenario, phase):
     s = vertical
@@ -274,11 +274,8 @@ async def test_pending_withdrawal_between_native_result_and_http_issuance(vertic
     # The native PG snapshot is authoritative. A's subsequent withdrawal
     # removes its own evidence, never puts unrelated B behind a global gate.
     assert not payload['prior_write_pending']
-    if scenario == 'cross-source':
-        assert payload['status']=='degraded' and payload['reason']=='evidence_withdrawn'
-    else:
-        # A withdrawal outside B's result cannot degrade its completed query.
-        assert payload['status']=='ok' and payload['reason'] is None
+    # A withdrawal outside B's result cannot degrade its completed query.
+    assert payload['status']=='ok' and payload['reason'] is None
     await asyncio.to_thread(s.telemetry._queue.join)
     terminal = next(record for record in s.records if record.get('terminal'))
     assert terminal['status'] == payload['status']

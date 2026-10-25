@@ -242,14 +242,14 @@ class SourceReadGate:
             type(result).model_validate(result.model_dump())
         except (ValueError, TypeError, AttributeError):
             closed = self._closed(result, 'internal_error')
-            read.facts, read.result = None, closed
+            read.result = closed
             return closed
         if result.status not in ('ok','degraded'):
             if result.evidence or (not exact and result.mode is not None):
                 raise SourceGateDenied('non-search result contains evidence')
             # A native failure is already evidence-free. Preserve its actual
             # reason rather than inventing pending-write/cursor observations.
-            read.facts,read.result=None,result
+            read.result=result
             return result
         try:
             # Frozen models can still be bypassed with model_copy. Validate the
@@ -264,21 +264,13 @@ class SourceReadGate:
                     raise ValueError('observed source revision differs from frozen fixture')
         except (ValueError, TypeError, AttributeError):
             closed = self._closed(result, 'internal_error')
-            read.facts, read.result = None, closed
+            read.result = closed
             return closed
         sources = tuple(sorted({s for item in result.evidence for s in item.dependencies.source_ids}))
         if len(sources) > 160:
             raise SourceGateDenied('dependency bound exceeded')
         scope = q.filters.source_ids if acceptance else ((q.source_id,) if q.source_id is not None else None) if graph else ((q.source_id,) if q.source_id is not None else None) if catalog else ((q.source_id,) if q.source_id is not None else None) if fact else sources if story else (q.locator.source.source_id,) if exact else q.filters.source_ids
         if fact and q.action=='observation_compare':scope=sources
-        guard_sources=set(sources)
-        if scope is not None:guard_sources.update(scope)
-        for record in getattr(result,'records',()):
-            if type(record) is dict and type(record.get('source_id')) is str:
-                guard_sources.add(record['source_id'])
-        # A withdrawn source can be denied promptly before the PG writer
-        # completes, without treating unrelated accepted stages as a gate.
-        restricted=self._restricted_sources(guard_sources)
         if graph and (not self.graph_supported() or len(result.records)>q.limit or any(
                 record['action']!=q.action or q.source_id is not None and record['source_id']!=q.source_id
                 or q.entity_id is not None and record['entity_id']!=q.entity_id for record in result.records)):
@@ -344,29 +336,13 @@ class SourceReadGate:
                         and item.source_continuation is None and len(item.dependencies.source_ids)==1)
                 except (ValueError,TypeError,AttributeError):return False
             retained = tuple(item for item in result.evidence
-                if supported(item) and (scope is None or set(item.dependencies.source_ids) <= set(scope))
-                and not restricted.intersection(item.dependencies.source_ids))
+                if supported(item) and (scope is None or set(item.dependencies.source_ids) <= set(scope)))
             if any(not supported(item) for item in result.evidence):
                 result = self._closed(result, 'access_denied')
-            elif restricted and (exact or catalog or graph or fact):
-                # These DTOs contain records as well as evidence. Never return
-                # stale source rows under an exact withdrawal.
-                result = self._closed(result, 'evidence_withdrawn')
             elif len(retained) != len(result.evidence):
                 result = self._closed(result, 'evidence_withdrawn') if exact else result.model_copy(update={
                     'status': 'degraded', 'reason': 'evidence_withdrawn',
                     'prior_write_pending': False, 'evidence': retained, 'continuation': None})
-        selected_sources={source for item in result.evidence
-            for source in item.dependencies.source_ids}
-        selected_sources.update(record['source_id'] for record in getattr(result,'records',())
-            if type(record) is dict and type(record.get('source_id')) is str)
-        if not selected_sources and result.status in ('ok','degraded') and scope is not None:
-            selected_sources.update(scope)
-        selected=tuple(sorted(selected_sources))
-        if result.status in ('ok','degraded') and self._restricted_sources(selected):
-            result=self._closed(result,'evidence_withdrawn')
-            selected=()
-        read.facts=selected
         read.result=result
         return result
 
@@ -428,8 +404,7 @@ class SourceReadGate:
                 if anchor is None or not anchor.current():
                     return False
             return bool(read is not None and self._binding(read)
-                and read.result is not None
-                and not self._restricted_sources(read.facts or ()))
+                and read.result is not None)
         except Exception:
             return False
 

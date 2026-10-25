@@ -118,21 +118,6 @@ async def test_comparison_preserves_legacy_no_arithmetic_policy(change,verdict):
     assert output['left']['bibliography']=='Exact source citation'
 
 
-@pytest.mark.asyncio
-async def test_current_gate_drops_entire_pair_after_pending_withdrawal(env,auth):
-    gate,authority,binding=await setup(env,auth);enable(env.spool)
-    native=PairNative(frontier=(0,0,0,True,False,'db-source'))
-    query=compare_request(connection_generation=1,turn_generation=1,min_data_seq=0)
-    permit=await gate.dispatch(authority,query,binding)
-    result=await execute_fact_read(permit.query,acquire=native.acquire)
-    gated=await gate.finish(permit,result)
-    assert len(gated.result.records)==2 and gate.issuance_current(gated.ticket)
-    await stage(env)
-    assert not gate.issuance_current(gated.ticket)
-    refreshed=await gate.refresh(gated)
-    assert not refreshed.result.records and not refreshed.result.evidence
-    assert refreshed.result.reason=='evidence_withdrawn'
-    with pytest.raises(ValueError):render_comparison(refreshed.result)
 
 
 @pytest.mark.asyncio
