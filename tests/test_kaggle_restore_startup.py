@@ -125,7 +125,7 @@ async def test_production_owner_restores_before_ready_through_same_claim_and_tic
                         assert 'dataset_base' not in frame and 'dataset_observation' not in frame
                     else:assert frame['download_ticket']['headers']==[['If-Match','"native-blob"']]
                     assert frame['arguments']['manifest_b64'] and frame['writer_generation']=='writer-2'
-                    value={'handle':'native-retained-session'}
+                    value={'handle':'native-retained-session','archived_sequence':0}
                 elif phase=='finish':
                     assert frame['arguments']['handle']=='native-retained-session'
                     value={'reference':'retained-native-capability'}

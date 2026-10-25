@@ -258,6 +258,21 @@ class SharedReadAdmission:
         self._event.set()
         return actor
 
+    async def register_accepted_command(self,bridge,command,seal):
+        """Resume already authorized durable work; grant no new client rights."""
+        self._active()
+        if bridge is not self.queue._source_commands:
+            raise PermissionError('retained accepted command bridge required')
+        from .kaggle_source_commands import digest
+        if await bridge.spool.journal.verify_accepted(seal,command)!=digest(command.encode()):
+            raise PermissionError('exact original acceptance required')
+        actor=command.person_id
+        if len(set(self._documents)|set(self._commands)|{actor})>256:
+            raise AdmissionUnavailable('canonical durable actor capacity exhausted')
+        self._commands.setdefault(actor,None)
+        self._event.set()
+        return actor
+
     async def register_editorial_document(self,owner,job_id):
         """One exact document job from the retained native Story workflow."""
         self._active()
@@ -441,7 +456,7 @@ class SharedReadAdmission:
                     if (self.queue._source_commands is None
                             or self.queue._source_commands.maintenance_blocks_dispatch()):continue
                     context=self._commands.get(doc['actor'])
-                    if context is not None and self.queue._source_commands is not None:
+                    if doc['actor'] in self._commands and self.queue._source_commands is not None:
                         try:actor=await self.queue._source_commands.authorize_job(context,doc)
                         except (PermissionError,ValueError,LookupError):actor=None
                         if actor==doc['actor']:eligible.append(doc)

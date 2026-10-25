@@ -108,12 +108,18 @@ outcomes remain intact. Automatic reconciliation observes current owners; a
 bounded historical sweep remains an explicit diagnostic operation.
 
 
-Physical restore reconciles retained local source jobs only after native tail
-replay, exact remote outcome persistence and final initialized-database verification.
-The original accepted bytes, actor, writer identity and attempt remain unchanged;
-the stored apply/outcome receipts settle the job before ordinary dispatch resumes.
-An unreconciled job must not be redispatched with its historical writer on the
-new executor. Native terminal logs diagnose channel closure; a generic
+Physical restore verifies the snapshot, applies missing numbered SQL migrations
+and establishes READY at that saved prefix. The accepted suffix then drains in
+strict sequence through the same `AcceptedSourceDispatch` and shared admission
+as ordinary imports. An unresolved suffix command blocks later writes while
+independent reads continue against PostgreSQL's actual committed prefix.
+
+Old command bytes, seals, outcomes and delivery records remain unchanged. A new
+executor gets an idempotent delivery of the original command under its current
+writer. A retained old outcome cannot settle that delivery: its own authenticated
+native receipt must first be recorded. Only completed deliveries from the current
+run advance the restored cursor. Pending Dataset capture remains pending rather
+than Saved. Native terminal logs diagnose channel closure; a generic
 `revoked_run` channel reason is not evidence that the bearer token was revoked.
 
 The owner policy dated 2026-10-23 starts the existing successor warmup at 8 h 15 min, with handover and confirmed native stop required before nine hours. This threshold schedules warmup; actual handover continuity, writer pause duration and predecessor stop time require a live receipt. STOP remains the existing planned-handover work, not an additional cancellation mechanism.

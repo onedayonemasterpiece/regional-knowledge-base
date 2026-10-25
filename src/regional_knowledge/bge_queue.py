@@ -311,6 +311,15 @@ class BgeQueue:
         with self.connect() as db:
             key='source-command:'+identity['operation_key']
             prior=db.execute('select * from jobs where actor=? and idempotency=?',(actor,key)).fetchone()
+            if prior and json.loads(prior['identity']).get('writer_generation')!=identity['writer_generation']:
+                old=json.loads(prior['identity']);old['writer_generation']=identity['writer_generation']
+                if prior['kind']!='source_command' or old!=identity:
+                    raise ValueError('source operation has different exact accepted identity')
+                # A new owned executor needs a delivery of the same accepted
+                # command. Preserve its old delivery and result, including an
+                # UNKNOWN claim, under their original identity.
+                key+=':'+identity['writer_generation']
+                prior=db.execute('select * from jobs where actor=? and idempotency=?',(actor,key)).fetchone()
             if prior:
                 if prior['kind']!='source_command' or prior['identity']!=encoded:
                     raise ValueError('source operation has different exact dispatch binding')
@@ -751,7 +760,8 @@ class BgeQueue:
             for actors,kind in ((document_actors,'document'),(command_actors,'source_command')):
                 if kind=='source_command' and self._source_commands is None:continue
                 for actor in actors:
-                    row=db.execute("select * from jobs where state='pending' and kind=? and actor=? order by created,id limit 1",(kind,actor)).fetchone()
+                    row=(self._source_commands.pending_job(db,actor,dict(run),generation)
+                         if kind=='source_command' else db.execute("select * from jobs where state='pending' and kind=? and actor=? order by created,id limit 1",(kind,actor)).fetchone())
                     if row is not None:rows.append(dict(row))
             if self._story_editorial is not None:
                 seen={row['id'] for row in rows}

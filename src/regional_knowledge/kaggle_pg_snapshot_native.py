@@ -295,6 +295,7 @@ class _NativeSession:
     binding: object
     executor: object
     receipts: list
+    archived_sequence: int | None = None
 
 
 class NativeSnapshotFactory:
@@ -517,10 +518,13 @@ class NativeSnapshotFactory:
                             or restored_cursor<m['applied_sequence']):
                         raise SnapshotError('native_restore_internal_cursor')
             await self._upgrade_restored(candidate,m)
+            # The restored WAL may already include accepted commits beyond
+            # the manifest lower bound. Native finish still checks this exact
+            # observed PG cursor before granting READY.
             original=replace(self.database,writer_generation=m['writer_generation'])
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
                 run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2])
-            session=_NativeSession(candidate,m,control_bytes,binding,executor,[])
+            session=_NativeSession(candidate,m,control_bytes,binding,executor,[],restored_cursor)
             self._sessions.add(session);self._current(binding)
             return session
         except BaseException:
@@ -554,7 +558,7 @@ class NativeSnapshotFactory:
         self._current(session.binding)
         receipt=await session.executor(frame)
         item=(receipt['sequence'],receipt['command_sha256'],receipt['outcome_sha256'])
-        expected=session.manifest['applied_sequence']+len(session.receipts)+1
+        expected=(session.archived_sequence if session.archived_sequence is not None else session.manifest['applied_sequence'])+len(session.receipts)+1
         if item[0]<expected:
             if item not in session.receipts:raise SnapshotError('native_restore_duplicate_receipt_changed')
         elif item[0]==expected:session.receipts.append(item)
@@ -585,7 +589,7 @@ class NativeSnapshotFactory:
         if session not in self._sessions:raise SnapshotError('native_restore_session_unknown')
         self._current(session.binding)
         if tuple(expected_tail)!=tuple(session.receipts):raise SnapshotError('native_restore_tail_receipts_differ')
-        final_sequence=session.manifest['applied_sequence']+len(session.receipts)
+        final_sequence=(session.archived_sequence if session.archived_sequence is not None else session.manifest['applied_sequence'])+len(session.receipts)
         control=json.loads(control_bytes)
         if (encode(control)!=control_bytes or control.get('database_generation')!=self.database.database_generation
                 or control.get('sequence')!=final_sequence or control.get('journal_head')!=final_head

@@ -101,7 +101,7 @@ async def test_recovery_only_writer_fences_old_generation_and_acceptance_until_n
     physical=PhysicalSnapshotRecovery(e.j,None,Native(),registry=None,history_verifier=None,
         maintenance_guard=guard,current=lambda b:e.w.recovery_current(b),private_storage_current=lambda:e.w.recovery_current(e.b))
     proof=ControllerRecoveryProof(physical,'actual-retained-native-reference',db,identity,e.plan.manifest,None,0,
-        __import__('json').dumps({'schema_version':db.schema_version}).encode(),e.b)
+        __import__('json').dumps({'schema_version':db.schema_version,'journal_head':None}).encode(),e.b)
     physical._proofs.add(proof)
     with pytest.raises(StaleWriter,match='verified target runtime'):
         await e.w.activate_recovered(e.j,proof,e.b)

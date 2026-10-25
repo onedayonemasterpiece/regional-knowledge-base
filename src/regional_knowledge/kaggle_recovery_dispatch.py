@@ -288,8 +288,8 @@ class WssSnapshotPhases:
     async def capture(self,binding,**args):return await self._call(binding,'capture',args)
 
     async def prepare(self,binding,*,operation_key,manifest_bytes,control_bytes,**args):
-        return (await self._call(binding,'prepare',dict(args,manifest_b64=b64(manifest_bytes),
-            control_b64=b64(control_bytes),restore_operation=operation_key)))['handle']
+        return await self._call(binding,'prepare',dict(args,manifest_b64=b64(manifest_bytes),
+            control_b64=b64(control_bytes),restore_operation=operation_key))
 
     async def apply(self,binding,handle,*,command_bytes,**args):
         return await self._call(binding,'apply',dict(args,handle=handle,command_b64=b64(command_bytes)))
