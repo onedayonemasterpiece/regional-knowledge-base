@@ -189,3 +189,60 @@ async def test_foreign_event_and_already_sent_result_never_claim_or_send(monkeyp
     done=await events.record_result("request-one","Ev-correct",1,"x"*40,"answer")
     assert done=={"state":"delivered","request_id":"request-one",
                  "retry_send_allowed":False}
+
+
+@pytest.mark.asyncio
+async def test_record_result_uses_original_provider_sender_and_single_claim(monkeypatch):
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    request="request-one"
+    marker="6a7ac5a1-0e00-4b72-a41d-849908f38435"
+    origin={"event_id":"Ev-one","trigger_event_id":"Ev-one","state":"leased"}
+    posts=[]
+    class Control:
+        app_id="A0RKBTEST"
+        team_id="T0RKBTEST"
+        bot_user_id="U0RKBTEST"
+        def _row(self,rid):
+            assert rid==request
+            return dict(origin)
+    class Delivery:
+        async def stage_dataset_native_receipt(self,credentials,rid,proof):
+            assert proof.channel_id=="C0RKBTEST"
+            assert proof.thread_ts=="1792920000.123456"
+            assert proof.client_message_id==marker
+            posts.append("receipt_staged")
+        def claim_send_once(self,credentials,rid,generation,token):
+            assert (rid,generation,token)==(request,1,"x"*40)
+            posts.append("claimed")
+            return {"delivery_id":marker,"channel_id":"C0RKBTEST",
+                    "thread_ts":"1792920000.123456",
+                    "text":"Содержательный ответ.\nИсточники: подтверждённый текст."}
+        def confirm_dataset_native_receipt(self,credentials,rid,proof):
+            assert posts==["claimed","posted","receipt_staged"]
+            origin["state"]="delivered"
+            return {"state":"delivered"}
+    class Receiver:
+        async def _advance(self,value):
+            assert value["request_id"]==request
+            posts.append("result_saved")
+            return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
+    class Sender:
+        async def post_once(self,**kw):
+            assert kw["event_id"]==marker
+            assert kw["channel"]=="C0RKBTEST"
+            assert kw["thread"]=="1792920000.123456"
+            posts.append("posted")
+            return {"ts":"1792923000.789012"}
+    events.control=Control()
+    events.context=SimpleNamespace(credentials="owned-executor",delivery=Delivery())
+    events.result_receiver=Receiver()
+    events.reply=SimpleNamespace(sender=Sender(),
+        _row=lambda rid,states: origin if origin["state"] in states else None)
+    result=await events.record_result(request,"Ev-one",1,"x"*40,
+        "Содержательный ответ.\nИсточники: подтверждённый текст.")
+    assert result=={"state":"delivered","request_id":request,"retry_send_allowed":False}
+    assert posts==["result_saved","claimed","posted","receipt_staged"]
+    repeated=await events.record_result(request,"Ev-one",1,"x"*40,"same text")
+    assert repeated["state"]=="delivered"
+    assert posts==["result_saved","claimed","posted","receipt_staged"]
