@@ -348,11 +348,7 @@ class BgeWssTransport:
         return self.recovery_handler
 
     async def _encode(self, job):
-        """One exception boundary for every durable native or vector job.
-
-        Retryable phases settle normally; source commands reconcile the same
-        accepted operation through the existing reconnect and applied ledger.
-        """
+        """Execute one durable job under the existing reconnect and ACK lifecycle."""
         try:
             if job['kind'] in ('source_command', 'recovery_phase'):
                 handler = self._native_handler(job)
@@ -394,7 +390,7 @@ class BgeWssTransport:
                 self.changed.set()
                 return
             if job['kind'] == 'source_command':
-                self.job = None
+                self.waiting_job, self.job = job, None
                 raise ConnectionError('source command requires outcome reconciliation') from error
             # Unexpected effects are not proof of failure or permission to
             # reexecute. This one bounded safe event excludes payload and text.
@@ -404,10 +400,10 @@ class BgeWssTransport:
                 separators=(',', ':')), flush=True)
 
     def _start(self, job):
-        if self.shared_reads:
+        if self.shared_reads and job is not self.waiting_job:
             self._claim_resource(job, 'document')
         self.job = job
-        if self.shared_reads:
+        if self.shared_reads and job is not self.waiting_job:
             # Durable job/claim/result remain singular. Actual model forwards
             # serialize in forward_lock, independently of control/PG latency.
             self.last_released,self.resource=self.resource,None
@@ -719,6 +715,9 @@ class BgeWssTransport:
                 elif kind=='READY_ACK':
                     if frame.get('status')=='ready':
                         ready_confirmed=True
+                        if self.shared_reads and self.waiting_job is not None:
+                            self._start(self.waiting_job)
+                            self.waiting_job = None
                         await request_telegram()
                     if self.bootstrap_only and frame.get('status')=='ready':
                         self.bootstrap_finalized=True
