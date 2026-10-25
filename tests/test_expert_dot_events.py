@@ -324,11 +324,13 @@ async def test_finished_native_prefetch_reaches_dot_without_second_search(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("question",[
-    "Как возник Кёнигсбергский университет?",
-    "Есть ли метро или космодром в Кёнигсберге?",
+@pytest.mark.parametrize("question,supports",[
+    ("Как возник Кнайпхоф?",True),
+    ("Какую политическую роль играл Якоби?",True),
+    ("Был ли космодром в Кёнигсберге?",False),
 ])
-async def test_get_request_returns_live_evidence_and_model_instruction_once(monkeypatch,question):
+async def test_get_request_returns_live_evidence_and_model_instruction_once(
+        monkeypatch,question,supports):
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     markers={"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
@@ -347,8 +349,9 @@ async def test_get_request_returns_live_evidence_and_model_instruction_once(monk
             return {"input_text":"<@U0BOT> "+question}
     async def search(request_id):
         calls.append(request_id)
-        evidence=[] if "метро" in question else [{
-            "text":"Подтверждённый первоисточник",
+        evidence=[{
+            "text":("Подтверждённый первоисточник о регионе." if supports
+                    else "Описано керосиновое освещение вокзала."),
             "metadata":{"citation":"История Кёнигсберга, 1994",
                         "locator":"стр. 59"}}]
         return {"status":"ok","context_gap":False,"evidence":evidence}
@@ -358,15 +361,17 @@ async def test_get_request_returns_live_evidence_and_model_instruction_once(monk
     result=await events.get_request("rkb-original","Ev-correct")
     assert result["state"]=="leased"
     assert result["question"]==question
-    if "метро" in question:
-        assert result["evidence"]["evidence"]==[]
-    else:
-        assert result["evidence"]["evidence"][0]["metadata"]=={
-            "citation":"История Кёнигсберга, 1994","locator":"стр. 59"}
+    assert result["evidence"]["evidence"][0]["metadata"]=={
+        "citation":"История Кёнигсберга, 1994","locator":"стр. 59"}
+    if not supports:
+        # The old live retrieval returned irrelevant top-K cards. The new
+        # model receives them as *candidates*, never as proven facts.
+        assert "керосиновое" in result["evidence"]["evidence"][0]["text"]
     instructions=result["instructions"]
     for value in ("in your own words first","never substitute raw",
                   "1–4 meaningful Russian","Источники:","metadata.citation",
                   "locator","metro","cosmodrome",
+                  "Do not treat unrelated top-K hits as evidence",
                   "В доступной базе подтверждений не найдено"):
         assert value in instructions
     assert calls==["rkb-original"]
@@ -638,6 +643,23 @@ async def test_retry_stops_when_request_delivered_during_webhook_5xx(tmp_path,mo
     assert attempts==["Ev-one"]
     with db.connect() as conn:
         assert conn.execute("SELECT state FROM rkb_expert_requests").fetchone()[0]=="delivered"
+
+
+@pytest.mark.asyncio
+async def test_active_dot_subscription_never_sends_original_three_cards():
+    from regional_knowledge.expert_slack_search_reply import ExpertSlackSearchReply
+    reply=object.__new__(ExpertSlackSearchReply)
+    reply._tasks={}
+    async def legacy_cards(request_id):
+        pytest.fail("active dot must replace the legacy three-card Slack answer")
+    reply._answer=legacy_cards
+    wakes=[]
+    reply._dot_events=SimpleNamespace(
+        _subscription=lambda:{"state":"active"},
+        notify=lambda request_id:wakes.append(request_id))
+    reply.notify("original-question")
+    assert wakes==["original-question"]
+    assert reply._tasks=={}
 
 
 @pytest.mark.asyncio
