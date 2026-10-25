@@ -130,6 +130,7 @@ class ExpertSlackSearchReply:
             request_id,after=after,first_done=first_done))
         self._tasks[request_id]=task
         def finish(t):
+            if first_done is not None:first_done.set()
             if self._tasks.get(request_id) is t:
                 self._tasks.pop(request_id,None)
             try:t.result()
