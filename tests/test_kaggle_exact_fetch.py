@@ -90,7 +90,6 @@ async def test_worker_exact_read_pages_text_and_bibliography_without_tokenizer_o
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change,reason', [
-    ({'visibility_epoch': 2}, 'evidence_withdrawn'),
     ({'database_generation': 'old-db'}, 'evidence_withdrawn'),
     ({'source': SourceDependency(source_id=SOURCE,content_revision=1,eligibility_revision=8)}, 'evidence_withdrawn'),
     ({'text_offset': 16002}, 'invalid_input'),
@@ -100,6 +99,17 @@ async def test_worker_exact_read_rejects_stale_or_impossible_locator(change,reas
     result = await KaggleWorkerQuery(acquire=lease.acquire, tokenizer=pinned())(
         request(locator(**change)).model_dump(mode='json'), encode=forbidden_encode)
     assert result['reason'] == reason and not result['evidence'] and 'mode' not in result
+    assert lease.entered == lease.exited == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_exact_read_accepts_unchanged_source_after_global_epoch_advance():
+    lease = Lease(ExactConnection())
+    result = await KaggleWorkerQuery(acquire=lease.acquire, tokenizer=pinned())(
+        request(locator(visibility_epoch=2)).model_dump(mode='json'), encode=forbidden_encode)
+    assert result['status'] == 'ok' and result['reason'] is None
+    assert result['observed_visibility_epoch'] == 3
+    assert result['evidence'][0]['id'] == PASSAGE
     assert lease.entered == lease.exited == 1
 
 
@@ -128,6 +138,16 @@ async def test_exact_gate_rechecks_pending_source_and_withholds_entire_continuat
     assert refreshed.result.status == 'unavailable' and not refreshed.result.evidence
     assert refreshed.result.reason == 'evidence_withdrawn'
     assert 'mode' not in refreshed.result.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_exact_gate_accepts_new_global_epoch_when_source_revision_is_unchanged(env,auth):
+    gate,authority,b = await setup(env,auth)
+    permit = await gate.dispatch(authority,gate_request(),b)
+    fresh = gate_result().model_copy(update={'observed_visibility_epoch': 42})
+    gated = await gate.finish(permit,fresh)
+    assert gated.result.status == 'ok' and gated.result.evidence == fresh.evidence
+    assert gate.issuance_current(gated.ticket)
 
 
 @pytest.mark.asyncio

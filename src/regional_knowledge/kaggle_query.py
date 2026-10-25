@@ -315,8 +315,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
                             (locator.passage_id, locator.source.source_id, locator.source.content_revision))
                         row = await cursor.fetchone()
                         if (row is None or row[6] != locator.source.eligibility_revision
-                                or observed["database"] != locator.database_generation
-                                or observed["visibility"] != locator.visibility_epoch):
+                                or observed["database"] != locator.database_generation):
                             raise ReadUnavailable("evidence_withdrawn")
                         hit = SearchEvidence(str(row[0]), str(row[1]), *row[2:6])
                         illustrations, illustrations_has_more = (), False
