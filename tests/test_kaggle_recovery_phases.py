@@ -611,7 +611,8 @@ async def test_preparation_can_wait_for_recovery_while_same_channel_executes_pha
     finally:stop.set();await task
 
 
-def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer):
+@pytest.mark.parametrize('deferred_owner', [False, True])
+def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer, deferred_owner):
     from test_bge_shared_channel import connect,attach,send,receive_expected,release
     p=peer;retained={}
     with connect(p) as socket:
@@ -627,6 +628,14 @@ def test_actual_asgi_runs_maintenance_before_ready_and_persists_receipt(peer):
             frame=receive_expected(socket,'DISPATCH')
             assert frame['kind']=='recovery_phase' and p.q.status()['state']=='starting'
             release(socket,generation,frame)
+            if deferred_owner:
+                async def resume_startup():
+                    p.q._recovery_phases=None
+                    async def compose():
+                        await asyncio.sleep(.05)
+                        p.q._recovery_phases=retained['bridge']
+                    retained['compose']=asyncio.create_task(compose())
+                p.client.portal.call(resume_startup)
             send(socket,generation,'RECOVERY_PHASE_RESULT',job_id=frame['id'],claim=frame['claim'],
                 receipt=dict(phase='verify',request_sha256=frame['request_sha256'],value={'verified':True}),
                 **{k:frame[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')})
