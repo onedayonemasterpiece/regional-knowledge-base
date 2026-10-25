@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 import time
 
-from .control_spool import ControlSpool,SpoolError
+from .control_spool import ControlSpool,SourceCursor,SpoolError
 from .geo_manifest_commands import validate_geo_manifest_command,geo_manifest_handler,GEO_REVISIONS,_name_projection
 from .geo_migration import canonical,normalized
 from .kaggle_geo_contracts import GeoReadRequest,GeoReadResult,decode_item
@@ -71,8 +71,8 @@ class GeoReadGate:
 
     def _history_current(self,binding,sequence):
         anchor=self.spool._source_anchor
-        return (isinstance(anchor,_Coverage) and anchor.current() and anchor.database_generation==binding.database_generation
-            and anchor.key==binding_key(binding) and anchor.applied_sequence>=sequence
+        return (isinstance(anchor,(_Coverage,SourceCursor)) and anchor.current() and anchor.database_generation==binding.database_generation
+            and binding_key(anchor.binding)==binding_key(binding) and anchor.applied_sequence>=sequence
             and self.binding_current(binding))
 
     def supported(self):
