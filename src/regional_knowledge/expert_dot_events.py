@@ -166,7 +166,9 @@ class ExpertDotEvents:
                 try:
                     return await client.post(target,content=body,headers=headers,
                                              extensions=extensions)
-                except httpx.ConnectError:
+                except (httpx.ConnectError,httpx.ConnectTimeout):
+                    # TCP/TLS connection never completed; no HTTP callback
+                    # request could have reached the verified recipient.
                     if index==len(targets)-1:
                         raise
 
@@ -348,6 +350,10 @@ class ExpertDotEvents:
         row=await asyncio.to_thread(self.control._row,request_id)
         if row["event_id"]!=event_id or row["trigger_event_id"]!=event_id:
             raise PermissionError("original event not correlated")
+        # This original row is already authoritative. An old event callback
+        # must not turn a completed/claimed request into a false pending search.
+        if row["state"] not in ("received","pending"):
+            return {"state":row["state"],"request_id":request_id}
         # A cold/unavailable search has not produced a source-grounded answer.
         # Preserve the question unclaimed so the SAME event may be read again.
         # A completed native prefetch can wait for dot *inside* the same
@@ -419,30 +425,24 @@ class ExpertDotEvents:
             return {"state":result["state"],"request_id":request_id}
         delivery=self.context.delivery
         credentials=self.context.credentials
-        def source_current(states):
-            # Reuse the existing actor + source gate before acquiring the
-            # one-way send permit, and again before the provider POST.
-            try:
-                current=self.reply._row(request_id,states)
-                if current is None:return False
-                delivery._source_current(current,json.loads(current["origin"]))
-                return True
-            except Exception:
-                return False
-        # A locally expired token or revoked source did not send anything.
-        # Do not convert this into irreversible unknown delivery.
-        if not self.reply.sender.current() or not source_current(("send_intent_ready",)):
-            raise PermissionError("Slack sender or source no longer current")
-        permit=await asyncio.to_thread(delivery.claim_send_once,credentials,
-            request_id,generation,execution_token)
+        permit=None
+        async def claim_for_post():
+            nonlocal permit
+            # Auth.test and the sender's local token check already passed.
+            # The existing transaction performs the only source-current check
+            # and issues the original one-way permit immediately before POST.
+            permit=await asyncio.to_thread(delivery.claim_send_once,credentials,
+                request_id,generation,execution_token)
+            return {"event_id":permit["delivery_id"],"channel":permit["channel_id"],
+                    "thread":permit["thread_ts"],"text":permit["text"]}
         try:
-            sent=await self.reply.sender.post_once(
-                event_id=permit["delivery_id"],channel=permit["channel_id"],
-                thread=permit["thread_ts"],text=permit["text"],
-                current=lambda:source_current(("sending",)))
+            sent=await self.reply.sender.post_once(claim=claim_for_post)
         except BaseException:
-            await asyncio.to_thread(delivery.uncertain_delivery,credentials,
-                                    request_id,permit["delivery_id"])
+            # No irreversible permit was consumed if bot authorization or
+            # the canonical transaction rejected the send before POST.
+            if permit is not None:
+                await asyncio.to_thread(delivery.uncertain_delivery,credentials,
+                                        request_id,permit["delivery_id"])
             raise
         proof=verified_native_slack_receipt({
                 "app_id":self.control.app_id,"user":self.control.bot_user_id,
