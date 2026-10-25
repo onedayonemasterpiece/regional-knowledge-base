@@ -182,10 +182,11 @@ async def test_event_intent_precedes_callback_and_same_id_replay(tmp_path,monkey
     with db.connect() as conn:
         conn.execute("""CREATE TABLE rkb_expert_requests(
           id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
-          reconcile_cursor TEXT,created_at REAL)""")
+          reconcile_cursor TEXT,created_at REAL,lease_until REAL)""")
         conn.execute("""INSERT INTO rkb_expert_requests
-            VALUES('request-one','Ev-once','pending',NULL,NULL,1)""")
+            VALUES('request-one','Ev-once','pending',NULL,NULL,1,NULL)""")
     class Control:
+        clock=staticmethod(lambda:1.0)
         corpus=db
         def confirm_dataset_coverage(self,request_id):return True
         async def stage_received_dataset(self,request_id):return True
@@ -253,11 +254,11 @@ async def test_resume_65_accepted_questions_wakes_all_without_native_prefetch(
     db=_Corpus(tmp_path/"resume-65.sqlite")
     with db.connect() as conn:
         conn.execute("""CREATE TABLE rkb_expert_requests(
-            id TEXT PRIMARY KEY,state TEXT,created_at REAL)""")
-        conn.executemany("INSERT INTO rkb_expert_requests VALUES(?,?,?)",
+            id TEXT PRIMARY KEY,state TEXT,created_at REAL,lease_until REAL)""")
+        conn.executemany("INSERT INTO rkb_expert_requests(id,state,created_at) VALUES(?,?,?)",
                          [(f"request-{i}","pending",i) for i in range(65)])
     events=_instance()
-    events.control=SimpleNamespace(corpus=db)
+    events.control=SimpleNamespace(corpus=db,clock=lambda:1.0)
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
     async def unexpected_search(request_id,ready=None):
         pytest.fail("resume must not flood native with speculative searches")
@@ -281,6 +282,7 @@ async def test_finished_native_prefetch_reaches_dot_without_second_search(monkey
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     class Control:
+        clock=staticmethod(lambda:1.0)
         bot_user_id="U0BOT"
         def _row(self,request_id):
             return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
@@ -337,6 +339,7 @@ async def test_get_request_returns_live_evidence_and_model_instruction_once(
              "state":"pending"}
     calls=[]
     class Control:
+        clock=staticmethod(lambda:1.0)
         bot_user_id="U0BOT"
         def _row(self,request_id):
             assert request_id=="rkb-original"
@@ -382,6 +385,7 @@ async def test_get_request_does_not_claim_during_source_warmup(monkeypatch):
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     class Control:
+        clock=staticmethod(lambda:1.0)
         def _row(self,request_id):
             return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
                     "state":"pending"}
@@ -403,6 +407,7 @@ async def test_foreign_event_and_already_sent_result_never_claim_or_send(monkeyp
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     class Control:
+        clock=staticmethod(lambda:1.0)
         def _row(self,request_id):
             return {"event_id":"Ev-correct","trigger_event_id":"Ev-correct",
                     "state":"delivered"}
@@ -423,9 +428,10 @@ async def test_delayed_get_returns_original_state_without_search(monkeypatch,sta
     events=_instance()
     monkeypatch.setattr(events,"_actor",lambda:events._scope)
     class Control:
+        clock=staticmethod(lambda:1.0)
         def _row(self,request_id):
             return {"event_id":"Ev-original","trigger_event_id":"Ev-original",
-                    "state":state}
+                    "state":state,"lease_until":2.0}
         def claim(self,*args,**kwargs):
             pytest.fail("terminal or claimed request cannot claim again")
     events.control=Control()
@@ -447,6 +453,7 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
     posts=[]
     source_checks=[]
     class Control:
+        clock=staticmethod(lambda:1.0)
         app_id="A0RKBTEST"
         team_id="T0RKBTEST"
         bot_user_id="U0RKBTEST"
@@ -526,6 +533,7 @@ async def test_local_presend_failure_after_previous_permit_boundary_never_consum
     claim_attempts=[]
     permit_count=[]
     class Control:
+        clock=staticmethod(lambda:1.0)
         def _row(self,request_id):return dict(row)
     class Delivery:
         def _source_current(self,original,destination):
@@ -580,6 +588,7 @@ async def test_unknown_only_after_actual_slack_post_attempt(monkeypatch):
     claims=[]
     unknown=[]
     class Control:
+        clock=staticmethod(lambda:1.0)
         def _row(self,rid):return dict(row)
     class Delivery:
         def claim_send_once(self,*args):
@@ -621,10 +630,11 @@ async def test_retry_stops_when_request_delivered_during_webhook_5xx(tmp_path,mo
     with db.connect() as conn:
         conn.execute("""CREATE TABLE rkb_expert_requests(
             id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
-            reconcile_cursor TEXT,created_at REAL)""")
+            reconcile_cursor TEXT,created_at REAL,lease_until REAL)""")
         conn.execute("""INSERT INTO rkb_expert_requests
-            VALUES('request-one','Ev-one','pending',NULL,NULL,1)""")
+            VALUES('request-one','Ev-one','pending',NULL,NULL,1,NULL)""")
     class Control:
+        clock=staticmethod(lambda:1.0)
         corpus=db
         def confirm_dataset_coverage(self,request_id):return True
     events=_instance()
@@ -687,13 +697,13 @@ async def test_webhook_ack_without_claim_resumes_original_pending_request(tmp_pa
     with db.connect() as conn:
         conn.execute("""CREATE TABLE rkb_expert_requests(
             id TEXT,event_id TEXT,state TEXT,trigger_event_id TEXT,
-            reconcile_cursor TEXT,created_at REAL)""")
+            reconcile_cursor TEXT,created_at REAL,lease_until REAL)""")
         conn.execute("""INSERT INTO rkb_expert_requests VALUES(
             'still-pending','Ev-original','pending','Ev-original','event_accepted',1)""")
         conn.execute("""INSERT INTO rkb_expert_requests VALUES(
             'already-done','Ev-done','delivered','Ev-done','event_accepted',2)""")
     events=_instance()
-    events.control=SimpleNamespace(corpus=db)
+    events.control=SimpleNamespace(corpus=db,clock=lambda:1.0)
     wakes=[]
     monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
     monkeypatch.setattr(events,"notify",lambda request_id,*,prefetch=True:
@@ -709,11 +719,12 @@ async def test_cold_coverage_longer_than_eight_attempts_still_wakes_without_rest
     with db.connect() as conn:
         conn.execute("""CREATE TABLE rkb_expert_requests(
             id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
-            reconcile_cursor TEXT,created_at REAL)""")
+            reconcile_cursor TEXT,created_at REAL,lease_until REAL)""")
         conn.execute("""INSERT INTO rkb_expert_requests
-            VALUES('cold-request','Ev-original','received',NULL,NULL,1)""")
+            VALUES('cold-request','Ev-original','received',NULL,NULL,1,NULL)""")
     stages=[]
     class Control:
+        clock=staticmethod(lambda:1.0)
         corpus=db
         def confirm_dataset_coverage(self,request_id):
             assert request_id=="cold-request"
@@ -749,10 +760,11 @@ async def test_webhook_5xx_beyond_five_retries_recovers_same_id_without_restart(
     with db.connect() as conn:
         conn.execute("""CREATE TABLE rkb_expert_requests(
             id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
-            reconcile_cursor TEXT,created_at REAL)""")
+            reconcile_cursor TEXT,created_at REAL,lease_until REAL)""")
         conn.execute("""INSERT INTO rkb_expert_requests
-            VALUES('retry-request','Ev-stable','pending',NULL,NULL,1)""")
+            VALUES('retry-request','Ev-stable','pending',NULL,NULL,1,NULL)""")
     class Control:
+        clock=staticmethod(lambda:1.0)
         corpus=db
         def confirm_dataset_coverage(self,request_id):return True
     events=_instance()
