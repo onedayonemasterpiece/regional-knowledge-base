@@ -78,3 +78,31 @@ async def test_warm_query_uses_reviewed_executor_and_existing_tokenizer_and_stag
     assert {'encode_ms', 'lexical_ms', 'dense_ms', 'hydrate_ms'} <= terminal['stages_ms'].keys()
     with pytest.raises(ValueError, match='tokenizer_abi_changed'):
         builder.bundle(worker, graph, graph, executor.replace('tokenizer_sha256: str', 'tokenizer_sha256: int'), executor)
+
+
+@pytest.mark.asyncio
+async def test_warm_exact_fetch_uses_reviewed_executor_without_replacing_resident_module(monkeypatch):
+    from regional_knowledge import kaggle_query as resident
+    from test_kaggle_exact_fetch import ExactConnection, locator, request
+    from test_kaggle_worker_query import Lease, pinned, forbidden_encode
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('exact fetch must use the reviewed warm executor')
+
+    monkeypatch.setattr(resident, 'execute_passage_read', forbidden)
+    worker, graph = sources()
+    executor = (ROOT/'src/regional_knowledge/kaggle_query.py').read_text()
+    source = builder.bundle(worker, graph, graph, executor, executor)
+    module = types.ModuleType('regional_knowledge._warm_exact_bundle_test')
+    module.__package__ = 'regional_knowledge'; module.__file__ = '<warm-exact-handler>'
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(source, module.__file__, 'exec'), module.__dict__)
+    lease, tokenizer = Lease(ExactConnection()), pinned(forbidden)
+    handler = module.KaggleWorkerQuery(acquire=lease.acquire, tokenizer=tokenizer)
+    result = await handler(request(locator(visibility_epoch=2)).model_dump(mode='json'),
+        encode=forbidden_encode)
+    assert result['status'] == 'ok' and result['reason'] is None
+    assert result['evidence'][0]['text'] == 'x' * 8000
+    assert lease.entered == lease.exited == 1
+    assert handler.acquire is lease.acquire or handler.acquire == lease.acquire
+    assert handler.tokenizer is tokenizer and resident.execute_passage_read is forbidden
