@@ -349,8 +349,11 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
         async def _advance(self,value):
             assert value["request_id"]==request
             posts.append("result_saved")
+            origin["state"]="send_intent_ready"
             return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
     class Sender:
+        def current(self):
+            return True
         async def post_once(self,**kw):
             # SlackChatSender checks current immediately before/after auth.test.
             assert kw["current"]()
@@ -370,10 +373,77 @@ async def test_record_result_uses_original_provider_sender_and_single_claim(monk
         "Содержательный ответ.\nИсточники: подтверждённый текст.")
     assert result=={"state":"delivered","request_id":request,"retry_send_allowed":False}
     assert posts==["result_saved","claimed","posted","receipt_staged"]
-    assert source_checks==[True,True]
+    assert source_checks==[True,True,True]
     repeated=await events.record_result(request,"Ev-one",1,"x"*40,"same text")
     assert repeated["state"]=="delivered"
     assert posts==["result_saved","claimed","posted","receipt_staged"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure",["token_revoked","source_revoked"])
+async def test_local_presend_failure_never_consumes_native_permit(monkeypatch,failure):
+    events=_instance()
+    monkeypatch.setattr(events,"_actor",lambda:events._scope)
+    row={"event_id":"Ev-one","trigger_event_id":"Ev-one","state":"leased",
+         "origin":json.dumps({"channel_id":"C-original"})}
+    effects=[]
+    class Control:
+        def _row(self,request_id):return row
+    class Delivery:
+        def _source_current(self,original,destination):
+            effects.append("source_checked")
+            if failure=="source_revoked":
+                raise PermissionError("source revoked")
+        def claim_send_once(self,*args):
+            pytest.fail("a denied local precondition cannot consume send permit")
+        def uncertain_delivery(self,*args):
+            pytest.fail("no provider POST means not unknown delivery")
+    class Receiver:
+        async def _advance(self,value):
+            row["state"]="send_intent_ready"
+            return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
+    class Sender:
+        def current(self):return failure!="token_revoked"
+        async def post_once(self,**kw):
+            pytest.fail("no post when the source or token is already expired")
+    events.control=Control()
+    events.context=SimpleNamespace(credentials="service",delivery=Delivery())
+    events.result_receiver=Receiver()
+    events.reply=SimpleNamespace(sender=Sender(),
+        _row=lambda rid,states:row if row["state"] in states else None)
+    with pytest.raises(PermissionError,match="no longer current"):
+        await events.record_result("request-one","Ev-one",1,"x"*40,"answer")
+    assert row["state"]=="send_intent_ready"
+
+
+@pytest.mark.asyncio
+async def test_retry_stops_when_request_delivered_during_webhook_5xx(tmp_path,monkeypatch):
+    db=_Corpus(tmp_path/"now-delivered.sqlite")
+    with db.connect() as conn:
+        conn.execute("""CREATE TABLE rkb_expert_requests(
+            id TEXT PRIMARY KEY,event_id TEXT,state TEXT,trigger_event_id TEXT,
+            reconcile_cursor TEXT,created_at REAL)""")
+        conn.execute("""INSERT INTO rkb_expert_requests
+            VALUES('request-one','Ev-one','pending',NULL,NULL,1)""")
+    class Control:
+        corpus=db
+        def confirm_dataset_coverage(self,request_id):return True
+    events=_instance()
+    events.control=Control()
+    monkeypatch.setattr(events,"_subscription",lambda:{"state":"active"})
+    attempts=[]
+    async def fail_once(record,event_id,payload):
+        attempts.append(event_id)
+        with db.connect() as conn:
+            conn.execute("UPDATE rkb_expert_requests SET state='delivered'")
+        return httpx.Response(503)
+    async def no_sleep(seconds):pass
+    monkeypatch.setattr(events,"_post",fail_once)
+    monkeypatch.setattr(asyncio,"sleep",no_sleep)
+    await events._wake("request-one")
+    assert attempts==["Ev-one"]
+    with db.connect() as conn:
+        assert conn.execute("SELECT state FROM rkb_expert_requests").fetchone()[0]=="delivered"
 
 
 @pytest.mark.asyncio
