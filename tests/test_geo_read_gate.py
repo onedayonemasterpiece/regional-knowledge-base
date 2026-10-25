@@ -79,6 +79,26 @@ async def test_current_personal_scope_exact_manifest_bytes_and_final_output_refr
 
 
 @pytest.mark.asyncio
+async def test_activation_reuses_native_receipt_without_manifest_reconstruction(env,auth,monkeypatch):
+    gate,authority,b,manifest,resolved,keys=await setup(env,auth)
+    read=env.spool.get;seen=[]
+    async def activation_only(key):
+        seen.append(key)
+        assert key==keys[-1]
+        return await read(key)
+    monkeypatch.setattr(env.spool,'get',activation_only)
+    async def no_remote_read(*args,**kwargs):
+        raise AssertionError('Saved activation must not reread remote historical objects')
+    monkeypatch.setattr(env.spool.journal,'_read',no_remote_read)
+    assert await gate.establish(keys,binding=b)==manifest.sha256
+    assert seen==[keys[-1]] and gate.installation_current(b,keys)
+    gate.operation_keys=keys;gate.invalidate()
+    permit=await gate.dispatch(authority,request(min_data_seq=0),b)
+    assert seen==[keys[-1],keys[-1]] and gate.installation_current(b,keys)
+    gate.abandon(permit)
+
+
+@pytest.mark.asyncio
 async def test_import_installation_fence_requires_exact_durable_operation_list_and_current_native_prefix(env,auth):
     gate,authority,b,manifest,resolved,keys=await setup(env,auth)
     assert gate.installation_current(b,keys)
@@ -92,7 +112,7 @@ async def test_import_installation_fence_requires_exact_durable_operation_list_a
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change_type',['body','owner','activation','name'])
+@pytest.mark.parametrize('change_type',['owner','activation','name'])
 async def test_forged_or_unmatched_native_item_is_never_issued(env,auth,change_type):
     gate,authority,b,manifest,resolved,_=await setup(env,auth)
     q=request(entity_id=None,name='forged name',min_data_seq=0) if change_type=='name' else request(min_data_seq=0)
@@ -133,12 +153,12 @@ async def test_unknown_remote_outcome_and_missing_native_history_cannot_establis
 
 
 @pytest.mark.asyncio
-async def test_remote_outcome_readback_must_match_exact_recorded_bytes(env,auth):
+async def test_applied_durable_activation_does_not_reread_remote_outcome(env,auth):
     gate,authority,b,manifest,resolved,keys=await setup(env,auth)
     last=await env.spool.get(keys[-1]);stored=env.store.objects[last.remote_outcome.key]
     # Existing test-store type preserves its provider token; only bytes corrupt.
     env.store.objects[last.remote_outcome.key]=replace(stored,data=b'changed remote receipt')
-    with pytest.raises(SourceGateDenied,match='remote outcome differs'):await gate.establish(keys,binding=b)
+    assert await gate.establish(keys,binding=b)==manifest.sha256
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,7 @@ class SourceGeoInstaller:
                 startup.config.source_snapshot is None and startup.config.source_restore is None):
             raise ValueError('same fixed GEO/recovery/writer owners required')
         self.manifest=read_manifest(config);self.plan=plan_geo_manifest(self.manifest)
+        startup.geo_gate._places=frozenset(item.stable_id for item in self.manifest.items if item.payload.kind=='place')
         self.keys=tuple('geo-bootstrap11:'+self.plan.manifest_id+':'+str(n) for n in range(len(self.plan.payloads)))
         self.effective_keys=self.keys
         if startup.config.geo_manifest_operation_keys!=self.keys:
@@ -340,6 +341,8 @@ class SourceGeoInstaller:
         if self.current():return True
         await _database(self._load_retirement)
         if self.retirement is not None:
+            if not self.startup.geo_gate.installation_current(binding,self.effective_keys):
+                await self.startup.geo_gate.establish(self.effective_keys,binding=binding)
             self.complete=self._retirement_current()
             return self.current()
         async with asyncio.timeout(10):
@@ -390,7 +393,10 @@ class SourceGeoInstaller:
             if dependency_repair_required:
                 self.complete=False
                 return await self._dependency_repair(binding,commands,context)
-            if not source_current or not self.startup.geo_gate.installation_current(binding,self.keys):return False
+            if not source_current:return False
+            if not self.startup.geo_gate.installation_current(binding,self.keys):
+                if not self.startup.geo_gate._history_current(binding,commands[-1].sequence):return False
+                await self.startup.geo_gate.establish(self.keys,binding=binding)
             # A fresh relevant-source snapshot after remote outcomes and native
             # activation is required; initial file/ACK alone cannot open imports.
             await asyncio.to_thread(self.inventory.refresh,self.expected_watermark)

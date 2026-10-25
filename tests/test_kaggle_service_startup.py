@@ -399,24 +399,18 @@ async def test_idle_unchanged_prefix_skips_redundant_extend_until_margin(service
 
 
 @pytest.mark.asyncio
-async def test_unchanged_geo_denial_is_not_retried_every_tick(service,monkeypatch):
-    import regional_knowledge.kaggle_service_startup as module
+async def test_ordinary_startup_refresh_never_reconstructs_geo_manifest(service):
     s=service;startup=s.startup;s.adapter.available=True
     class Gate:
-        _manifest=None;calls=0
-        async def establish(self,keys,*,binding):
-            Gate.calls+=1;raise RuntimeError('synthetic GEO outcome not durable')
+        _manifest=None
+        async def establish(self,*args,**kwargs):
+            raise AssertionError('ordinary read maintenance must not reconstruct GEO')
         def invalidate(self):pass
-    clock=[1000.];monkeypatch.setattr(module.time,'monotonic',lambda:clock[0])
     async with startup.lifespan(None):
         startup.geo_gate=Gate()
-        assert await startup.refresh() and Gate.calls==1
-        assert await startup.refresh() and Gate.calls==1  # same inputs: no spool-locked re-read
-        clock[0]+=module.GEO_RETRY_SECONDS
-        assert await startup.refresh() and Gate.calls==2  # bounded periodic retry
-        startup.config.spool._source_covered_sequence+=1
-        assert await startup.refresh() and Gate.calls==3  # new spool sequence retries at once
-        assert startup.reads_current()
+        for _ in range(3):
+            assert await startup.refresh() and startup.reads_current()
+            startup.config.spool._source_covered_sequence+=1
 
 
 @pytest.mark.asyncio

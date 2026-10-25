@@ -326,7 +326,8 @@ async def test_owner_final_cutover_retires_explicit_legacy_watch_and_restart_wit
         assert await other.advance(s.startup.binding)
         assert other.inventory.db is None and TargetServiceStartup.imports_current(s.startup)
         s.startup.geo_gate.invalidate()
-        assert not other.current() and not await other.advance(s.startup.binding)
+        assert not other.current()
+        assert await other.advance(s.startup.binding)  # current activation restores compact routing
     finally:await other.aclose()
 
 

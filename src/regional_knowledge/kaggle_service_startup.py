@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import logging
 import json
 import math
-import time
 from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -27,7 +26,6 @@ from .read_authority import ReadAuthority
 from .source_read_gate import SourceReadGate
 
 _LOG=logging.getLogger(__name__)
-GEO_RETRY_SECONDS=300
 
 
 class SourceHistoryCoverage(Protocol):
@@ -222,11 +220,12 @@ class TargetServiceStartup:
         if self.gate.graph_supported():
             self.routes.update({'source.entity_read':self.backend.source_graph_fetch,
                 'source.entity_list':self.backend.entity_list})
-        self.geo_gate=self.geo_backend=None;self._geo_denied=None
+        self.geo_gate=self.geo_backend=None
         if config.geo_manifest_operation_keys:
             from .geo_read_gate import GeoReadGate
             from .kaggle_geo_backend import KaggleGeoBackend
-            self.geo_gate=GeoReadGate(authority,config.spool,binding_current=self.binding_current)
+            self.geo_gate=GeoReadGate(authority,config.spool,binding_current=self.binding_current,
+                operation_keys=config.geo_manifest_operation_keys)
             if not self.geo_gate.supported():
                 raise ValueError('explicit fresh11 GEO handler required for GEO startup')
             self.geo_backend=KaggleGeoBackend(worker_queue=config.queue,read_authority=authority,
@@ -534,23 +533,6 @@ class TargetServiceStartup:
                 self.coverage=None;self.gate.invalidate()
                 return False
             if self.snapshot is not None:self.snapshot.kick(self.binding)
-            if self.geo_gate is not None and (self.geo_gate._manifest is None
-                    or self.geo_gate._manifest.database!=binding.database_generation):
-                # establish() holds the spool lock while re-reading every GEO
-                # command; a denial for unchanged inputs repeats identically, so
-                # retry only after spool/binding change or GEO_RETRY_SECONDS.
-                inputs=(binding.database_generation,binding.connection_generation,
-                    self.config.spool._source_covered_sequence)
-                denied=self._geo_denied
-                if denied is None or denied[0]!=inputs or time.monotonic()-denied[1]>=GEO_RETRY_SECONDS:
-                    try:
-                        await self.geo_gate.establish(self.config.geo_manifest_operation_keys,binding=self.binding)
-                        self._geo_denied=None
-                    except asyncio.CancelledError:raise
-                    except Exception as exc:
-                        self.geo_gate.invalidate()
-                        self._geo_denied=(inputs,time.monotonic())
-                        _LOG.warning('target_geo_routing state=closed reason=%s',type(exc).__name__)
             if self.geo_installer is not None:self.geo_installer.kick(self.binding)
             if self.reads_current():
                 # Mark the original demand complete only after the full
