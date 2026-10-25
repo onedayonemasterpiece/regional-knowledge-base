@@ -130,7 +130,7 @@ class RecoveryPhaseDispatch:
         self._bindings.pop(job,None)
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
         value=result['result']['value']
-        if phase in ('capture','dataset_verify') and isinstance(value,dict) and value.get('status')=='pending':
+        if phase in ('capture','dataset_verify','original_pages') and isinstance(value,dict) and value.get('status')=='pending':
             handle=value.get('handle')
             if not isinstance(handle,str):raise SnapshotError('snapshot_io_receipt_invalid')
             async with asyncio.timeout(self.timeout):

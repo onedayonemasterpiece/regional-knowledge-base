@@ -240,6 +240,8 @@ class TargetRuntime:
         from .kaggle_recovery_phases import WorkerRecoveryPhases
         if type(worker) is not WorkerRecoveryPhases:
             return
+        if self.original_intake_handler is not None:
+            self.original_intake_handler.snapshot_io=worker.snapshot_io
         worker.read_handler_slot=slot
         if worker.read_handler_control is not None or slot._pinned is None:
             return
@@ -511,6 +513,10 @@ class TargetRuntime:
         try:
             try:
                 try:
+                    # Cancel retained page rendering before removing its owned
+                    # files. The PG/model owner remains until pool shutdown.
+                    if self.recovery_worker is not None and self.recovery_worker.snapshot_io is not None:
+                        await self.recovery_worker.snapshot_io.aclose()
                     if self.original_intake_handler is not None:await self.original_intake_handler.aclose()
                 finally:
                     if self.source_history_observer is not None:await self.source_history_observer.aclose()

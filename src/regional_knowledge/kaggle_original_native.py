@@ -84,7 +84,7 @@ class NativeOriginalIntake:
         self.native_bundle=native_bundle
         self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,256*1024),timeout_seconds=config.seconds)
         self.generation=None;self.closed=False;self._records={};self._requests={};self._results={};self._lock=asyncio.Lock()
-        self._prebinding_retry=set();self.telegram_channel=None
+        self._prebinding_retry=set();self.telegram_channel=None;self.snapshot_io=None
 
     def attached(self,generation):self.generation=generation
     def detached(self,generation):
@@ -172,6 +172,11 @@ class NativeOriginalIntake:
 
     async def __call__(self,frame):
         self._validate(frame);key=frame['operation_key'];request=frame['request_sha256']
+        # Replaying an already issued receipt must not wait on its renderer.
+        # No await separates the immutable fingerprint and cached-result reads.
+        if key in self._results:
+            if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
+            return self._results[key]
         async with self._lock:
             if key in self._requests:
                 if self._requests[key]!=request:raise OriginalIntakeError('original_operation_changed')
@@ -180,27 +185,43 @@ class NativeOriginalIntake:
                 self._prebinding_retry.remove(key)
             if len(self._requests)>=4096:raise OriginalIntakeError('original_retention_bound')
             self._requests[key]=request
-            started = time.monotonic()
-            operation_ref = digest(key.encode())
-            _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],operation_ref)
-            try:
-                async with asyncio.timeout(self.config.seconds):value=await self._execute(frame)
-            except asyncio.CancelledError:raise
-            except OriginalIntakeRejected as exc:value={'error':exc.code,'terminal':True}
-            except OriginalIntakeError as exc:value={'error':str(exc)}
-            except Exception as exc:
-                value={'error':'original_intake_unavailable','error_class':type(exc).__name__}
-                _LOG.warning('native_original_phase state=unavailable run_id=%s phase=%s operation_sha256=%s error_class=%s',
-                    self.identity[0],frame['phase'],operation_ref,type(exc).__name__)
+            if frame['phase']=='original_pages' and self.snapshot_io is not None:
+                # Rendering an owned derivative must not hold the shared PG/BGE
+                # permit. Reuse the retained snapshot I/O owner and status jobs.
+                async def render(operation):
+                    async with self._lock:
+                        return await self._execute_logged(frame)
+                from .kaggle_pg_snapshot_native import SnapshotError
+                try:
+                    value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],
+                        frame['connection_generation']),render)
+                except SnapshotError:
+                    _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
+                    value={'error':'original_intake_unavailable'}
+            else:value=await self._execute_logged(frame)
             result=dict(phase=frame['phase'],request_sha256=request,value=value)
-            if len(canonical(result))>120*1024:raise OriginalIntakeError('original_result_bound')
             if value.get('error')=='original_telegram_binding_required':
                 self._prebinding_retry.add(key)  # Retain exact fingerprint, no native effect occurred.
             else:self._results[key]=result
-            elapsed_ms=(time.monotonic()-started)*1000
-            _LOG.info('native_original_phase state=%s run_id=%s phase=%s operation_sha256=%s elapsed_ms=%.3f',
-                'unavailable' if 'error' in value else 'complete',self.identity[0],frame['phase'],operation_ref,elapsed_ms)
             return result
+
+    async def _execute_logged(self,frame):
+        started=time.monotonic();operation_ref=digest(frame['operation_key'].encode())
+        _LOG.info('native_original_phase state=start run_id=%s phase=%s operation_sha256=%s',self.identity[0],frame['phase'],operation_ref)
+        try:
+            async with asyncio.timeout(self.config.seconds):value=await self._execute(frame)
+        except asyncio.CancelledError:raise
+        except OriginalIntakeRejected as exc:value={'error':exc.code,'terminal':True}
+        except OriginalIntakeError as exc:value={'error':str(exc)}
+        except Exception as exc:
+            value={'error':'original_intake_unavailable','error_class':type(exc).__name__}
+            _LOG.warning('native_original_phase state=unavailable run_id=%s phase=%s operation_sha256=%s error_class=%s',
+                self.identity[0],frame['phase'],operation_ref,type(exc).__name__)
+        if len(canonical(dict(phase=frame['phase'],request_sha256=frame['request_sha256'],value=value)))>120*1024:
+            raise OriginalIntakeError('original_result_bound')
+        _LOG.info('native_original_phase state=%s run_id=%s phase=%s operation_sha256=%s elapsed_ms=%.3f',
+            'unavailable' if 'error' in value else 'complete',self.identity[0],frame['phase'],operation_ref,(time.monotonic()-started)*1000)
+        return value
 
     def _record(self,args):
         if type(args) is not dict or type(args.get('handle')) is not str:raise OriginalIntakeError('original_handle_required')

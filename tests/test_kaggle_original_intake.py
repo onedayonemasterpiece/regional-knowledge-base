@@ -92,8 +92,9 @@ async def acquire(n,s=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('index',[0,1])
+@pytest.mark.parametrize('background',[False,True])
 async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_page(
-        native,djvu_archive,djvu_bundle,monkeypatch,index):
+        native,djvu_archive,djvu_bundle,monkeypatch,index,background):
     import regional_knowledge.kaggle_djvu_pixels as pixels
     path,inventory=djvu_archive
     encoded=[]
@@ -102,13 +103,26 @@ async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_
         return b'\xff\xd8'+rgb+b'\xff\xd9',82
     monkeypatch.setattr(pixels,'_jpeg',jpeg)
     n=native;n.handler.native_bundle=djvu_bundle
+    if background:
+        from regional_knowledge.kaggle_snapshot_io import SnapshotIo
+        n.handler.snapshot_io=SnapshotIo(factory=SimpleNamespace(_current=lambda b:None,
+            limits=SimpleNamespace(timeout_seconds=10)),tickets=None,transfer=None)
+    async def resolved(request):
+        value=(await n.handler(request))['value']
+        if background:
+            io=n.handler.snapshot_io
+            assert value=={'status':'pending','handle':digest(request['operation_key'].encode())}
+            assert (await n.handler(request))['value']==value
+            await io.operations[value['handle']].task
+            value=io.status(value['handle'],('run','inc',1))['value']
+        return value
     source=path.read_bytes();handle='synthetic-djvu-handle'
     n.handler._records[handle]=dict(path=path,sha256=digest(source),size=len(source),
         format='djvu',page_count=inventory.page_count,pages={},verified={'retained':True},
         parser_sha256=n.handler.parser_sha256,spec=spec(max_bytes=len(source)).wire())
     args=dict(handle=handle,original_sha256=digest(source),index=index)
     request=frame('original_pages',args)
-    result=(await n.handler(request))['value']
+    result=await resolved(request)
     assert 'error' not in result
     assert result['format']=='djvu' and result['physical_page_index']==index
     assert result['page_id']==str(uuid5(UUID(SOURCE),f'page:1:{index}'))
@@ -120,12 +134,13 @@ async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_
     assert encoded==[bytes([240,0,0] if index==0 else [0,0,240])*4]
     assert await n.handler(request)==await n.handler(request)
     # A distinct read operation still reuses the retained exact page pixels.
-    assert (await n.handler(frame('original_pages',args,key='read-again')))['value']==result
+    assert await resolved(frame('original_pages',args,key='read-again'))==result
     assert len(encoded)==1
     artifact=n.handler._records[handle]['pages'][index]
     assert artifact['sha256']==digest(artifact['path'].read_bytes())==result['image_sha256']
     bad=frame('original_pages',dict(args,cursor=dict(block=1,offset=0,text=0)))
-    assert (await n.handler(bad))['value']=={'error':'original_page_cursor_invalid'}
+    assert await resolved(bad)=={'error':'original_page_cursor_invalid'}
+    if background:await n.handler.snapshot_io.aclose()
 
 
 @pytest.mark.asyncio

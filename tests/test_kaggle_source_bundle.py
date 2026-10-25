@@ -75,6 +75,7 @@ n.config=OriginalIntakeConfig(('https://archive.invalid',),(('pymupdf','fixture'
 n.database=SimpleNamespace(database_generation='db',writer_generation='writer')
 n.identity=('run','nonce','inc');n.generation=1;n.closed=False;n.current=lambda b:b==('run','inc',1)
 n._requests={};n._results={};n._records={};n._prebinding_retry=set();n._lock=asyncio.Lock()
+n.snapshot_io=None
 def frame(handle):
  args=dict(handle=handle,original_sha256='a'*64,index=0)
  return dict(type='DISPATCH',protocol_version=2,connection_generation=1,id='job-'+handle,
