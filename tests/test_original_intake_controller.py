@@ -135,6 +135,7 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
         batch=await controller.pages(e.auth.p.admin,INGEST)
         assert batch.pages[0].data==IMAGE and batch.pages[0].native_text=='actual fixture span'
         assert batch.next_cursor.startswith('pc1.') if continued else batch.next_cursor is None
+        assert bool(controller._page_chunks.get(INGEST))==continued
         # A first image is usable without fetching the rest of native text.
         # The metadata is durable across a controller restart and cannot mint
         # evidence for another page or a caller-supplied image hash.
@@ -154,6 +155,7 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
         proof=await controller.native_pages(e.auth.p.admin,INGEST)
         assert proof.original_receipt_sha256==status.receipt.receipt_sha256
         assert proof.pages[0]['original_sha256']==digest(PDF)
+        assert INGEST not in controller._page_chunks
         if continued:
             assert proof.pages[0]['native_text']==full and len(proof.pages[0]['native_blocks'])==2
             assert proof.pages[0]['native_text_info']['complete'] and not proof.pages[0]['native_text_info']['truncated']
@@ -217,3 +219,40 @@ async def test_unknown_or_conflicting_head_never_authorizes_a_put(response):
     record=dict(handle='retained',sha256=digest(PDF),size=len(PDF),spec={'source_id':SOURCE})
     with pytest.raises(OriginalIntakeError):await controller._archive(object(),record)
     assert not puts
+
+
+@pytest.mark.asyncio
+async def test_large_original_page_releases_chunks_and_keeps_proof():
+    controller=object.__new__(OriginalIntakeController)
+    controller._page_chunks={};controller._page_proofs={}
+    receipt=SimpleNamespace(source_id=SOURCE,page_count=139,sha256=digest(PDF),parser_sha256='parser')
+    cursor=dict(block=0,offset=0,text=0)
+    native='page text'
+    info=dict(original_length=len(native),block_count=0,
+        native_text_sha256=digest(native.encode()),native_blocks_sha256=digest(canonical([])),
+        encoding_notice=None,offset=0,end=len(native),complete=True)
+    page=dict(format='pdf',page_count=receipt.page_count,physical_page_index=0,width=40,height=50,
+        page_id=str(uuid5(UUID(SOURCE),'page:1:0')),original_sha256=receipt.sha256,
+        parser_sha256=receipt.parser_sha256,image_size=len(IMAGE),image_sha256=digest(IMAGE),
+        mime_type='image/jpeg',preview_render=False,native_cursor=cursor,next_native=None,
+        native_text=native,native_blocks=[],native_text_info=info)
+    page['page_receipt_sha256']=digest(canonical(page))
+
+    async def authorize(_context):return 'actor','binding'
+    async def verified(_context,_ingestion_id):return receipt
+    async def page_data(_binding,record,_index,native_cursor,*,restore):
+        assert native_cursor==cursor
+        return record,page,IMAGE
+
+    controller._authorize=authorize
+    controller.verified=verified
+    controller._row=lambda _actor,_ingestion_id:{'acquisition_json':json.dumps({'sha256':receipt.sha256})}
+    controller._page_data=page_data
+    controller._record_issued_image=lambda _receipt,_page:dict(
+        source_image_receipt_sha256='issued',image_sha256=digest(IMAGE))
+
+    batch=await controller.pages(None,INGEST)
+    assert batch.pages[0].data==IMAGE and batch.pages[0].native_text=='page text'
+    assert batch.next_cursor=='1'
+    assert controller._page_chunks=={}
+    assert 0 in controller._page_proofs[INGEST]
