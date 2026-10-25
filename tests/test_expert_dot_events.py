@@ -358,3 +358,28 @@ async def test_both_existing_http_and_socket_lifespan_resume_pending_request_onc
             assert observed[-1]=="original_request_rows_rescanned"
         assert observed.count("original_request_rows_rescanned")==1
         assert observed[-1]=="target_stopped"
+
+
+
+@pytest.mark.asyncio
+async def test_actual_mcp_registers_discover_events_and_scoped_tools(monkeypatch):
+    from mcp import types
+    from mcp.server.mcpserver import MCPServer
+    from regional_knowledge.expert_executor_workflow import ExpertExecutorResultReceiver
+    dot=object.__new__(ExpertDotEvents)
+    dot.result_receiver=object.__new__(ExpertExecutorResultReceiver)
+    dot._actor=lambda:"synthetic restricted executor"
+    mcp=MCPServer("Synthetic RKB Events contract")
+    dot.register(mcp)
+    registered=mcp._lowlevel_server._request_handlers
+    assert {"server/discover","events/list","events/subscribe",
+            "events/unsubscribe"}<=set(registered)
+    context=SimpleNamespace(protocol_version="2026-07-28")
+    discover=await registered["server/discover"].handler(context,types.RequestParams())
+    assert discover["capabilities"]["events"]=={}
+    listing=await registered["events/list"].handler(context,types.PaginatedRequestParams())
+    assert listing["events"][0]["name"]==EVENT
+    assert set(listing["events"][0]["inputSchema"]["properties"])==set()
+    tools=await mcp._list_tools()
+    exposed={tool.name for tool in tools.tools}
+    assert {"expert_request_get","expert_result_record"}<=exposed
