@@ -108,9 +108,9 @@ class ExpertSlackSearchReply:
         self._dot_events=events
 
     def notify(self, request_id):
-        if self._dot_events is not None:
-            # Events wake and original-human search run in parallel;
-            # never post the legacy top-three snippets as a second reply.
+        if self._dot_events is not None and self._dot_events._subscription() is not None:
+            # Only suppress the original source-only reply if a real, current
+            # dot subscription can be woken. Expired/unset falls back to it.
             return self._dot_events.notify(request_id)
         if request_id in self._tasks:return
         if len(self._tasks)>=16:raise RuntimeError("bounded Slack event wake capacity")
