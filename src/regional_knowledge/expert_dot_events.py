@@ -59,12 +59,13 @@ def _secret(value):
     return raw
 
 
-def _signed_headers(secret, event_id, body):
+def _signed_headers(secret, subscription_id, event_id, body):
     timestamp=str(int(time.time()))
     signed=event_id.encode()+b"."+timestamp.encode()+b"."+body
     mac=base64.b64encode(hmac.new(_secret(secret),signed,hashlib.sha256).digest()).decode()
     return {"content-type":"application/json","webhook-id":event_id,
-            "webhook-timestamp":timestamp,"webhook-signature":"v1,"+mac}
+            "webhook-timestamp":timestamp,"webhook-signature":"v1,"+mac,
+            "X-MCP-Subscription-Id":subscription_id}
 
 
 def _event_definition():
@@ -133,7 +134,7 @@ class ExpertDotEvents:
 
     async def _post(self,record,event_id,payload):
         body=json.dumps(payload,ensure_ascii=False,separators=(",",":")).encode()
-        headers=_signed_headers(record["secret"],event_id,body)
+        headers=_signed_headers(record["secret"],record["id"],event_id,body)
         async with httpx.AsyncClient(transport=self.transport,timeout=8,
                                      follow_redirects=False,trust_env=False) as client:
             response=await client.post(record["url"],content=body,headers=headers)
@@ -155,7 +156,7 @@ class ExpertDotEvents:
         sub_id="sub_"+identity
         # The callback must prove possession before its secret is persisted.
         nonce=secrets.token_urlsafe(24)
-        response=await self._post({"url":url,"secret":secret},
+        response=await self._post({"id":sub_id,"url":url,"secret":secret},
             "verify_"+identity[:24],{"type":"verification","challenge":nonce})
         try:
             if response.status_code!=200 or response.json().get("challenge")!=nonce:
@@ -348,11 +349,23 @@ class ExpertDotEvents:
         credentials=self.context.credentials
         permit=await asyncio.to_thread(delivery.claim_send_once,credentials,
             request_id,generation,execution_token)
+        def source_current():
+            # Native sender checks this both before and AFTER Slack auth.test.
+            # Reuse the delivery controller's real source gate at the last
+            # moment; a source may be revoked after claim_send_once.
+            try:
+                current=self.reply._row(request_id,("sending",))
+                if current is None:return False
+                self.context.delivery._source_current(
+                    current,json.loads(current["origin"]))
+                return True
+            except Exception:
+                return False
         try:
             sent=await self.reply.sender.post_once(
                 event_id=permit["delivery_id"],channel=permit["channel_id"],
                 thread=permit["thread_ts"],text=permit["text"],
-                current=lambda:self.reply._row(request_id,("sending",)) is not None)
+                current=source_current)
         except BaseException:
             await asyncio.to_thread(delivery.uncertain_delivery,credentials,
                                     request_id,permit["delivery_id"])
