@@ -253,14 +253,26 @@ class ExpertSlackSearchReply:
                           else answer_from_evidence(evidence))
             if model_only:
                 return {"status":"unavailable"}
-            permit=await asyncio.to_thread(self._claim_post,request_id)
-            if permit is None:return
+            permit=None
+            async def claim_for_post():
+                nonlocal permit
+                # The existing Slack sender has already verified the bot and
+                # issued source ticket; _claim_post checks the human actor in
+                # the original transaction, then grants the single POST.
+                permit=await asyncio.to_thread(self._claim_post,request_id)
+                if permit is None:
+                    raise PermissionError("original Slack request not claimable")
+                return dict(permit,text=text)
             try:
-                receipt=await self.sender.post_once(**permit,text=text,
-                    current=lambda:current() and (issued is None
-                        or issued.gate.issuance_current(issued.gated.ticket)))
+                receipt=await self.sender.post_once(
+                    current=(None if issued is None
+                             else lambda:issued.gate.issuance_current(issued.gated.ticket)),
+                    claim=claim_for_post)
             except BaseException:
-                await asyncio.to_thread(self._finish,request_id,"sending","unknown")
+                # No claim means auth/source failed before chat.postMessage;
+                # retain the original intent instead of a false UNKNOWN.
+                if permit is not None:
+                    await asyncio.to_thread(self._finish,request_id,"sending","unknown")
                 raise
             await asyncio.to_thread(self._finish,request_id,"sending","delivered",receipt)
         finally:
