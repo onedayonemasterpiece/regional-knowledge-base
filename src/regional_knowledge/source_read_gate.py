@@ -318,8 +318,7 @@ class SourceReadGate:
                     any(e['variant_id']<=q.after_variant_id for e in result.record['entries'])):
             raise SourceGateDenied('exact story provenance differs')
         if exact and not acceptance and not graph and not story and not fact and not catalog and (len(result.evidence) != 1 or result.evidence[0].id != q.locator.passage_id
-                or result.evidence[0].dependencies.source_revisions != (q.locator.source,)
-                or result.observed_visibility_epoch != q.locator.visibility_epoch):
+                or result.evidence[0].dependencies.source_revisions != (q.locator.source,)):
             raise SourceGateDenied('exact source provenance differs')
         # Native PG resolves active revisions, visibility and source eligibility
         # in its read snapshot. The controller checks the exact result/binding,

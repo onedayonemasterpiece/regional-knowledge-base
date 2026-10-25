@@ -297,6 +297,37 @@ async def test_dirty_early_old_cursor_publish_cannot_enable_automatic_carry(env)
 
 @PG
 @pytest.mark.asyncio
+async def test_unrelated_accepted_book_preserves_old_source_locator_but_own_revision_does_not(env):
+    await publish(env)
+    original = await execute_query(query(), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)
+    locator = original.evidence[0].source_continuation
+    assert locator is not None and locator.source.source_id == SOURCE
+    other = "00000000-0000-0000-0000-000000000002"
+    async with env["admin"].transaction():
+        await env["admin"].execute("INSERT INTO rkb_v4.sources VALUES (%s,'later accepted book',true,false)", (other,))
+        await env["admin"].execute("INSERT INTO rkb_v4.revisions VALUES (%s,1)", (other,))
+        await env["admin"].execute("INSERT INTO rkb_v4.active_revision VALUES (%s,1)", (other,))
+        await env["admin"].execute("""INSERT INTO rkb_v4.passage_search
+            (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
+            VALUES ('10000000-0000-0000-0000-000000000022',%s,1,0,'page 1','later source text',
+                    'simple','pg_catalog.simple',%s::vector)""",
+            (other, "[" + ",".join(map(str, VECTOR)) + "]"))
+    await publish(env)
+    retained = await read_continuation(query(), locator, acquire=env["acquire"])
+    assert retained.status == "ok" and retained.evidence[0].id == PASSAGE
+    assert retained.observed_visibility_epoch > locator.visibility_epoch
+    assert retained.evidence[0].dependencies.source_revisions == (locator.source,)
+    assert retained.observed_database_generation == locator.database_generation
+
+    # The identical locator must fail if its OWN source becomes a new active revision.
+    assert (await actual_apply(env, activate=True)).status == "applied"
+    revised = await read_continuation(query(min_data_seq=6), locator, acquire=env["acquire"])
+    assert revised.status == "unavailable" and revised.reason == "evidence_withdrawn"
+    assert not revised.evidence
+
+
+@PG
+@pytest.mark.asyncio
 async def test_continuation_database_generation_cannot_be_reused_on_a_restored_fork(env):
     await publish(env)
     first = await execute_query(query(), acquire=env["acquire"], tokenizer=tokenizer(), encode=encode)
