@@ -24,6 +24,33 @@ def database():return replace(spec().database,mode='VERIFIED_INITIALIZED',owners
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('old_status,kind,allowed',[
+    ('failed','recovery_phase',True),('expired','recovery_phase',True),
+    ('starting','recovery_phase',False),('failed','document',False)])
+async def test_maintenance_capacity_counts_live_work_without_deleting_retired_evidence(state,old_status,kind,allowed):
+    s=state
+    dispatch=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:True)
+    identity=dict(run_id=s.run,launch_nonce=s.nonce,runtime_incarnation='incarnation-a',operation_key='current-verify')
+    with s.q.connect() as db:
+        db.execute("UPDATE jobs SET state='done' WHERE id=?",(s.doc,))
+        old=s.q._new_run(db,s.q.clock())
+        db.execute('UPDATE runs SET status=? WHERE id=?',(old_status,old))
+        for n in range(256):
+            db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) '
+                'VALUES(?,?,?,?,?,?,?,?,?)',(f'old-{n}','maintenance:'+old,str(n),kind,'[]','{}','pending',1,1))
+    try:
+        if allowed:
+            job,actor=dispatch._enqueue(identity)
+            assert dispatch._enqueue(identity)==(job,actor)
+        else:
+            with pytest.raises(SnapshotError,match='recovery_queue_capacity'):dispatch._enqueue(identity)
+        with s.q.connect(write=False) as db:
+            assert db.execute("SELECT count(*) FROM jobs WHERE id LIKE 'old-%' AND state='pending'").fetchone()[0]==256
+    finally:await dispatch.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('invalid',[None,'archive','control','missing_ticket'])
 async def test_native_dataset_prepare_uses_pinned_download_and_same_pg_factory(invalid):
     from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint,DatasetFile
