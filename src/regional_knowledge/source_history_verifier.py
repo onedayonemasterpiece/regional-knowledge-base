@@ -233,8 +233,7 @@ class NativeSourceHistoryVerifier:
                 head=await j.head(); ref=head.reference if head else None
                 base=proof.head.reference if proof.head else None
                 suffix=[];used=sum(len(p[0]) for p in proof.pending)
-                for _ in range(j.max_reconcile_hops):
-                    if ref==base:break
+                while ref!=base:
                     if ref is None:raise SpoolConflict('retained source prefix is not an ancestor')
                     previous,raws=await j.read_segment(ref)
                     for raw in raws:
@@ -244,7 +243,6 @@ class NativeSourceHistoryVerifier:
                         c,h,_=self._classify(raw,ref)
                         suffix.append((c,h,ref))
                     ref=previous
-                if ref!=base:raise SpoolConflict('incremental source ancestry budget exceeded')
                 suffix.sort(key=lambda p:p[0].sequence)
                 if [c.sequence for c,_,_ in suffix]!=list(range(proof.accepted_sequence+1,
                         proof.accepted_sequence+len(suffix)+1)):
@@ -555,8 +553,7 @@ class NativeSourceHistoryVerifier:
                                     raise SpoolConflict('exact immutable generation genesis missing')
                                 self._verify_genesis(remote.data,key[3])
                             commands=[]; ref=head.reference if head else None; used=0
-                            for _ in range(j.max_reconcile_hops):
-                                if ref is None:break
+                            while ref is not None:
                                 previous,raws=await j.read_segment(ref)
                                 for raw in raws:
                                     used+=len(raw)
@@ -565,7 +562,6 @@ class NativeSourceHistoryVerifier:
                                     command,handler,_=self._classify(raw,ref,historical=True)
                                     commands.append((command,handler,ref))
                                 ref=previous
-                            if ref is not None:raise SpoolConflict('full source genesis traversal incomplete')
                             commands.sort(key=lambda item:item[0].sequence)
                             if [c.sequence for c,_,_ in commands]!=list(range(1,len(commands)+1)):
                                 raise SpoolConflict('noncontiguous accepted source history')

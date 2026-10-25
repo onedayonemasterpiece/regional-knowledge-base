@@ -343,8 +343,7 @@ class PhysicalSnapshotRecovery:
         return m,blob,boundary
     async def _tail(self,head,base,sequence):
         ref=head.reference if head else None;tail=[];used=0
-        for _ in range(self.journal.max_reconcile_hops):
-            if ref==base:break
+        while ref!=base:
             if ref is None:raise SnapshotError('snapshot_boundary_not_ancestor')
             previous,raws=await self.journal.read_segment(ref)
             seal=AcceptedSeal(ref,tuple(sha(raw) for raw in raws))
@@ -354,7 +353,6 @@ class PhysicalSnapshotRecovery:
                     raise SnapshotError('snapshot_replay_budget')
                 tail.append((_command(raw),seal))
             ref=previous
-        if ref!=base:raise SnapshotError('snapshot_tail_ancestry_budget')
         tail.sort(key=lambda p:p[0].sequence)
         if [c.sequence for c,_ in tail]!=list(range(sequence+1,sequence+len(tail)+1)):
             raise SnapshotError('snapshot_tail_gap')
