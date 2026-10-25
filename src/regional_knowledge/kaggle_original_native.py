@@ -208,10 +208,11 @@ class NativeOriginalIntake:
                 _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
                 value={'error':'original_intake_unavailable'}
             return self._receipt(frame,value)
-        async with self._lock:
-            prior=self._remember_request(key,request)
-            if prior is not None:return prior
-            return self._receipt(frame,await self._execute_logged(frame))
+        # The existing WSS compute claim already serializes these phases.
+        # They must not wait on an unrelated background page renderer.
+        prior=self._remember_request(key,request)
+        if prior is not None:return prior
+        return self._receipt(frame,await self._execute_logged(frame))
 
     async def _execute_logged(self,frame):
         started=time.monotonic();operation_ref=digest(frame['operation_key'].encode())

@@ -138,7 +138,9 @@ async def test_original_page_waiting_never_holds_compute_and_preserves_operation
     page_running={'count':0,'peak':0}
     def entered():
         running['count']+=1;running['peak']=max(running['peak'],running['count'])
+    verified=[]
     async def render(frame):
+        if frame['phase']=='original_verify':verified.append(True);return {'verified':True}
         index=frame['arguments']['index'];effects.append(index);started[index].set()
         page_running['count']+=1;page_running['peak']=max(page_running['peak'],page_running['count'])
         try:
@@ -166,7 +168,7 @@ async def test_original_page_waiting_never_holds_compute_and_preserves_operation
                 else:
                     frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
                         **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
-                    receipt=await (original(frame) if frame['phase']=='original_pages' else worker(frame))
+                    receipt=await (original(frame) if frame['phase'].startswith('original_') else worker(frame))
                     if frame['phase']=='original_pages':receipts.append((frame,receipt))
                     await bridge.receive(response(s,frame,receipt['value']),run_id=s.run,token=s.token,generation=s.generation)
                 await release(s,work)
@@ -200,6 +202,10 @@ async def test_original_page_waiting_never_holds_compute_and_preserves_operation
         read=await begin(s,'while-two-page-operations-wait')
         await pump_until(read.result.done)
         assert (await read.result).status=='ok' and not finished[0].is_set()
+        proof=asyncio.create_task(bridge.request(binding,'original_verify',dict(handle='retained-original'),operation_key='verify-while-page-blocked'))
+        pending.append(proof)
+        await pump_until(proof.done)
+        assert (await proof)=={'verified':True} and verified==[True] and not finished[0].is_set()
         if scenario!='busy_slots':
             # Queued pages cannot consume the slots that keep Saved advancing.
             saved=asyncio.create_task(bridge.request(binding,'capture',dict(versions={},expected_sequence=0),operation_key='capture-during-pages'))
