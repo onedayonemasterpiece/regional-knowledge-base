@@ -220,7 +220,7 @@ class ExpertDotEvents:
         with self.control.corpus.connect() as db:
             rows=db.execute("""SELECT id FROM rkb_expert_requests
                 WHERE state IN ('received','pending')
-                ORDER BY created_at,id LIMIT 64""").fetchall()
+                ORDER BY created_at,id""").fetchall()
         for row in rows:
             self.notify(row["id"])
 
@@ -310,9 +310,17 @@ class ExpertDotEvents:
                 "generation":lease["generation"],
                 "execution_token":lease["execution_token"],
                 "question":query,"evidence":evidence,
-                "instructions":"Answer the question in its language, using only matching "
-                    "source evidence. Give one coherent answer with sources; distinguish "
-                    "no support from temporary unavailability. Do not invent page links."}
+                "instructions":"Return ONE coherent answer in the question language; for Russian, "
+                    "use 1–4 meaningful Russian sentences followed by 'Источники:'. "
+                    "Cite only passages that actually support the named fact, using verified "
+                    "metadata.citation and locator (printed or scanned page when known); "
+                    "omit unknown author/year/ISBN and never display UUID/urn as a public URL. "
+                    "Do not treat unrelated top-K hits as evidence: for unsupported questions "
+                    "such as metro, cosmodrome or an unrecorded exact temperature, state "
+                    "'В доступной базе подтверждений не найдено' without invented sources. "
+                    "Distinguish retrieval pending/unavailable ('Не удалось проверить базу сейчас') "
+                    "from successful search with no supporting evidence. "
+                    "Preserve author attribution and don't invent page links."}
 
     async def record_result(self, request_id, event_id, generation, execution_token, text):
         self._actor()
