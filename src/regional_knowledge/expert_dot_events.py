@@ -222,7 +222,9 @@ class ExpertDotEvents:
             task=asyncio.create_task(fn(request_id))
             cache[request_id]=task
             def finished(done, *, key=request_id, target=cache):
-                if target is self._wakes:
+                # Only in-flight searches may be reused. Completed plaintext
+                # evidence is released immediately, not cached indefinitely.
+                if target.get(key) is done:
                     target.pop(key,None)
                 try:done.result()
                 except asyncio.CancelledError:pass
@@ -303,8 +305,11 @@ class ExpertDotEvents:
             raise PermissionError("original event not correlated")
         # A cold/unavailable search has not produced a source-grounded answer.
         # Preserve the question unclaimed so the SAME event may be read again.
-        task=self._reads.get(request_id)
-        evidence=await task if task is not None else await self._search(request_id)
+        task=self._reads.pop(request_id,None)
+        # A completed task has released its original issuance ticket. Reread
+        # through the SAME current source gate instead of serving stale bytes.
+        evidence=(await task if task is not None and not task.done()
+                  else await self._search(request_id))
         if not isinstance(evidence,dict):
             evidence={"status":"unavailable"}
         if evidence.get("status") not in ("ok","degraded") or evidence.get("context_gap") is True:
