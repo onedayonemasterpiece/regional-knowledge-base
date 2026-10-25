@@ -25,8 +25,8 @@ _TEMPORARILY_UNAVAILABLE = "Сейчас не могу проверить, по�
 
 
 def _error_reply(reason):
-    code=reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,80}",reason) else "not_ready"
-    return "Ошибка поиска. Код: unavailable/"+code
+    code=reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,80}",reason) else None
+    return "Ошибка поиска. Код: unavailable"+("/"+code if code is not None else "")
 
 
 def answer_from_evidence(result):
@@ -190,7 +190,7 @@ class ExpertSlackSearchReply:
                 # text-only failure, but never turn an access denial into a post.
                 if calls or isinstance(exc,(PermissionError,ParticipantError)):
                     raise
-                text=_error_reply("internal_error")
+                text=_error_reply(None)
                 if isinstance(exc,ToolError):
                     try:details=json.loads(str(exc))
                     except (ValueError,TypeError):raise
