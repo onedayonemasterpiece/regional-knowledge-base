@@ -56,6 +56,30 @@ class BatchCompilerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.inputs), 1)
         self.assertEqual(media['illustrations'], [])
 
+    async def test_page81_heading_prefixed_without_losing_page82_passage(self):
+        doc = exact_batch(start=80, count=2)
+        page = doc['model_payload']['pages'][0]
+        body = page['regions'][0]
+        body['reading_order'] = 1
+        body['bbox'] = dict(left=10, top=110, right=900, bottom=900)
+        page['regions'].insert(0, {**body, 'region_key': 'p81_heading',
+            'reading_order': 0, 'kind': 'heading',
+            'bbox': dict(left=10, top=20, right=900, bottom=100),
+            'source_text': 'Первая мировая война'})
+
+        with self.assertRaisesRegex(SourceMaterializationRejected, 'native_source_stage_requires_review'):
+            await self.compile([doc], 0)
+        self.assertEqual(self.inputs, [])
+
+        chunk = doc['model_payload']['chunks'][0]
+        chunk['region_refs'].insert(0, dict(page_id=page['page_id'], region_key='p81_heading'))
+        result, _ = await self.compile([doc], 0)
+        self.assertEqual(len(result['passages']), 2)
+        self.assertTrue(result['passages'][0]['body'].startswith('Первая мировая война'))
+        self.assertIn(body['source_text'], result['passages'][0]['body'])
+        self.assertIn('page 81.', result['passages'][1]['body'])
+        self.assertEqual([p['physical_page_index'] for p in result['image_manifest']['pages']], [80, 81])
+
     async def test_unrelated_bad_packet_does_not_block_good_packet(self):
         first = exact_batch(count=1)
         first['model_payload']['pages'][0]['regions'][0]['source_text'] = ''
