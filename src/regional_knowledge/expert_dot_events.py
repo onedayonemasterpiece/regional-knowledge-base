@@ -296,7 +296,12 @@ class ExpertDotEvents:
         # One continuing task for the SAME original event, not a new queue.
         # A fifth transient failure cannot strand an ACKed question forever.
         delay=2
-        while self._subscription() is not None:
+        while (record := self._subscription()) is not None:
+            with self.control.corpus.connect() as db:
+                current=db.execute("SELECT state FROM rkb_expert_requests WHERE id=?",
+                                   (request_id,)).fetchone()
+            if current is None or current["state"] not in ("received","pending"):
+                return
             try:response=await self._post(record,row["event_id"],payload)
             except (httpx.HTTPError,ValueError):
                 response=None
@@ -395,25 +400,27 @@ class ExpertDotEvents:
             return {"state":result["state"],"request_id":request_id}
         delivery=self.context.delivery
         credentials=self.context.credentials
-        permit=await asyncio.to_thread(delivery.claim_send_once,credentials,
-            request_id,generation,execution_token)
-        def source_current():
-            # Native sender checks this both before and AFTER Slack auth.test.
-            # Reuse the delivery controller's real source gate at the last
-            # moment; a source may be revoked after claim_send_once.
+        def source_current(states):
+            # Reuse the existing actor + source gate before acquiring the
+            # one-way send permit, and again before the provider POST.
             try:
-                current=self.reply._row(request_id,("sending",))
+                current=self.reply._row(request_id,states)
                 if current is None:return False
-                self.context.delivery._source_current(
-                    current,json.loads(current["origin"]))
+                delivery._source_current(current,json.loads(current["origin"]))
                 return True
             except Exception:
                 return False
+        # A locally expired token or revoked source did not send anything.
+        # Do not convert this into irreversible unknown delivery.
+        if not self.reply.sender.current() or not source_current(("send_intent_ready",)):
+            raise PermissionError("Slack sender or source no longer current")
+        permit=await asyncio.to_thread(delivery.claim_send_once,credentials,
+            request_id,generation,execution_token)
         try:
             sent=await self.reply.sender.post_once(
                 event_id=permit["delivery_id"],channel=permit["channel_id"],
                 thread=permit["thread_ts"],text=permit["text"],
-                current=source_current)
+                current=lambda:source_current(("sending",)))
         except BaseException:
             await asyncio.to_thread(delivery.uncertain_delivery,credentials,
                                     request_id,permit["delivery_id"])
