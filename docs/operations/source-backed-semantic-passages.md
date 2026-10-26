@@ -27,3 +27,7 @@ Already deleted historical review evidence cannot be declared recovered: restore
 Validate source completeness/spans/figures, final token input and proposed projection on exact revision. Measure per-book natural/paraphrased/cross-language retrieval; changed chunking/index/model invokes protected dense/latency/capacity gates (BGE Hit@5≥85%, Hit@10≥90%, RU→DE Hit@10≥85%, at least30 held-out fact families; scale≥100books/100kchunks). One passing draft helper is not activation permission or mass readiness.
 
 The same model review saves facts/dates/observations/entities independently of Story. Sufficient episode saves real default Variant.body with source dependencies; zero narrative leaves all factual knowledge available. A source fidelity test does not establish storytelling quality, and an improved story does not waive retrieval evidence.
+
+### Corrected bibliography in passage fetch
+
+Numbered migration 041 makes passage citation metadata use the latest accepted source catalog correction, matching book_find. Sources without a correction retain manifest bibliography. Original stage/manifest bytes and page, region, passage and original-file provenance remain unchanged; correcting bibliography does not require reimporting or reembedding accepted pages.
