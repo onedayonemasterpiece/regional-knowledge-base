@@ -126,19 +126,26 @@ def test_inline_search_k3_marks_partial_and_exposes_exact_fetch_next_id():
     assert second['metadata']['continuation_complete'] is True
 
 
-def test_inline_search_cannot_silently_truncate_without_fetchable_locator():
+def test_inline_search_without_continuation_keeps_incomplete_hit_and_other_results():
     from test_kaggle_protocol import item
     loc = locator()
+    dependencies = {'source_ids': (SOURCE,), 'source_revisions': (loc.source,),
+        'variant_refs': (), 'grant_refs': ()}
     partial = item(kind='source', id=PASSAGE, text='partial', text_form='excerpt',
-        continuation='legacy-unfetchable', dependencies={
-            'source_ids': (SOURCE,), 'source_revisions': (loc.source,),
-            'variant_refs': (), 'grant_refs': ()})
+        continuation='legacy-unfetchable', dependencies=dependencies)
+    complete = item(kind='source', id=PASSAGE, text='complete', dependencies=dependencies)
     search = QueryResult(request_id='inline', connection_generation=4, turn_generation=9,
-        status='ok', mode='hybrid', evidence=(partial,), observed_data_seq=12,
+        status='ok', mode='hybrid', evidence=(partial, complete), observed_data_seq=12,
         observed_projection_seq=12, observed_visibility_epoch=loc.visibility_epoch,
         observed_database_generation=loc.database_generation)
-    with pytest.raises(ValueError, match='lacks fetch continuation'):
-        KaggleSourceBackend._render(search, evidence=False, attempt=ReadAttempt('d' * 32))
+    rows = KaggleSourceBackend._render(search, evidence=False,
+        attempt=ReadAttempt('d' * 32)).results
+    assert len(rows) == 2  # One uncontinuable excerpt must not drop the whole search.
+    assert rows[0].text == 'partial' and rows[0].incomplete is True
+    assert rows[0].next_id is None and rows[0].metadata['continuation_complete'] is False
+    assert rows[0].id == passage_fetch_id(loc)  # fetch(id) remains available.
+    assert rows[1].text == 'complete' and rows[1].incomplete is False
+    assert rows[1].next_id is None and rows[1].metadata['continuation_complete'] is True
 
 
 @pytest.mark.asyncio
