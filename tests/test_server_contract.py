@@ -132,13 +132,14 @@ def test_supabase_configuration_never_enables_mcp_auth(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unsupported_indexing_status_does_not_report_a_kaggle_outage():
+@pytest.mark.parametrize('tool',['indexing_status','catalog','unknown_tool'])
+async def test_unsupported_profile_tool_does_not_report_a_kaggle_outage(tool):
     from regional_knowledge.server import KnowledgeMCPServer
     from mcp.server.mcpserver.exceptions import ToolError
     server=KnowledgeMCPServer('source-profile')
     server._target_source_profile=True
     with pytest.raises(ToolError) as error:
-        await server.call_tool('indexing_status',{})
+        await server.call_tool(tool,{})
     assert json.loads(str(error.value))=={
         'status':'unavailable','reason':'tool_not_supported_in_profile'}
 

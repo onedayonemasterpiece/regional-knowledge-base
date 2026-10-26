@@ -79,4 +79,4 @@ Control checkpoint 15 min; changed PG base 4 h или раньше по replay/b
 
 While the source restore coordinator is incomplete, an import status or finalize call waits before querying source tails. It must not instantiate the lazy native-history maintenance dispatcher ahead of the retained restore/checkpoint owner. After restore composition completes, the same ingestion resumes ordinary tail checks; accepted packet identities and Dataset durability are unchanged.
 
-`indexing_status` is not supported by the Kaggle source profile. A call through a stale client schema returns `tool_not_supported_in_profile`; it is not a notebook health probe. Use normal search/fetch results and the current ingestion status to verify accepted-page visibility.
+`indexing_status` is not supported by the Kaggle source profile. Any method unavailable in the source profile returns `tool_not_supported_in_profile`; this is not a notebook health probe. Use normal search/fetch results and the current ingestion status to verify accepted-page visibility.
