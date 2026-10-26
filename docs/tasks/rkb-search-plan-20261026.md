@@ -170,7 +170,7 @@
 
 ### 3.2 Выдача (сервер)
 
-- [~] **S1b. Страница или скан** (В, узкое исправление; [PR 536](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/536)). locator может содержать печатный номер или номер физического скана; formatter сейчас всегда пишет «с. N».
+- [x] **S1b. Страница или скан** (В, узкое исправление; [PR 536](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/536); CI GREEN на Python 3.12/3.13). locator может содержать печатный номер или номер физического скана; formatter сейчас всегда пишет «с. N».
   - Нужно: известна печатная — «с. N», иначе «скан N» или без номера.
   - Приёмка: один пример печатной страницы и один fallback на скан; затем установка и живая проверка S1 + S1b.
 - [x] **S2a. Текст фрагмента в результате search при прежнем K=3** (В). [PR #535](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/535) — реализация принята ИПП; при отсутствии продолжения excerpt возвращает `incomplete=true`, `next_id=null`, не прерывая search. Парный замер с V0/M1 — отдельная приёмка после установки.
