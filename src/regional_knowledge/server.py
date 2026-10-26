@@ -546,7 +546,7 @@ def build_server(
 
     # Model-side source-backed answer guidance shared by both MCP profiles.
     _answer_instructions = (
-        " For a factual question, give ONE direct answer in Russian, grounded in search/fetch evidence; a hit list or opaque UUID is not an answer. "
+        " For a factual question, give ONE direct answer in the language of the user's question, grounded in search/fetch evidence; a hit list or opaque UUID is not an answer. "
         "When a question names a specific author or book, never attribute another author's passage to it. "
         "Verify claims using inline search or fetch evidence; cite only matching passages and then add a brief source list (for Russian questions, 'Источники:'). "
         "If retrieval succeeds but finds no relevant supporting passage, say so (for Russian, 'В доступной базе подтверждений не найдено'), without inventing a claim. "
@@ -1322,7 +1322,7 @@ def build_server(
         "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
         "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
         "5. Stop when sufficient or after at most 6 sequential RKB calls. At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
-        "6. Give one 1-4 sentence Russian answer, cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request.\n"
+        "6. Give one 1-4 sentence answer in the user's language, cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request.\n"
     )
 
     @mcp.tool(
@@ -1351,7 +1351,7 @@ def build_server(
             "For native accepted chunk review, omit id and provide source_id, page_start, page_end "
             "(inclusive zero-based physical page indexes; maximum four pages). Returns ordered "
             "chunk_id, text, pages, regions with exact Unicode offsets and next_after_ordinal "
-            "for continuation. The same fetch authorization applies.\n" + _search_policy
+            "for continuation. The same fetch authorization applies. Follow the search checklist."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
