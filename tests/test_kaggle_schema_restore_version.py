@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 import psycopg
 import pytest
 
-from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory, compatible_versions
+from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory, compatible_versions, SnapshotError
 from regional_knowledge.kaggle_schema_migrate import bundle_migrations, migrate
 from regional_knowledge.kaggle_database_probe import NativeDatabaseProbe
 from test_kaggle_schema_migrate import files
@@ -19,6 +19,12 @@ def test_old_dataset_versions_ignore_catalog_acl_and_minor_pg_but_keep_runtime_a
     current=dict(server_version_num=170011,pgvector_version='0.8.2',model_sha256='a'*64,
         tokenizer_sha256='b'*64,schema_version=16)
     assert compatible_versions(old,current)
+    upgraded=current | {'pgvector_version':'0.8.4'}
+    assert compatible_versions(old,upgraded)  # Only proven forward path.
+    assert compatible_versions(upgraded,upgraded)
+    assert not compatible_versions(upgraded,current)  # Never downgrade.
+    with pytest.raises(SnapshotError,match='snapshot_native_version_mismatch'):
+        compatible_versions(old,upgraded | {'pgvector_version':'0.8.7'})
     for update in ({'model_sha256':'c'*64},{'tokenizer_sha256':'c'*64},
                    {'protocol_version':2},{'postgis_version':'3.5'}):
         assert not compatible_versions(old,current | update)
@@ -89,11 +95,14 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         factory.database=NS(schema_version=len(artifacts),database_generation='restore-fixture')
         factory.schema_files=artifacts
         factory.probe=NativeDatabaseProbe()
-        manifest=dict(versions={'schema_version':len(artifacts)-2},applied_sequence=20)
+        base=dict(server_version_num=170011,pgvector_version='0.8.2',
+            model_sha256='a'*64,tokenizer_sha256='b'*64,schema_version=len(artifacts)-2)
+        manifest=dict(versions=base,applied_sequence=20)
         assert (await factory.probe(acquire=acquire))[1]['schema_version']==len(artifacts)-2
         # This is the same awaited boundary _prepare uses before constructing
         # the executor or allowing PhysicalSnapshotRecovery to replay its tail.
-        await factory._upgrade_restored(NS(acquire=acquire),manifest)
+        await factory._upgrade_restored(NS(acquire=acquire),manifest,
+            base | {'schema_version':len(artifacts)})
         _,ready=await factory.probe(acquire=acquire)
         assert ready['schema_version']==len(artifacts) and ready['applied_seq']==20
         assert ready['text_search_ready'] and ready['dense_search_ready']
