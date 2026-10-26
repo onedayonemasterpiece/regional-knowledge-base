@@ -10,10 +10,11 @@ from test_kaggle_native_bundle import fixture as native_fixture,sha
 
 
 @pytest.mark.parametrize('parser_enabled',(False,True))
-def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_fixture,parser_enabled):
+@pytest.mark.parametrize('pgvector_version',('0.8.2','0.8.4'))
+def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_fixture,parser_enabled,pgvector_version):
     names=('usr/lib/postgresql/17/bin/initdb','usr/lib/postgresql/17/bin/postgres',
         'usr/lib/postgresql/17/bin/pg_config','usr/lib/postgresql/17/lib/vector.so',
-        'usr/share/postgresql/17/extension/vector.control','usr/share/postgresql/17/extension/vector--0.8.2.sql')
+        'usr/share/postgresql/17/extension/vector.control',f'usr/share/postgresql/17/extension/vector--{pgvector_version}.sql')
     files=[dict(path=name,size=1,sha256=sha(b'x'),package='fixture',member=name,executable=index<3)
         for index,name in enumerate(names)]
     root,spec,inventory,_=native_fixture(entries=[(name,'file',b'x') for name in names],files=files)
@@ -33,7 +34,14 @@ def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_
         from regional_knowledge.kaggle_original_native import OriginalIntakeConfig
         options['original_intake']=OriginalIntakeConfig(
             ('https://archive.fixture.invalid',),(('pymupdf','1.28.2'),))
-    target=build_bootstrap_target(**options)
+    target=build_bootstrap_target(**options,pgvector_version=pgvector_version)
+    assert target.database.native_paths['vector_sql'].endswith(f'vector--{pgvector_version}.sql')
+    assert target.database.native_paths['vector_control'].endswith('/vector.control')
+    assert target.database.native_paths['vector_library'].endswith('/vector.so')
+    with pytest.raises(ValueError,match='path pins'):
+        build_bootstrap_target(**options,pgvector_version=('0.8.4' if pgvector_version=='0.8.2' else '0.8.2'))
+    with pytest.raises(ValueError,match='explicit supported pgvector'):
+        build_bootstrap_target(**options,pgvector_version='0.8.7')
     assert target.bootstrap_only and target.dependency_sha256 is None and target.schema_sha256 is None
     assert target.database.cluster.startswith('/kaggle/temp/rkb-')
     assert len(target.stage0.wheels)==len(lock['packages'])
