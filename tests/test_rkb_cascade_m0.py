@@ -1,7 +1,14 @@
 """M0: blind-policy adaptation must not contaminate the frozen pilot."""
+import importlib.util
 import json
+from pathlib import Path
 
-from scripts.benchmarks.rkb_cascade_pilot_summary import m1_record_view
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/benchmarks/rkb_cascade_pilot_summary.py"
+SPEC = importlib.util.spec_from_file_location("rkb_cascade_pilot_summary", SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+m1_record_view = MODULE.m1_record_view
 
 
 def test_m1_scoped_search_and_neighbor_fetch_are_in_read_packet():
