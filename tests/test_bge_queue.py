@@ -101,7 +101,8 @@ def test_useful_lease_heartbeat_does_not_extend_it(tmp_path):
 
 
 @pytest.mark.parametrize('claimed_document',[False,True])
-def test_live_native_idle_timeout_drains_to_stop_without_losing_claim(tmp_path,claimed_document):
+@pytest.mark.parametrize('first_observer',['maintenance','channel_status','stop_eligible'])
+def test_live_native_idle_timeout_drains_to_stop_without_losing_claim(tmp_path,claimed_document,first_observer):
     now=[1000.];q=BgeQueue(tmp_path/'idle-stop.sqlite',clock=lambda:now[0])
     q.request_startup();run,token=run_details(q)
     q.launch_claim(run,provider_ref='owner/fixture')
@@ -116,7 +117,10 @@ def test_live_native_idle_timeout_drains_to_stop_without_losing_claim(tmp_path,c
         assert job['id']==ident
     for _ in range(IDLE_SECONDS//60-1):
         now[0]+=60;q.heartbeat(run,token,connection_generation=generation)
-    now[0]+=60;q.maintenance()
+    now[0]+=60
+    if first_observer=='maintenance':q.maintenance()
+    elif first_observer=='channel_status':q.channel_status(run,token,generation)
+    else:assert q.stop_eligible(run,token,generation) is (not claimed_document)
     assert q.channel_status(run,token,generation)['state']=='draining'
     assert q.channel_status(run,token,generation)['ready'] is False
     assert q.claim(run,token,connection_generation=generation) is None

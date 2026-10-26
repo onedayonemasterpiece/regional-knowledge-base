@@ -182,18 +182,23 @@ class BgeQueue:
             WHERE kind='recovery_phase' AND state!='done'
             AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))""",(now,))
 
+    @staticmethod
+    def _idle_drain_due(db,run,now):
+        from .queue_writer import pending
+        return (run['status']=='ready' and run['launch_state']=='dispatched'
+            and run['provider_version'] is not None
+            and run['channel_active'] and not run['attachment_conflict']
+            and now>=run['useful']+IDLE_SECONDS
+            and now<run['started']+MAX_LIFETIME
+            and now-run['heartbeat']<=HEARTBEAT_SECONDS
+            and not pending(db,run['id']))
+
     def _expire(self, db, now):
         from .queue_writer import pending
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             if run['status']=='draining' and run['launch_state'] in ('dispatching','dispatched'):
                 continue  # Keep this reservation/channel until exact provider terminal proof.
-            if (run['status']=='ready' and run['launch_state']=='dispatched'
-                    and run['provider_version'] is not None
-                    and run['channel_active'] and not run['attachment_conflict']
-                    and now>=run['useful']+IDLE_SECONDS
-                    and now<run['started']+MAX_LIFETIME
-                    and now-run['heartbeat']<=HEARTBEAT_SECONDS
-                    and not pending(db,run['id'])):
+            if self._idle_drain_due(db,run,now):
                 # Keep the exact live channel for checkpoint/STOP and existing
                 # claims. Draining denies fresh serving/claims; native terminal
                 # proof still owns retirement, never the useful-idle clock.
@@ -472,18 +477,19 @@ class BgeQueue:
         return result
 
     def channel_status(self, run_id, token, connection_generation):
-        """Observe authoritative readiness without lease or expiry writes."""
+        """Read readiness; only the exact idle edge commits its normal drain."""
         now=self.clock()
         with self.connect(write=False) as db:
             run=self._authorize(db,run_id,token,now)
             self._dispatch_authorize(run,connection_generation)
             if connection_generation is None:
                 raise StaleAttachment('BGE channel generation required')
-            if self._run_expired(run,now):
+            idle_due=self._idle_drain_due(db,run,now)
+            if self._run_expired(run,now) and not idle_due:
                 raise RevokedRun('invalid or stale BGE worker')
             provider_version=str(run['provider_version']) if run['provider_version'] is not None else None
             runtime = self._runtime_row(db,run_id)
-            return {'state':run['status'],
+            observed={'state':run['status'],
                     'ready':run['status']=='ready' and provider_version is not None
                         and (runtime is None or runtime['accepted_generation']==connection_generation),
                     'provider_version':provider_version,
@@ -491,6 +497,18 @@ class BgeQueue:
                     'active':bool(run['channel_active']),
                     'runtime_required':runtime is not None,
                     'runtime_verified':runtime is not None and runtime['accepted_generation']==connection_generation}
+        if idle_due:
+            # WSS may observe the deadline before controller maintenance.
+            # Healthy ready reads never enter this write transaction.
+            self._drain_idle_channel(run_id,token,connection_generation)
+            return self.channel_status(run_id,token,connection_generation)
+        return observed
+
+    def _drain_idle_channel(self,run_id,token,generation):
+        with self.connect() as db:
+            run=self._authorize(db,run_id,token,self.clock())
+            self._dispatch_authorize(run,generation)
+            self._expire(db,self.clock())
 
     @staticmethod
     def _runtime_row(db, run_id):
@@ -944,7 +962,7 @@ class BgeQueue:
             return self._status(db,self.clock())
 
     def stop_eligible(self, run_id, token, connection_generation):
-        """Read-only authenticated STOP predicate; never proof of provider terminal.
+        """Authenticated STOP predicate; never proof of provider terminal.
 
         A former owner can stop after handover; the current owner stops at
         nine hours or after its exact idle-drain request. Pending/claimed work and unknown writer publication
@@ -955,16 +973,21 @@ class BgeQueue:
         with self.connect(write=False) as db:
             run = self._authorize(db, run_id, token, now)
             self._dispatch_authorize(run, connection_generation)
-            if self._run_expired(run, now):
+            idle_due=self._idle_drain_due(db,run,now)
+            if self._run_expired(run, now) and not idle_due:
                 return False
             current = db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
-            if current == run_id and run['status']!='draining' and now - run['started'] < 9 * 3600:
+            if not idle_due and current == run_id and run['status']!='draining' and now - run['started'] < 9 * 3600:
                 return False
             if pending(db, run_id):
                 return False
-            return db.execute(
+            unclaimed=db.execute(
                 "SELECT 1 FROM jobs WHERE run_id=? AND state IN ('pending','claimed') LIMIT 1",
                 (run_id,)).fetchone() is None
+        if idle_due:
+            self._drain_idle_channel(run_id,token,connection_generation)
+            return self.stop_eligible(run_id,token,connection_generation)
+        return unclaimed
 
     def request_idle_drain(self, run_id, *, provider_ref, provider_version):
         """Operator requests planned closure of the exact idle current run.
