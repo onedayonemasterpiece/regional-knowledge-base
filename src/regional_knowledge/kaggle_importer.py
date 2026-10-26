@@ -942,7 +942,8 @@ class KaggleSourceImporter:
                 if (command == 'status' and getattr(self, 'native_intake', None) is not None
                         and (output.state == 'finalized' or output.state == 'staged' and output.next_action == 'continue_pages' and not output.warnings)):
                     output = await self._native_research_status(access, row, output)
-                if self.native_intake is not None and command in ('stage','status'):
+                if (self.native_intake is not None and command in ('stage','status')
+                        and hasattr(self.native_intake, 'with_import_hints')):
                     output = await self.native_intake.with_import_hints(row,output)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64
