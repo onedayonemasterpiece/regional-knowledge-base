@@ -186,7 +186,13 @@ async def test_actual_shared_worker_query_sql_roundtrip_and_separate_resource_re
         assert len(responses) == 1 and responses[0]['request_id'] == ticket.request_id
         events = responses[0]['read_events']
         assert len(events) == 2 and query_text not in json.dumps(events)
-        await until(lambda: len(native_records) == 2)
+        def observed_native():
+            return [r for r in native_records if r['event'] in (
+                'kaggle_read_completed','kaggle_read_adapter_terminal')]
+        await until(lambda: len(observed_native()) == 2)
+        boundaries=[r for r in native_records if r['event']=='read_channel_boundary']
+        assert {r['phase'] for r in boundaries}=={'write','receive'}
+        assert query_text not in json.dumps(native_records)
         assert read_telemetry.failed == 0
         terminal = next(record for record in native_records if record['terminal'])
         assert terminal['status'] == 'ok'
