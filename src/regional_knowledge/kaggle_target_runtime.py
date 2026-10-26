@@ -196,7 +196,16 @@ class TargetRuntime:
         self.executed_source = executed_source
         self.pool_factory = pool_factory or AsyncConnectionPool
         self.owner = owner_factory(self.database)
-        self.probe = probe or native_probe_for_schema()
+        self._custom_probe = probe is not None
+        from .kaggle_owned_pg import pinned_pgvector_version
+        version='0.8.2'
+        if self.database.mode=='NEW_EMPTY_GENERATION':
+            # Inert synthetic target specs may use placeholder paths; actual
+            # start_empty rejects them before an initialized/readable PG exists.
+            name=Path(self.database.native_paths['vector_sql']).name
+            if name.startswith('vector--'):
+                version=pinned_pgvector_version(self.database.native_paths)
+        self.probe = probe or native_probe_for_schema(pgvector_version=version)
         self.prepare_resident = prepare
         self.pool = None
         self.writer_pool = None
@@ -224,6 +233,8 @@ class TargetRuntime:
         self._recovery_available=asyncio.Event()
         if recovery_worker is not None:self._recovery_available.set()
         self.restored_database=restored_database
+        if restored_database is not None and not self._custom_probe:
+            self.probe=getattr(restored_database._factory,'probe',self.probe)
 
     def _bind_read_handler_maintenance(self):
         """Bind the one owned PG/BGE read slot, regardless of preparation order.
@@ -309,6 +320,9 @@ class TargetRuntime:
             ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins,
             **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}),
             source_materializer=self._native_source_materializer(encoder))
+        if self.database.mode=='NEW_EMPTY_GENERATION' and getattr(worker,'factory',None) is not None:
+            # A first-base capture and its restore drill use the same fresh pin.
+            worker.factory.probe=self.probe
         self.recovery_worker=worker
         self.native_bundle=native_bundle
         if self.original_intake_handler is not None:
@@ -402,6 +416,8 @@ class TargetRuntime:
         reader_kwargs=self.database.connection()
         if self.recovery_worker is not None:
             self.restored_database=await self.recovery_worker.wait_initialized(self.database,*identity)
+            if not self._custom_probe:
+                self.probe=getattr(getattr(self.recovery_worker,'factory',None),'probe',self.probe)
         if self.restored_database is not None:
             reader_kwargs=await self.restored_database.verify_for(self.database,run_id,launch_nonce,runtime_incarnation)
             if (not isinstance(reader_kwargs,dict) or any(reader_kwargs.get(key)!=self.database.connection()[key]
@@ -468,7 +484,7 @@ class TargetRuntime:
                     yield connection
             history_handler=NativeSourceHistoryObserver(acquire=acquire_history,database=self.database,identity=identity,
                 registry=current_registry(),current=lambda binding:
-                    not self.closed and binding[:2]==(run_id,runtime_incarnation))
+                    not self.closed and binding[:2]==(run_id,runtime_incarnation),probe=self.probe)
             self.source_history_observer=history_handler
         observation=None
         if self.target.get('bootstrap_only'):

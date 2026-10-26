@@ -12,11 +12,11 @@ from regional_knowledge.recovery_journal import JournalConflict
 from test_dataset_recovery_store import prepared
 
 
-def setup(tmp_path):
+def setup(tmp_path,*,base_vector='0.8.2',selected_vector='0.8.2'):
     p=prepared(tmp_path)
-    versions=dict(server_version_num=170011,pgvector_version='0.8.2',
+    versions=dict(server_version_num=170011,pgvector_version=base_vector,
                   model_sha256='a'*64,tokenizer_sha256='b'*64,schema_version=42)
-    config=SourceRestoreConfig(p.ref,'restore-fixture',versions,'c'*64,
+    config=SourceRestoreConfig(p.ref,'restore-fixture',versions|{'pgvector_version':selected_vector},'c'*64,
         ('https://storage.googleapis.com',),dataset_checkpoint=p.checkpoint)
     raw=encode(dict(database_generation='db',applied_sequence=9,versions=versions))
     latest=replace(p.checkpoint,dataset_version=2,base_sequence=9,
@@ -28,6 +28,27 @@ def setup(tmp_path):
         db.execute('INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,?)',
                    (p.store.storage_identity,key,raw,'verified-manifest',2))
     return p,config,latest,key
+
+
+@pytest.mark.parametrize('base_vector,selected_vector',[
+    ('0.8.2','0.8.2'),('0.8.2','0.8.4'),('0.8.4','0.8.4'),
+])
+def test_newest_saved_preserves_selected_runtime_without_rewriting_base(tmp_path,base_vector,selected_vector):
+    p,config,latest,key=setup(tmp_path,base_vector=base_vector,selected_vector=selected_vector)
+    before=list(p.reads)
+    resumed=_verified_restart_restore(p.q,config,'stream')
+    assert resumed.dataset_checkpoint==latest and resumed.versions['pgvector_version']==selected_vector
+    assert resumed.manifest.key==key and p.reads==before
+    with p.q.connect(write=False) as db:
+        raw=db.execute('SELECT data FROM rkb_dataset_recovery_objects WHERE key=?',(key,)).fetchone()[0]
+    assert json.loads(raw)['versions']['pgvector_version']==base_vector
+    assert _verified_restart_restore(p.q,resumed,'stream') is resumed
+
+
+def test_newest_saved_cannot_downgrade_selected_runtime(tmp_path):
+    p,config,_,_=setup(tmp_path,base_vector='0.8.4',selected_vector='0.8.2')
+    with pytest.raises(JournalConflict,match='pgvector_selection_changed'):
+        _verified_restart_restore(p.q,config,'stream')
 
 
 def test_stale_restart_selects_exact_verified_checkpoint_without_provider_io(tmp_path):

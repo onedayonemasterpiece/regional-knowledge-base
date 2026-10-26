@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from .kaggle_database_probe import PGVECTOR_VERSIONS
 from .kaggle_model_manifest import bge_model_manifest
 from .kaggle_native_bundle import NativeBundleSpec
 from .kaggle_owned_pg import OwnedDatabase
@@ -18,7 +19,7 @@ from .kaggle_target_runtime import TargetLaunchSpec
 
 def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,native_downloads,
                            database_generation,writer_generation,uid,gid,identity_evidence,
-                           seconds=1800,original_intake=None):
+                           seconds=1800,original_intake=None,pgvector_version='0.8.2'):
     """Build full load_target_launch-compatible wire metadata with no guessed pins.
 
     uid/gid are explicit candidate numeric identities. Actual early observation
@@ -32,6 +33,8 @@ def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,nat
             or type(native_receipt) is not dict or native_receipt.get('codec')!='rkb.native_collection_artifacts.v1'
             or type(native_manifest_bytes) is not bytes or not 1<=len(native_manifest_bytes)<=1536*1024):
         raise ValueError('exact native and wheel input receipts required')
+    if pgvector_version not in PGVECTOR_VERSIONS:
+        raise ValueError('explicit supported pgvector version required')
     bundle=NativeBundleSpec.from_wire(native_receipt['spec'])
     if hashlib.sha256(native_manifest_bytes).hexdigest()!=bundle.manifest_sha256:
         raise ValueError('actual native manifest differs from receipt')
@@ -40,7 +43,7 @@ def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,nat
     relative=dict(initdb='usr/lib/postgresql/17/bin/initdb',postgres='usr/lib/postgresql/17/bin/postgres',
         pg_config='usr/lib/postgresql/17/bin/pg_config',vector_library='usr/lib/postgresql/17/lib/vector.so',
         vector_control='usr/share/postgresql/17/extension/vector.control',
-        vector_sql='usr/share/postgresql/17/extension/vector--0.8.2.sql')
+        vector_sql=f'usr/share/postgresql/17/extension/vector--{pgvector_version}.sql')
     if (not set(relative.values())<=pins.keys()
             or any(not pins[relative[key]]['executable'] for key in ('initdb','postgres','pg_config'))):
         raise ValueError('complete native PostgreSQL/pgvector path pins required')

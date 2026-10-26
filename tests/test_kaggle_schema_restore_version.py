@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 import psycopg
 import pytest
 
-from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory, compatible_versions
+from regional_knowledge.kaggle_pg_snapshot_native import NativeSnapshotFactory, compatible_versions, SnapshotError
 from regional_knowledge.kaggle_schema_migrate import bundle_migrations, migrate
 from regional_knowledge.kaggle_database_probe import NativeDatabaseProbe
 from test_kaggle_schema_migrate import files
@@ -19,6 +19,12 @@ def test_old_dataset_versions_ignore_catalog_acl_and_minor_pg_but_keep_runtime_a
     current=dict(server_version_num=170011,pgvector_version='0.8.2',model_sha256='a'*64,
         tokenizer_sha256='b'*64,schema_version=16)
     assert compatible_versions(old,current)
+    upgraded=current | {'pgvector_version':'0.8.4'}
+    assert compatible_versions(old,upgraded)  # Only proven forward path.
+    assert compatible_versions(upgraded,upgraded)
+    assert not compatible_versions(upgraded,current)  # Never downgrade.
+    with pytest.raises(SnapshotError,match='snapshot_native_version_mismatch'):
+        compatible_versions(old,upgraded | {'pgvector_version':'0.8.7'})
     for update in ({'model_sha256':'c'*64},{'tokenizer_sha256':'c'*64},
                    {'protocol_version':2},{'postgis_version':'3.5'}):
         assert not compatible_versions(old,current | update)
@@ -40,7 +46,9 @@ async def test_production_fresh_schema_sequence_creates_roles_before_sql_grants(
         await connection.execute('CREATE ROLE rkb_bootstrap SUPERUSER NOLOGIN')
         owned=True
         await connection.execute('SET ROLE rkb_bootstrap')
-        owner=OwnedPostgres(replace(spec(fresh=True).database,dbname='rkb_graph_test'))
+        base_spec=spec(fresh=True).database
+        paths=dict(base_spec.native_paths,vector_sql='/kaggle/working/native/vector--0.8.2.sql')
+        owner=OwnedPostgres(replace(base_spec,dbname='rkb_graph_test',native_paths=paths))
         artifacts={m.name:m.body for m in bundle_migrations(files())}
         await owner._initialize_schema(connection,artifacts)
         assert await (await connection.execute('SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()==(len(artifacts),)
@@ -89,11 +97,14 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
         factory.database=NS(schema_version=len(artifacts),database_generation='restore-fixture')
         factory.schema_files=artifacts
         factory.probe=NativeDatabaseProbe()
-        manifest=dict(versions={'schema_version':len(artifacts)-2},applied_sequence=20)
+        base=dict(server_version_num=170011,pgvector_version='0.8.2',
+            model_sha256='a'*64,tokenizer_sha256='b'*64,schema_version=len(artifacts)-2)
+        manifest=dict(versions=base,applied_sequence=20)
         assert (await factory.probe(acquire=acquire))[1]['schema_version']==len(artifacts)-2
         # This is the same awaited boundary _prepare uses before constructing
         # the executor or allowing PhysicalSnapshotRecovery to replay its tail.
-        await factory._upgrade_restored(NS(acquire=acquire),manifest)
+        await factory._upgrade_restored(NS(acquire=acquire),manifest,
+            base | {'schema_version':len(artifacts)})
         _,ready=await factory.probe(acquire=acquire)
         assert ready['schema_version']==len(artifacts) and ready['applied_seq']==20
         assert ready['text_search_ready'] and ready['dense_search_ready']
@@ -107,3 +118,86 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
             await connection.execute('DROP ROLE rkb_writer')
             await connection.execute('DROP ROLE rkb_reader')
         await connection.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('base_version,target_version,actual_version,expected_alter,failed',[
+    ('0.8.2','0.8.4','0.8.2',True,None),
+    ('0.8.2','0.8.2','0.8.2',False,None),
+    ('0.8.4','0.8.4','0.8.4',False,None),
+    ('0.8.4','0.8.4','0.8.2',False,'native_restore_base_pgvector_version'),
+    ('0.8.4','0.8.2','0.8.4',False,'native_restore_version_mismatch'),
+])
+async def test_isolated_restore_vector_transition_precedes_schema_and_readiness(
+        monkeypatch,tmp_path,base_version,target_version,actual_version,expected_alter,failed):
+    """Source-only SQL fixture: real 0.8.4 package/corpus belongs to Shkiper."""
+    import regional_knowledge.kaggle_schema_migrate as schema
+    import regional_knowledge.kaggle_owned_pg as owned
+    events=[]
+
+    class CandidateConnection:
+        version=actual_version
+        observed=None
+        @asynccontextmanager
+        async def transaction(self):
+            events.append('transaction_start')
+            try:
+                yield
+            except BaseException:
+                events.append('transaction_rollback')
+                raise
+            else:
+                events.append('transaction_commit')
+        async def execute(self,statement,*args,**kwargs):
+            events.append(statement)
+            if statement.startswith('SELECT max(version)'):
+                self.observed=(42,)
+            elif statement.startswith('SELECT extversion'):
+                self.observed=(self.version,)
+            elif statement=="ALTER EXTENSION vector UPDATE TO '0.8.4'":
+                self.version='0.8.4'
+            return self
+        async def fetchone(self):
+            return self.observed
+
+    connection=CandidateConnection()
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    async def configure(conn):
+        assert conn is connection
+        events.append('configure_migration_defaults')
+    async def migrate(conn,files):
+        assert conn is connection and files=={'sql/042_synthetic.sql':b'fixture'}
+        events.append('schema_migrate')
+    async def probe(*,acquire):
+        events.append('probe_readiness')
+        assert connection.version==target_version
+        return b'{}',dict(schema_version=42,database_generation='fixture-generation',applied_seq=853)
+    monkeypatch.setattr(owned,'configure_migration_defaults',configure)
+    monkeypatch.setattr(schema,'migrate',migrate)
+    factory=object.__new__(NativeSnapshotFactory)
+    factory.database=NS(schema_version=42,database_generation='fixture-generation')
+    factory.schema_files={'sql/042_synthetic.sql':b'fixture'}
+    factory.probe=probe
+    version=lambda v:dict(server_version_num=170011,pgvector_version=v,
+        schema_version=42,model_sha256='a'*64,tokenizer_sha256='b'*64)
+    manifest=dict(versions=version(base_version),applied_sequence=853)
+    selected=version(target_version)
+    if (base_version,target_version)==('0.8.2','0.8.4'):
+        from test_verified_restart_checkpoint import setup
+        from regional_knowledge.kaggle_source_owners import _verified_restart_restore
+        p,config,_,_=setup(tmp_path,base_vector=base_version,selected_vector=target_version)
+        selected=dict(_verified_restart_restore(p.q,config,'stream').versions)
+    if failed:
+        with pytest.raises(SnapshotError,match=failed):
+            await factory._upgrade_restored(NS(acquire=acquire),manifest,selected)
+        assert 'schema_migrate' not in events and 'probe_readiness' not in events
+    else:
+        await factory._upgrade_restored(NS(acquire=acquire),manifest,selected)
+        alter=[event for event in events if event=="ALTER EXTENSION vector UPDATE TO '0.8.4'"]
+        assert bool(alter)==expected_alter
+        assert events.index('transaction_commit')<events.index('schema_migrate')<events.index('probe_readiness')
+        if expected_alter:
+            assert events.index(alter[0])<events.index('transaction_commit')
+        assert events.count('SELECT extversion FROM pg_extension WHERE extname=\'vector\'')==(2 if expected_alter else 1)

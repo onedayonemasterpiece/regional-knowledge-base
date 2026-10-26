@@ -19,7 +19,7 @@ import stat
 import tarfile
 import psycopg
 
-from .kaggle_database_probe import native_probe_for_schema
+from .kaggle_database_probe import native_probe_for_schema, PGVECTOR_VERSIONS
 from .kaggle_apply import handover_writer
 from .kaggle_restored_database import VerifiedInitializedDatabase
 from .kaggle_owned_pg import PRIVATE_RUNTIME_ROOT, ensure_private_runtime_root
@@ -70,7 +70,7 @@ def validate_versions(versions):
     if not isinstance(versions,dict) or not required<=set(versions) or set(versions)-required-legacy-{'schema_version','postgis_version','protocol_version'}:
         raise SnapshotError('snapshot_exact_runtime_versions_required')
     if (type(versions['server_version_num']) is not int or versions['server_version_num']//10000!=17
-            or versions['pgvector_version']!='0.8.2'
+            or versions['pgvector_version'] not in PGVECTOR_VERSIONS
             or 'schema_version' in versions and (type(versions['schema_version']) is not int or versions['schema_version']<1)):
         raise SnapshotError('snapshot_native_version_mismatch')
     for k in ('model_sha256','tokenizer_sha256'):_hash(versions[k])
@@ -81,8 +81,10 @@ def compatible_versions(base,expected):
     # Physical compatibility is PG major plus native/model/protocol versions.
     # An older schema is upgraded from its verified files before tail replay.
     return (base['server_version_num']//10000==expected['server_version_num']//10000
+        and (base['pgvector_version']==expected['pgvector_version']
+             or (base['pgvector_version'],expected['pgvector_version'])==('0.8.2','0.8.4'))
         and all(base.get(key)==expected.get(key) for key in (
-            'pgvector_version','postgis_version','model_sha256','tokenizer_sha256','protocol_version'))
+            'postgis_version','model_sha256','tokenizer_sha256','protocol_version'))
         and ('schema_version' not in base or 'schema_version' not in expected
              or base['schema_version']<=expected['schema_version']))
 
@@ -356,6 +358,9 @@ class NativeSnapshotFactory:
                     observed=await cursor.fetchone()
                     if observed is None or observed[0]//10000!=17 or observed[1]!=self.database.writer_generation:
                         raise SnapshotError('native_backup_version_or_writer')
+                    cursor=await connection.execute("SELECT extversion FROM pg_extension WHERE extname='vector'")
+                    if await cursor.fetchone()!=(versions['pgvector_version'],):
+                        raise SnapshotError('native_backup_pgvector_version')
                     cursor=await connection.execute('SELECT datname FROM pg_database WHERE NOT datistemplate '
                         'ORDER BY datname COLLATE "C" LIMIT 4')
                     if {row[0] for row in await cursor.fetchall()}!={'postgres',self.database.dbname}:
@@ -415,7 +420,7 @@ class NativeSnapshotFactory:
             await _blocking(verify_mounted_journal,checkpoint,mount_root=mount_root)
         try:
             manifest=json.loads(verified.manifest_bytes)
-            if manifest['versions']!=expected_versions:
+            if not compatible_versions(manifest['versions'],expected_versions):
                 raise SnapshotError('dataset_restore_versions_mismatch')
         except (ValueError,TypeError,KeyError):
             raise SnapshotError('dataset_restore_versions_mismatch') from None
@@ -436,7 +441,8 @@ class NativeSnapshotFactory:
         if not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('native_restore_operation_key_required')
         request=sha(encode({'manifest':arguments.get('expected_manifest_sha256'),
-            'control':sha(arguments.get('control_bytes',b'')),'identity':self.identity}))
+            'control':sha(arguments.get('control_bytes',b'')),
+            'expected_versions':arguments.get('expected_versions'),'identity':self.identity}))
         previous=self._operations.get(operation_key)
         if previous is not None:
             digest,session=previous
@@ -474,6 +480,12 @@ class NativeSnapshotFactory:
         if (blob.size>self.limits.max_archive_bytes or m['unpacked_bytes']>self.limits.max_unpacked_bytes
                 or m['file_count']>self.limits.max_files):raise SnapshotError('native_restore_artifact_budget')
         if len(self._owned_candidates)>=2:raise SnapshotError('native_restore_candidate_capacity')
+        # One controller-selected target pin for this retained restore owner.
+        selected=expected_versions['pgvector_version']
+        if getattr(self,'_selected_pgvector_version',selected)!=selected:
+            raise SnapshotError('native_restore_expected_pgvector_changed')
+        self._selected_pgvector_version=selected
+        if not self._custom_probe:self.probe=native_probe_for_schema(pgvector_version=selected)
         await self.tools.verify(self._run)
         root=await _blocking(self._workspace,workspace,m['unpacked_bytes'])
         if self.database.socket!=str(root/'socket'):raise SnapshotError('native_restore_socket_binding')
@@ -516,7 +528,7 @@ class NativeSnapshotFactory:
                             or type(restored_cursor) is not int
                             or restored_cursor<m['applied_sequence']):
                         raise SnapshotError('native_restore_internal_cursor')
-            await self._upgrade_restored(candidate,m)
+            await self._upgrade_restored(candidate,m,expected_versions)
             original=replace(self.database,writer_generation=m['writer_generation'])
             executor=self.executor_factory(acquire=candidate.acquire,registry=self.registry,database=original,
                 run_id=self.identity[0],launch_nonce=self.identity[1],runtime_incarnation=self.identity[2])
@@ -526,8 +538,12 @@ class NativeSnapshotFactory:
         except BaseException:
             await candidate.aclose();self._owned_candidates.discard(candidate);raise
 
-    async def _upgrade_restored(self,candidate,manifest):
-        """Verified physical bytes/cursor precede DDL; replay follows this call."""
+    async def _upgrade_restored(self,candidate,manifest,expected_versions):
+        """Upgrade only an isolated verified candidate, before replay/READY."""
+        if not compatible_versions(manifest['versions'],expected_versions):
+            raise SnapshotError('native_restore_version_mismatch')
+        old=manifest['versions']['pgvector_version']
+        target=expected_versions['pgvector_version']
         files=getattr(self,'schema_files',None)
         if files is None:raise SnapshotError('native_restore_migration_bundle_required')
         from .kaggle_schema_migrate import migrate
@@ -541,6 +557,18 @@ class NativeSnapshotFactory:
                     actual=await (await connection.execute(
                         'SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()
                     if actual!=(declared,):raise SnapshotError('native_restore_base_schema_version')
+                observed=await (await connection.execute(
+                    "SELECT extversion FROM pg_extension WHERE extname='vector'")).fetchone()
+                if observed!=(old,):raise SnapshotError('native_restore_base_pgvector_version')
+                if old!=target:
+                    # The only proven forward path; the package has to supply
+                    # its native library and extension update SQL from Stage0.
+                    if (old,target)!=('0.8.2','0.8.4'):
+                        raise SnapshotError('native_restore_pgvector_upgrade_unsupported')
+                    await connection.execute("ALTER EXTENSION vector UPDATE TO '0.8.4'")
+                    observed=await (await connection.execute(
+                        "SELECT extversion FROM pg_extension WHERE extname='vector'")).fetchone()
+                    if observed!=(target,):raise SnapshotError('native_restore_pgvector_upgrade_unverified')
                 await configure_migration_defaults(connection)
             await migrate(connection,files)
         _,fields=await self.probe(acquire=candidate.acquire)
