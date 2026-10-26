@@ -200,43 +200,6 @@ class NativeSourceIntake:
                 return True
         return False
 
-    async def with_import_hints(self, row, output):
-        # Guidance describes a settled result, never a wait/rejection receipt.
-        if output.state!='staged': return output
-        state=self._state(row)
-        if state is not None and state.get('rejected_batch_index') is not None: return output
-        metadata=json.loads(row['metadata_json'])
-        with self.queue.connect(write=False) as db:
-            catalogs=[v[0] for v in db.execute(
-                "SELECT operation_key FROM rkb_control_operations WHERE source_id=? AND person_id=? "
-                "AND apply_state='APPLIED' AND operation_key LIKE ? ORDER BY sequence",
-                (row['source_id'],row['person_id'],f"source-catalog:{row['ingestion_id']}:%"))]
-            last=db.execute("SELECT operation_key FROM rkb_control_operations WHERE source_id=? "
-                "AND person_id=? AND apply_state='APPLIED' AND operation_key LIKE ? "
-                "ORDER BY sequence DESC LIMIT 1",
-                (row['source_id'],row['person_id'],f"source-stage:{row['ingestion_id']}:%")).fetchone()
-        for key in catalogs:
-            entry=await self._entry(key)
-            if entry is None: raise _failure('accepted_catalog_history_unavailable')
-            update=json.loads(entry.command.payload)['catalog_update']
-            for field in ('authors','publication_year'):
-                if field in update: metadata[field]=update[field]
-        hints=[]
-        if last is not None:
-            entry=await self._entry(last[0])
-            if entry is None: raise _failure('accepted_page_history_unavailable')
-            entities=json.loads(entry.command.payload)['model_payload'].get('entity_candidates') or {}
-            if not entities.get('entities'):
-                hints.append('Accepted pages have no entities: if the text names places, people, '
-                    'organizations or events, add entity_candidates (with historical German '
-                    'forms as aliases) in the next packet.')
-        if not metadata.get('authors') or not metadata.get('publication_year'):
-            hints.append('Catalog author/year missing: read the title or imprint and correct '
-                'author/year using metadata.catalog_update in a separate book_ingest(stage).')
-        if not hints: return output
-        return output.model_copy(update={'message':output.message+'; '+'; '.join(hints),
-            'warnings':list(dict.fromkeys([*output.warnings,*hints]))})
-
     def _inactive_prefix_current(self, access, row, scope):
         """Require this book's own accepted inactive predecessors."""
         proof=getattr(self.startup,'coverage',None)
