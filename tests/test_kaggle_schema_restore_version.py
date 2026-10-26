@@ -116,3 +116,80 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
             await connection.execute('DROP ROLE rkb_writer')
             await connection.execute('DROP ROLE rkb_reader')
         await connection.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('base_version,target_version,actual_version,expected_alter,failed',[
+    ('0.8.2','0.8.4','0.8.2',True,None),
+    ('0.8.2','0.8.2','0.8.2',False,None),
+    ('0.8.4','0.8.4','0.8.4',False,None),
+    ('0.8.4','0.8.4','0.8.2',False,'native_restore_base_pgvector_version'),
+    ('0.8.4','0.8.2','0.8.4',False,'native_restore_version_mismatch'),
+])
+async def test_isolated_restore_vector_transition_precedes_schema_and_readiness(
+        monkeypatch,base_version,target_version,actual_version,expected_alter,failed):
+    """Source-only SQL fixture: real 0.8.4 package/corpus belongs to Shkiper."""
+    import regional_knowledge.kaggle_schema_migrate as schema
+    import regional_knowledge.kaggle_owned_pg as owned
+    events=[]
+
+    class CandidateConnection:
+        version=actual_version
+        observed=None
+        @asynccontextmanager
+        async def transaction(self):
+            events.append('transaction_start')
+            try:
+                yield
+            except BaseException:
+                events.append('transaction_rollback')
+                raise
+            else:
+                events.append('transaction_commit')
+        async def execute(self,statement,*args,**kwargs):
+            events.append(statement)
+            if statement.startswith('SELECT max(version)'):
+                self.observed=(42,)
+            elif statement.startswith('SELECT extversion'):
+                self.observed=(self.version,)
+            elif statement=="ALTER EXTENSION vector UPDATE TO '0.8.4'":
+                self.version='0.8.4'
+            return self
+        async def fetchone(self):
+            return self.observed
+
+    connection=CandidateConnection()
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    async def configure(conn):
+        assert conn is connection
+        events.append('configure_migration_defaults')
+    async def migrate(conn,files):
+        assert conn is connection and files=={'sql/042_synthetic.sql':b'fixture'}
+        events.append('schema_migrate')
+    async def probe(*,acquire):
+        events.append('probe_readiness')
+        assert connection.version==target_version
+        return b'{}',dict(schema_version=42,database_generation='fixture-generation',applied_seq=853)
+    monkeypatch.setattr(owned,'configure_migration_defaults',configure)
+    monkeypatch.setattr(schema,'migrate',migrate)
+    factory=object.__new__(NativeSnapshotFactory)
+    factory.database=NS(schema_version=42,database_generation='fixture-generation')
+    factory.schema_files={'sql/042_synthetic.sql':b'fixture'}
+    factory.probe=probe
+    version=lambda v:dict(server_version_num=170011,pgvector_version=v,
+        schema_version=42,model_sha256='a'*64,tokenizer_sha256='b'*64)
+    manifest=dict(versions=version(base_version),applied_sequence=853)
+    if failed:
+        with pytest.raises(SnapshotError,match=failed):
+            await factory._upgrade_restored(NS(acquire=acquire),manifest,version(target_version))
+        assert 'schema_migrate' not in events and 'probe_readiness' not in events
+    else:
+        await factory._upgrade_restored(NS(acquire=acquire),manifest,version(target_version))
+        alter=[event for event in events if event=="ALTER EXTENSION vector UPDATE TO '0.8.4'"]
+        assert bool(alter)==expected_alter
+        assert events.index('transaction_commit')<events.index('schema_migrate')<events.index('probe_readiness')
+        if expected_alter:
+            assert events.index(alter[0])<events.index('transaction_commit')
+        assert events.count('SELECT extversion FROM pg_extension WHERE extname=\'vector\'')==(2 if expected_alter else 1)
