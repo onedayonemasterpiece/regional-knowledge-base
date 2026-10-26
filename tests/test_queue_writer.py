@@ -55,6 +55,25 @@ def marker(e):
 
 
 @pytest.mark.asyncio
+async def test_idle_deadline_does_not_drain_unknown_writer_publication(owner):
+    from regional_knowledge.bge_queue import IDLE_SECONDS
+    e=owner;e.c.lost_ack=True
+    with pytest.raises(StoreUnavailable):
+        await e.s.compare_and_swap(e.key,b'exact',expected_token=None,writer_generation='writer-1')
+    original=marker(e)
+    assert json.loads(original)['state']=='UNKNOWN'
+    e.q.clock=lambda:1000.+IDLE_SECONDS
+    with e.q.connect() as db:
+        db.execute('UPDATE runs SET heartbeat=? WHERE id=?',(e.q.clock(),e.run))
+    e.q.maintenance()
+    with e.q.connect(write=False) as db:
+        assert db.execute('SELECT status FROM runs WHERE id=?',(e.run,)).fetchone()[0]=='ready'
+        assert db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]==e.run
+    assert marker(e)==original
+    assert not e.q.stop_eligible(e.run,e.token,e.generation)
+
+
+@pytest.mark.asyncio
 async def test_exact_current_draining_writer_can_finish_checkpoint_but_not_expired_writer(owner):
     e=owner
     with e.q.connect() as db:

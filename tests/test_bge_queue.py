@@ -99,6 +99,44 @@ def test_useful_lease_heartbeat_does_not_extend_it(tmp_path):
     # Pending useful work survives the expired run; it never disappears.
     assert queue.status()['queue_depth']==1
 
+
+@pytest.mark.parametrize('claimed_document',[False,True])
+def test_live_native_idle_timeout_drains_to_stop_without_losing_claim(tmp_path,claimed_document):
+    now=[1000.];q=BgeQueue(tmp_path/'idle-stop.sqlite',clock=lambda:now[0])
+    q.request_startup();run,token=run_details(q)
+    q.launch_claim(run,provider_ref='owner/fixture')
+    nonce=q.prepare_channel(run)
+    q.launch_record(run,'owner/fixture',provider_version=165)
+    generation=q.attach_channel(run,token,nonce,'idle-runtime')['connection_generation']
+    q.heartbeat(run,token,ready=True,connection_generation=generation)
+    job=None
+    if claimed_document:
+        ident=q.enqueue('actor','long-document',['fixture'],kind='document')
+        job=q.claim(run,token,connection_generation=generation)
+        assert job['id']==ident
+    for _ in range(IDLE_SECONDS//60-1):
+        now[0]+=60;q.heartbeat(run,token,connection_generation=generation)
+    now[0]+=60;q.maintenance()
+    assert q.channel_status(run,token,generation)['state']=='draining'
+    assert q.channel_status(run,token,generation)['ready'] is False
+    assert q.claim(run,token,connection_generation=generation) is None
+    assert q.stop_eligible(run,token,generation) is (not claimed_document)
+    if job:
+        assert q.result('actor',ident)['state']=='claimed'
+        q.complete(run,token,ident,job['claim'],SPACE,[[1]+[0]*1023],{},connection_generation=generation)
+        assert q.result('actor',ident)['state']=='done'
+        assert q.stop_eligible(run,token,generation)
+    with q.connect(write=False) as db:
+        assert db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]==run
+        assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==1
+        assert not db.execute('SELECT 1 FROM bge_provider_terminal_receipts WHERE run_id=?',(run,)).fetchone()
+    # Keeping STOP available does not extend a missing heartbeat or hard age.
+    now[0]+=121
+    assert not q.stop_eligible(run,token,generation)
+    from regional_knowledge.bge_queue import MAX_LIFETIME
+    now[0]=1000.+MAX_LIFETIME
+    with pytest.raises(PermissionError):q.stop_eligible(run,token,generation)
+
 def test_queries_precede_documents_and_lost_worker_result_is_fenced(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
     doc=queue.enqueue('actor','doc',['passage'],kind='document')

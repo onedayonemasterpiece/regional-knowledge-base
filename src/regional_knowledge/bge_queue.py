@@ -171,7 +171,8 @@ class BgeQueue:
         lost = (now-run['heartbeat']>HEARTBEAT_SECONDS
                 if run['status']!='starting' or prepared else now-run['started']>900)
         return (run['status']=='expired' or now>=run['started']+MAX_LIFETIME
-                or now>=run['useful']+IDLE_SECONDS or lost or run['status']=='failed')
+                or (run['status']!='draining' and now>=run['useful']+IDLE_SECONDS)
+                or lost or run['status']=='failed')
 
     def _retire_recovery_jobs(self,db,now):
         # One retirement path, including historical rows; no native success is
@@ -182,14 +183,28 @@ class BgeQueue:
             AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))""",(now,))
 
     def _expire(self, db, now):
+        from .queue_writer import pending
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
             if run['status']=='draining' and run['launch_state'] in ('dispatching','dispatched'):
                 continue  # Keep this reservation/channel until exact provider terminal proof.
+            if (run['status']=='ready' and run['launch_state']=='dispatched'
+                    and run['provider_version'] is not None
+                    and run['channel_active'] and not run['attachment_conflict']
+                    and now>=run['useful']+IDLE_SECONDS
+                    and now<run['started']+MAX_LIFETIME
+                    and now-run['heartbeat']<=HEARTBEAT_SECONDS
+                    and not pending(db,run['id'])):
+                # Keep the exact live channel for checkpoint/STOP and existing
+                # claims. Draining denies fresh serving/claims; native terminal
+                # proof still owns retirement, never the useful-idle clock.
+                db.execute("UPDATE runs SET status='draining' WHERE id=?",(run['id'],))
+                _LOG.info('bge_idle_drain requested run_id=%s provider_version=%s',
+                          run['id'],run['provider_version'])
+                continue
             # A cold start gets at most 15 minutes to prove the completed native
             # bootstrap or become ready. Only trusted finalized pins permit the
             # normal heartbeat lease; idle and maximum lifetimes still apply.
             if self._run_expired(run, now):
-                from .queue_writer import pending
                 if pending(db,run['id']):
                     continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))

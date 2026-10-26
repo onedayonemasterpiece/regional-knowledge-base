@@ -45,6 +45,14 @@ execution Stop/capacity and unknown publication outcomes remain controller
 integration work. Existing controller lifetime/launch behavior is not silently
 claimed to satisfy the target lifecycle contract.
 
+An attached, version-bound READY worker reaching the useful-idle deadline
+enters `draining` while its heartbeat and hard lifetime remain valid. It stops
+serving new reads/claims, retains existing claimed work, and uses the same
+checkpoint/STOP path as a planned drain. An unresolved writer publication
+keeps its existing recovery fence. The idle clock cannot retire the provider
+reservation; only exact native terminal evidence does that. Disconnected,
+conflicting, unversioned or failed cold starts keep their existing expiry rules.
+
 Local evidence uses actual uvicorn/ASGI, aiohttp websocket, BgeQueue and result
 waiters with a stub encoder, plus deterministic lost-ACK/reconnect/slow-load
 fixtures. The native socket check is loopback without TLS and does not establish
