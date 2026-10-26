@@ -72,6 +72,8 @@ async def vertical(database, auth, tmp_path):
                          '005_source_withdraw.sql', '006_source_import.sql',
                          '007_source_stories.sql', '008_source_facts.sql', '009_story_editorial.sql'):
                 await admin.execute((ROOT / 'sql/kaggle' / name).read_text(), prepare=False)
+            await admin.execute('CREATE TABLE rkb_v4.source_catalog_corrections '
+                                '(source_id uuid, accepted_sequence bigint, metadata jsonb)')
             await admin.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,0,0,true,true)',
                                 (GENERATION, 'writer-1'))
 

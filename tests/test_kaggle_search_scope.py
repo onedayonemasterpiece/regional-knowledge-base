@@ -134,6 +134,8 @@ async def test_actual_pg_scope_and_current_hydration(database):
         for path in sorted((ROOT / 'sql/kaggle').glob('00[2-9]_*.sql')):
             if not path.name.startswith('003_'):
                 await database.execute(path.read_text(), prepare=False)
+        await database.execute('CREATE TABLE rkb_v4.source_catalog_corrections '
+                               '(source_id uuid, accepted_sequence bigint, metadata jsonb)')
     connection = await connect()
     try:
         async def encode(query):
