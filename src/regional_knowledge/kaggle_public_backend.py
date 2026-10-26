@@ -122,14 +122,14 @@ class TargetReadBinding:
     provider_version: str
 
 
-def current_binding(queue):
-    """Small read-only control snapshot; BGE-only readiness never suffices."""
+def current_binding(queue, *, allow_draining=False):
+    """Serving requires READY; retained checkpoint/output guards may allow current DRAINING."""
     try:
         with queue.connect(write=False) as db:
             queue._shared_owner(db)
             row = db.execute('SELECT current_run FROM control WHERE id=1').fetchone()
             run = db.execute('SELECT * FROM runs WHERE id=?', (row[0],)).fetchone() if row else None
-            if (run is None or run['status'] != 'ready' or not run['channel_active']
+            if (run is None or run['status'] not in (('ready','draining') if allow_draining else ('ready',)) or not run['channel_active']
                     or run['attachment_conflict'] or queue._run_expired(run, queue.clock())
                     or run['provider_version'] is None or not run['runtime_incarnation']):
                 raise TargetUnavailable('target runtime not ready')

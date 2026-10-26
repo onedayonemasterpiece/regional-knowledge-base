@@ -55,6 +55,20 @@ def marker(e):
 
 
 @pytest.mark.asyncio
+async def test_exact_current_draining_writer_can_finish_checkpoint_but_not_expired_writer(owner):
+    e=owner
+    with e.q.connect() as db:
+        db.execute("UPDATE runs SET status='draining' WHERE id=?",(e.run,))
+    assert e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
+    assert await e.s.compare_and_swap(e.key,b'final-checkpoint',expected_token=None,writer_generation='writer-1')
+    with e.q.connect() as db:
+        db.execute("UPDATE runs SET status='expired' WHERE id=?",(e.run,))
+    assert not e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
+    with pytest.raises(StaleWriter):
+        await e.s.compare_and_swap(e.key,b'forbidden',expected_token=None,writer_generation='writer-1')
+
+
+@pytest.mark.asyncio
 async def test_real_guard_blocks_retirement_and_control_handover_through_native_io(owner):
     e=owner;e.c.release=threading.Event()
     writing=asyncio.create_task(e.s.compare_and_swap(e.key,b'exact',expected_token=None,writer_generation='writer-1'))

@@ -145,7 +145,9 @@ LEASE_TERMINAL_PROBE_SECONDS=30
 
 def lease_terminal_probe_due(queue, run, *, now=None):
     if run['status']=='expired':return True
-    if run['status'] not in ('starting','ready','draining') or not queue._run_expired(run,queue.clock()):
+    if run['status'] not in ('starting','ready','draining') or not (
+            run['status']=='draining' and not run.get('channel_active',1)
+            or queue._run_expired(run,queue.clock())):
         return False
     now=time.monotonic() if now is None else now
     previous=_LEASE_TERMINAL_PROBED.get(run['id'])

@@ -33,6 +33,8 @@ E5 и Supabase отсутствуют в target. Один BGE space: сущес�
 
 Ping/Pong, полезный спрос, task progress, короткая writer lease и 30-минутный useful-idle — разные таймеры. Сокет без полезной работы не удерживает notebook бесконечно. Frames, bytes, inflight credits, reconnect backoff и task deadlines ограничены. Большие payloads передаются существующим bounded byte transport по проверенным refs, а не огромным WSS JSON.
 
+При плановом drain новые чтения и импорт закрыты, но точный текущий writer и проверенный prefix сохраняются для финального checkpoint. Ожидание checkpoint не останавливает dispatch/receive его RPC. После его исхода по прежнему аутентифицированному каналу отправляется STOP; отсутствие сокета или heartbeat не освобождает reservation до подтверждённого terminal конкретной версии Kaggle. Старый writer после смены current run, потери канала или expiry не получает права публиковать checkpoint.
+
 Отладка переиспользует healthy owned run со **стабильным slug**. Минимальный HELLO/control приходит до install/restore/BGE, READY после probes. SQL и совместимый stateless read handler меняются без повторного model load; mutation executor — через ordered migration/reconciliation, context/deps — через controlled restart. Snapshot replacement по умолчанию требует finite PG maintenance окно, не двух clusters. UNKNOWN push/stop не запускает replacement; provider terminal относится к exact execution, cancel ACK/delete/TTL недостаточны. Expected outputs определены до работы. Полный контракт и новые cases — [handoff §5.4/6.6/14.5](prompts/rkb-scalable-kaggle-implementation-20261019.md).
 
 ## Долговечность и ACK

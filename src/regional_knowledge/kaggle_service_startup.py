@@ -329,7 +329,7 @@ class TargetServiceStartup:
     def binding_current(self,binding):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
-                and current_binding(self.config.queue)==binding
+                and current_binding(self.config.queue,allow_draining=True)==binding
                 and self.config.writer_current(database_generation=binding.database_generation,
                     writer_generation=self.config.writer_generation))
         except Exception:return False
@@ -348,7 +348,8 @@ class TargetServiceStartup:
     def reads_current(self):
         try:
             return bool(self.running and not self.closed and (self.snapshot is None or self.snapshot.verified) and self.coverage is not None
-                and self.coverage.current() and self.binding_current(self.binding))
+                and self.coverage.current() and self.binding_current(self.binding)
+                and current_binding(self.config.queue)==self.binding)
         except Exception:return False
 
     def imports_current(self):
@@ -482,6 +483,8 @@ class TargetServiceStartup:
             try:
                 binding=await asyncio.to_thread(current_binding,self.config.queue)
             except TargetUnavailable:
+                if self.binding is not None and self.binding_current(self.binding):
+                    return False  # Retain the verified prefix for this current writer's final checkpoint.
                 # The migrated worker can reconnect before its lost receipt
                 # advances our observed version. Reconcile that original job
                 # through existing pre-ready authority, then resume READY.

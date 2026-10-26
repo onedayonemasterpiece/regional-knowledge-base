@@ -152,6 +152,23 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
 
 
 @pytest.mark.asyncio
+async def test_drain_keeps_final_checkpoint_prefix_but_closes_new_imports_and_reads(service):
+    s=service;startup=s.startup;s.adapter.available=True
+    async with startup.lifespan(None):
+        assert startup.reads_current()
+        proof,binding=startup.coverage,startup.binding
+        with s.target.queue.connect() as db:
+            db.execute("UPDATE runs SET status='draining' WHERE id=?",(binding.run_id,))
+        assert startup.binding_current(binding) and proof.current()
+        assert not startup.reads_current() and not startup.imports_current()
+        assert not await startup.refresh()
+        assert startup.coverage is proof and proof.current()
+        with s.target.queue.connect() as db:
+            db.execute("UPDATE runs SET status='expired' WHERE id=?",(binding.run_id,))
+        assert not startup.binding_current(binding) and not proof.current()
+
+
+@pytest.mark.asyncio
 async def test_proof_refresh_failure_and_writer_change_close_routing(service):
     s=service;startup=s.startup
     s.adapter.available=True

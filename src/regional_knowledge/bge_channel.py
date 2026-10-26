@@ -219,9 +219,10 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 return await queue_call(queue.channel_status, run_id, token, generation)
 
             stop_sent = False
+            stop_checkpoint = None
 
             async def maybe_stop():
-                nonlocal stop_sent
+                nonlocal stop_sent, stop_checkpoint
                 if stop_sent:
                     return True
                 predicate = getattr(queue, 'stop_eligible', None)
@@ -238,8 +239,18 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 # success AND explicit failure are terminal for this wait.
                 # The target callback enforces the original nine-hour limit.
                 if before_stop is not None:
+                    if stop_checkpoint is None:
+                        logger.info(json.dumps({'event':'bge_stop_checkpoint',
+                            'run_id':run_id,'connection_generation':generation,'outcome':'started'}))
+                        stop_checkpoint = asyncio.create_task(before_stop(run_id,generation))
+                        tasks.append(stop_checkpoint)
+                        return False
+                    if not stop_checkpoint.done():
+                        return False  # Dispatch and receive must complete the checkpoint RPCs.
                     try:
-                        await before_stop(run_id,generation)
+                        stop_checkpoint.result()
+                        logger.info(json.dumps({'event':'bge_stop_checkpoint',
+                            'run_id':run_id,'connection_generation':generation,'outcome':'settled'}))
                     except asyncio.CancelledError:
                         raise
                     except Exception as error:

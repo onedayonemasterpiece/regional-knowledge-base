@@ -183,6 +183,8 @@ class BgeQueue:
 
     def _expire(self, db, now):
         for run in db.execute("select * from runs where status in ('starting','ready','draining','failed')").fetchall():
+            if run['status']=='draining' and run['launch_state'] in ('dispatching','dispatched'):
+                continue  # Keep this reservation/channel until exact provider terminal proof.
             # A cold start gets at most 15 minutes to prove the completed native
             # bootstrap or become ready. Only trusted finalized pins permit the
             # normal heartbeat lease; idle and maximum lifetimes still apply.
@@ -929,8 +931,8 @@ class BgeQueue:
     def stop_eligible(self, run_id, token, connection_generation):
         """Read-only authenticated STOP predicate; never proof of provider terminal.
 
-        A former owner can stop after handover; the current owner stops only
-        at nine hours. Pending/claimed work and unknown writer publication
+        A former owner can stop after handover; the current owner stops at
+        nine hours or after its exact idle-drain request. Pending/claimed work and unknown writer publication
         retain their original run even when its compute resource looks idle.
         """
         from .queue_writer import pending
@@ -941,7 +943,7 @@ class BgeQueue:
             if self._run_expired(run, now):
                 return False
             current = db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
-            if current == run_id and now - run['started'] < 9 * 3600:
+            if current == run_id and run['status']!='draining' and now - run['started'] < 9 * 3600:
                 return False
             if pending(db, run_id):
                 return False
@@ -984,8 +986,9 @@ class BgeQueue:
             if (current and current['status']=='ready' and not self._run_expired(current,now)
                     and now-current['started']>=ROTATE_SECONDS and not control['successor']):
                 db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
-            # A draining poll still returns no work; maintenance owns closure.
-            draining=db.execute("select id from runs where status='draining' and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()
+            # An attached drain retains its checkpoint/STOP channel. A detached
+            # dispatched run retains capacity until exact provider terminal proof.
+            draining=db.execute("select id from runs where status='draining' and channel_active=0 and launch_state not in ('dispatching','dispatched') and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()
             from .queue_writer import pending
             for row in draining:
                 if not pending(db,row['id']):db.execute("update runs set status='expired' where id=?",(row['id'],))
@@ -1105,8 +1108,8 @@ class BgeQueue:
                     or type(run['provider_version']) is not int):
                 return False
             if run['status']=='starting':return True
-            return (run['status'] in ('ready','draining')
-                    and self._run_expired(run,self.clock()))
+            return (run['status']=='draining' and not run['channel_active']
+                or run['status'] in ('ready','draining') and self._run_expired(run,self.clock()))
 
     @staticmethod
     def _provider_owner_ids(db):
