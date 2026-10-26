@@ -27,6 +27,7 @@ from psycopg.rows import tuple_row
 from .kaggle_apply import initialize_database
 from .kaggle_schema_migrate import latest_schema_version
 from .kaggle_bootstrap import BootstrapUnavailable, _file_hash
+from .kaggle_database_probe import PGVECTOR_VERSIONS
 
 # Kaggle saves /kaggle/working outputs; /kaggle/temp is session-only.
 PRIVATE_RUNTIME_ROOT = Path('/kaggle/temp')
@@ -143,6 +144,14 @@ async def configure_migration_defaults(connection):
         GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO rkb_writer;
         ALTER DEFAULT PRIVILEGES IN SCHEMA rkb_v4
         GRANT EXECUTE ON FUNCTIONS TO rkb_writer""",prepare=False)
+
+
+def pinned_pgvector_version(native_paths):
+    """Version explicitly selected by the verified SQL-file path (not auto-detected)."""
+    filename=Path(native_paths['vector_sql']).name
+    for version in PGVECTOR_VERSIONS:
+        if filename==f'vector--{version}.sql':return version
+    raise BootstrapUnavailable('native_pg_extension_binding_mismatch')
 
 
 def canonical(value):
@@ -472,9 +481,10 @@ class OwnedPostgres:
         paths = spec.native_paths
         library = await self._command(paths['pg_config'],'--pkglibdir',timeout=5)
         shared = await self._command(paths['pg_config'],'--sharedir',timeout=5)
+        version=pinned_pgvector_version(paths)
         if (Path(paths['vector_library']) != Path(library)/'vector.so'
                 or Path(paths['vector_control']) != Path(shared)/'extension/vector.control'
-                or Path(paths['vector_sql']) != Path(shared)/'extension/vector--0.8.2.sql'):
+                or Path(paths['vector_sql']) != Path(shared)/'extension'/f'vector--{version}.sql'):
             raise BootstrapUnavailable('native_pg_extension_binding_mismatch')
         cluster = Path(spec.cluster)
         try:
@@ -545,7 +555,10 @@ class OwnedPostgres:
         selected_sql=tuple(files)
         spec=self.spec
         async with admin.transaction():
-            await admin.execute('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public')
+            version=pinned_pgvector_version(self.spec.native_paths)
+            await admin.execute(sql.SQL('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public VERSION {}').format(sql.Literal(version)))
+            observed=await (await admin.execute("SELECT extversion FROM pg_extension WHERE extname='vector'")).fetchone()
+            if observed!=(version,):raise BootstrapUnavailable('native_pg_extension_version_mismatch')
             await create_native_roles(admin)
         await migrate(admin,{'sql/'+name:files[name] for name in selected_sql})
         await initialize_database(admin,database_generation=spec.database_generation,
