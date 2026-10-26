@@ -14,7 +14,7 @@ from regional_knowledge.kaggle_search import _PENDING_ENCODERS
 import pytest
 
 from regional_knowledge.kaggle_search import fused_search, vector_literal
-from test_kaggle_pg_driver import catalog_database, database, connect
+from test_kaggle_query import env, database, connect
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "rkb-v4-fixture-20261020"
@@ -239,11 +239,11 @@ ROLLBACK;
 @pytest.mark.skipif(not (os.environ.get('RKB_PG_DRIVER_FIXTURE_SOCKET') or
                            os.environ.get('RKB_KAGGLE_TEST_DSN')), reason='disposable PG17 required')
 @pytest.mark.asyncio
-async def test_hydrate_30_acceptance_union_and_top_ten(catalog_database):
+async def test_hydrate_30_acceptance_union_and_top_ten(env):
+    catalog_database = env['admin']
     from regional_knowledge.kaggle_protocol import QueryFilters
     from regional_knowledge.kaggle_search import acceptance_search
-    source = '00000000-0000-0000-0000-000000000001'
-    other = '00000000-0000-0000-0000-000000000004'
+    source, other = '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000004'
     vector_b = '[' + ','.join(['0', '1'] + ['0'] * 1022) + ']'
     async with catalog_database.transaction():
         await catalog_database.execute((ROOT / 'sql/kaggle/043_hydrate_window.sql').read_text(), prepare=False)
