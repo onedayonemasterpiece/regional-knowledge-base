@@ -23,12 +23,16 @@ from test_kaggle_protocol import item
 
 @pytest.mark.parametrize('catalog, locator, expected', [
     ({'title': 'Кёнигсберг в Пруссии', 'authors': ['Фриц Гаузе'], 'publication_year': 1994},
-     'pages 141', 'Фриц Гаузе. Кёнигсберг в Пруссии (1994), с. 141'),
-    ({'title': 'Atlas', 'publication_year': 1880}, 'pages 12-13', 'Atlas (1880), с. 12–13'),
-    ({'title': 'Учебник', 'authors': ['А. Автор']}, 'pages 141, 142',
+     'printed page 141', 'Фриц Гаузе. Кёнигсберг в Пруссии (1994), с. 141'),
+    ({'title': 'Atlas', 'publication_year': 1880}, 'printed page 12-13', 'Atlas (1880), с. 12–13'),
+    ({'title': 'Учебник', 'authors': ['А. Автор']}, 'printed page 141, 142',
      'А. Автор. Учебник, с. 141–142'),
+    ({'title': 'Разворот'}, 'printed page 17; scan 19', 'Разворот, с. 17, скан 19'),
+    ({'title': 'Скан'}, 'scan 5', 'Скан, скан 5'),
+    ({'title': 'Римские'}, 'printed page IV', 'Римские, с. IV'),
+    ({'title': 'Старый формат'}, 'pages 141', 'Старый формат'),
     ({'title': 'Без даты', 'authors': []}, 'unknown', 'Без даты'),
-    ({}, 'pages 9', 'passage-1'),
+    ({}, 'printed page 9', 'passage-1'),
 ])
 def test_evidence_title_uses_existing_catalog_and_page(catalog, locator, expected):
     from regional_knowledge.kaggle_public_backend import _evidence_title
