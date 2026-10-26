@@ -1,0 +1,3 @@
+condition,family_id,selection,packet_characters,anchor_evidence_sufficient,expanded_evidence_sufficient,complete_grounded_answer,reader_declared_sufficient,judge_count
+post_core_context_diagnostic,F04,selected_after_insufficient_anchor,1977,False,True,True,True,1
+post_core_context_diagnostic,F06,selected_after_insufficient_anchor,1628,False,True,True,True,1

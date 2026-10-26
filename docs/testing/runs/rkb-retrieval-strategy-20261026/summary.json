@@ -1,0 +1,148 @@
+{
+  "analysis_scope": "exploratory_core_only_no_original_gold_read",
+  "core_cutoff_utc": "2026-10-26T11:16:27+00:00",
+  "selected_families": 8,
+  "planned_arms": 5,
+  "all_trace_calls": 156,
+  "all_calls_by_operation": {
+    "catalog": 1,
+    "book_find": 5,
+    "fetch": 60,
+    "search": 80,
+    "entity_list": 4,
+    "story_calendar": 1,
+    "geo_lookup": 2,
+    "story_search": 1,
+    "story_get": 1,
+    "graph_fetch": 1
+  },
+  "all_calls_by_execution": {
+    "error": 3,
+    "completed": 153
+  },
+  "core_search_calls": 58,
+  "other_search_calls": 22,
+  "core_search_by_arm": {
+    "A4": 10,
+    "A0": 8,
+    "A1": 8,
+    "A2": 16,
+    "A3": 16
+  },
+  "core_execution_counts": {
+    "completed": 58
+  },
+  "core_observed_state_count": 1,
+  "core_calls_missing_observed_state": 0,
+  "cutoff_unclassifiable_calls": 0,
+  "expected_source_mapping_available": true,
+  "core_unique_candidate_urls": 49,
+  "core_known_source_count": 4,
+  "repeated_exact_query_groups": 8,
+  "repeated_exact_query_calls": 32,
+  "repeated_query_groups_with_ordered_url_change": 0,
+  "core_identity_status_counts": {
+    "confirmed": 174
+  },
+  "fetched_urls_with_source_conflicts": 0,
+  "fetch_payload_revision_conflicts": 0,
+  "family_search_wall_sum_statistics_by_arm": {
+    "A0": {
+      "n": 8,
+      "missing": 0,
+      "sum_complete": 13538.0,
+      "sum_known": 13538.0,
+      "median": 1339.5,
+      "max": 3257.0,
+      "empirical_p95": 3038.2499999999995
+    },
+    "A1": {
+      "n": 8,
+      "missing": 0,
+      "sum_complete": 12162.0,
+      "sum_known": 12162.0,
+      "median": 1523.5,
+      "max": 1793.0,
+      "empirical_p95": 1773.05
+    },
+    "A2": {
+      "n": 8,
+      "missing": 0,
+      "sum_complete": 18235.0,
+      "sum_known": 18235.0,
+      "median": 2197.0,
+      "max": 2968.0,
+      "empirical_p95": 2809.7999999999997
+    },
+    "A3": {
+      "n": 8,
+      "missing": 0,
+      "sum_complete": 18204.0,
+      "sum_known": 18204.0,
+      "median": 2197.5,
+      "max": 2900.0,
+      "empirical_p95": 2867.45
+    },
+    "A4": {
+      "n": 8,
+      "missing": 0,
+      "sum_complete": 12332.0,
+      "sum_known": 12332.0,
+      "median": 1386.0,
+      "max": 2274.0,
+      "empirical_p95": 2225.35
+    }
+  },
+  "paired_A1_A0_native_ratio_statistics": {
+    "n": 8,
+    "missing": 0,
+    "sum_complete": 12.863952282445295,
+    "sum_known": 12.863952282445295,
+    "median": 1.5815225315484591,
+    "max": 1.9316556362682191,
+    "empirical_p95": 1.8435839441599287
+  },
+  "paired_A1_minus_A0_native_delta_statistics": {
+    "n": 8,
+    "missing": 0,
+    "sum_complete": 2221.423,
+    "sum_known": 2221.423,
+    "median": 274.041,
+    "max": 415.41499999999996,
+    "empirical_p95": 379.1581499999999
+  },
+  "all_fetch_wall_statistics": {
+    "n": 60,
+    "missing": 0,
+    "sum_complete": 55143.0,
+    "sum_known": 55143.0,
+    "median": 932.0,
+    "max": 2034.0,
+    "empirical_p95": 1292.8999999999999
+  },
+  "all_fetch_native_statistics": {
+    "n": 60,
+    "missing": 0,
+    "sum_complete": 11534.634672989341,
+    "sum_known": 11534.634672989341,
+    "median": 208.88608550012577,
+    "max": 347.08021900223684,
+    "empirical_p95": 278.223553400312
+  },
+  "rrf_pair_status_counts": {
+    "single_query": 22,
+    "complete": 18
+  },
+  "fetch_calls": 60,
+  "fetched_passage_url_count": 56,
+  "fetched_confirmed_passage_revision_count": 56,
+  "returned_source_page_chunk_occurrences": 32,
+  "source_page_chunk_state_unique_count": 32,
+  "unified_passage_plus_page_chunk_count": null,
+  "counts_note": "Page chunks and fetched passage URLs may overlap; not summed.",
+  "no_gold_quality_metrics": false,
+  "timing_note": "Observed tool clocks only; no user_to_answer or causal arm speed claim.",
+  "rank_note": "Absent top-3 membership is censored; no fabricated rank 4.",
+  "rrf_note": "k=60; within-list URL dedup; cross-list merge only for confirmed source/revision and state binding.",
+  "independent_judgments_joined": true
+}
