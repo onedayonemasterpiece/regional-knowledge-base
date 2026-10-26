@@ -185,7 +185,10 @@ class NativeSourceIntake:
         return heads
 
     async def with_import_hints(self, row, output):
-        if output.state not in ('staged','processing'): return output
+        # Guidance describes a settled result, never a wait/rejection receipt.
+        if output.state!='staged': return output
+        state=self._state(row)
+        if state is not None and state.get('rejected_batch_index') is not None: return output
         metadata=json.loads(row['metadata_json'])
         with self.queue.connect(write=False) as db:
             catalogs=[v[0] for v in db.execute(
