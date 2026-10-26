@@ -24,12 +24,36 @@ def _field(value,name,default=None):
     return value.get(name,default) if isinstance(value,dict) else getattr(value,name,default)
 
 
-def probe_stage0_datasets(api,stage0):
-    """Check readiness and exact-version file metadata; worker checks SHA bytes.
+def _file_readiness(api,ref,version,files):
+    cursor=None;seen_cursors=set();found=set()
+    for _ in range(4):
+        page=api.dataset_list_files(f'{ref}/{version}',page_token=cursor,page_size=100)
+        if _field(page,'error_message'):return 'dataset_files_unavailable'
+        rows=_field(page,'files',[]) or []
+        if not isinstance(rows,(list,tuple)) or len(rows)>100:
+            return 'dataset_file_listing_invalid'
+        for row in rows:
+            name=_field(row,'name')
+            if type(name) is not str or name not in files:continue
+            size=_field(row,'total_bytes')
+            if type(size) is not int or size!=files[name][0] or name in found:
+                return 'dataset_file_metadata_differs'
+            found.add(name)
+        if found==files.keys():return None
+        cursor=_field(page,'next_page_token')
+        if not cursor:return 'dataset_files_pending'
+        if type(cursor) is not str or cursor in seen_cursors:
+            return 'dataset_file_cursor_invalid'
+        seen_cursors.add(cursor)
+    return 'dataset_file_listing_bounded'
 
-    Status is slug-wide. A newer *ready* version does not invalidate an older
-    explicitly selected immutable version. List the selected version itself,
-    never substitute the latest version or infer identity from a mount name.
+
+def probe_stage0_datasets(api,stage0):
+    """Check selected and mount-compatible latest metadata; worker checks SHA.
+
+    Notebook save may discard the requested Dataset version suffix. Latest
+    must therefore retain the selected filenames/sizes too; an additive new
+    version is valid. Neither listing substitutes for native byte verification.
     """
     if type(stage0) is not Stage0Spec:
         raise ValueError('stage0_typed_plan_required')
@@ -54,29 +78,11 @@ def probe_stage0_datasets(api,stage0):
                 return result(False,'dataset_version_pending')
             if api.dataset_status(ref)!='ready':
                 return result(False,'dataset_warming')
-            cursor=None;seen_cursors=set();found=set()
-            for _ in range(4):
-                page=api.dataset_list_files(f'{ref}/{version}',page_token=cursor,page_size=100)
-                if _field(page,'error_message'):
-                    return result(False,'dataset_files_unavailable')
-                rows=_field(page,'files',[]) or []
-                if not isinstance(rows,(list,tuple)) or len(rows)>100:
-                    return result(False,'dataset_file_listing_invalid')
-                for row in rows:
-                    name=_field(row,'name')
-                    if type(name) is not str or name not in files:continue
-                    size=_field(row,'total_bytes')
-                    if type(size) is not int or size!=files[name][0] or name in found:
-                        return result(False,'dataset_file_metadata_differs')
-                    found.add(name)
-                if found==files.keys():break
-                cursor=_field(page,'next_page_token')
-                if not cursor:return result(False,'dataset_files_pending')
-                if type(cursor) is not str or cursor in seen_cursors:
-                    return result(False,'dataset_file_cursor_invalid')
-                seen_cursors.add(cursor)
-            else:
-                return result(False,'dataset_file_listing_bounded')
+            for candidate in dict.fromkeys((version,before)):
+                reason=_file_readiness(api,ref,candidate,files)
+                if reason:
+                    if candidate!=version:reason='dataset_mount_'+reason.removeprefix('dataset_')
+                    return result(False,reason)
             # A concurrent version transition is a reason to try on a later
             # tick, never to make a launch claim while still warming.
             if publisher.observe()!=before or api.dataset_status(ref)!='ready':
