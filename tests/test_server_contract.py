@@ -73,13 +73,38 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     assert "book_pages" in server.instructions and "book_ingest(reprocess)" in server.instructions
     assert "model performs semantic reading" in server.instructions
     for phrase in ("ONE direct answer", "language of the user's question",
-                   "names a specific author or book", "fetch evidence",
+                   "names a specific author or book", "inline search or fetch evidence",
                    "Источники:", "В доступной базе подтверждений не найдено",
                    "Не удалось проверить базу сейчас", "printed-page numbers from scan numbers"):
         assert phrase in server.instructions
     live = {tool.name for tool in await build_server(profile="live").list_tools()}
     assert "book_find" not in live and "book_ingest" not in live
 
+
+
+@pytest.mark.asyncio
+async def test_adaptive_p1_policy_is_in_search_only_and_fetch_refers_to_it(monkeypatch):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    tools = {tool.name: tool for tool in await build_server().list_tools()}
+    search_description, fetch_description = tools["search"].description, tools["fetch"].description
+    for phrase in (
+        "Search/fetch checklist:", "user's language", "document_ids immediately",
+        "inline search text", "incomplete and next_id", "After EACH read",
+        "For ONE gap choose ONE action", "fetch(id=next_id)", "fetch using the hit's id",
+        "source language/rephrase", "Never mix languages", "short OPEN question",
+        "AND needs one entity", "do not prove NOT", "at most 6 sequential",
+        "evidenced part and remaining question", "1-4 sentence answer in the user's language",
+        "cite ALL supporting passages",
+    ):
+        assert phrase in search_description, phrase
+    assert search_description.count("Search/fetch checklist:") == 1
+    assert "only when needed" in search_description
+    assert "Follow the search checklist." in fetch_description
+    assert "when needed follow next_id" in fetch_description
+    assert "Search/fetch checklist:" not in fetch_description
+    assert "at most 6 sequential" not in fetch_description
+    assert "document_ids" in tools["search"].input_schema["properties"]
+    assert "source_id" in tools["fetch"].input_schema["properties"]
 
 
 def test_auth_uses_application_issuer_not_supabase(monkeypatch):

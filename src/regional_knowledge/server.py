@@ -548,7 +548,7 @@ def build_server(
     _answer_instructions = (
         " For a factual question, give ONE direct answer in the language of the user's question, grounded in search/fetch evidence; a hit list or opaque UUID is not an answer. "
         "When a question names a specific author or book, never attribute another author's passage to it. "
-        "Verify claims using fetch evidence; cite only matching passages and then add a brief source list (for Russian questions, 'Источники:'). "
+        "Verify claims using inline search or fetch evidence; cite only matching passages and then add a brief source list (for Russian questions, 'Источники:'). "
         "If retrieval succeeds but finds no relevant supporting passage, say so (for Russian, 'В доступной базе подтверждений не найдено'), without inventing a claim. "
         "Distinguish insufficient evidence from pending, timeout or unavailable retrieval (for Russian, 'Не удалось проверить базу сейчас'). "
         "When requested, give quotations and pages only when verified; distinguish printed-page numbers from scan numbers. "
@@ -1315,13 +1315,23 @@ def build_server(
 
         return mcp
 
+    _search_policy = (
+        "Search/fetch checklist:\n"
+        "1. Identify subject, required parts, named book, period and ambiguity. First search in the user's language; for a named book use document_ids immediately, not a broad search.\n"
+        "2. Read inline search text, provenance, incomplete and next_id. After EACH read check all parts, identity, negations and caveats; stop when evidence is sufficient.\n"
+        "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
+        "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
+        "5. Stop when sufficient or after at most 6 sequential RKB calls. At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
+        "6. Give one 1-4 sentence answer in the user's language, cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request.\n"
+    )
+
     @mcp.tool(
         title="Search regional knowledge",
         description=(
             "Search accessible regional books and journals. Results include citable IDs/URLs; "
             "source-backed hits include bounded text, provenance, incomplete and next_id. "
-            "Use fetch(id=next_id) to continue an incomplete hit; fetch also reads neighboring pages. "
-            "If Kaggle is cold, check startup_status and retry as a NEW read after ready."
+            "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
+            "If Kaggle is cold, check startup_status and retry as a NEW read after ready.\n" + _search_policy
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
@@ -1337,11 +1347,11 @@ def build_server(
         description=(
             "Fetch evidence for an ID returned by search, including source provenance. "
             "A bounded source passage includes explicit offsets and next_id when more text "
-            "or bibliography remains; fetch next_id until continuation_complete. "
+            "or bibliography remains; when needed follow next_id until evidence suffices, continuation_complete or the call budget. "
             "For native accepted chunk review, omit id and provide source_id, page_start, page_end "
             "(inclusive zero-based physical page indexes; maximum four pages). Returns ordered "
             "chunk_id, text, pages, regions with exact Unicode offsets and next_after_ordinal "
-            "for continuation. The same fetch authorization applies."
+            "for continuation. The same fetch authorization applies. Follow the search checklist."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
