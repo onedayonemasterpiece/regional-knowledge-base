@@ -1,7 +1,11 @@
 """Synthetic, offline K-curve acceptance; no database, Kaggle, or BGE needed."""
 import json
+import os
 import runpy
 from pathlib import Path
+
+import pytest
+from test_kaggle_pg_driver import database
 
 MODULE = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/benchmarks/r1_k_curve.py'))
 
@@ -62,9 +66,40 @@ def test_variant_ordering_and_sql_read_only():
         order='coverage DESC, score DESC, passage_id')
 
 
-def test_pg_lexical_pool_variants(database=None):
-    # Actual PG assertion is performed in the async companion below.
-    assert MODULE['DEPTH'] == 100
+@pytest.mark.skipif(not (os.environ.get('RKB_KAGGLE_TEST_DSN')
+                        or os.environ.get('RKB_PG_DRIVER_FIXTURE_SOCKET')),
+                    reason='disposable PG17 fixture required')
+@pytest.mark.asyncio
+async def test_pg_lexical_pool_variants(database):
+    ids = ['10000000-0000-0000-0000-000000000081',
+           '10000000-0000-0000-0000-000000000082',
+           '10000000-0000-0000-0000-000000000083']
+    vec = '[1,' + ','.join(['0'] * 1023) + ']'
+    async with database.transaction():
+        for ordinal, ident, body, lang in [
+            (81, ids[0], 'Университет дата обсерватория', 'ru'),
+            (82, ids[1], 'Университет ' * 12, 'ru'),
+            (83, ids[2], 'foo', 'simple'),
+        ]:
+            await database.execute("""INSERT INTO rkb_v4.passage_search
+                (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
+                VALUES (%s,'00000000-0000-0000-0000-000000000001',1,%s,'test',%s,
+                    %s,%s::regconfig,%s::public.vector)""",
+                (ident, ordinal, body, lang, 'pg_catalog.' + ('russian' if lang == 'ru' else lang), vec))
+        async def pool(kind, question):
+            order = ('coverage DESC, score DESC, passage_id' if kind == 'coverage'
+                     else 'score DESC, passage_id')
+            sql = MODULE['LEXICAL_VARIANT_SQL'].format(order=order)
+            result = await (await database.execute(sql, (question, 100, 100))).fetchall()
+            return [str(row[0]) for row in result]
+        question = 'университет дата обсерватория профессор'
+        baseline = await (await database.execute(
+            'SELECT passage_id FROM rkb_v4.lexical_candidates(%s,100)', (question,))).fetchall()
+        assert baseline == []
+        assert set(await pool('or', question)) == set(ids[:2])
+        assert (await pool('coverage', question))[0] == ids[0]
+        assert await pool('or', 'университет -обсерватория') == [ids[1]]
+        assert await pool('or', 'foo missing') == []
 
 
 def test_pool_cli_passes_lexical_choice(tmp_path, monkeypatch):
