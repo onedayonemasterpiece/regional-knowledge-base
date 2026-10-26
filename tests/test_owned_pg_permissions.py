@@ -68,6 +68,25 @@ def test_verified_code_only_becomes_readable_by_exact_native_identity(code,monke
     assert stat.S_IMODE((root/'native/lib').stat().st_mode)&0o070==0o050
 
 
+def test_selected_temp_public_native_files_keep_model_private(code,monkeypatch,tmp_path):
+    """The PG identity gets only pinned code, even under the session artifact root."""
+    old, files, pins = code
+    temp = tmp_path/'kaggle/temp/rkb-artifacts'
+    temp.parent.mkdir(parents=True,mode=0o711)
+    temp.parent.chmod(0o711)
+    old.rename(temp)
+    temp.chmod(0o711)
+    selected = [(str(temp/Path(path).relative_to(old)),size,digest,executable)
+                for path,size,digest,executable in pins]
+    before = (temp/'model/weight').read_bytes()
+    fake_identity(monkeypatch)
+    grant_native_code_access(temp,selected,uid=9999,gid=8888)
+    assert (temp/'model/weight').read_bytes()==before
+    assert (temp/'model').stat().st_mode&0o777==0o700
+    assert (temp/'model/weight').stat().st_mode&0o777==0o400
+    assert (temp/'native/bin').stat().st_mode&0o070==0o050
+
+
 @pytest.mark.parametrize('case',['symlink_parent','changed_bytes','root_not_traversable'])
 def test_permission_grants_refuse_unsafe_code_without_launching_native(code,monkeypatch,case):
     root,files,pins=code;fake_identity(monkeypatch)

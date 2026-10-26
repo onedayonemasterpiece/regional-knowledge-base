@@ -53,7 +53,7 @@ class TargetLaunchSpec:
                     or self.dataset_checkpoint.database_generation!=self.database.database_generation):
                 raise ValueError('exact Dataset checkpoint for this restored generation required')
         root = Path(self.artifact_root)
-        if (not root.is_absolute() or '..' in root.parts or root != Path('/kaggle/working')
+        if (not root.is_absolute() or '..' in root.parts or root not in (Path('/kaggle/working'), Path('/kaggle/temp/rkb-artifacts'))
                 or not 1 <= len(self.artifacts) <= 96):
             raise ValueError('bounded prepared Kaggle inventory required')
         from .kaggle_bootstrap import PreparedArtifact, REQUIRED_DEPENDENCIES

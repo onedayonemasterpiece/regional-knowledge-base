@@ -28,6 +28,7 @@ import zlib
 from .kaggle_stage0 import CHUNK_BYTES, _hash, _integer, _name, _parent, _verify, _remaining
 
 TRUSTED_ROOT=Path('/kaggle/working')
+TEMP_ARTIFACT_ROOT=Path('/kaggle/temp/rkb-artifacts')
 OS_RELEASE=Path('/etc/os-release')
 MAX_MANIFEST_BYTES=4*1024*1024
 MAX_FILES=8192
@@ -561,8 +562,14 @@ def _pins(prefix,manifest):
 
 def _open_root(root):
     root=Path(root)
-    if root!=TRUSTED_ROOT or root.resolve(strict=True)!=root or not root.is_dir():
+    if root not in (TRUSTED_ROOT,TEMP_ARTIFACT_ROOT) or root.resolve(strict=True)!=root or not root.is_dir():
         raise NativeBundleError('native_bundle_root_invalid')
+    if root==TEMP_ARTIFACT_ROOT:
+        for part in (root.parent.parent,root.parent,root):
+            info=part.stat(follow_symlinks=False)
+            if (info.st_uid not in (0,os.geteuid()) or
+                    stat.S_IMODE(info.st_mode)&0o022 or not info.st_mode&stat.S_IXOTH):
+                raise NativeBundleError('native_bundle_root_invalid')
     return os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 
 

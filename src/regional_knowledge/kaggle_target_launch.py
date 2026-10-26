@@ -156,7 +156,35 @@ if __name__ == '__main__':
         raise RuntimeError('target_bundle_transport_invalid')
     _bundle = _json.loads(_raw)
     _root = _Path(BUNDLE_ROOT)
-    if _root.parent.resolve(strict=True) != _root.parent:
+    _artifact_root = _root.parent
+    if _artifact_root != _Path(RUN_CONFIG['prepared_model']['root']):
+        raise RuntimeError('target_bundle_artifact_root_mismatch')
+    if _artifact_root == _Path('/kaggle/temp/rkb-artifacts'):
+        # The only new parent permitted at cold start; no arbitrary mkdir -p.
+        import os as _os, stat as _stat
+        _fd = _os.open('/kaggle', _os.O_RDONLY|_os.O_DIRECTORY|_os.O_NOFOLLOW)
+        try:
+            for _part in (None, 'temp', 'rkb-artifacts'):
+                _created = False
+                if _part is not None:
+                    try:
+                        _os.mkdir(_part, mode=0o711, dir_fd=_fd)
+                        _created = True
+                    except FileExistsError:
+                        pass
+                    _next = _os.open(_part, _os.O_RDONLY|_os.O_DIRECTORY|_os.O_NOFOLLOW, dir_fd=_fd)
+                    _os.close(_fd)
+                    _fd = _next
+                    if _created: _os.fchmod(_fd, 0o711)
+                _info = _os.fstat(_fd)
+                if (_info.st_uid not in (0, _os.geteuid()) or
+                        _stat.S_IMODE(_info.st_mode)&0o022 or not _info.st_mode&_stat.S_IXOTH):
+                    raise RuntimeError('target_bundle_parent_invalid')
+        finally:
+            _os.close(_fd)
+    elif _artifact_root != _Path('/kaggle/working'):
+        raise RuntimeError('target_bundle_artifact_root_invalid')
+    if _artifact_root.resolve(strict=True) != _artifact_root:
         raise RuntimeError('target_bundle_parent_invalid')
     try:
         _root.mkdir(mode=0o700)
