@@ -170,7 +170,7 @@ async def test_server_main_optional_slack_signed_ingress_stays_received_without_
     monkeypatch.delenv('RKB_PROJECTS_HUB_READER_CONFIG',raising=False)
     monkeypatch.delenv('RKB_EXPERT_SLACK_INGRESS_CONFIG',raising=False)
     apps=[]
-    monkeypatch.setattr(server.uvicorn,'run',
+    monkeypatch.setattr('regional_knowledge.http_shutdown.run_http_server',
                         lambda app,**kwargs:apps.append(app))
 
     server.main(target_startup=startup)
