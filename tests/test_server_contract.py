@@ -95,6 +95,8 @@ async def test_adaptive_p1_policy_is_in_search_only_and_fetch_refers_to_it(monke
         "AND needs one entity", "do not prove NOT", "at most 6 sequential",
         "evidenced part and remaining question", "1-4 sentence answer in the user's language",
         "cite ALL supporting passages",
+        "do not add details absent from read passages",
+        "label them as outside the cited sources",
     ):
         assert phrase in search_description, phrase
     assert search_description.count("Search/fetch checklist:") == 1
