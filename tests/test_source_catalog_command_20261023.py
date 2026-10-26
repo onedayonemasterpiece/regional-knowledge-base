@@ -128,6 +128,12 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
             'SELECT metadata FROM rkb_v4.source_catalog WHERE source_id=%s',(SOURCE,))).fetchone())[0]
         original_manifest=(await (await db.execute(
             'SELECT manifest FROM rkb_v4.source_manifests WHERE source_id=%s',(SOURCE,))).fetchone())[0]
+        passage=(await (await db.execute(
+            'SELECT passage_id FROM rkb_v4.source_passage_provenance WHERE source_id=%s LIMIT 1',
+            (SOURCE,))).fetchone())[0]
+        before_metadata=(await (await db.execute(
+            'SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([passage],))).fetchone())[0]
+        assert before_metadata['catalog']==original_manifest['metadata']
 
     # Closed group SQL integrity does not compare original stage person_id with the
     # current accepted catalog actor. Existing controller OAuth/owned-ingestion checks
@@ -170,6 +176,11 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
             ('Omega',8))).fetchall()
         assert len(current)==1 and str(current[0][0])==SOURCE
         assert current[0][1]==rows[-1][1]
+        passage_metadata=(await (await db.execute(
+            'SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([passage],))).fetchone())[0]
+        assert passage_metadata['catalog']==current[0][1]
+        assert {k:v for k,v in passage_metadata.items() if k!='catalog'}=={
+            k:v for k,v in before_metadata.items() if k!='catalog'}
         assert await (await db.execute(
             'SELECT source_id FROM rkb_v4.find_source_catalog_v1(%s,%s)',
             ('Alpha',8))).fetchall()==[]
