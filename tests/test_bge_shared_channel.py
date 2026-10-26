@@ -388,3 +388,96 @@ def test_native_diagnostics_use_same_result_and_nonblocking_sink_without_payload
         assert 'NEVER_LOG' not in json.dumps(p.records)
         if not bad:assert p.records[0]['stages_ms']=={'encode_ms':5.}
         release(socket,generation,frame)
+
+def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monkeypatch):
+    """Real channel plus synthetic native worker: a queued release cannot block its answer."""
+    from contextlib import asynccontextmanager
+    from test_bge_wss_worker import module
+
+    p = peer
+    transport = module('bge_wss_transport')
+    finish_times = []
+    original_finish = p.a.finish_read
+
+    async def record_finish(*args, **kwargs):
+        finish_times.append(time.monotonic())
+        return await original_finish(*args, **kwargs)
+
+    monkeypatch.setattr(p.a, 'finish_read', record_finish)
+
+    async def exercise():
+        block_heartbeat = asyncio.Event()
+        heartbeat_waiting = asyncio.Event()
+        resume_writer = asyncio.Event()
+        handler_finished = asyncio.Event()
+        ready_received = asyncio.Event()
+        admission_held = threading.Event()
+        stop = asyncio.Event()
+
+        async def hold_admission():
+            async with p.a._lock:
+                admission_held.set()
+                await asyncio.sleep(1.5)
+
+        @asynccontextmanager
+        async def connector():
+            with connect(p) as websocket:
+                class Socket:
+                    async def send(self, raw):
+                        frame = json.loads(raw)
+                        if (frame['type'] == 'HEARTBEAT' and block_heartbeat.is_set()
+                                and not heartbeat_waiting.is_set()):
+                            heartbeat_waiting.set()
+                            await resume_writer.wait()
+                        await asyncio.to_thread(websocket.send_text, raw)
+
+                    async def receive(self):
+                        raw = await asyncio.to_thread(websocket.receive_text)
+                        frame = json.loads(raw)
+                        if frame['type'] == 'READY_ACK' and frame['status'] == 'ready':
+                            ready_received.set()
+                        return raw
+
+                yield Socket()
+
+        async def query_handler(frame, *, encode):
+            await encode(frame['query'])
+            block_heartbeat.set()
+            await asyncio.wait_for(heartbeat_waiting.wait(), 1)
+            p.client.portal.start_task_soon(hold_admission)
+            assert await asyncio.to_thread(admission_held.wait, 1)
+            handler_finished.set()
+            return answer(frame)
+
+        worker = transport.BgeWssTransport(
+            dict(run_id=p.run, token=p.token, launch_nonce=p.nonce,
+                 channel='wss://synthetic.invalid/bge-worker/channel', shared_reads=True),
+            lambda: lambda _: [1.] + [0.] * 1023, lambda: {},
+            query_handler=query_handler, connector=connector,
+            heartbeat_seconds=.4, maximum_seconds=6, stop=stop)
+        task = asyncio.create_task(worker.run())
+        try:
+            await asyncio.wait_for(ready_received.wait(), 2)
+            ticket = await asyncio.to_thread(begin, p, worker._connection_generation, 'queued-read-first')
+            await asyncio.wait_for(handler_finished.wait(), 1.5)
+            # Let states() enqueue QUERY_RESULT, RESOURCE_RELEASED and RESOURCE_STATE
+            # in one iteration while writer is held on an earlier heartbeat.
+            async with asyncio.timeout(.4):
+                while worker.read_pending is None or worker.last_released is None:
+                    await asyncio.sleep(.005)
+            await asyncio.sleep(.02)
+            started = time.monotonic()
+            resume_writer.set()
+
+            async def delivered():
+                return await asyncio.wait_for(asyncio.shield(ticket.result), .6)
+
+            response = await asyncio.to_thread(p.client.portal.call, delivered)
+            assert response.mode == 'hybrid'
+            assert finish_times and finish_times[0] - started < .2
+        finally:
+            resume_writer.set()
+            stop.set()
+            await asyncio.wait_for(task, 3)
+
+    asyncio.run(exercise())
