@@ -382,7 +382,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                     if message['type'] == 'websocket.disconnect':
                         return
                     frame = message if service else _decode(message)
-                    if not service and frame['type'] in ('RECOVERY_PHASE_RESULT', 'SNAPSHOT_UPLOAD_INTENT',
+                    if not service and frame['type'] in ('RECOVERY_PHASE_RESULT', 'SNAPSHOT_UPLOAD_INTENT', 'HEARTBEAT',
                                                          'RKB1_BIND_REQUEST', 'SOURCE_COMMAND_RESULT'):
                         service_frames.put_nowait(frame)
                         continue
