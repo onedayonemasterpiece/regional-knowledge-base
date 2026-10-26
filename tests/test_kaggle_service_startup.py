@@ -262,7 +262,7 @@ async def test_explicit_main_selects_target_without_env_loader(service,monkeypat
         return app
     launched=[]
     monkeypatch.setattr(module.KnowledgeMCPServer,'streamable_http_app',capture_app)
-    monkeypatch.setattr(module.uvicorn,'run',lambda app,**options:launched.append((app,options)))
+    monkeypatch.setattr('regional_knowledge.http_shutdown.run_http_server',lambda app,**options:launched.append((app,options)))
     module.main(target_startup=service.startup)
     assert len(seen)==len(launched)==1 and seen[0][0]._target_startup is service.startup
     assert launched[0][0] is seen[0][2]
