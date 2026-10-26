@@ -100,7 +100,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "exact page/region/quote evidence" not in native.instructions
     # This is the server's global MCP initialize guidance, not a tools/list
     # description. The native and legacy init workflows must not mix.
-    assert native.instructions.startswith("The Kaggle native importer accepts")
+    assert native.instructions.startswith("Mandatory import checklist:")
+    assert "The Kaggle native importer accepts" in native.instructions
     assert "ONE direct answer" in native.instructions
     assert "names a specific author or book" in native.instructions
     assert "В доступной базе подтверждений не найдено" in native.instructions
