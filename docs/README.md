@@ -23,6 +23,11 @@ Updated2026-10-20. Active contracts below describe one target; historical report
 | BGE/indexes | [Kaggle contract](bge-kaggle.md), [runbook](operations/bge-kaggle.md), [hard boundary](operations/bge-kaggle-only.md), [automatic indexing](operations/automatic-indexing.md) |
 | Media | [illustration pipeline](operations/illustration-pipeline.md), [source archive](operations/telegram-archive.md), [archive continuation](operations/archive-read-continuation.md) |
 
+## Product proposals (not deployed capabilities)
+
+- [«Читать первоисточник»: исходная глава/статья как качественный PDF (P0) и аудио (P1)](designs/rkb-source-unit-pdf-and-audio-20261026.md) — source-span fidelity, edition metadata, verified reproduction rights, multi-citation selection, async Kaggle workflow and assessment of Wonderful Lections Qwen TTS.
+- [Export acceptance matrix](testing/rkb-source-unit-export-acceptance-20261026.md) — P0 source/text/font/rights/delivery checks, P1 audio benchmarks; proposal, not a PASS.
+
 ## History and superseded entry points
 
 [Prompt index](prompts/README.md) has one current implementation handoff. Older E5/SQLite/Supabase/capacity/seed-only prompts and old beta handoffs are short retired entry points with immutable Git history links; their old executable instructions are not left underneath a new override banner.
