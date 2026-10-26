@@ -220,6 +220,26 @@ def _delivery_row(control, request_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query",["", "я"*1001])
+async def test_invalid_query_completes_once_without_search_and_unblocks_dialog(service,monkeypatch,query):
+    control,receiver,reply,request_id,posts=_temporary_reply_harness(service)
+    with control.corpus.connect() as db:
+        db.execute("UPDATE rkb_expert_requests SET input_text=? WHERE id=?",("<@UBOT> "+query,request_id))
+    async def forbidden(*args,**kwargs):
+        pytest.fail("Invalid question must not execute a search")
+    monkeypatch.setattr(receiver.backend,"search_adapter",forbidden)
+    await reply._answer(request_id)
+    saved=_delivery_row(control,request_id)
+    assert saved["state"]=="delivered" and saved["delivery_attempt"]==1
+    assert len(posts)==1 and "от 1 до 1000 символов" in posts[0]["text"]
+    await reply._answer(request_id)
+    assert len(posts)==1 and _delivery_row(control,request_id)==saved
+    control.clock=lambda:1792000002.0
+    second=control.accept(_observation(n=2))["request_id"]
+    assert reply._row(second,("received",),begin=True) is not None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("eta_seconds", [300, None])
 async def test_target_warming_pending_posts_one_text_only_reply(service, monkeypatch, eta_seconds):
     control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
