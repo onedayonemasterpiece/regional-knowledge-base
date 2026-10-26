@@ -99,6 +99,8 @@ Canonical command outcome hash включает exact domain IDs/body/evidence, 
 
 Spatial predicates используют индексируемые ST_DWithin/ST_Intersects и согласованный CRS. Не вычислять ST_Transform для каждой строки без соответствующего expression index. Не создавать partition/HNSW на каждую книгу и не индексировать все поля без query owner.
 
+Диагностика WSS использует тот же ограниченный неблокирующий read sink: `read_channel_boundary` связывает hash request ID и точную runtime/generation с монотонными границами socket write и приёма/обработки результата на контроллере. Время проверки канала и `finish_read` выделено отдельно. Между этими метками остаются сеть и очереди native transport; это не измерение односторонней сетевой задержки. Часы Kaggle и Dev напрямую не сравниваются. Диагностика не пишет тексты запросов, ответы, actor или credentials; её отказ/переполнение не задерживает выдачу и не освобождает compute.
+
 ## Язык runtime и общие ресурсы
 
 Default — тонкий Python bootstrap/control и QUERY handler, один resident PyTorch FP32 BGE process, нативные PostgreSQL/pgvector/PostGIS kernels. Вызов Python API не означает вычисление tensor math в Python; фактический tokenizer backend проверяется вместе с pinned assets. Encode и blocking operations вынесены из event loop; модель/процессы не загружаются и не создаются на каждый запрос. Torch threads, PG pool/parallel workers, import/proof и maintenance делят один measured CPU/RAM budget с search reserve; четыре Torch threads и один interop — исходный профиль, не универсально свободные ядра.

@@ -384,9 +384,10 @@ def test_native_diagnostics_use_same_result_and_nonblocking_sink_without_payload
         assert p.client.portal.call(observed).status=='degraded'
         p.telemetry._queue.join()
         assert p.telemetry.failed==int(bad)
-        assert len(p.records)==(0 if bad else 1)
+        native_records=[r for r in p.records if r['event']=='kaggle_read_adapter_terminal']
+        assert len(native_records)==(0 if bad else 1)
         assert 'NEVER_LOG' not in json.dumps(p.records)
-        if not bad:assert p.records[0]['stages_ms']=={'encode_ms':5.}
+        if not bad:assert native_records[0]['stages_ms']=={'encode_ms':5.}
         release(socket,generation,frame)
 
 def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monkeypatch):
@@ -481,3 +482,40 @@ def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monk
             await asyncio.wait_for(task, 3)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('broken_observer',[False,True])
+def test_channel_boundaries_separate_socket_and_delivery_without_gating_result(peer,monkeypatch,broken_observer):
+    from hashlib import sha256
+    p=peer
+    original=p.a.finish_read
+    async def slow_finish(*args,**kwargs):
+        await asyncio.sleep(.03)
+        return await original(*args,**kwargs)
+    monkeypatch.setattr(p.a,'finish_read',slow_finish)
+    if broken_observer:
+        def broken(*args,**kwargs):raise OSError('PRIVATE_OBSERVATION_FAILURE')
+        monkeypatch.setattr(p.telemetry,'channel_timing',broken)
+    with connect(p) as socket:
+        generation=attach(p,socket);ready(socket,generation)
+        ticket=begin(p,generation,'channel-boundary')
+        frame=receive_expected(socket,'QUERY')
+        socket.send_json(answer(frame))
+        async def delivered():return await asyncio.wait_for(ticket.result,.5)
+        assert p.client.portal.call(delivered).status=='degraded'
+        p.telemetry._queue.join()
+        observed=[x for x in p.records if x['event']=='read_channel_boundary']
+        assert 'PRIVATE_OBSERVATION_FAILURE' not in json.dumps(p.records)
+        assert 'synthetic regional query' not in json.dumps(p.records)
+        if broken_observer:
+            assert observed==[]
+        else:
+            assert {x['phase'] for x in observed}=={'write','receive'}
+            assert all(x['request_ref']==sha256(frame['request_id'].encode()).hexdigest() for x in observed)
+            write=next(x for x in observed if x['phase']=='write')
+            receive=next(x for x in observed if x['phase']=='receive')
+            assert write['monotonic_start_ns']<=write['monotonic_end_ns']
+            assert write['monotonic_start_ns']<=receive['monotonic_start_ns']
+            assert receive['elapsed_ms']>=receive['settle_ms']>=30
+            assert receive['status_ms']>=0
+        release(socket,generation,frame)

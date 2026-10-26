@@ -11,7 +11,8 @@ import threading
 import time
 from uuid import uuid4
 
-from .query_telemetry import ReadAttempt
+from .query_telemetry import ReadAttempt, ReadRuntime
+from hashlib import sha256
 
 current_trace_id: ContextVar[str | None] = ContextVar("rkb_read_trace", default=None)
 _CONTROLLER_STAGES=frozenset({'auth_ms','binding_ms','startup_demand_ms','dispatch_gate_ms','admission_ms',
@@ -135,6 +136,26 @@ class ReadTelemetry:
                 record=dict(record,controller_loss_before={'dropped':self.dropped,'failed':self.failed})
                 if self.dropped or self.failed:record['diagnostic_state']='inconclusive'
                 self._record(json.dumps(record,allow_nan=False,separators=(',',':')))
+        except Exception:self.failed+=1
+
+    def channel_timing(self,phase,*,request_id,runtime,connection_generation,turn_generation,
+                       started_ns,finished_ns,status_ms=0.,settle_ms=0.):
+        """Controller monotonic boundaries; no clock comparison with Kaggle."""
+        try:
+            if (phase not in ('write','receive') or type(runtime) is not ReadRuntime
+                    or type(request_id) is not str or not 1<=len(request_id.encode())<=256
+                    or type(connection_generation) is not int or connection_generation<1
+                    or type(turn_generation) is not int or turn_generation<0
+                    or type(started_ns) is not int or type(finished_ns) is not int
+                    or not 0<=started_ns<=finished_ns<2**63
+                    or any(type(v) not in (int,float) or not math.isfinite(v) or not 0<=v<=86400000
+                           for v in (status_ms,settle_ms))):raise ValueError('channel timing metadata')
+            self._attempt_record(dict(event='read_channel_boundary',plane='controller_channel',terminal=False,
+                phase=phase,request_ref=sha256(request_id.encode()).hexdigest(),**runtime.fields(),
+                connection_generation=connection_generation,turn_generation=turn_generation,
+                monotonic_start_ns=started_ns,monotonic_end_ns=finished_ns,
+                elapsed_ms=(finished_ns-started_ns)/1e6,status_ms=status_ms,settle_ms=settle_ms,
+                diagnostic_state='observed'))
         except Exception:self.failed+=1
 
     async def measure(self, operation, awaitable):
