@@ -199,6 +199,25 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         result=await self.helper.status(self.access,self.row)
         self.assertEqual(self.pending().command.route,'source.finish.v1')
 
+    async def test_status_waits_for_restore_owner_before_querying_native_tails(self):
+        self.packet_mode();await self.stage();self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        self.importer.startup.restorer=NS(complete=False)
+        calls=[]
+        async def tails(*args):
+            calls.append(args)
+            return dict(tail_refs=[],has_more=False)
+        self.importer.startup.history.source_tail_refs=tails
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.next_action,'wait')
+        self.assertEqual(result.warnings,['source_maintenance_starting'])
+        self.assertEqual(calls,[])
+        self.importer.startup.restorer.complete=True
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.next_action,'continue_pages')
+        self.assertEqual(len(calls),1)
+
     async def test_unknown_tail_query_never_claims_complete_coverage(self):
         self.packet_mode();await self.stage();self.finish()
         await self.helper.status(self.access,self.row);self.finish()

@@ -74,3 +74,7 @@ Control checkpoint 15 min; changed PG base 4 h или раньше по replay/b
 Проверки включают socket drop живого run, kill завершённой session с восстановлением, late duplicate result, wrong generation, duplicate connection, lost ACK, failed remote seal, failed Dataset processing и restore без нужного WAL. Для release действуют [protected gates](../mass-ingestion-readiness.md); качественный ответ в 2 s нельзя заменить быстрым enqueue.
 
 [Прежние pull/claim/complete deployment details](https://github.com/onedayonemasterpiece/regional-knowledge-base/blob/a8cf41b50b8ccb62409d046d009d53c09d74b1d7/docs/operations/bge-kaggle.md) — исходный runbook. Новое развёртывание следует этому контракту и handoff, не восстанавливает прежний E5/Supabase runtime.
+
+### API restart and import status
+
+While the source restore coordinator is incomplete, an import status or finalize call waits before querying source tails. It must not instantiate the lazy native-history maintenance dispatcher ahead of the retained restore/checkpoint owner. After restore composition completes, the same ingestion resumes ordinary tail checks; accepted packet identities and Dataset durability are unchanged.

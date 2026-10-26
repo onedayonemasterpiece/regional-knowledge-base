@@ -415,6 +415,12 @@ class NativeSourceIntake:
                 or state['phase'] not in ('staging','finalized')):
             return None
         await self._check(access,row)
+        restorer=getattr(self.startup,'restorer',None)
+        if restorer is not None and not restorer.complete:
+            # A status request must not create the lazy history dispatcher
+            # before startup installs its retained restore/checkpoint owner.
+            return self.importer._output(row,'processing','Source maintenance is starting; resume status',
+                'wait',source_archive_status='verified',warnings=['source_maintenance_starting'])
         try:
             from .contracts import SourceTailRef
             value=await self.startup.history.source_tail_refs(access.binding,row['source_id'],row['ingestion_id'])
