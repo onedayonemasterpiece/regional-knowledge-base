@@ -192,6 +192,39 @@ def controller():
     return module
 
 
+@pytest.mark.parametrize('phase', ['ERROR', 'RUNNING'])
+def test_current_only_reconciles_telegram_owner_without_scanning_archive(env, phase):
+    from regional_knowledge.telegram_runtime_binding import Rkb1Lease
+
+    q, now, prior, row = env
+    with q.connect() as db:
+        db.execute('UPDATE runs SET runtime_incarnation=? WHERE id=?',
+                   ('prior-incarnation', prior))
+        Rkb1Lease._ensure_slot_table(db)
+        db.execute('INSERT INTO rkb_telegram_session_lease VALUES(?,?,?,?,?)',
+                   ('TELEGRAM_RKB1', prior, 'prior-incarnation', -100100100, 2))
+        candidate = q._new_run(db, now[0])
+        db.execute('UPDATE control SET current_run=? WHERE id=1', (candidate,))
+        archived = q._new_run(db, now[0])
+        db.execute("UPDATE runs SET status='expired',launch_state='dispatched',"
+                   'provider_ref=?,provider_version=92 WHERE id=?', (REF, archived))
+    api = API(row())
+    api.phase = phase
+    retired = controller().reconcile_provider_history(api, q, current_only=True)
+    assert retired == (1 if phase == 'ERROR' else 0)
+    assert api.calls == [('status', 'v93', 'fixture-owner', 'stable-notebook')]
+    with q.connect(write=False) as db:
+        assert db.execute('SELECT launch_state FROM runs WHERE id=?',
+                          (prior,)).fetchone()[0] == (
+                              'terminal' if phase == 'ERROR' else 'dispatched')
+        assert db.execute('SELECT count(*) FROM bge_provider_terminal_receipts').fetchone()[0] == retired
+        assert db.execute('SELECT run_id FROM rkb_telegram_session_lease').fetchone()[0] == prior
+        assert db.execute('SELECT launch_state FROM runs WHERE id=?',
+                          (archived,)).fetchone()[0] == 'dispatched'
+        assert db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0] == candidate
+    assert q.launch_claim(candidate, provider_ref=REF)
+
+
 def test_mixed_history_known_terminal_unmapped_and_different_ref(env):
     q, now, rid, row = env
     with q.connect() as db:
