@@ -65,6 +65,7 @@ async def test_version_frontier_observation_ignores_catalog_and_pg_patch_release
     ({'schema_version':True},'database_native_runtime_mismatch'),
     ({'server_version_num':160011},'database_native_runtime_mismatch'),
     ({'pgvector_version':'0.7.0'},'database_native_runtime_mismatch'),
+    ({'pgvector_version':'0.8.4'},'database_native_runtime_mismatch'),
     ({'projection_seq':6},'database_state_invalid'),
     ({'applied_seq':True},'database_state_invalid'),
     ({'pending':True},'database_state_invalid'),
@@ -74,6 +75,18 @@ async def test_invalid_version_environment_or_frontier_fails_closed(update,code)
     with pytest.raises(DatabaseProbeUnavailable,match='^'+code+'$'):
         await NativeDatabaseProbe()(acquire=connection.acquire)
     assert connection.exits==['rollback']
+
+
+@pytest.mark.asyncio
+async def test_explicit_084_probe_requires_exact_actual_version():
+    connection=Connection();connection.state['pgvector_version']='0.8.4'
+    raw,fields=await NativeDatabaseProbe(pgvector_version='0.8.4')(acquire=connection.acquire)
+    assert raw==b'{}' and fields['schema_version']==16
+    connection.state['pgvector_version']='0.8.2'
+    with pytest.raises(DatabaseProbeUnavailable,match='database_native_runtime_mismatch'):
+        await NativeDatabaseProbe(pgvector_version='0.8.4')(acquire=connection.acquire)
+    with pytest.raises(ValueError,match='explicit supported pgvector'):
+        NativeDatabaseProbe(pgvector_version='0.8.7')
 
 
 @pytest.mark.asyncio
