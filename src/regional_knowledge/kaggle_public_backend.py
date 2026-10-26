@@ -51,16 +51,26 @@ def _evidence_title(item) -> str:
     title = catalog['title'].strip() + (f' ({year})' if type(year) is int and 1 <= year <= 3000 else '')
     # Legacy "pages N" may be a physical scan, so do not claim it is printed.
     pattern = r'(?<!\w)(printed page|scan|pp?\.|с\.|стр\.)\s*((?:\d+[a-z]?|[ivxlcdm]+)(?:\s*(?:,|[-–])\s*(?:\d+[a-z]?|[ivxlcdm]+))*)(?=$|[;,])'
+    groups = []
     for page in re.finditer(pattern, item.metadata.locator or '', re.I):
-        raw = page[2]
-        if re.fullmatch(r'\d+(?:\s*(?:,|[-–])\s*\d+)*', raw):
-            numbers = [int(n) for n in re.findall(r'\d+', raw)]
-            span = (f'{numbers[0]}–{numbers[-1]}' if '-' in raw or '–' in raw
-                    or len(numbers) > 1 and numbers == list(range(numbers[0], numbers[-1] + 1))
-                    else ', '.join(map(str, numbers)))
+        prefix = 'скан' if page[1].lower() == 'scan' else 'с.'
+        values = [part.strip().replace('-', '–') for part in page[2].split(',')]
+        if groups and groups[-1][0] == prefix:
+            groups[-1][1].extend(values)
         else:
-            span = raw
-        title += f', {"скан" if page[1].lower() == "scan" else "с."} {span}'
+            groups.append((prefix, values))
+    for prefix, values in groups:
+        spans, run = [], []
+        for value in values:
+            if run and value.isdecimal() and run[-1].isdecimal() and int(value) == int(run[-1]) + 1:
+                run.append(value)
+            else:
+                if run:
+                    spans.append(f'{run[0]}–{run[-1]}' if len(run) > 1 else run[0])
+                run = [value]
+        if run:
+            spans.append(f'{run[0]}–{run[-1]}' if len(run) > 1 else run[0])
+        title += f', {prefix} ' + ', '.join(spans)
     return ((names + '. ' if names else '') + title)[:2048]
 
 
