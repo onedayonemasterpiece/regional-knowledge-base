@@ -1319,9 +1319,9 @@ def build_server(
         "Search/fetch checklist:\n"
         "1. Identify subject, required parts, named book, period and ambiguity. First search in the user's language; for a named book use document_ids immediately, not a broad search.\n"
         "2. Read inline search text, provenance, incomplete and next_id. After EACH read check all parts, identity, negations and caveats; stop when evidence is sufficient.\n"
-        "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch(id=hit ID) if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
+        "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
         "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
-        "5. Stop when sufficient or after at most 6 sequential RKB search/fetch calls. At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
+        "5. Stop when sufficient or after at most 6 sequential RKB calls. At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
         "6. Give one 1-4 sentence Russian answer, cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request.\n"
     )
 
