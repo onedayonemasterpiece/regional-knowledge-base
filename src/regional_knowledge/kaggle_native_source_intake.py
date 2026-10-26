@@ -93,8 +93,7 @@ class NativeSourceIntake:
             for name, declaration in (('packet_mode','INTEGER NOT NULL DEFAULT 0'),
                     ('published_batch_count','INTEGER NOT NULL DEFAULT 0'),('rejected_batch_index','INTEGER'),
                     ('read_completion_requested','INTEGER NOT NULL DEFAULT 0'),('enriched_batch_count','INTEGER NOT NULL DEFAULT 0'),
-                    ('command_attempt','INTEGER NOT NULL DEFAULT 0'),('rejected_reason','TEXT'),
-                    ('accepted_page_batches_json',"TEXT NOT NULL DEFAULT '{}'")):
+                    ('command_attempt','INTEGER NOT NULL DEFAULT 0'),('rejected_reason','TEXT')):
                 if name not in columns:
                     db.execute(f'ALTER TABLE rkb_native_source_intake_state ADD COLUMN {name} {declaration}')
             for legacy in db.execute("UPDATE rkb_native_source_intake_state SET phase='failed',"
@@ -131,7 +130,7 @@ class NativeSourceIntake:
             'pending_kind','phase','seal_sha256','materializer_sha256','next_ordinal','total_inputs','knowledge_sha256'}
         allowed.add('rejected_seal_head')
         allowed.update({'published_batch_count','enriched_batch_count','rejected_batch_index','read_completion_requested',
-            'command_attempt','rejected_reason','accepted_page_batches_json'})
+            'command_attempt','rejected_reason'})
         if not changes or set(changes)-allowed: raise ValueError('compact native progress fields required')
         with self.queue.connect() as db:
             n=db.execute('UPDATE rkb_native_source_intake_state SET '+','.join(k+'=?' for k in changes)
@@ -162,43 +161,6 @@ class NativeSourceIntake:
     def _request_hash(doc):
         return digest(canonical({k:v for k,v in doc.items()
             if k not in ('codec','batch_index','previous_batch_sha256')}))
-
-    async def _page_batch_heads(self, row, state):
-        heads=json.loads(state['accepted_page_batches_json'])
-        if state['batch_count'] and not heads:
-            # One-time upgrade of a previously accepted ingestion. The applied
-            # command history remains the authority; no accepted input is edited.
-            with self.queue.connect(write=False) as db:
-                keys=[v[0] for v in db.execute(
-                    "SELECT operation_key FROM rkb_control_operations WHERE source_id=? AND person_id=? "
-                    "AND apply_state='APPLIED' AND operation_key LIKE ? ORDER BY sequence",
-                    (row['source_id'],row['person_id'],f"source-stage:{row['ingestion_id']}:%"))]
-            for key in keys:
-                entry=await self._entry(key)
-                if entry is None or entry.command.route!=STAGE_ROUTE:
-                    raise _failure('accepted_page_history_unavailable')
-                doc=json.loads(entry.command.payload)
-                for page in doc['model_payload']['pages']:
-                    heads[str(page['physical_page_index'])]=doc['batch_index']
-            if not heads: raise _failure('accepted_page_history_unavailable')
-            await asyncio.to_thread(self._update,row,accepted_page_batches_json=canonical(heads).decode())
-        return heads
-
-    async def _can_retry_rejected_packet(self, row, state, batch_index):
-        if state.get('rejected_batch_index')!=batch_index:return False
-        # A rejected next *stage* must not authorize a retry of an older,
-        # already-published physical page.
-        rejected_stage=await self._entry(self._operation(row,'stage',
-            f"{state['batch_count']}:{state['command_attempt']-1}"))
-        if (rejected_stage is not None and
-                getattr(getattr(rejected_stage,'apply_receipt',None),'status',None)=='rejected_precondition'):
-            return False
-        for component in ('text','semantic'):
-            candidate=await self._entry(self._operation(row,'batch',f'{batch_index}:{component}'))
-            if (candidate is not None and
-                    getattr(getattr(candidate,'apply_receipt',None),'status',None)=='rejected_precondition'):
-                return True
-        return False
 
     def _inactive_prefix_current(self, access, row, scope):
         """Require this book's own accepted inactive predecessors."""
@@ -348,10 +310,7 @@ class NativeSourceIntake:
             if (result.get('batch_index')!=doc['batch_index'] or result.get('batch_sha256')!=digest(entry.command.payload)
                     or result.get('candidate_state')!='staged_inactive'):
                 raise _failure('native_stage_outcome_differs')
-            heads=json.loads(state['accepted_page_batches_json'])
-            heads.update({str(p['physical_page_index']):doc['batch_index'] for p in doc['model_payload']['pages']})
-            changes.update(accepted_page_batches_json=canonical(heads).decode(),
-                batch_count=doc['batch_index']+1,last_batch_sha256=digest(entry.command.payload),
+            changes.update(batch_count=doc['batch_index']+1,last_batch_sha256=digest(entry.command.payload),
                 last_request_sha256=self._request_hash(doc),phase='staging',rejected_seal_head=None,
                 rejected_batch_index=None,rejected_reason=None,read_completion_requested=0)
             await asyncio.to_thread(self.importer._save,row,phase='staging',
@@ -601,20 +560,6 @@ class NativeSourceIntake:
         if (self._request_hash(doc)==state['last_request_sha256']
                 and state.get('rejected_batch_index') is None):
             return self._output(row,await self._packet_progress(access,row,state))
-        heads=await self._page_batch_heads(row,state)
-        for page in payload['pages']:
-            index=page['physical_page_index']; previous=heads.get(str(index))
-            correction=page.get('corrects_batch_index')
-            if previous is None and correction is not None:
-                raise _failure(f'page_{index}_has_no_prior_selection: omit corrects_batch_index on new pages',
-                    status='invalid_query')
-            # Retry a semantically rejected packet, but do not let a separately
-            # rejected stage make an older accepted page eligible for replay.
-            if previous is not None and correction!=previous and not (
-                    await self._can_retry_rejected_packet(row,state,previous)):
-                raise _failure(f'page_{index}_already_accepted: do not resend accepted pages; '
-                    f'only for a deliberate correction set pages[].corrects_batch_index={previous} '
-                    'to match its last accepted selection',status='invalid_query')
         if state['enriched_batch_count']<state['batch_count']:
             # Only the newest packet is ever enriched; accepting the next one
             # now would silently drop the previous packet's entities/stories.
