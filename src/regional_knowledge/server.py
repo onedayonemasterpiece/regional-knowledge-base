@@ -1269,7 +1269,7 @@ def build_server(
             return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
-                max_evidence=max(1, min(max_evidence, 5)),
+                max_evidence=max(1, min(max_evidence, 10)),
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
             )))

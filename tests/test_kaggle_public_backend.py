@@ -21,6 +21,23 @@ from test_bge_runtime_readiness import expected, observation
 from test_kaggle_protocol import item
 
 
+@pytest.mark.parametrize('catalog, locator, expected', [
+    ({'title': 'Кёнигсберг в Пруссии', 'authors': ['Фриц Гаузе'], 'publication_year': 1994},
+     'pages 141', 'Фриц Гаузе. Кёнигсберг в Пруссии (1994), с. 141'),
+    ({'title': 'Atlas', 'publication_year': 1880}, 'pages 12-13', 'Atlas (1880), с. 12–13'),
+    ({'title': 'Учебник', 'authors': ['А. Автор']}, 'pages 141, 142',
+     'А. Автор. Учебник, с. 141–142'),
+    ({'title': 'Без даты', 'authors': []}, 'unknown', 'Без даты'),
+    ({}, 'pages 9', 'passage-1'),
+])
+def test_evidence_title_uses_existing_catalog_and_page(catalog, locator, expected):
+    from regional_knowledge.kaggle_public_backend import _evidence_title
+    metadata = SimpleNamespace(source_provenance={'catalog': catalog}, locator=locator)
+    assert _evidence_title(SimpleNamespace(id='passage-1', metadata=metadata)) == expected
+    metadata.source_provenance = {'catalog': {'title': 'x' * 3000}}
+    assert len(_evidence_title(SimpleNamespace(id='passage-1', metadata=metadata))) == 2048
+
+
 class Gate:
     """Only the final source provenance gate is synthetic in these tests."""
     def __init__(self, authority):
