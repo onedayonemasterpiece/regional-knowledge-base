@@ -87,6 +87,8 @@ The API finishes HTTP calls already accepted at the shutdown boundary before Uvi
 
 The official Slack Socket Mode client uses at most one second for its WebSocket closing handshake during API shutdown, preserving a shorter existing limit. Reconnect is disabled by the SDK before disconnect. This bounds transport closure after accepted HTTP calls have drained; it does not replace the durable event receipt/ACK path or cancel the native notebook. Logs distinguish `rkb_socket_close` start/completion and elapsed time.
 
+The HTTP runner preserves Uvicorn’s SIGINT handling: after graceful shutdown, control returns to `main`. A requested source rotation then exits with code 75 so the existing `Restart=on-failure` policy restarts the API. Ordinary Ctrl+C remains a clean stop.
+
 ### Book tool argument errors
 
 Server-side MCP argument validation for `book_ingest` and `book_pages` returns `invalid_query/invalid_input`, `error_class=validation` and bounded field/type/length hints without input values. This precedes backend dispatch; it does not change import limits or reinterpret backend/output failures as rejected input. A client validating the published JSON Schema before sending HTTP must redact its own diagnostics too: formatting an outer `anyOf` error can otherwise include the complete source packet. The server boundary cannot sanitize an exception created entirely in that client.

@@ -102,3 +102,29 @@ async def test_migration_saved_restart_drains_search_before_worker_close_then_ac
         response=await client.post('/operation',json={'op':'page','page':15})
         assert response.status_code==200
         assert response.json()=={'status':'ok','schema':42,'saved_schema':42,'pages':[15]}
+def test_rotation_sigint_returns_to_main_for_restart_exit():
+    import subprocess
+    import sys
+    import textwrap
+
+    program = textwrap.dedent('''
+        import asyncio, os, signal
+        from contextlib import asynccontextmanager
+        from starlette.applications import Starlette
+        from regional_knowledge.http_shutdown import run_http_server
+
+        @asynccontextmanager
+        async def lifespan(app):
+            asyncio.get_running_loop().call_later(.05, os.kill, os.getpid(), signal.SIGINT)
+            yield
+            print('lifespan_closed', flush=True)
+
+        run_http_server(Starlette(lifespan=lifespan), host='127.0.0.1', port=0,
+                        log_level='error', timeout_graceful_shutdown=1)
+        print('rotation_restart', flush=True)
+        raise SystemExit(75)
+    ''')
+    result = subprocess.run([sys.executable, '-c', program], capture_output=True,
+                            text=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert result.stdout.splitlines() == ['lifespan_closed', 'rotation_restart']

@@ -48,4 +48,9 @@ class HttpDrainingServer(uvicorn.Server):
 
 
 def run_http_server(app, **options):
-    HttpDrainingServer(uvicorn.Config(app, **options)).run()
+    try:
+        HttpDrainingServer(uvicorn.Config(app, **options)).run()
+    except KeyboardInterrupt:
+        # Match uvicorn.run(): main must resume after SIGINT so an intentional
+        # source rotation reaches its SystemExit(75) and systemd restarts it.
+        pass
