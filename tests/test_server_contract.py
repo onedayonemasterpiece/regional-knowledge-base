@@ -100,6 +100,8 @@ async def test_adaptive_p1_policy_is_in_actual_search_and_fetch_descriptions(mon
             assert phrase in guide, (name, phrase)
     assert "document_ids" in tools["search"].input_schema["properties"]
     assert "source_id" in tools["fetch"].input_schema["properties"]
+    assert "only when needed" in tools["search"].description
+    assert "when needed follow next_id" in tools["fetch"].description
 
 
 def test_auth_uses_application_issuer_not_supabase(monkeypatch):
