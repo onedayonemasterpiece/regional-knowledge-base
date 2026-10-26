@@ -980,3 +980,12 @@ async def test_rejected_new_stage_does_not_permit_restage_of_earlier_page(native
     with pytest.raises(ToolError, match='page_0_already_accepted'):
         await stage(s, book, prior)
     assert operation_count(s) == before
+
+
+@pytest.mark.asyncio
+async def test_no_entity_missing_hint_for_reviewed_empty_page(native_intake):
+    s = native_intake; book = await start(s)
+    await settle_reviewed_packet(s, book, batch(s, book, count=1))
+    result = await call(s, book, 'status')
+    assert 'Accepted pages have no entities' not in result.message
+    assert not any('entity_candidates' in warning for warning in result.warnings)
