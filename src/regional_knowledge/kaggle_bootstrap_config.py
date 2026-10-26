@@ -19,7 +19,7 @@ from .kaggle_target_runtime import TargetLaunchSpec
 
 def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,native_downloads,
                            database_generation,writer_generation,uid,gid,identity_evidence,
-                           seconds=1800,original_intake=None,pgvector_version='0.8.2'):
+                           seconds=1800,original_intake=None,pgvector_version='0.8.2',artifact_root='/kaggle/working'):
     """Build full load_target_launch-compatible wire metadata with no guessed pins.
 
     uid/gid are explicit candidate numeric identities. Actual early observation
@@ -47,7 +47,7 @@ def build_bootstrap_target(*,wheel_lock,native_receipt,native_manifest_bytes,nat
     if (not set(relative.values())<=pins.keys()
             or any(not pins[relative[key]]['executable'] for key in ('initdb','postgres','pg_config'))):
         raise ValueError('complete native PostgreSQL/pgvector path pins required')
-    root=Path('/kaggle/working');prefix=bundle.prefix(root)
+    root=Path(artifact_root);prefix=bundle.prefix(root)
     leaf='rkb-'+hashlib.sha256(database_generation.encode()).hexdigest()[:20]
     cluster=Path('/kaggle/temp')/leaf
     database=OwnedDatabase(mode='NEW_EMPTY_GENERATION', database_generation=database_generation, writer_generation=writer_generation, cluster=str(cluster), socket=str(cluster / 'socket'), dbname='rkb', uid=uid, gid=gid, native_paths={key: str(prefix / value) for key, value in relative.items()}, ownership_evidence=identity_evidence)

@@ -11,7 +11,8 @@ from test_kaggle_native_bundle import fixture as native_fixture,sha
 
 @pytest.mark.parametrize('parser_enabled',(False,True))
 @pytest.mark.parametrize('pgvector_version',('0.8.2','0.8.4'))
-def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_fixture,parser_enabled,pgvector_version):
+@pytest.mark.parametrize('artifact_root',('/kaggle/working','/kaggle/temp/rkb-artifacts'))
+def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_fixture,parser_enabled,pgvector_version,artifact_root):
     names=('usr/lib/postgresql/17/bin/initdb','usr/lib/postgresql/17/bin/postgres',
         'usr/lib/postgresql/17/bin/pg_config','usr/lib/postgresql/17/lib/vector.so',
         'usr/share/postgresql/17/extension/vector.control',f'usr/share/postgresql/17/extension/vector--{pgvector_version}.sql')
@@ -30,12 +31,16 @@ def test_concrete_builder_combines_full_receipts_without_fake_ready_pins(native_
     options=dict(wheel_lock=lock,native_receipt=receipt,native_manifest_bytes=(root/spec.manifest_name).read_bytes(),
         native_downloads=downloads,database_generation='fixture-new-generation',writer_generation='writer-1',
         uid=65534,gid=65534,identity_evidence='explicit candidate; actual lookup mandatory',
-        pgvector_version=pgvector_version)
+        pgvector_version=pgvector_version,artifact_root=artifact_root)
     if parser_enabled:
         from regional_knowledge.kaggle_original_native import OriginalIntakeConfig
         options['original_intake']=OriginalIntakeConfig(
             ('https://archive.fixture.invalid',),(('pymupdf','1.28.2'),))
     target=build_bootstrap_target(**options)
+    assert target.artifact_root==artifact_root
+    assert Path(target.database.native_paths['initdb']).is_relative_to(spec.prefix(Path(artifact_root)))
+    with pytest.raises(ValueError,match='bounded prepared Kaggle inventory'):
+        build_bootstrap_target(**dict(options,artifact_root='/tmp/arbitrary'))
     assert target.database.native_paths['vector_sql'].endswith(f'vector--{pgvector_version}.sql')
     assert target.database.native_paths['vector_control'].endswith('/vector.control')
     assert target.database.native_paths['vector_library'].endswith('/vector.so')

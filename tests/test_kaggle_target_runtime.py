@@ -148,12 +148,16 @@ def test_generated_entrypoint_executes_lifecycle_with_stubs(tmp_path,monkeypatch
             await kwargs['close_runtime']()
         asyncio.run(lifecycle())
     namespace.update(main=main,__name__='__main__')
+    namespace['RUN_CONFIG']['prepared_model']['root']=str(tmp_path)
     # Redirect the pure source extraction for this local fixture only. The source
     # whose final hash is persisted above retains its actual Kaggle paths.
     class Redirect(ast.NodeTransformer):
         def visit_Constant(self,node):
-            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/r-'):
-                return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
+            if isinstance(node.value,str):
+                if node.value=='/kaggle/working':
+                    return ast.copy_location(ast.Constant(str(tmp_path)),node)
+                if node.value.startswith('/kaggle/working/r-'):
+                    return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
             return node
     exec(compile(ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[]))),
                  'fixture-entry','exec'),namespace)

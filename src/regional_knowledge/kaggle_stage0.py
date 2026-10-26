@@ -1,7 +1,7 @@
 """Controller-pinned preparation after HELLO, before optional runtime imports.
 
 Stdlib only. This is neither a package resolver nor a general downloader: every
-byte must be in the final prepared artifact inventory, under Kaggle working.
+byte must be in the final inventory, under the selected trusted Kaggle root.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from urllib.parse import urlsplit, urljoin
 import urllib.request
 
 TRUSTED_ROOT = Path('/kaggle/working')
+TEMP_ARTIFACT_ROOT = Path('/kaggle/temp/rkb-artifacts')
 TRUSTED_INPUT_ROOT = Path('/kaggle/input')
 MAX_FILES = 128
 MAX_FILE_BYTES = 16 * 1024**3
@@ -243,7 +244,8 @@ class _HTTPSRedirect(urllib.request.HTTPRedirectHandler):
 
 def _inventory(prepared):
     if (type(prepared) is not dict or set(prepared)!={'root','entries','max_total_bytes'}
-            or type(prepared['root']) is not str or prepared['root'] != str(TRUSTED_ROOT)
+            or type(prepared['root']) is not str
+            or prepared['root'] not in (str(TRUSTED_ROOT), str(TEMP_ARTIFACT_ROOT))
             or type(prepared['entries']) not in (list,tuple)
             or not prepared['entries']):
         raise ValueError('stage0_prepared_inventory_required')
@@ -386,6 +388,20 @@ def _versions(packages):
 
 
 def _install(root_fd,root,plan,inventory,deadline):
+    site=None
+    if root==TEMP_ARTIFACT_ROOT:
+        # Keep selected-session dependencies out of notebook outputs and global site.
+        try:os.mkdir('.rkb-site',mode=0o700,dir_fd=root_fd)
+        except FileExistsError:pass
+        fd=os.open('.rkb-site',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=root_fd)
+        try:
+            info=os.fstat(fd)
+            if info.st_uid!=os.geteuid() or stat.S_IMODE(info.st_mode)&0o077:
+                raise Stage0Error('stage0_install_target_invalid')
+        finally:os.close(fd)
+        site=root/'.rkb-site'
+        if str(site) not in sys.path:sys.path.insert(0,str(site))
+        importlib.invalidate_caches()
     if _versions(plan.packages)==dict(plan.packages):
         return False
     if not plan.wheels:
@@ -409,7 +425,7 @@ def _install(root_fd,root,plan,inventory,deadline):
                 stream.write(requirements);stream.flush();os.fsync(stream.fileno())
         finally:os.close(fd)
         command=[sys.executable,'-I','-m','pip','--isolated','--disable-pip-version-check',
-            'install','--break-system-packages','--no-index','--no-deps','--only-binary=:all:','--require-hashes',
+            'install',*(['--target',str(site)] if site is not None else ['--break-system-packages']),'--no-index','--no-deps','--only-binary=:all:','--require-hashes',
             '--no-cache-dir','--no-compile','--no-input','-r',str(root/task/'requirements.txt')]
         result=subprocess.run(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,timeout=_remaining(deadline),check=False)
@@ -464,6 +480,14 @@ def prepare_stage0(prepared_model:dict,plan:dict,*,run_id=None)->dict:
         root=Path(prepared_model['root'])
         if root.resolve(strict=True)!=root or not root.is_dir():
             raise ValueError('stage0_root_invalid')
+        if root==TEMP_ARTIFACT_ROOT:
+            # All three fixed ancestors must be owned, non-writable by others
+            # and traversable by the separate nonroot PostgreSQL identity.
+            for part in (root.parent.parent,root.parent,root):
+                info=part.stat(follow_symlinks=False)
+                if (info.st_uid not in (0,os.geteuid()) or
+                        stat.S_IMODE(info.st_mode)&0o022 or not info.st_mode&stat.S_IXOTH):
+                    raise ValueError('stage0_root_invalid')
         deadline=time.monotonic()+spec.total_seconds
         root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
         try:
