@@ -222,3 +222,6 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
         assert (await (await db.execute(
             'SELECT bibliography FROM rkb_v4.sources WHERE source_id=%s',(SOURCE,))).fetchone())[0]==(
                 long_author+'; Omega title corrected; 1988')
+        frontier=(await (await db.execute(
+            'SELECT projection_seq,text_ready,dense_ready FROM rkb_v4.read_frontier WHERE singleton')).fetchone())
+        assert frontier==(third.sequence,*readiness)
