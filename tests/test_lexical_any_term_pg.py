@@ -30,11 +30,14 @@ async def test_natural_question_recalls_short_chronology(database):
                     'ru', 'pg_catalog.russian', %s::public.vector)
         """, (FACT, SOURCE, "1544 17 августа основание университета (Альбертины)",
               vector))
-        rows = await (await database.execute(
-            "SELECT passage_id FROM rkb_v4.lexical_candidates(%s, 100)",
-            (QUESTION,))).fetchall()
+        unscoped = "SELECT passage_id FROM rkb_v4.lexical_candidates(%s, 100)"
+        scoped = "SELECT passage_id FROM rkb_v4.lexical_candidates_scoped(%s, 100, %s)"
+        # The immutable original migrations require every word and return nothing.
+        assert await (await database.execute(unscoped, (QUESTION,))).fetchall() == []
+        assert await (await database.execute(scoped, (QUESTION, [SOURCE]))).fetchall() == []
+        await database.execute((ROOT / "sql/kaggle/039_lexical_any_term.sql").read_text(),
+                               prepare=False)
+        rows = await (await database.execute(unscoped, (QUESTION,))).fetchall()
         assert [row[0] for row in rows] == [FACT]
-        rows = await (await database.execute(
-            "SELECT passage_id FROM rkb_v4.lexical_candidates_scoped(%s, 100, %s)",
-            (QUESTION, [SOURCE]))).fetchall()
+        rows = await (await database.execute(scoped, (QUESTION, [SOURCE]))).fetchall()
         assert [row[0] for row in rows] == [FACT]
