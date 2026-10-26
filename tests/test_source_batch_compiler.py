@@ -62,6 +62,17 @@ class BatchCompilerTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self.compile([doc], 0)
         self.assertEqual([p['locator'] for p in result['passages']], ['printed page 17', 'scan 2'])
 
+    async def test_multi_page_locator_keeps_printed_and_scan_types(self):
+        doc = exact_batch(count=4)
+        pages = doc['model_payload']['pages']
+        pages[0]['printed_page_number'] = '36'
+        pages[1]['printed_page_number'] = '37'
+        doc['model_payload']['chunks'] = [dict(chunk_key='multi', title='Multi page', region_refs=[
+            dict(page_id=page['page_id'], region_key='body') for page in pages])]
+        result, _ = await self.compile([doc], 0)
+        self.assertEqual(result['passages'][0]['locator'],
+            'printed page 36; printed page 37; scan 3; scan 4')
+
     async def test_page81_heading_prefixed_without_losing_page82_passage(self):
         doc = exact_batch(start=80, count=2)
         page = doc['model_payload']['pages'][0]
