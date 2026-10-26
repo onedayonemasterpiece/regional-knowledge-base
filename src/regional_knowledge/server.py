@@ -1330,7 +1330,7 @@ def build_server(
         description=(
             "Search accessible regional books and journals. Results include citable IDs/URLs; "
             "source-backed hits include bounded text, provenance, incomplete and next_id. "
-            "Use fetch(id=next_id) to continue an incomplete hit; fetch also reads neighboring pages. "
+            "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
             "If Kaggle is cold, check startup_status and retry as a NEW read after ready.\n" + _search_policy
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
@@ -1347,7 +1347,7 @@ def build_server(
         description=(
             "Fetch evidence for an ID returned by search, including source provenance. "
             "A bounded source passage includes explicit offsets and next_id when more text "
-            "or bibliography remains; fetch next_id until continuation_complete. "
+            "or bibliography remains; when needed follow next_id until evidence suffices, continuation_complete or the call budget. "
             "For native accepted chunk review, omit id and provide source_id, page_start, page_end "
             "(inclusive zero-based physical page indexes; maximum four pages). Returns ordered "
             "chunk_id, text, pages, regions with exact Unicode offsets and next_after_ordinal "
