@@ -193,3 +193,93 @@ async def test_receiver_private_descriptor_references_existing_credential_withou
     config.chmod(0o640)
     assert not reader.current()
     with pytest.raises(ValueError):ProjectsHubReader.from_file(config,backend=s.backend)
+
+
+def test_p3_v2_codec_remains_exact_and_v3_selectors_fail_closed(target):
+    import copy
+    s=target
+    reader,app,body,headers=setup(s)
+    source='00000000-0000-0000-0000-000000000001'
+    reader._query(body)  # old format still accepted with all original fields
+    old_extra={**body,'document_ids':[source]}
+    with pytest.raises(ValueError):reader._query(old_extra)
+    v3={**body,'codec':'rkb.knowledge-query.v3','operation':'search'}
+    reader._query(v3)
+    scoped={**v3,'document_ids':[source]}
+    reader._query(scoped)
+    bad_values=[[],[source,source],[source]*6,['00000000-0000-0000-0000-00000000000A'],
+        ['not-uuid'],[source,3],[[source]]]
+    for ids in bad_values:
+        with pytest.raises((ValueError,TypeError)):
+            reader._query({**v3,'document_ids':ids})
+    with pytest.raises(ValueError):
+        reader._query({**scoped,'arbitrary':'ignore-me'})
+    pages={key:value for key,value in body.items() if key!='query'}
+    pages.update(codec='rkb.knowledge-query.v3',operation='fetch',
+        source_id=source,page_start=3,page_end=6)
+    reader._query(pages)
+    for change in ({'page_end':7},{'page_start':-1},{'page_start':True},
+                   {'source_id':'not-uuid'},{'id':'rkb:passage:v1:wrong'}):
+        with pytest.raises((ValueError,TypeError)):
+            reader._query({**pages,**change})
+    with pytest.raises(ValueError):
+        reader._query({**pages,'query':'unexpected'})
+
+
+@pytest.mark.asyncio
+async def test_p3_v3_document_scope_uses_existing_hybrid_source_filter(target):
+    s=target;reader,app,body,headers=setup(s)
+    source='00000000-0000-0000-0000-000000000001'
+    body.update(codec='rkb.knowledge-query.v3',operation='search',document_ids=[source])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
+                                  base_url='http://127.0.0.1') as client:
+        read=asyncio.create_task(client.post(PATH,json=body,headers=headers))
+        dispatched=await work(s)
+        assert dispatched.query.filters.source_ids==(source,)
+        await settle(s,dispatched)
+        response=(await read).json()
+        assert response['codec']=='rkb.knowledge-search.v2'
+        assert response['status']=='degraded' and response['mode']=='hybrid'
+        assert response['evidence'][0]['text']=='Evidence'
+        assert not s.auth.resolver._contexts
+        await release(s,dispatched)
+
+
+@pytest.mark.asyncio
+async def test_p3_v3_page_fetch_reads_same_accepted_chunks_and_current_grant(target):
+    from regional_knowledge.kaggle_source_read import SourceReadRequest,SourceReadResult
+    from regional_knowledge.kaggle_protocol import EvidenceItem,ItemDependencies,SourceDependency
+    s=target;reader,app,body,headers=setup(s)
+    source='00000000-0000-0000-0000-000000000001'
+    chunk='60000000-0000-0000-0000-000000000001'
+    page='40000000-0000-0000-0000-000000000001'
+    region='50000000-0000-0000-0000-000000000001'
+    body.pop('query')
+    body.update(codec='rkb.knowledge-query.v3',operation='fetch',
+        source_id=source,page_start=1,page_end=2,max_evidence=1)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
+                                  base_url='http://127.0.0.1') as client:
+        read=asyncio.create_task(client.post(PATH,json=body,headers=headers))
+        dispatched=await work(s)
+        assert type(dispatched.query) is SourceReadRequest
+        assert dispatched.query.operation=='accepted_chunks'
+        assert (dispatched.query.source_id,dispatched.query.page_start,dispatched.query.page_end)==(source,1,2)
+        dep=SourceDependency(source_id=source,content_revision=1,eligibility_revision=7)
+        result=SourceReadResult(request_id=dispatched.query.request_id,
+            connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
+            operation='accepted_chunks',status='ok',records=(dict(source_id=source,chunk_id=chunk,
+                ordinal=0,text='From the adjacent page',pages=[dict(page_id=page,physical_page_index=1)],
+                regions=[dict(page_id=page,region_id=region,start=0,end=22,role='body')]),),
+            evidence=(EvidenceItem(id=chunk,kind='source',text='From the adjacent page',
+                dependencies=ItemDependencies(source_ids=(source,),variant_refs=(),grant_refs=(),
+                    source_revisions=(dep,))),),
+            observed_data_seq=5,observed_projection_seq=5,
+            observed_visibility_epoch=4,observed_database_generation='db-source')
+        assert await s.admission.finish_read(s.run,s.token,s.generation,result)
+        value=(await read).json()
+        assert value['status']=='ok' and value['mode']=='hybrid'
+        assert value['evidence'][0]['text']=='From the adjacent page'
+        assert value['evidence'][0]['metadata']['pages'][0]['physical_page_index']==1
+        assert value['evidence'][0]['metadata']['source_id']==source
+        assert not s.auth.resolver._contexts and len(s.gate.released)==1
+        await release(s,dispatched)
