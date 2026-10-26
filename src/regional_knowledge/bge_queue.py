@@ -1116,6 +1116,8 @@ class BgeQueue:
             owners.update(r[0] for r in db.execute('select run_id from bge_shared_admission where run_id is not null'))
         if db.execute("select 1 from sqlite_master where type='table' and name='rkb_writer_control'").fetchone():
             owners.update(r[0] for r in db.execute('select run_id from rkb_writer_control where active!=0 or publication_json is not null'))
+        if db.execute("select 1 from sqlite_master where type='table' and name='rkb_telegram_session_lease'").fetchone():
+            owners.update(r[0] for r in db.execute('select run_id from rkb_telegram_session_lease'))
         return owners
 
     def provider_owned_run_ids(self):

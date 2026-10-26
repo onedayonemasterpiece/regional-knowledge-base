@@ -81,6 +81,9 @@ change only after an indexed read of the exact old incarnation's persisted nativ
 terminal receipt. Same-run reads do not acquire a new receipt check or writer lock.
 
 The automatic controller observes at most two current owners per iteration.
+Current owners include the run holding the Telegram session lease, even after
+current/successor rotation. The normal exact-version terminal proof retires its
+reservation; the observer does not rewrite the lease or scan unrelated history.
 Detached launch history is not probed automatically and does not gate launch.
 An explicit bounded historical diagnostic sweep can still use the durable SQLite
 rowid cursor: UNKNOWN/unmapped rows are retained, exhausted cycles back off for
