@@ -857,3 +857,40 @@ async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intak
     after=operation_count(s)
     assert (await stage(s,book,payload)).state=='staged'
     assert operation_count(s)==after  # Success/lost-ACK retries still deduplicate.
+
+
+@pytest.mark.asyncio
+async def test_next_stage_before_semantic_still_enriches_every_batch(native_intake):
+    """A model that moves to the next pages right after its text is published
+    must not lose the earlier packet's entities/stories (semantic component)."""
+    s = native_intake; result = await start(s)
+    issued = []
+    async def drain():
+        while True:
+            entry = await pending(s,result) if state(s,result)['pending_operation_key'] else None
+            if entry is None:
+                return
+            if entry.command.route == 'source.batch.v1':
+                doc = json.loads(entry.command.payload)
+                issued.append((doc['batch_index'],doc['component']))
+            await finish(s,result)
+            await call(s,result,'status')
+    await stage(s,result,batch(s,result,first=0))
+    await finish(s,result)
+    await call(s,result,'status')
+    entry = await pending(s,result)
+    assert json.loads(entry.command.payload)['component'] == 'text'
+    issued.append((0,'text'))
+    await finish(s,result)
+    # The model does not wait for enrichment of batch 0: told to wait and resend.
+    second = batch(s,result,first=4)
+    early = await stage(s,result,second)
+    assert early.state == 'processing' and early.warnings == ['previous_packet_applying']
+    assert state(s,result)['batch_count'] == 1
+    await drain()
+    assert (await stage(s,result,second)).state == 'processing'
+    await drain()
+    await stage(s,result,batch(s,result,first=8))
+    await drain()
+    assert {(i,c) for i in range(3) for c in ('text','semantic')} <= set(issued), issued
+    assert state(s,result)['enriched_batch_count'] == state(s,result)['batch_count'] == 3
