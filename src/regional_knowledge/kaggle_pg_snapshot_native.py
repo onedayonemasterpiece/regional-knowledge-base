@@ -358,6 +358,9 @@ class NativeSnapshotFactory:
                     observed=await cursor.fetchone()
                     if observed is None or observed[0]//10000!=17 or observed[1]!=self.database.writer_generation:
                         raise SnapshotError('native_backup_version_or_writer')
+                    cursor=await connection.execute("SELECT extversion FROM pg_extension WHERE extname='vector'")
+                    if await cursor.fetchone()!=(versions['pgvector_version'],):
+                        raise SnapshotError('native_backup_pgvector_version')
                     cursor=await connection.execute('SELECT datname FROM pg_database WHERE NOT datistemplate '
                         'ORDER BY datname COLLATE "C" LIMIT 4')
                     if {row[0] for row in await cursor.fetchall()}!={'postgres',self.database.dbname}:
