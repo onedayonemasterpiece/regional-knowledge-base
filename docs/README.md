@@ -23,10 +23,10 @@ Updated2026-10-20. Active contracts below describe one target; historical report
 | BGE/indexes | [Kaggle contract](bge-kaggle.md), [runbook](operations/bge-kaggle.md), [hard boundary](operations/bge-kaggle-only.md), [automatic indexing](operations/automatic-indexing.md) |
 | Media | [illustration pipeline](operations/illustration-pipeline.md), [source archive](operations/telegram-archive.md), [archive continuation](operations/archive-read-continuation.md) |
 
-## Product proposals (not deployed capabilities)
+## Proposed MCP capabilities (not deployed)
 
-- [«Читать первоисточник»: исходная глава/статья как качественный PDF (P0) и аудио (P1)](designs/rkb-source-unit-pdf-and-audio-20261026.md) — source-span fidelity, edition metadata, verified reproduction rights, multi-citation selection, async Kaggle workflow and assessment of Wonderful Lections Qwen TTS.
-- [Export acceptance matrix](testing/rkb-source-unit-export-acceptance-20261026.md) — P0 source/text/font/rights/delivery checks, P1 audio benchmarks; proposal, not a PASS.
+- [«Читать первоисточник»: PDF главы/статьи (P0), озвучка (P1)](designs/rkb-source-unit-pdf-and-audio-20261026.md) — закрытая группа, договоры вне RKB, границы частей определяются моделью при импорте, PDF/аудио готовит Kaggle, фактические файлы передаются модели без Dev file proxy. Работа только через MCP/Slack, без нового UI.
+- [Acceptance](testing/rkb-source-unit-export-acceptance-20261026.md) — проверка границ при импорте, точного текста, оформления, прямой передачи PDF и отдельного Qwen audio pipeline.
 
 ## History and superseded entry points
 
