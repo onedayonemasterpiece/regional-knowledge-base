@@ -56,6 +56,12 @@ class BatchCompilerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.inputs), 1)
         self.assertEqual(media['illustrations'], [])
 
+    async def test_locator_marks_printed_page_and_physical_scan(self):
+        doc = exact_batch(count=2)
+        doc['model_payload']['pages'][0]['printed_page_number'] = '17'
+        result, _ = await self.compile([doc], 0)
+        self.assertEqual([p['locator'] for p in result['passages']], ['printed page 17', 'scan 2'])
+
     async def test_page81_heading_prefixed_without_losing_page82_passage(self):
         doc = exact_batch(start=80, count=2)
         page = doc['model_payload']['pages'][0]
