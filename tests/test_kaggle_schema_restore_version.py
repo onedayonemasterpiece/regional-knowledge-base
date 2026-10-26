@@ -46,7 +46,9 @@ async def test_production_fresh_schema_sequence_creates_roles_before_sql_grants(
         await connection.execute('CREATE ROLE rkb_bootstrap SUPERUSER NOLOGIN')
         owned=True
         await connection.execute('SET ROLE rkb_bootstrap')
-        owner=OwnedPostgres(replace(spec(fresh=True).database,dbname='rkb_graph_test'))
+        base_spec=spec(fresh=True).database
+        paths=dict(base_spec.native_paths,vector_sql='/kaggle/working/native/vector--0.8.2.sql')
+        owner=OwnedPostgres(replace(base_spec,dbname='rkb_graph_test',native_paths=paths))
         artifacts={m.name:m.body for m in bundle_migrations(files())}
         await owner._initialize_schema(connection,artifacts)
         assert await (await connection.execute('SELECT max(version) FROM rkb_v4.schema_migrations')).fetchone()==(len(artifacts),)
