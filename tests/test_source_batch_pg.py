@@ -109,6 +109,62 @@ async def test_one_of_174_pages_is_searchable_without_seal_and_retry_reuses_vect
 
 @PG
 @pytest.mark.asyncio
+async def test_search_fetch_id_survives_next_packet_of_same_book(image_pg_sql18):
+    from regional_knowledge.kaggle_protocol import PassageContinuation, PassageReadRequest
+    from regional_knowledge.kaggle_public_backend import passage_fetch_id, parse_passage_fetch_id
+    from regional_knowledge.kaggle_query import execute_query, execute_passage_read
+    from test_kaggle_query import query, tokenizer, encode
+    env = image_pg_sql18
+    prepare, _ = native(env)
+    first = exact_batch(count=1)
+    assert (await accepted(env, stage_command(first, 1))).status == 'applied'
+    command = packet(env, first)
+    await prepare(command)
+    assert (await accepted(env, command)).status == 'applied'
+
+    @asynccontextmanager
+    async def acquire():
+        yield env['connection']
+
+    searched = await execute_query(query(query='synthetic', min_data_seq=env['sequence'],
+        filters={'kinds': ('source',), 'source_ids': (SOURCE,)}),
+        acquire=acquire, tokenizer=tokenizer(), encode=encode)
+    assert searched.status == 'ok', searched.reason
+    assert len(searched.evidence) == 1
+    hit = searched.evidence[0]
+    fetch_id = passage_fetch_id(PassageContinuation(
+        database_generation=searched.observed_database_generation,
+        visibility_epoch=searched.observed_visibility_epoch,
+        source=hit.dependencies.source_revisions[0], passage_id=hit.id,
+        text_offset=0, bibliography_offset=0))
+    request = PassageReadRequest(locator=parse_passage_fetch_id(fetch_id),
+        request_id='retained-first-packet', connection_generation=1, turn_generation=1,
+        min_data_seq=env['sequence'], deadline_ms=2000,
+        actor={'person_id': PERSON, 'audience': 'personal', 'auth_epoch': 1, 'visibility_epoch': 0})
+    before = await execute_passage_read(request, acquire=acquire, source_provenance=True)
+    assert before.status == 'ok' and before.evidence[0].text == hit.text
+
+    second = exact_batch(1, digest(canonical(first)), start=1, count=1)
+    assert (await accepted(env, stage_command(second, env['sequence'] + 1))).status == 'applied'
+    command = packet(env, second)
+    await prepare(command)
+    assert (await accepted(env, command)).status == 'applied'
+    async with env['connection'].transaction():
+        revision = await (await env['connection'].execute(
+            'SELECT eligibility_revision FROM rkb_v4.source_visibility WHERE source_id=%s',
+            (SOURCE,))).fetchone()
+    assert revision[0] > request.locator.source.eligibility_revision
+    after = await execute_passage_read(request.model_copy(update={'min_data_seq': env['sequence']}),
+        acquire=acquire, source_provenance=True)
+    assert after.status == 'ok', after.reason
+    assert after.evidence[0].id == hit.id
+    assert after.evidence[0].text == before.evidence[0].text
+    assert after.evidence[0].metadata == before.evidence[0].metadata
+    assert passage_fetch_id(request.locator) == fetch_id
+
+
+@PG
+@pytest.mark.asyncio
 async def test_fetch_second_packet_passage_includes_its_pages_and_regions(image_pg_sql18):
     from regional_knowledge.kaggle_protocol import PassageContinuation,PassageReadRequest,SourceDependency
     from regional_knowledge.kaggle_query import execute_passage_read
