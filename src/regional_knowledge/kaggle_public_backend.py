@@ -327,13 +327,12 @@ class KaggleSourceBackend:
         def inline_result(item):
             next_id = (passage_fetch_id(item.source_continuation)
                 if item.source_continuation and not item.continuation_complete else None)
-            if item.text_form == 'excerpt' and not item.continuation_complete and next_id is None:
-                raise ValueError('search excerpt lacks fetch continuation')
+            incomplete = next_id is not None or (item.text_form == 'excerpt' and not item.continuation_complete)
             return SearchResult(id=fetch_id(item), title=_evidence_title(item), url=locator(item),
-                text=item.text, incomplete=next_id is not None, next_id=next_id,
+                text=item.text, incomplete=incomplete, next_id=next_id,
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
                     'source_provenance': item.metadata.source_provenance,
-                    'text_form': item.text_form, 'continuation_complete': next_id is None,
+                    'text_form': item.text_form, 'continuation_complete': not incomplete,
                     'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions]})
         return SearchOutput(results=[inline_result(item) for item in result.evidence], **common)
 
