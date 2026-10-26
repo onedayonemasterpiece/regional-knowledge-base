@@ -552,6 +552,104 @@ def quality_view(analyzer, judgments):
     return output
 
 
+
+def m1_record_view(record):
+    """Sanitized per-family V0/V1/V4s view of *recorded* model tool calls.
+
+    Input: {family_id, policy, calls, answer?, claims?, citations?, judgment?}.
+    Calls use the existing operation/args/response trace shape. Evidence and
+    answer semantics are judged independently; mere URL membership is not proof.
+    No question, answer, book text, native ID, or raw citation leaves this view.
+    """
+    if not isinstance(record, dict) or not isinstance(record.get("calls"), list):
+        raise ValueError("expected an M1 record with calls")
+    family, policy = record.get("family_id"), record.get("policy")
+    if not isinstance(family, str) or not re.fullmatch(r"[A-Z][0-9]{2}", family):
+        raise ValueError("invalid M1 family")
+    if policy not in ("V0", "V1", "V4s", "A", "B", "C"):
+        raise ValueError("invalid M1 policy/opaque variant")
+
+    def has_text(item):
+        return isinstance(item, dict) and any(
+            isinstance(item.get(key), str) and bool(item[key].strip())
+            for key in ("text", "content"))
+
+    counts = Counter()
+    search_observed = True
+    read_observed = True
+    for call in record["calls"]:
+        if not isinstance(call, dict):
+            raise ValueError("invalid M1 call")
+        op = call.get("operation")
+        if op not in ("search", "fetch"):
+            counts["other_calls"] += 1
+            continue
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        response, payload = normalize_response(call)
+        ok = execution(response, payload) == "completed"
+        if op == "search":
+            counts["search_calls"] += 1
+            if isinstance(args.get("document_ids"), list) and args["document_ids"]:
+                counts["scoped_search_calls"] += 1
+            results = payload.get("results")
+            if not ok or not isinstance(results, list):
+                search_observed = False
+                continue
+            counts["found_candidate_occurrences"] += len(results)
+            counts["search_text_units"] += sum(has_text(item) for item in results)
+        else:
+            counts["fetch_calls"] += 1
+            neighbor = all(k in args for k in ("source_id", "page_start", "page_end"))
+            if neighbor:
+                counts["neighbor_fetch_calls"] += 1
+            chunks = payload.get("chunks")
+            if not ok or not (has_text(payload) or isinstance(chunks, list)):
+                read_observed = False
+                continue
+            units = int(has_text(payload)) + sum(
+                has_text(item) for item in chunks if isinstance(item, dict)
+            ) if isinstance(chunks, list) else int(has_text(payload))
+            counts["fetch_text_units"] += units
+            if neighbor:
+                counts["neighbor_text_units"] += units
+
+    rubric = record.get("judgment") if isinstance(record.get("judgment"), dict) else {}
+
+    def judged(key):
+        value = rubric.get(key)
+        return value if isinstance(value, bool) else None
+
+    answer = record.get("answer")
+    return {
+        "family": family, "variant": policy,
+        "search": {
+            "calls": counts["search_calls"],
+            "scoped_calls": counts["scoped_search_calls"],
+            "returned_candidate_occurrences":
+                counts["found_candidate_occurrences"] if search_observed else None,
+            "text_exposed_units": counts["search_text_units"] if search_observed else None,
+            "complete_evidence_set": judged("search_complete"),
+        },
+        "read": {
+            "fetch_calls": counts["fetch_calls"],
+            "neighbor_fetch_calls": counts["neighbor_fetch_calls"],
+            "fetch_text_units": counts["fetch_text_units"] if read_observed else None,
+            "neighbor_text_units": counts["neighbor_text_units"] if read_observed else None,
+            "total_text_units": counts["search_text_units"] + counts["fetch_text_units"]
+                if search_observed and read_observed else None,
+            "complete_evidence_set": judged("read_complete"),
+        },
+        "answer": {
+            "present": bool(answer.strip()) if isinstance(answer, str) else None,
+            "claim_count": len(record["claims"]) if isinstance(record.get("claims"), list) else None,
+            "supported_complete": judged("answer_supported"),
+        },
+        "citations": {
+            "count": len(record["citations"]) if isinstance(record.get("citations"), list) else None,
+            "support_complete": judged("citations_supported"),
+        },
+    }
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="pmi_private_runs_checkpoint.json")
