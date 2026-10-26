@@ -79,7 +79,7 @@ class Query(ReadIdentity):
     min_data_seq: Nonnegative
     # Remaining total tool-call budget, never a new per-hop timeout.
     deadline_ms: Annotated[int, Field(gt=0)]
-    evidence_limit: Annotated[int, Field(ge=1, le=5)] = 3
+    evidence_limit: Annotated[int, Field(ge=1, le=10)] = 3
     # Assigned only by the existing authenticated controller at dispatch.
     compute_claim: Identifier | None = None
 
@@ -283,7 +283,7 @@ class QueryResult(ReadIdentity):
     protocol_version: Literal[2] = PROTOCOL_VERSION
     status: Literal["ok", "degraded", "unavailable", "cancelled", "invalid_query", "denied"]
     mode: Literal["hybrid"] | None
-    evidence: tuple[EvidenceItem, ...] = Field(default=(), max_length=5)
+    evidence: tuple[EvidenceItem, ...] = Field(default=(), max_length=10)
     # None means not observed, not zero / fresh / ready.
     observed_data_seq: Nonnegative | None
     observed_projection_seq: Nonnegative | None

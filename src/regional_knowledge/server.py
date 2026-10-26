@@ -1301,14 +1301,14 @@ def build_server(
         )
         async def knowledge_search(
             query: str,
-            max_evidence: int = 3,
+            max_evidence: Annotated[int, Field(ge=1, le=10)] = 3,
             main_job_id: str | None = None,
             document_ids: list[str] | None = None,
         ) -> EvidenceSearchOutput:
             return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
-                max_evidence=max(1, min(max_evidence, 5)),
+                max_evidence=max_evidence,
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
             )))
@@ -1331,13 +1331,16 @@ def build_server(
             "Search accessible regional books and journals. Results include citable IDs/URLs; "
             "source-backed hits include bounded text, provenance, incomplete and next_id. "
             "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
+            "For overview questions, top_k can be increased up to 10. "
             "If Kaggle is cold, check startup_status and retry as a NEW read after ready.\n" + _search_policy
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None, document_ids: list[str] | None = None) -> SearchOutput:
+    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None,
+                     document_ids: list[str] | None = None, top_k: Annotated[int, Field(ge=1, le=10)] = 3) -> SearchOutput:
         options={}
         if document_ids is not None:options['document_ids']=document_ids
+        options['top_k']=top_k
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
         return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))
