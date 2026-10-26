@@ -50,7 +50,7 @@ LEXICAL_VARIANT_SQL = """
 WITH configs AS (
     SELECT c, raw.q,
         ARRAY(SELECT DISTINCT replace(m.term[1], '''''', '''')
-              FROM regexp_matches(raw.q::text, $'((?:''|[^'])+)'$, 'g') AS m(term)) terms
+              FROM regexp_matches(raw.q::text, $$'((?:''|[^'])+)'$$, 'g') AS m(term)) terms
     FROM unnest(ARRAY['pg_catalog.russian'::regconfig,
                       'pg_catalog.german'::regconfig, 'pg_catalog.simple'::regconfig]) c
     CROSS JOIN LATERAL (SELECT websearch_to_tsquery(c, %s) q) raw
