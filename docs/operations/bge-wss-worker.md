@@ -46,7 +46,9 @@ integration work. Existing controller lifetime/launch behavior is not silently
 claimed to satisfy the target lifecycle contract.
 
 An attached, version-bound READY worker reaching the useful-idle deadline
-enters `draining` while its heartbeat and hard lifetime remain valid. It stops
+enters `draining` while its heartbeat and hard lifetime remain valid. The first
+maintenance, channel-status or STOP observation commits that same transition;
+ordinary pre-deadline observations remain read-only. It stops
 serving new reads/claims, retains existing claimed work, and uses the same
 checkpoint/STOP path as a planned drain. An unresolved writer publication
 keeps its existing recovery fence. The idle clock cannot retire the provider
