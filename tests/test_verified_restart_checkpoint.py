@@ -76,3 +76,12 @@ def test_verified_advance_cannot_change_pinned_model(tmp_path):
     changed=replace(config,versions={**config.versions,'model_sha256':'d'*64})
     with pytest.raises(JournalConflict,match='versions_changed'):
         _verified_restart_restore(p.q,changed,'stream')
+
+
+@pytest.mark.parametrize('legacy',[False,True])
+def test_store_constructor_can_initialize_or_upgrade_metadata(tmp_path,legacy):
+    p,config,latest,key=setup(tmp_path)
+    with p.q.connect() as db:
+        db.execute('ALTER TABLE rkb_dataset_recovery_store DROP COLUMN latest_json' if legacy
+                   else 'DROP TABLE rkb_dataset_recovery_store')
+    assert _verified_restart_restore(p.q,config,'stream') is config
