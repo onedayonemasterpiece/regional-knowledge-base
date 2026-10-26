@@ -326,10 +326,14 @@ class TargetServiceStartup:
             object.__setattr__(proof,'database',database)
             object.__setattr__(proof,'control',encode(control))
 
-    def binding_current(self,binding):
+    def checkpoint_binding_current(self,binding):
+        """Retained Dataset prefix/checkpoint only; never public mutation authority."""
+        return self.binding_current(binding,allow_draining=True)
+
+    def binding_current(self,binding,*,allow_draining=False):
         try:
             return (not self.closed and type(binding) is TargetReadBinding
-                and current_binding(self.config.queue,allow_draining=True)==binding
+                and current_binding(self.config.queue,allow_draining=allow_draining)==binding
                 and self.config.writer_current(database_generation=binding.database_generation,
                     writer_generation=self.config.writer_generation))
         except Exception:return False
@@ -348,8 +352,7 @@ class TargetServiceStartup:
     def reads_current(self):
         try:
             return bool(self.running and not self.closed and (self.snapshot is None or self.snapshot.verified) and self.coverage is not None
-                and self.coverage.current() and self.binding_current(self.binding)
-                and current_binding(self.config.queue)==self.binding)
+                and self.coverage.current() and self.binding_current(self.binding))
         except Exception:return False
 
     def imports_current(self):
@@ -379,7 +382,7 @@ class TargetServiceStartup:
             if self.geo_gate is not None:self.geo_gate.invalidate()
             self.case_gate.invalidate()
         self.binding=binding
-        cursor=await spool.dataset_cursor(binding,control=control,current=self.binding_current)
+        cursor=await spool.dataset_cursor(binding,control=control,current=self.checkpoint_binding_current)
         if cursor is not self.coverage:
             _LOG.info('target_dataset_cursor run_id=%s dataset_version=%s accepted_seq=%s applied_seq=%s pending_count=%s',
                 binding.run_id,checkpoint.dataset_version,cursor.accepted_sequence,cursor.applied_sequence,len(cursor.pending))
@@ -483,7 +486,7 @@ class TargetServiceStartup:
             try:
                 binding=await asyncio.to_thread(current_binding,self.config.queue)
             except TargetUnavailable:
-                if self.binding is not None and self.binding_current(self.binding):
+                if self.binding is not None and self.checkpoint_binding_current(self.binding):
                     return False  # Retain the verified prefix for this current writer's final checkpoint.
                 # The migrated worker can reconnect before its lost receipt
                 # advances our observed version. Reconcile that original job

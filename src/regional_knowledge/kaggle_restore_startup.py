@@ -110,7 +110,7 @@ class SourceRestoreCoordinator:
 
     def current(self,binding):
         from .kaggle_public_backend import TargetReadBinding
-        if type(binding) is TargetReadBinding:return self.startup.binding_current(binding)
+        if type(binding) is TargetReadBinding:return self.startup.checkpoint_binding_current(binding)
         if type(binding) is not PreReadyRecoveryBinding:return False
         try:
             actual,_=self._observe()
