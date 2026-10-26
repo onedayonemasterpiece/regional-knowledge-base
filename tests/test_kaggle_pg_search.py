@@ -14,7 +14,7 @@ from regional_knowledge.kaggle_search import _PENDING_ENCODERS
 import pytest
 
 from regional_knowledge.kaggle_search import fused_search, vector_literal
-from test_kaggle_query import env, connect
+from test_kaggle_query import env, database, connect
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "rkb-v4-fixture-20261020"
