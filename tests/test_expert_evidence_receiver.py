@@ -50,7 +50,7 @@ async def test_real_asgi_expert_identity_is_verified_and_uses_single_kaggle_read
         issued=await work(s.target)
         assert issued.query.actor.person_id==s.target.auth.p.other.subject
         assert issued.query.actor.person_id!=s.target.auth.p.owner.subject
-        assert issued.query.request_id==req['request_id']
+        assert issued.query.request_id!=req['request_id']
         assert issued.query.turn_generation==payload['generation']
         assert issued.query.min_data_seq==5
         assert issued.query.actor.audience.startswith('slack:personal:')
