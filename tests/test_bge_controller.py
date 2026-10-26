@@ -77,6 +77,18 @@ def controller():
     spec=importlib.util.spec_from_file_location('bge_controller_test',Path(__file__).resolve().parents[1]/'scripts/production/bge_kaggle_controller.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
+def test_disconnected_planned_drain_probes_before_lease_expiry_with_existing_rate_limit():
+    module=controller()
+    class Queue:
+        def clock(self):return 1000.
+        def _run_expired(self,run,now):return False
+    q=Queue();run=dict(id='planned-drain',status='draining',channel_active=1)
+    assert not module.lease_terminal_probe_due(q,run,now=0.)
+    run['channel_active']=0
+    assert module.lease_terminal_probe_due(q,run,now=0.)
+    assert not module.lease_terminal_probe_due(q,run,now=29.)
+    assert module.lease_terminal_probe_due(q,run,now=30.)
+
 def test_stable_notebook_across_runs_and_frozen_legacy_unknown_launch(monkeypatch,tmp_path):
     module=controller();monkeypatch.setenv('KAGGLE_USERNAME','fixture-owner')
     a={'id':str(uuid4()),'launch_state':'pending','provider_ref':None};b={**a,'id':str(uuid4())}

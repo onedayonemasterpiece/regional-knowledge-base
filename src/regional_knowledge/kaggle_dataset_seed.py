@@ -56,11 +56,14 @@ def _put_control(grant, data):
 
 
 class SourceDatasetSeed:
+    def binding_current(self,binding):
+        return self.startup.binding_current(binding)
+
     def __init__(self, startup, config, publisher):
         self.startup, self.config, self.publisher = startup, config, publisher
         self.queue = startup.config.queue
         self.tickets = DatasetSnapshotTicketIssuer(self.queue, publisher,
-            current=startup.binding_current, writer_guard=startup.config.writer_owner)
+            current=self.binding_current, writer_guard=startup.config.writer_owner)
         with self.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_dataset_seed(
                 operation_key TEXT PRIMARY KEY, provider_ref TEXT NOT NULL,
@@ -161,7 +164,7 @@ class SourceDatasetSeed:
                         or descriptor['writer_generation'] != self.startup.config.writer_generation
                         or descriptor['applied_sequence'] != proof.applied_sequence
                         or descriptor['versions'] != self.config.versions
-                        or not self.startup.binding_current(binding)
+                        or not self.binding_current(binding)
                         or (not self.concurrent_capture and
                             await self.startup.config.spool.journal.head()!=proof.head)):
                     raise SnapshotError('dataset_seed_capture_prefix_changed')

@@ -60,10 +60,32 @@ def test_planned_idle_drain_preserves_provider_reservation_and_pending_work(tmp_
     queue.maintenance()
     with queue.connect(write=False) as db:
         row=db.execute('SELECT status,launch_state FROM runs WHERE id=?',(run,)).fetchone()
-        assert tuple(row)==('expired','dispatched')
+        assert tuple(row)==('draining','dispatched')
         assert not db.execute('SELECT 1 FROM bge_provider_terminal_receipts WHERE run_id=?',(run,)).fetchone()
     assert queue.result('actor',pending)['state']=='pending'
     assert queue.result('actor',job)['state']=='done'
+
+
+def test_planned_drain_keeps_attached_current_channel_for_exact_stop(tmp_path):
+    now=[1000.];q=BgeQueue(tmp_path/'planned-stop.sqlite',clock=lambda:now[0])
+    q.request_startup();run,token=run_details(q)
+    q.launch_claim(run,provider_ref='owner/fixture')
+    nonce=q.prepare_channel(run)
+    q.launch_record(run,'owner/fixture',provider_version=12)
+    generation=q.attach_channel(run,token,nonce,'same-runtime')['connection_generation']
+    q.heartbeat(run,token,ready=True,connection_generation=generation)
+    assert not q.stop_eligible(run,token,generation)
+    assert q.request_idle_drain(run,provider_ref='owner/fixture',provider_version=12)
+    q.maintenance()
+    assert q.channel_status(run,token,generation)['state']=='draining'
+    assert q.stop_eligible(run,token,generation)
+    q.detach_channel(run,token,generation)
+    assert q.needs_dispatched_terminal_probe(run)
+    now[0]+=1000  # Neither socket loss nor heartbeat expiry proves compute ended.
+    q.maintenance()
+    with q.connect(write=False) as db:
+        assert db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]==run
+        assert db.execute('SELECT status FROM runs WHERE id=?',(run,)).fetchone()[0]=='draining'
 
 def test_useful_lease_heartbeat_does_not_extend_it(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])

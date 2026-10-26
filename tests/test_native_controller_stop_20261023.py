@@ -30,7 +30,7 @@ def expected_stop(generation):
         run_id='run', launch_nonce='nonce', runtime_incarnation='instance')
 
 
-def test_current_under_nine_hours_and_merely_draining_do_not_stop():
+def test_current_under_nine_hours_without_stop_authorization_does_not_stop():
     queue = PlannedQueue()
     with client(queue) as app, app.websocket_connect(
             '/bge-worker/channel', headers={'Authorization':'Bearer secret'}) as socket:
@@ -38,7 +38,7 @@ def test_current_under_nine_hours_and_merely_draining_do_not_stop():
         assert ready(socket, generation)['status'] == 'ready'
         send(socket, generation, 'HEARTBEAT')
         assert socket.receive_json()['type'] == 'HEARTBEAT_ACK'
-        # A manual drain of the serving owner cannot stop it before handover.
+        # The channel cannot invent STOP permission for its current owner.
         queue.current = True
         send(socket, generation, 'HEARTBEAT')
         assert socket.receive_json()['type'] == 'HEARTBEAT_ACK'
@@ -230,3 +230,42 @@ def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops():
             queue.current=False
             assert socket.receive_json()==expected_stop(generation)
     assert calls==[('run',generation)]
+
+
+def test_final_checkpoint_can_finish_its_dispatch_before_stop():
+    from concurrent.futures import ThreadPoolExecutor
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from regional_knowledge.bge_channel import channel_route
+    queue = PlannedQueue()
+    entered, cleanup = threading.Event(), threading.Event()
+    calls = []
+
+    async def checkpoint(run_id, generation):
+        calls.append('checkpoint_start')
+        entered.set()
+        while not queue.completion.is_set() and not cleanup.is_set():
+            await asyncio.sleep(.001)
+        calls.append('checkpoint_settled')
+
+    with TestClient(Starlette(routes=[channel_route(queue, before_stop=checkpoint)])) as app:
+        with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer secret'}) as socket:
+            generation = attach(socket)['connection_generation']
+            assert ready(socket, generation)['status'] == 'ready'
+            queue.current = False
+            assert entered.wait(1)
+            queue.pending_job = True
+            queue.enqueue()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(socket.receive_json)
+                try:
+                    frame = future.result(timeout=1)
+                    assert frame['type'] == 'DISPATCH'
+                    send(socket, generation, 'RESULT', job_id='job', claim='claim',
+                        space=SPACE, vectors=[[1.] + [0.] * 1023])
+                    assert socket.receive_json()['type'] == 'RESULT_ACK'
+                    queue.pending_job = False
+                    assert socket.receive_json() == expected_stop(generation)
+                    assert calls == ['checkpoint_start', 'checkpoint_settled']
+                finally:
+                    cleanup.set()

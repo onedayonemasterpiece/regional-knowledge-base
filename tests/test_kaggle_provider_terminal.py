@@ -103,6 +103,24 @@ def test_exact_version_retirement_no_incarnation_idempotent_restart(env):
         assert db.execute('select count(*) from bge_provider_terminal_receipts').fetchone()[0] == 1
 
 
+def test_disconnected_planned_drain_waits_for_exact_provider_terminal(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute("UPDATE runs SET status='draining',channel_active=0,heartbeat=? WHERE id=?",(now[0],rid))
+    assert not q._run_expired(row(),now[0])
+    api=API(row());api.phase='RUNNING'
+    assert q.needs_dispatched_terminal_probe(rid)
+    assert observe(api,row,now) is None
+    now[0]+=1000;q.maintenance()
+    assert row()['status']=='draining' and row()['launch_state']=='dispatched'
+    api.phase='COMPLETE'
+    proof=observe(api,row,now)
+    assert proof is not None and q.retire_provider_reservation(proof)
+    q.maintenance()
+    assert row()['status']=='expired' and row()['launch_state']=='terminal'
+    assert q.request_startup()['run_id']!=rid
+
+
 
 
 @pytest.mark.parametrize('phase', ['RUNNING', 'QUEUED', 'CANCEL_REQUESTED'])

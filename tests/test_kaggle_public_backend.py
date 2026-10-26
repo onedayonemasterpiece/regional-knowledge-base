@@ -341,6 +341,19 @@ async def test_binding_requires_verified_current_runtime_and_exact_shared_owner(
 
 
 @pytest.mark.asyncio
+async def test_current_draining_binding_is_explicitly_maintenance_only(target):
+    s=target;before=current_binding(s.queue)
+    with s.queue.connect() as db:
+        db.execute("UPDATE runs SET status='draining' WHERE id=?",(s.run,))
+    with pytest.raises(TargetUnavailable):current_binding(s.queue)
+    assert not s.backend.binding_current(before)
+    assert current_binding(s.queue,allow_draining=True)==before
+    with s.queue.connect() as db:
+        db.execute("UPDATE runs SET status='expired' WHERE id=?",(s.run,))
+    with pytest.raises(TargetUnavailable):current_binding(s.queue,allow_draining=True)
+
+
+@pytest.mark.asyncio
 async def test_real_queue_to_final_asgi_issuance_releases_authority_after_send(target):
     s = target
     scope = {'type': 'http', 'method': 'POST', 'path': '/mcp', 'headers': []}

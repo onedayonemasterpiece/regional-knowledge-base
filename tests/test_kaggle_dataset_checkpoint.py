@@ -66,6 +66,7 @@ async def test_work_cycle_waits_for_quiet_then_resumes_published_version_after_l
         source_restore=NS(versions=versions),history_adapter=NS(database=NS(**versions))),
         coverage=proof,history=NS(schema_version=16,catalog_hash=versions['catalog_sha256']),
         restorer=NS(dispatch=NS(request=request)),binding_current=lambda binding:True)
+    startup.checkpoint_binding_current=startup.binding_current
     owner=SourceDatasetCheckpoints(startup,clock=lambda:clock[0],wall_clock=lambda:clock[0],quiet_seconds=30)
     assert not await owner.refresh('binding')
     clock[0]=29
@@ -193,6 +194,7 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
         restorer=NS(complete=True,physical=NS(journal=spool.journal,
             limits=NS(max_receipts=100,max_control_bytes=1024*1024)),dispatch=NS(request=request)),
         binding_current=lambda binding:p.alive and binding is p.binding)
+    p.startup.checkpoint_binding_current=p.startup.binding_current
     p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],wall_clock=lambda:p.clock[0],interval_seconds=interval,quiet_seconds=quiet)
     return p
 
@@ -233,6 +235,7 @@ async def test_control_only_lost_ack_resumes_same_operation_version_after_restar
     await p.owner.refresh(p.binding);p.clock[0]=31
     with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
     assert not p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==1
+    p.startup.checkpoint_binding_current=p.startup.binding_current
     p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],wall_clock=lambda:p.clock[0])
     assert await p.owner.refresh(p.binding)
     assert p.store.remote_durable(key,b'pending') and p.store.latest_checkpoint.dataset_version==2
@@ -393,6 +396,7 @@ async def test_failed_dataset_verify_does_not_promote_saved_seq_or_discard_tail(
     assert p.owner.saved_seq==7 and p.store.latest_checkpoint.dataset_version==1
     assert not p.store.remote_durable(key,b'pending')
     # The ordinary controller restart path resumes the very same version.
+    p.startup.checkpoint_binding_current=p.startup.binding_current
     p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],wall_clock=lambda:p.clock[0])
     assert await p.owner.refresh(p.binding)
     assert p.store.remote_durable(key,b'pending')
@@ -408,6 +412,8 @@ async def test_existing_planned_idle_drain_forces_checkpoint_before_quiet_timeou
     p.clock[0]=11
     with p.q.connect() as db:
         db.execute("UPDATE runs SET status='draining' WHERE id='run'")
+    p.startup.binding_current=lambda binding:False  # Public authority is closed.
+    assert p.startup.checkpoint_binding_current(p.binding)
     assert await p.owner.refresh(p.binding)
     assert p.owner.saved_seq==7
     assert p.store.remote_durable(key,b'pending')
@@ -438,6 +444,7 @@ async def test_api_restart_cannot_reset_saved_version_deadline(tmp_path,monkeypa
     assert not await p.owner.refresh(p.binding)
     p.clock[0]=1799
     await put_control(p,data=b'new write just before restart')
+    p.startup.checkpoint_binding_current=p.startup.binding_current
     p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],
         wall_clock=lambda:p.clock[0],interval_seconds=1800,quiet_seconds=900)
     assert not await p.owner.refresh(p.binding) and not p.calls
@@ -448,6 +455,7 @@ async def test_api_restart_cannot_reset_saved_version_deadline(tmp_path,monkeypa
     # The next verified Saved version establishes the next deadline.
     p.clock[0]=1801
     await put_control(p,data=b'next cycle')
+    p.startup.checkpoint_binding_current=p.startup.binding_current
     p.owner=SourceDatasetCheckpoints(p.startup,clock=lambda:p.clock[0],
         wall_clock=lambda:p.clock[0],interval_seconds=1800,quiet_seconds=900)
     assert not await p.owner.refresh(p.binding)

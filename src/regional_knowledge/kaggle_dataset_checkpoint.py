@@ -28,10 +28,13 @@ class CheckpointPending(Exception):
 class _WorkCycleCapture(SourceDatasetSeed):
     concurrent_capture=True
 
+    def binding_current(self,binding):
+        return self.startup.checkpoint_binding_current(binding)
+
     @asynccontextmanager
     async def prefix_guard(self,binding):
         async with self.startup.config.spool._lock:
-            if not self.startup.binding_current(binding):
+            if not self.startup.checkpoint_binding_current(binding):
                 raise SnapshotError('dataset_checkpoint_writer_changed')
             yield
 
@@ -44,10 +47,10 @@ class _WorkCycleCapture(SourceDatasetSeed):
         reject a moving/incomplete checkpoint; they must never be bypassed to
         turn an in-flight APPLIED packet into an invented Saved receipt.
         """
-        if not self.startup.binding_current(binding):
+        if not self.startup.checkpoint_binding_current(binding):
             raise SnapshotError('dataset_checkpoint_writer_changed')
         yield
-        if not self.startup.binding_current(binding):
+        if not self.startup.checkpoint_binding_current(binding):
             raise SnapshotError('dataset_checkpoint_writer_changed')
 
     async def _prepare_prefix(self,proof):
@@ -250,7 +253,7 @@ class SourceDatasetCheckpoints:
         if task is not None and not task.done():
             self._force_after=True
             await task
-        if not self.startup.binding_current(binding):
+        if not self.startup.checkpoint_binding_current(binding):
             raise CheckpointPending('dataset_checkpoint_writer_changed')
         return await self.refresh(binding,planned_stop=True)
 
@@ -355,10 +358,10 @@ class SourceDatasetCheckpoints:
                 latest.database_generation,proof.applied_sequence]))
         else:operation=retained['operation_key']
         try:
-            if not startup.binding_current(binding):raise SnapshotError('dataset_checkpoint_writer_changed')
+            if not startup.checkpoint_binding_current(binding):raise SnapshotError('dataset_checkpoint_writer_changed')
             checkpoint,observed,manifest_ref,version=await self._capture_verify(binding,operation,latest)
             await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref,
-                current=lambda:startup.binding_current(binding))
+                current=lambda:startup.checkpoint_binding_current(binding))
         except asyncio.CancelledError:raise
         except Exception as exc:
             raise CheckpointPending(type(exc).__name__,

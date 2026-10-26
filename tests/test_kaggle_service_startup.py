@@ -152,6 +152,36 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
 
 
 @pytest.mark.asyncio
+async def test_drain_keeps_only_checkpoint_authority_and_closes_public_work(service):
+    s=service;startup=s.startup;s.adapter.available=True
+    async with startup.lifespan(None):
+        assert startup.reads_current()
+        proof,binding=startup.coverage,startup.binding
+        with s.target.queue.connect() as db:
+            db.execute("UPDATE runs SET status='draining' WHERE id=?",(binding.run_id,))
+        assert startup.checkpoint_binding_current(binding)
+        assert not startup.binding_current(binding)
+        assert not startup.reads_current() and not startup.imports_current()
+        from regional_knowledge.kaggle_cases_backend import KaggleCasesBackend
+        from regional_knowledge.kaggle_story_editorial_backend import KaggleStoryEditorial
+        from regional_knowledge.kaggle_importer import KaggleSourceImporter
+        from regional_knowledge.original_intake_controller import OriginalIntakeController,OriginalIntakeError
+        guarded=SimpleNamespace(startup=startup)
+        assert not KaggleCasesBackend._binding_current(guarded,binding)
+        assert not KaggleStoryEditorial._binding_current(guarded,binding)
+        assert not KaggleSourceImporter._binding_current(guarded,binding)
+        # This production ticket method must reject before consulting storage.
+        original=SimpleNamespace(binding_current=startup.binding_current)
+        with pytest.raises(OriginalIntakeError,match='original_current_binding_required'):
+            await OriginalIntakeController._ticket(original,binding,'operation','PUT','key',1,'0'*64)
+        assert not await startup.refresh()
+        assert startup.coverage is proof and not proof.current()
+        with s.target.queue.connect() as db:
+            db.execute("UPDATE runs SET status='expired' WHERE id=?",(binding.run_id,))
+        assert not startup.checkpoint_binding_current(binding) and not proof.current()
+
+
+@pytest.mark.asyncio
 async def test_proof_refresh_failure_and_writer_change_close_routing(service):
     s=service;startup=s.startup
     s.adapter.available=True

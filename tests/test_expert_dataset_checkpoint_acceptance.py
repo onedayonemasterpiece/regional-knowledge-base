@@ -154,6 +154,7 @@ def composition(owner, env, tmp_path, monkeypatch):
             p.alive and binding is p.binding and writer.current(
                 database_generation=writer.database_generation,
                 writer_generation=writer.writer_generation)))
+    p.startup.checkpoint_binding_current=p.startup.binding_current
     async def fake_native_capture(batch,physical,bridge,binding,sequence):
         p.calls.append('capture')
         ticket=await batch.tickets.issue_upload(

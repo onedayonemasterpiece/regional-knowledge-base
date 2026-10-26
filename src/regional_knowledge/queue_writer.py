@@ -120,7 +120,7 @@ class QueueWriterAuthority:
         run=db.execute('SELECT * FROM runs WHERE id=?',(self.run_id,)).fetchone()
         control=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()
         runtime=self.queue._runtime_row(db,self.run_id)
-        if (run is None or control[0]!=self.run_id or run['status']!='ready' or not run['channel_active']
+        if (run is None or control[0]!=self.run_id or run['status'] not in ('ready','draining') or not run['channel_active']
                 or run['attachment_conflict'] or self.queue._run_expired(run,self.queue.clock())
                 or runtime is None or runtime['accepted_generation']!=run['connection_generation']):
             raise StaleWriter('current verified target runtime required')
