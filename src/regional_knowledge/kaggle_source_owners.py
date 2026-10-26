@@ -59,6 +59,9 @@ def _verified_restart_restore(queue, restore, stream):
     if (document['database_generation']!=checkpoint.database_generation
             or document['applied_sequence']!=checkpoint.base_sequence):
         raise JournalConflict('verified_restart_manifest_cursor_changed')
+    # A newer Saved must not silently change the operator-selected runtime ABI.
+    if document['versions'].get('pgvector_version')!=restore.versions['pgvector_version']:
+        raise JournalConflict('verified_restart_pgvector_selection_changed')
     if not compatible_versions(dict(restore.versions),document['versions']):
         raise JournalConflict('verified_restart_versions_changed')
     resumed=replace(restore,dataset_checkpoint=checkpoint,
