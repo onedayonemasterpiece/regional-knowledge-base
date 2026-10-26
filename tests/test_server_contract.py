@@ -81,6 +81,20 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
 
 
 
+@pytest.mark.asyncio
+async def test_search_guidance_requires_russian_and_german_in_one_query(monkeypatch):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    server = build_server()
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    texts = (server.instructions, build_server(profile="live").instructions, tools["search"].description)
+    for text in texts:
+        for phrase in ("one line", "Russian", "German equivalents", "keywords", "names",
+                       "historical place names", "historical German forms",
+                       "regardless of the question's language", "two languages suffice",
+                       "omit service labels and guessed answers"):
+            assert phrase in text
+
+
 def test_auth_uses_application_issuer_not_supabase(monkeypatch):
     import regional_knowledge.server as server_module
 
