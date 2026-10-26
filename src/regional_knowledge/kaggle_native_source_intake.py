@@ -629,7 +629,10 @@ class NativeSourceIntake:
             if previous is None and correction is not None:
                 raise _failure(f'page_{index}_has_no_prior_selection: omit corrects_batch_index on new pages',
                     status='invalid_query')
-            if previous is not None and correction!=previous:
+            # Existing retry-after-rejection semantics remain valid: the
+            # rejected packet can be reviewed/retried without a new correction marker.
+            if (previous is not None and correction!=previous
+                    and previous!=state.get('rejected_batch_index')):
                 raise _failure(f'page_{index}_already_accepted: do not resend accepted pages; '
                     f'only for a deliberate correction set pages[].corrects_batch_index={previous} '
                     'to match its last accepted selection',status='invalid_query')
