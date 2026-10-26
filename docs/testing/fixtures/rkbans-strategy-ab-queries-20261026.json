@@ -1,0 +1,154 @@
+{
+  "bank_id": "RKBANS-STRATEGY-AB-20261026",
+  "status": "frozen_question_only_before_measured_search",
+  "source_resolution": "book_find then accepted source/page fetch; no complete-ingest claim",
+  "regression_fixture": "docs/testing/fixtures/rkb-retrieval-strategy-queries-20261026.json (PR519 F01-F10)",
+  "languages": "RU→DE (10 new); DE→RU (4 translations of PR519 F01-F04; correlated with RU→RU); negative (4 refutable premises)",
+  "policy": "V0 original; V1 original + translated as one mixed line; V2 separate; V3 original + same-language paraphrase; V4 original then one gap-directed step after reading. Short/full instruction PR515 §10.",
+  "families": [
+    {
+      "id": "W01",
+      "stratum": "RU→DE",
+      "source": "Wiechert",
+      "original": "Кем работал Эрнст Вихерт в Кёнигсберге?",
+      "translated": "Welchen Beruf übte Ernst Wiechert in Königsberg aus?",
+      "paraphrase": "Какую преподавательскую должность занимал Эрнст Вихерт в Кёнигсберге?"
+    },
+    {
+      "id": "W02",
+      "stratum": "RU→DE",
+      "source": "Wiechert",
+      "original": "Какие предметы изучал Эрнст Вихерт в 1905–1911 годах?",
+      "translated": "Welche Fächer studierte Ernst Wiechert in den Jahren 1905 bis 1911?",
+      "paraphrase": "Что входило в университетскую программу Эрнста Вихерта с 1905 по 1911 год?"
+    },
+    {
+      "id": "W03",
+      "stratum": "RU→DE",
+      "source": "Wiechert",
+      "original": "За какое произведение Эрнст Вихерт получил премию Вильгельма Раабе?",
+      "translated": "Für welches Werk erhielt Ernst Wiechert den Wilhelm-Raabe-Preis?",
+      "paraphrase": "Как называется книга Вихерта, отмеченная премией Раабе?"
+    },
+    {
+      "id": "W04",
+      "stratum": "RU→DE",
+      "source": "Wiechert",
+      "original": "В какие годы Эрнст Вихерт выступал перед мюнхенскими студентами с предупреждениями о режиме Гитлера?",
+      "translated": "In welchen Jahren hielt Ernst Wiechert vor Münchner Studenten Warnreden gegen Hitlers Regime?",
+      "paraphrase": "Когда Вихерт произнёс две речи для студентов Мюнхена с критикой гитлеровского режима?"
+    },
+    {
+      "id": "W05",
+      "stratum": "RU→DE",
+      "source": "Wiechert",
+      "original": "Какой урок преподала мать юному Эрнсту Вихерту после его невежливости к старому лесному рабочему?",
+      "translated": "Welche Lehre erteilte Ernst Wiecherts Mutter ihm wegen seiner Unhöflichkeit gegenüber einem alten Waldarbeiter?",
+      "paraphrase": "Что сказала мать Вихерта, наказав его за то, что он не снял шапку перед старым рабочим?"
+    },
+    {
+      "id": "A01",
+      "stratum": "RU→DE",
+      "source": "Albinus",
+      "original": "Согласно лексикону Альбинуса, кто пригласил художника Карла Генриха Христиана Альбрехта преподавать в Кёнигсберге и когда?",
+      "translated": "Wer berief laut Albinus den Maler Karl Heinrich Christian Albrecht als Lehrer nach Königsberg, und wann?",
+      "paraphrase": "Альбинус: какой директор и в каком году пригласил художника Карла Альбрехта в Кёнигсбергскую академию?"
+    },
+    {
+      "id": "A02",
+      "stratum": "RU→DE",
+      "source": "Albinus",
+      "original": "Согласно Альбинусу, какое учреждение основал Карл Готлиб Альбрехт в 1838 году и кому завещал своё состояние?",
+      "translated": "Welche Einrichtung stiftete Karl Gottlieb Albrecht laut Albinus 1838, und wem vermachte er sein Vermögen?",
+      "paraphrase": "Лексикон Альбинуса: что учредил Карл Готлиб Альбрехт в 1838 году и какая церковь получила наследство?"
+    },
+    {
+      "id": "A03",
+      "stratum": "RU→DE",
+      "source": "Albinus",
+      "original": "По лексикону Альбинуса, кто и в какой день пожаловал Альтштадту главное учредительное привилегийное письмо?",
+      "translated": "Wer erteilte der Altstadt laut Albinus an welchem Tag das Haupt- und Gründungsprivilegium?",
+      "paraphrase": "Альбинус: укажите лицо и точную дату выдачи основного привилегия Альтштадту."
+    },
+    {
+      "id": "A04",
+      "stratum": "RU→DE",
+      "source": "Albinus",
+      "original": "Согласно Альбинусу, в каком году Пауль Адлофф стал профессором и директором стоматологической университетской клиники Кёнигсберга?",
+      "translated": "In welchem Jahr wurde Paul Adloff laut Albinus Professor und Direktor der zahnärztlichen Universitätsklinik in Königsberg?",
+      "paraphrase": "Лексикон Альбинуса: дата назначения Пауля Адлоффа профессором и руководителем зубоврачебной университетской клиники?"
+    },
+    {
+      "id": "A05",
+      "stratum": "RU→DE",
+      "source": "Albinus",
+      "original": "По Альбинусу, в каком году и по проекту какого архитектора построили церковь Святого Адальберта в Кёнигсберге?",
+      "translated": "In welchem Jahr und nach den Plänen welchen Architekten wurde laut Albinus die Adalberts-Kirche in Königsberg gebaut?",
+      "paraphrase": "Лексикон Альбинуса: дата строительства и имя архитектора церкви Святого Адальберта."
+    },
+    {
+      "id": "D01",
+      "stratum": "DE→RU",
+      "source": "Gause",
+      "original": "Wer billigte laut Gause den Lübecker Plan einer freien Stadt an der Pregelmündung in einem Brief aus Thorn, und welches Datum trug dieser Brief?",
+      "translated": "Кто, по Гаузе, одобрил любекский план свободного города в устье Прегеля письмом из Торна и какой датой было помечено это письмо?",
+      "paraphrase": "Wer sandte laut Gause die Zustimmung aus Thorn zum Lübecker Plan und wann wurde der Brief datiert?"
+    },
+    {
+      "id": "D02",
+      "stratum": "DE→RU",
+      "source": "Gause",
+      "original": "Was erhielt der samländische Bischof laut Gause 1263 für die Abtretung seiner Königsberger Besitzungen an den Orden, und wo wurde die ihm zugesagte Burg errichtet?",
+      "translated": "Что, по Гаузе, получил самландский епископ за передачу Ордену своих кёнигсбергских владений в 1263 году и где был построен обещанный ему замок?",
+      "paraphrase": "Welche Gegenleistung und welcher Burgstandort wurden dem samländischen Bischof 1263 laut Gause zugesagt?"
+    },
+    {
+      "id": "D03",
+      "stratum": "DE→RU",
+      "source": "Gause",
+      "original": "Welchen Turm der äußeren Befestigung der Königsberger Burg nennt Gause als den einzigen bis in die neueste Zeit erhaltenen, welche Form hatte er, und an welcher Ecke stand er?",
+      "translated": "Какую башню внешних укреплений кёнигсбергской крепости Гаузе называет единственной сохранившейся до новейшего времени, какова её форма и в каком углу она стояла?",
+      "paraphrase": "Gause: Wie hieß der erhaltene Turm der Außenbefestigung, welche Form hatte er und wo stand er?"
+    },
+    {
+      "id": "D04",
+      "stratum": "DE→RU",
+      "source": "Gause",
+      "original": "Wem gehörte laut Gause die Krämerbrücke, und wem gehörten die auf ihr gelegenen Läden?",
+      "translated": "Кому, по Гаузе, принадлежал мост Кремербрюке и кому принадлежали расположенные на нём лавки?",
+      "paraphrase": "Gause: Wer besaß die Krämerbrücke, und wer war Eigentümer der Geschäfte darauf?"
+    },
+    {
+      "id": "N01",
+      "stratum": "negative",
+      "source": "Wiechert",
+      "original": "Был ли Эрнст Вихерт заключён в Бухенвальд ещё до 1933 года?",
+      "translated": "War Ernst Wiechert bereits vor 1933 im Konzentrationslager Buchenwald inhaftiert?",
+      "paraphrase": "Содержался ли Вихерт в Бухенвальде раньше 1933 года?"
+    },
+    {
+      "id": "N02",
+      "stratum": "negative",
+      "source": "Albinus",
+      "original": "Преподавал ли Карл Генрих Христиан Альбрехт в Кёнигсбергской академии уже в 1884 году?",
+      "translated": "Lehrte Karl Heinrich Christian Albrecht bereits 1884 an der Königsberger Kunstakademie?",
+      "paraphrase": "Началось ли преподавание художника Карла Альбрехта в Кёнигсберге в 1884 году?"
+    },
+    {
+      "id": "N03",
+      "stratum": "negative",
+      "source": "Albinus",
+      "original": "Получил ли Альтштадт учредительную грамоту только в 1370 году?",
+      "translated": "Erhielt die Altstadt ihr Gründungsprivileg erst im Jahre 1370?",
+      "paraphrase": "Верно ли, что главное привилегийное письмо Альтштадту выдано в 1370 году?"
+    },
+    {
+      "id": "N04",
+      "stratum": "negative",
+      "source": "Albinus",
+      "original": "Была ли церковь Святого Адальберта в Кёнигсберге построена в 1950 году?",
+      "translated": "Wurde die Adalberts-Kirche in Königsberg 1950 erbaut?",
+      "paraphrase": "Датируется ли постройка кёнигсбергской церкви Святого Адальберта 1950 годом?"
+    }
+  ]
+}
