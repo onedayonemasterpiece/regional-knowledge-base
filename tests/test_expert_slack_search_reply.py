@@ -2,6 +2,7 @@
 
 All events/Slack responses are synthetic; no provider, PG, deployment or grants.
 """
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -398,6 +399,118 @@ async def test_guarded_context_gap_returns_error_code_without_exposing_source(se
     assert len(posts) == 1 and posts[0]["text"] == "Ошибка поиска. Код: unavailable/not_ready"
     assert "unverified source" not in posts[0]["text"]
     assert gate.refreshes == gate.releases == 1 and gate.checked >= 2
+
+
+@pytest.mark.asyncio
+async def test_generic_post_unknown_never_resends_after_provider_lost_ack(service, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(
+        service, lost_ack=True)
+
+    async def transient(query, **kwargs):
+        raise ToolError('{"status":"unavailable","reason":"target_warming"}')
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", transient)
+    with pytest.raises(httpx.ReadTimeout):
+        await reply._answer(request_id)
+    saved = _delivery_row(control, request_id)
+    assert saved["state"] == "unknown" and saved["delivery_attempt"] == 1
+    assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is None
+    assert len(posts) == 1
+    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/target_warming"
+
+    assert control.accept(_observation())["request_id"] == request_id
+    await reply._answer(request_id)
+    assert len(posts) == 1 and _delivery_row(control, request_id) == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial",("wrong_bot","token_revoked","source_revoked"))
+async def test_legacy_post_claim_follows_auth_and_current_issuance_without_false_unknown(
+        service,monkeypatch,denial):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from regional_knowledge.read_issuance import retain_read_output
+
+    ctl,receiver,reply,rid,posts=_temporary_reply_harness(service)
+    paths=[]
+    allowed={"token":True,"source":True,"deny":True}
+    first_auth=asyncio.Event()
+    reply.sender.current=lambda:allowed["token"]
+
+    class IssuanceGate:
+        async def refresh(self,gated):
+            return gated
+        def issuance_current(self,ticket):
+            return allowed["source"]
+        def release(self,ticket):
+            pass
+    gate=IssuanceGate()
+
+    async def source_search(query,**kwargs):
+        # A real captured source ticket is checked again after auth.test.
+        if denial!="source_revoked":
+            raise ToolError('{"status":"unavailable","reason":"deadline_exceeded"}')
+        from regional_knowledge.read_issuance import retain_read_output
+        value={"status":"ok","mode":"hybrid","context_gap":False,
+               "observed_data_seq":1,"observed_projection_seq":1,
+               "prior_write_pending":False,
+               "evidence":[{"text":"Confirmed synthetic source.","title":"Gause",
+                            "metadata":{"citation":"Gause 1994","locator":"стр. 59"}}]}
+        assert retain_read_output(gate,SimpleNamespace(ticket=object(),result=value),
+                                  lambda result:result)
+        return None
+    monkeypatch.setattr(receiver.backend,"search_adapter",source_search)
+
+    def provider(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth.test"):
+            if allowed["deny"]:
+                first_auth.set()
+                if denial=="token_revoked":
+                    allowed["token"]=False
+                elif denial=="source_revoked":
+                    allowed["source"]=False
+                user="OTHER" if denial=="wrong_bot" else "UBOT"
+            else:
+                user="UBOT"
+            return httpx.Response(200,json={"ok":True,"team_id":"T111",
+                                            "user_id":user})
+        body=json.loads(request.content)
+        posts.append(body)
+        return httpx.Response(200,json={"ok":True,"channel":body["channel"],
+            "ts":"1792000008.200","message":{"text":body["text"],"user":"UBOT",
+                "thread_ts":body["thread_ts"],"client_msg_id":body["client_msg_id"]}})
+    reply.sender.transport=httpx.MockTransport(provider)
+
+    # A SINGLE original Slack event and 200 ACK must carry the request
+    # through a transient sender refusal without a second event/caller.
+    reply.ingress.bind_search_reply(reply)
+    app=Starlette(routes=[Route(PATH,reply.ingress.__call__,methods=["POST"])])
+    raw,head=_event()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://test") as http:
+        accepted=await http.post(PATH,content=raw,headers=head)
+    assert accepted.status_code==200 and accepted.json()=={"ok":True}
+    await asyncio.wait_for(first_auth.wait(),3)
+    await asyncio.sleep(0.1)  # First failed sender already returned to task.
+    saved=_delivery_row(ctl,rid)
+    assert saved["state"]=="searching" and saved["delivery_attempt"]==0
+    assert saved["delivery_id"] is None and saved["delivery_receipt"] is None
+    assert posts==[] and paths==["/api/auth.test"]
+
+    # Restore the source/token; the original task performs the next attempt.
+    allowed.update(token=True,source=True,deny=False)
+    await asyncio.wait_for(reply._tasks[rid],6)
+    await asyncio.sleep(0)  # Existing task completion callback.
+    delivered=_delivery_row(ctl,rid)
+    assert delivered["state"]=="delivered" and delivered["delivery_attempt"]==1
+    assert len(posts)==1 and posts[0]["client_msg_id"]=="Ev-1"
+    assert posts[0]["thread_ts"]=="1792000000.100"
+    assert paths==["/api/auth.test","/api/auth.test","/api/chat.postMessage"]
+    assert reply._tasks=={}
+    # No second ACK/request and no additional provider message.
+    assert _delivery_row(ctl,rid)==delivered
 
 
 @pytest.mark.asyncio

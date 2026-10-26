@@ -62,15 +62,19 @@ class SlackChatSender:
         self.token,self.app_id,self.team_id,self.bot_user_id=token,app_id,team_id,bot_user_id
         self.current,self.transport=current,transport
 
-    async def post_once(self, *, event_id, channel, thread, text, current):
-        if not self.current() or not current():raise PermissionError("current Slack scope required")
+    async def post_once(self, *, event_id=None, channel=None, thread=None, text=None,
+                        current=None, claim=None):
         headers={"Authorization":"Bearer "+self.token}
         async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
             auth=(await http.post("https://slack.com/api/auth.test",headers=headers)).json()
             if (auth.get("ok") is not True or auth.get("team_id")!=self.team_id
                     or auth.get("user_id")!=self.bot_user_id or not self.current()
-                    or not current()):
+                    or (current is not None and not current())):
                 raise PermissionError("Slack bot identity or evidence changed")
+            if claim is not None:
+                args=await claim()
+                event_id,channel,thread,text=(args["event_id"],args["channel"],
+                                               args["thread"],args["text"])
             response=await http.post("https://slack.com/api/chat.postMessage",headers=headers,
                 json={"channel":channel,"thread_ts":thread,"text":text,
                       "client_msg_id":event_id,"unfurl_links":False,"unfurl_media":False})
@@ -104,7 +108,7 @@ class ExpertSlackSearchReply:
     def notify(self, request_id):
         if request_id in self._tasks:return
         if len(self._tasks)>=16:raise RuntimeError("bounded Slack event wake capacity")
-        task=asyncio.create_task(self._answer(request_id))
+        task=asyncio.create_task(self._answer_until_sent(request_id))
         self._tasks[request_id]=task
         def finish(t):
             self._tasks.pop(request_id,None)
@@ -113,6 +117,30 @@ class ExpertSlackSearchReply:
             except Exception as exc:_LOG.warning("rkb_slack_search_pending error_type=%s",
                                                 type(exc).__name__)
         task.add_done_callback(finish)
+
+    async def _answer_until_sent(self, request_id):
+        # Retry the same acknowledged request only before any POST permit.
+        # A possible provider effect remains sending/unknown and is not resent.
+        delay=2
+        while True:
+            try:
+                await self._answer(request_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOG.warning("rkb_slack_reply_deferred error_type=%s",
+                             type(exc).__name__)
+            try:
+                row=await asyncio.to_thread(self.control._row,request_id)
+                if row is None or row["state"] not in ("received","searching"):
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOG.warning("rkb_slack_state_deferred error_type=%s",
+                             type(exc).__name__)
+            await asyncio.sleep(delay)
+            delay=min(60,delay*2)
 
     def _verified(self, db, row):
         origin=json.loads(row["origin"])
@@ -219,14 +247,21 @@ class ExpertSlackSearchReply:
                     text=(_error_reply(evidence.get("reason"))
                           if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
                           else answer_from_evidence(evidence))
-            permit=await asyncio.to_thread(self._claim_post,request_id)
-            if permit is None:return
+            permit=None
+            async def claim_for_post():
+                nonlocal permit
+                permit=await asyncio.to_thread(self._claim_post,request_id)
+                if permit is None:
+                    raise PermissionError("original Slack request not claimable")
+                return dict(permit,text=text)
             try:
-                receipt=await self.sender.post_once(**permit,text=text,
-                    current=lambda:current() and (issued is None
-                        or issued.gate.issuance_current(issued.gated.ticket)))
+                receipt=await self.sender.post_once(
+                    current=(None if issued is None
+                             else lambda:issued.gate.issuance_current(issued.gated.ticket)),
+                    claim=claim_for_post)
             except BaseException:
-                await asyncio.to_thread(self._finish,request_id,"sending","unknown")
+                if permit is not None:
+                    await asyncio.to_thread(self._finish,request_id,"sending","unknown")
                 raise
             await asyncio.to_thread(self._finish,request_id,"sending","delivered",receipt)
         finally:

@@ -233,7 +233,10 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   page locator (unknown if absent) and excerpt. No LLM, owner impersonation,
   unsupported web link or original-scan proof is introduced.
 - The existing event row makes exactly one transition searching→sending before
-  chat.postMessage. The bot token is checked against Slack auth.test for the
+  chat.postMessage, after Slack auth.test and the current source-ticket check.
+  A refusal before this claim leaves the original request searching with no
+  send attempt; its existing task retries with 2–60 second backoff and fresh
+  authorization/evidence. The bot token is checked against Slack auth.test for the
   original workspace and bot user; client_msg_id is the exact Slack event_id,
   thread_ts is the originating signed thread. A verified matching native
   provider echo records delivered. Any uncertain send becomes UNKNOWN and
