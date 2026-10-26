@@ -1,7 +1,8 @@
 """Source-only Socket Mode → exact existing ingress/read-only reply regression.
 
-The official SocketModeClient is replaced with an in-process fake: no Slack
-connection, installed credential, owner grants, provider post or Kaggle I/O.
+Most tests use an in-process fake. The close regression uses the official SDK
+against a loopback WebSocket. No external Slack connection, installed credential,
+owner grants, provider post or Kaggle I/O.
 """
 import json
 from contextlib import asynccontextmanager
@@ -171,3 +172,48 @@ def test_socket_server_main_is_inert_until_explicit_private_codec(service,tmp_pa
     assert options["host"]=="127.0.0.1"
     # Neither the SDK WebSocket nor the bot chat API is called until the real
     # API lifespan is started separately by Shkiper.
+
+
+@pytest.mark.asyncio
+async def test_official_sdk_slow_websocket_close_does_not_hold_api_lifespan(env):
+    """Actual SDK + loopback WebSocket; peer never processes the close frame."""
+    import asyncio
+    from slack_sdk.socket_mode.websockets import SocketModeClient
+    from slack_sdk.web.async_client import AsyncWebClient
+    from websockets.asyncio.server import serve
+
+    ctl,_,_=_prepare(env)
+    ingress=ExpertSlackIngress(ctl,signing_secret=None,socket_only=True)
+    ingress.bind_search_reply(SimpleNamespace(control=ctl,ingress=ingress,notify=lambda _:None))
+    ready=asyncio.Event();release=asyncio.Event();peers=[]
+    async def unresponsive_peer(ws):
+        peers.append(ws)
+        ws.transport.pause_reading()
+        ready.set()
+        try:await release.wait()
+        finally:ws.transport.resume_reading()
+
+    async with serve(unresponsive_peer,'127.0.0.1',0,ping_interval=None,close_timeout=.1)as server:
+        port=server.sockets[0].getsockname()[1]
+        client=SocketModeClient(app_token='xapp-synthetic',
+            web_client=AsyncWebClient(token='xoxb-synthetic'))
+        client.wss_uri=f'ws://127.0.0.1:{port}/'
+        adapter=ExpertSlackSocketMode(ingress=ingress,app_token='xapp-synthetic',
+            bot_token='xoxb-synthetic',client_factory=lambda *_:client)
+        lifetime=adapter.lifespan()
+        try:
+            await asyncio.wait_for(lifetime.__aenter__(),2)
+            await asyncio.wait_for(ready.wait(),2)
+            assert client.current_session.close_timeout==10
+            start=asyncio.get_running_loop().time()
+            await asyncio.wait_for(lifetime.__aexit__(None,None,None),2.5)
+            assert asyncio.get_running_loop().time()-start<2
+            assert client.closed and not client.auto_reconnect_enabled
+            assert adapter._client is None
+        finally:
+            release.set()
+            for peer in peers:peer.transport.resume_reading()
+            await asyncio.wait_for(client.close(),2)
+            tasks=[getattr(client,name,None)for name in
+                   ('message_processor','current_session_monitor','message_receiver')]
+            await asyncio.gather(*(t for t in tasks if t is not None),return_exceptions=True)
