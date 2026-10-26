@@ -1002,3 +1002,20 @@ async def test_catalog_hint_only_while_author_or_year_missing(native_intake, fie
         db.execute('UPDATE rkb_source_intake_control SET metadata_json=? WHERE ingestion_id=?',
                    (json.dumps(complete), book.ingestion_id))
     assert 'Catalog author/year missing' not in (await call(s, book, 'status')).message
+
+
+@pytest.mark.asyncio
+async def test_rejected_new_stage_does_not_permit_restage_of_earlier_page(native_intake):
+    s = native_intake; book = await start(s)
+    await settle_reviewed_packet(s, book, batch(s, book, count=1))
+    second = batch(s, book, first=1, count=1)
+    await stage(s, book, second)
+    await finish(s, book, status='rejected_precondition')
+    await call(s, book, 'status')
+    assert state(s, book)['rejected_batch_index'] == 0
+    prior = batch(s, book, count=1)
+    prior['chunks'][0]['chunk_key'] = 'unrelated-retry'
+    before = operation_count(s)
+    with pytest.raises(ToolError, match='page_0_already_accepted'):
+        await stage(s, book, prior)
+    assert operation_count(s) == before
