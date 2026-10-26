@@ -190,8 +190,15 @@ class NativeSourceIntake:
         # already-published physical page.
         rejected_stage=await self._entry(self._operation(row,'stage',
             f"{state['batch_count']}:{state['command_attempt']-1}"))
-        return not (rejected_stage is not None and
-            getattr(getattr(rejected_stage,'apply_receipt',None),'status',None)=='rejected_precondition')
+        if (rejected_stage is not None and
+                getattr(getattr(rejected_stage,'apply_receipt',None),'status',None)=='rejected_precondition'):
+            return False
+        for component in ('text','semantic'):
+            candidate=await self._entry(self._operation(row,'batch',f'{batch_index}:{component}'))
+            if (candidate is not None and
+                    getattr(getattr(candidate,'apply_receipt',None),'status',None)=='rejected_precondition'):
+                return True
+        return False
 
     async def with_import_hints(self, row, output):
         # Guidance describes a settled result, never a wait/rejection receipt.
