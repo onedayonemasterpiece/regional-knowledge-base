@@ -602,7 +602,7 @@ class ControlSpool:
         return db.execute('''SELECT
             (SELECT coalesce(sum(CASE WHEN apply_bytes IS NULL THEN reserved_bytes ELSE
                 length(command_bytes)+length(dependency_bytes)+length(outcome_bytes)+32768 END),0)
-                FROM rkb_control_operations)+
+                FROM rkb_control_operations WHERE outcome_state<>'DURABLE')+
             (SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads)''').fetchone()[0]
 
     def _stage(self,command,data,handler,database_generation):
