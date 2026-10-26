@@ -468,6 +468,9 @@ async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(na
     assert (await pending(s,result)).command.route=='source.batch.v1'
     await finish(s,result);await call(s,result,'status')
     await finish(s,result);await call(s,result,'status')
+    with pytest.raises(ToolError,match='page_0_already_accepted'):
+        await stage(s,result,changed)
+    changed['pages'][0]['corrects_batch_index'] = 0
     await stage(s,result,changed)
     second = await pending(s,result)
     assert second.command.sequence == entry.command.sequence+3
