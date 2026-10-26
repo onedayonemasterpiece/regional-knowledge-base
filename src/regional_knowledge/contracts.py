@@ -235,10 +235,6 @@ class StageIllustrationInput(BaseModel):
 
 
 class StagePageInput(BaseModel):
-    corrects_batch_index: int | None = Field(default=None, ge=0,
-        description="For deliberate correction ONLY: expected batch_index of the latest accepted "
-                    "selection of this physical page. Omit on new pages and exact retries; "
-                    "correction does not automatically supersede old searchable evidence.")
     # Optional legacy image receipt echo. Native stage resolves issued pixels
     # by owned ingestion/page index; this never certifies model-authored text.
     source_image_receipt_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
