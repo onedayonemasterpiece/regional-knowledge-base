@@ -132,10 +132,12 @@ async def test_default_query_still_hydrates_only_three_identical_fused_ids():
         json.loads(q.model_dump_json()),encode=encode)
     assert normal['type']=='QUERY_RESULT' and normal['mode']=='hybrid' and len(normal['evidence'])==3
     assert {v['id'] for v in normal['evidence']}==set(observed['ranks']['fusion'][:3])
+    with pytest.raises(ValueError):await fused_search(BranchConnection(),'synthetic harbour',encode=encode,top_k=10)
 
 
-def test_acceptance_contract_rejects_modified_fixture_and_duplicate_ranks():
+def test_contracts_do_not_expand_product_query_or_allow_unhydrated_duplicate_ranks():
     f=fixture(str(UUID(int=90)))
+    with pytest.raises(ValueError):Query(**(request(f).model_dump(exclude={'type','operation','operation_version','fixture_sha256','fixture_sources'})|{'evidence_limit':10}))
     for change in ({'filters':QueryFilters(source_ids=(SOURCE,),kinds=('source',))},
                    {'filters':QueryFilters(source_ids=(SOURCE,OTHER),kinds=('story',))},
                    {'fixture_sha256':'not-a-hash'},{'evidence_limit':10},{'evidence_limit':3.0}):

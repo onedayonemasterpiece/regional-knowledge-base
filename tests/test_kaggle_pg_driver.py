@@ -130,6 +130,9 @@ async def catalog_database(database):
     async with database.transaction():
         for path in sorted((ROOT / "sql/kaggle").glob("00[2-9]_*.sql")):
             await database.execute(path.read_text(), prepare=False)
+        # Old SQL009-only fixture: the live catalog-correction table arrives in SQL034.
+        await database.execute('CREATE TABLE rkb_v4.source_catalog_corrections '
+                               '(source_id uuid, accepted_sequence bigint, metadata jsonb)')
     return database
 
 

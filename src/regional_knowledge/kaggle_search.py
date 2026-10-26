@@ -110,8 +110,8 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
             or len(query.encode("utf-8")) > 4096):
         raise ValueError("query requires 1..1000 characters and <=4096 UTF-8 bytes")
     if (type(top_k) is not int or type(candidate_budget) is not int
-            or not 1 <= top_k <= 10 or not top_k <= candidate_budget <= 200):
-        raise ValueError("require integer 1 <= top_k <= 10 and top_k <= budget <= 200")
+            or not 1 <= top_k <= 5 or not top_k <= candidate_budget <= 200):
+        raise ValueError("require integer 1 <= top_k <= 5 and top_k <= budget <= 200")
     if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
             or not 0 < timeout_seconds <= 2):
         raise ValueError("deadline must be within 2 seconds")
@@ -232,11 +232,16 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         hydration = ('rkb_v4.hydrate(%s::uuid[])' if source_ids is None else
                                      'rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])')
                         await execute(f"""SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
-                            jsonb_build_object('catalog',jsonb_build_object('title',c.metadata->>'title',
-                                'authors',c.metadata->'authors','publication_year',c.metadata->'publication_year'))
+                            jsonb_build_object('catalog',jsonb_build_object('title',picked.metadata->>'title',
+                                'authors',picked.metadata->'authors','publication_year',picked.metadata->'publication_year'))
                             FROM {hydration} WITH ORDINALITY h
                             LEFT JOIN rkb_v4.source_catalog c
                               ON c.source_id=h.source_id AND c.source_revision=h.revision
+                            LEFT JOIN LATERAL (
+                              SELECT k.metadata FROM rkb_v4.source_catalog_corrections k
+                              WHERE k.source_id=h.source_id ORDER BY k.accepted_sequence DESC LIMIT 1
+                            ) corrected ON true
+                            CROSS JOIN LATERAL (SELECT coalesce(corrected.metadata,c.metadata) AS metadata) picked
                             ORDER BY h.ordinality""", (ids,) if source_ids is None else (ids,source_ids))
                     rows = await cursor.fetchall()
                     if observe and (len(rows) != len(ids) or {row[0] for row in rows} != set(ids)):

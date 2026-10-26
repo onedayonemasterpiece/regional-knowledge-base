@@ -14,7 +14,6 @@ from regional_knowledge.kaggle_search import _PENDING_ENCODERS
 import pytest
 
 from regional_knowledge.kaggle_search import fused_search, vector_literal
-from test_kaggle_query import env, database, connect
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "rkb-v4-fixture-20261020"
@@ -131,7 +130,7 @@ async def test_input_and_connection_bounds():
         raise AssertionError("invalid input reached encoder")
 
     for arguments in ({"top_k": True}, {"top_k": 1.5}, {"candidate_budget": True},
-                      {"candidate_budget": 10.0}, {"top_k": 11}):
+                      {"candidate_budget": 10.0}, {"top_k": 6}):
         with pytest.raises(ValueError):
             await fused_search(FixtureConnection(), "fixture", encode=encode, **arguments)
     for query in ("x" * 1001, "", None):
@@ -234,52 +233,6 @@ EXPLAIN (ANALYZE, BUFFERS)
 SELECT 'fixture_search_checks_passed';
 ROLLBACK;
 """
-
-
-@pytest.mark.skipif(not (os.environ.get('RKB_PG_DRIVER_FIXTURE_SOCKET') or
-                           os.environ.get('RKB_KAGGLE_TEST_DSN')), reason='disposable PG17 required')
-@pytest.mark.asyncio
-async def test_hydrate_30_acceptance_union_and_top_ten(env):
-    catalog_database = env['admin']
-    from regional_knowledge.kaggle_protocol import QueryFilters
-    from regional_knowledge.kaggle_search import acceptance_search
-    source, other = '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000004'
-    vector_b = '[' + ','.join(['0', '1'] + ['0'] * 1022) + ']'
-    async with catalog_database.transaction():
-        await catalog_database.execute((ROOT / 'sql/kaggle/043_hydrate_window.sql').read_text(), prepare=False)
-        await catalog_database.execute("INSERT INTO rkb_v4.sources VALUES (%s,'second',true,false)", (other,))
-        await catalog_database.execute("INSERT INTO rkb_v4.revisions VALUES (%s,1)", (other,))
-        await catalog_database.execute("INSERT INTO rkb_v4.active_revision VALUES (%s,1)", (other,))
-        await catalog_database.execute("""
-            INSERT INTO rkb_v4.passage_search
-                (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
-            SELECT ('10000000-0000-0000-0000-' || lpad(n::text,12,'0'))::uuid,
-                CASE WHEN n<=15 THEN %s::uuid ELSE %s::uuid END,1,n,
-                'pages ' || n, CASE WHEN n<=15 THEN 'other' ELSE 'needle' END,
-                'simple','pg_catalog.simple',
-                CASE WHEN n<=15 THEN %s::vector ELSE %s::vector END
-            FROM generate_series(2,30) g(n)
-        """, (source, other, vector_literal([1] + [0] * 1023), vector_b))
-        ids = (await (await catalog_database.execute(
-            'SELECT array_agg(passage_id ORDER BY passage_id) FROM rkb_v4.passage_search')).fetchone())[0]
-        for sql, args in [
-            ('SELECT count(*) FROM rkb_v4.hydrate(%s::uuid[])', (ids,)),
-            ('SELECT count(*) FROM rkb_v4.hydrate_scoped(%s::uuid[],%s::uuid[])', (ids, [source, other])),
-        ]:
-            assert (await (await catalog_database.execute(sql, args)).fetchone())[0] == 30
-    conn = await connect()
-    try:
-        async def encode(_): return [1] + [0] * 1023
-        filters = QueryFilters(source_ids=(source, other), kinds=('source',))
-        normal = await fused_search(conn, 'needle', encode=encode, filters=filters, top_k=10)
-        assert len(normal.evidence) == 10
-        diagnostic = await acceptance_search(conn, 'needle', encode=encode, filters=filters,
-            timeout_seconds=2, snapshot_guard=None, snapshot_finish=None)
-        union = {p for branch in diagnostic.branch_ranks for p in branch}
-        assert 10 < len(union) <= 30
-        assert {e.passage_id for e in diagnostic.evidence} == union
-    finally:
-        await conn.close()
 
 
 @pytest.mark.skipif(os.environ.get("RKB_PG_SEARCH_FIXTURE_CONTAINER") != CONTAINER,

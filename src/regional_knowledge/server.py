@@ -19,7 +19,7 @@ from mcp.server.auth.settings import (
     RevocationOptions,
 )
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, ValidationError
 
 from starlette.routing import Route
 from mcp.server.auth.routes import build_metadata, cors_middleware
@@ -265,6 +265,29 @@ def _book_mcp_error_boundary(handler):
     return call
 
 
+def _book_argument_error(error: ValidationError) -> ToolError:
+    """SDK argument validation runs before the registered book error boundary."""
+    from .stage_file import StageFile
+    schema = StageFile.model_json_schema()
+    fields = {'command', 'cursor', 'batch_size', 'file', 'metadata',
+              'source_import', 'telegram_original', 'document_id'}
+    for model in (schema, *schema.get('$defs', {}).values()):
+        fields.update(model.get('properties', {}))
+    hints = []
+    for issue in error.errors(include_input=False, include_url=False)[:2]:
+        path = '.'.join(str(p) if (type(p) is int and 0 <= p <= 9999) or
+                        (type(p) is str and p in fields) else '*'
+                        for p in issue['loc'][:8])
+        kind = issue['type']
+        if re.fullmatch(r'[a-z][a-z0-9_]{0,47}', kind) is None:
+            kind = 'invalid_input'
+        maximum = issue.get('ctx', {}).get('max_length')
+        bound = f':max_length={maximum}' if type(maximum) is int and 0 <= maximum <= 10**7 else ''
+        hints.append(f'{path}:{kind}{bound}'[:96])
+    return ToolError(json.dumps(dict(status='invalid_query', reason='invalid_input',
+        error_class='validation', hints=hints), separators=(',', ':')))
+
+
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
     resource = (
         resource_url
@@ -335,7 +358,16 @@ class KnowledgeMCPServer(MCPServer):
             raise ToolError('{"status":"unavailable","reason":"tool_not_supported_in_profile"}')
         from .read_issuance import capture_read_output, bind_request_output
         with capture_read_output() as calls:
-            result = await super().call_tool(name, arguments, context)
+            try:
+                result = await super().call_tool(name, arguments, context)
+            except ToolError as exc:
+                # An output/backend crash can also wrap ValidationError: only
+                # the SDK's exact anticipated argument error proves no dispatch.
+                if (name not in {'book_ingest', 'book_pages'} or type(exc) is not ToolError
+                        or type(exc.__cause__) is not ValidationError):
+                    raise
+                logging.getLogger(__name__).info('book_tool_rejected tool=%s reason=invalid_input', name)
+                raise _book_argument_error(exc.__cause__) from None
             if calls:
                 if name == 'fetch':
                     # FastMCP wraps this typed union in {result: ...}.
@@ -600,6 +632,13 @@ def build_server(
             "without reimporting, re-chunking or re-embedding the source. " +
             "Never infer that a source is public." + _answer_instructions
         ) if selected!='kaggle_source' else (
+            "Mandatory import checklist:\n"
+            "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
+            "2. Never resend an accepted page; continue from next_cursor.\n"
+            "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
+            "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
+            "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
+            "6. For next_action=wait, call status; when told to retry stage, resend the identical stage, not a new operation.\n"
             "The Kaggle native importer accepts an owner-authorized PDF/DjVu original up to 128 MiB and 2500 physical pages, subject to verified original intake. Ordinary owner-only start is shared-searchable without a mandatory per-book public_rights declaration; the owner's legal attestation is retained. Authentication does not grant another actor access to private Case, original or scan proof. Use exactly the ordinary workflow: book_ingest(start) with the attached original, then book_pages (default 1 page, maximum requested 4; the renderer may return just one actual ImageContent), model visual/source review, book_ingest(stage) with up to four reviewed pages and source passage evidence (page_id and region_key with a current chunk_key or an already accepted chunk_id), repeat with returned cursor/next_action, then book_ingest(finalize) only to record that reading ended. One accepted native text packet becomes searchable by registered search, knowledge_search or fetch after its actual apply, not merely after a pending stage request. There is no whole-book activation or extra validation step before the first page can be found. A rejected page can be corrected and retried in the same ingestion; an independently accepted earlier page remains searchable. Optional story, fact, illustration, map and POI enrichment may remain pending or reject without rolling back accepted source text. "
             "Build semantically coherent source chunks with model-chosen boundaries at changes of thought, typically about 256 BGE tokens (roughly 800-1000 characters when appropriate; a guideline rather than a hard limit), within the existing exact token bound; a printed paragraph, physical page or stage packet is not a mandatory chunk boundary. Preserve whole sentences: split a long or visually unbroken paragraph at a complete sentence when the idea changes, using exact span_refs and source_text offsets; combine short adjacent paragraphs about the same idea into one appropriately sized chunk using source-backed region_refs or span_refs. Read continuing text with book_pages; one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages, not one oversized chunk. If a completed thought spans pages and fits current limits, one chunk may use ordered region_refs OR exact span_refs from both real page_ids and source regions; preserve original page/region/span provenance and never invent unseen continuation or force a whole packet into one chunk. "
             "If book_ingest(status) returns next_action=continue_tail, use its tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end; start/end are exact Unicode codepoint offsets in the original source region) for the contiguous uncovered body suffix on the last accepted packet page. Read the next page with book_pages at next_cursor; the model then chooses small, sentence-complete semantic chunks with ordered exact span_refs or region_refs across the accepted prior tail and newly issued, reviewed page(s), retaining prior page/region/span provenance. For span_refs supply page_id, region_key, start and end; the server derives source_text_sha256 from the known region text, so the model must not calculate or supply a hash. Stage only newly issued, visually reviewed page(s) in a 1-4-page packet: do not re-stage the accepted prior page, split sentences, invent missing text, use system-chosen split/merge boundaries, or finalize while status still indicates continue_tail. "
@@ -1269,7 +1308,7 @@ def build_server(
             return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
-                max_evidence=max(1, min(max_evidence, 10)),
+                max_evidence=max(1, min(max_evidence, 5)),
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
             )))

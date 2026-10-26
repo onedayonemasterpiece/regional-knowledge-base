@@ -212,6 +212,20 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
             (canonical(wrong),json.dumps(dict(second.ids)),
              json.dumps(dict(second.expected_revisions)),TIME))).fetchone())[0]
         assert ok is False
+    # Search and rendered titles must use the last accepted correction, not the immutable original.
+    from types import SimpleNamespace
+    from regional_knowledge.kaggle_search import fused_search
+    from regional_knowledge.kaggle_public_backend import _evidence_title
+    async def encode(_): return [1.] + [0.] * 1023
+    search=await fused_search(db,'Omega',encode=encode,top_k=1)
+    assert len(search.evidence)==1
+    hit=search.evidence[0]
+    assert hit.source_provenance['catalog']['title']=='Omega title corrected'
+    title=_evidence_title(SimpleNamespace(id=hit.passage_id,
+        metadata=SimpleNamespace(source_provenance=hit.source_provenance,locator=hit.locator)))
+    assert title.startswith('Corrected author. Omega title corrected')
+    assert 'Alpha title corrected' not in title
+
     # Later accepted corrections maintain the projection without replaying
     # the migration. The existing 16 KiB correction envelope stays supported.
     long_author='A'*8100

@@ -63,7 +63,7 @@ def test_query_roundtrip_default_limits_and_immutable_authority_projection():
     {"operation_version": True},
     {"query": "x" * 1001}, {"query": " "}, {"deadline_ms": 0},
     {"deadline_ms": True}, {"deadline_ms": 1.5}, {"deadline_ms": float("inf")},
-    {"connection_generation": 0}, {"min_data_seq": -1}, {"evidence_limit": 11},
+    {"connection_generation": 0}, {"min_data_seq": -1}, {"evidence_limit": 6},
     {"evidence_limit": "3"}, {"filters": {"arbitrary_sql": "SELECT *"}},
     {"filters": {"source_ids": []}},
     {"filters": {"source_ids": [str(i) for i in range(33)]}},
@@ -77,16 +77,6 @@ def test_query_rejects_unbounded_unknown_or_coerced_input(update):
     payload.update(update)
     with pytest.raises(ValueError):
         decode_envelope(wire(payload))
-
-
-def test_ten_evidence_allowed_but_default_three():
-    payload = query_payload()
-    payload['evidence_limit'] = 10
-    assert decode_envelope(wire(payload)).evidence_limit == 10
-    ten = tuple(item(id=f'item-{i}') for i in range(10))
-    assert len(decode_envelope(encode_envelope(result(evidence=ten))).evidence) == 10
-    with pytest.raises(ValueError):
-        result(evidence=ten + (item(id='item-10'),))
 
 
 def test_query_unicode_cap_and_exact_bytes_no_truncation():
@@ -179,7 +169,7 @@ def test_total_text_and_response_byte_caps_are_independent():
     with pytest.raises(ValueError, match="response too large"):
         encode_envelope(large)
     with pytest.raises(ValueError):
-        result(evidence=tuple(item(id=str(i)) for i in range(11)))
+        result(evidence=tuple(item(id=str(i)) for i in range(6)))
 
 
 def test_cancel_has_identity_and_does_not_claim_compute_termination():
