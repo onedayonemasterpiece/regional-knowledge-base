@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import ValidationError
 
 from regional_knowledge.contracts import BookIngestOutput, Principal
 from regional_knowledge.kaggle_importer import failure
@@ -115,6 +116,9 @@ async def test_expected_domain_toolerror_preserves_actual_status_reason(
     (OSError(_SECRET), "unknown", "transport_unavailable", "transport"),
     (RuntimeError(_SECRET), "unknown", "internal_error", "internal"),
     (ValueError(_SECRET), "unknown", "internal_error", "internal"),
+    (ValidationError.from_exception_data('BackendOutput', [
+        {'type':'string_type','loc':('private',),'input':_SECRET}
+    ]), "unknown", "internal_error", "internal"),
     (ToolError(_SECRET), "unknown", "domain_error", "domain"),
 ])
 async def test_untrusted_exception_never_leaks_or_becomes_final_rejection(
@@ -319,3 +323,31 @@ async def test_backend_runtimeerror_with_same_auth_words_is_still_unknown(regist
     assert await error_envelope(server, tool) == {
         "status": "unknown", "reason": "internal_error", "error_class": "internal"}
     assert len(backend.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad_field,maximum', [('layout_kind',80),('source_text',8000)])
+async def test_registered_argument_validation_redacts_payload_before_dispatch(
+        registered_books,bad_field,maximum,caplog):
+    server,backend=registered_books
+    marker='PRIVATE_BOOK_525'
+    region={'region_key':'body','kind':'body','bbox':{'left':0,'top':0,'right':100,'bottom':100},
+            'reading_order':0,'source_text':marker}
+    page={'page_id':_INGESTION,'physical_page_index':0,'layout_kind':'columns','regions':[region]}
+    target=page if bad_field=='layout_kind'else region
+    target[bad_field]=marker+'x'*(maximum+1-len(marker))
+    args={'command':'stage','ingestion_id':_INGESTION,'pages':[page]}
+    with pytest.raises(ToolError)as caught:
+        await server.call_tool('book_ingest',args)
+    raw=str(caught.value)
+    assert marker not in raw and marker not in caplog.text
+    assert 'input_value'not in raw and 'source_text\":'not in raw
+    envelope=json.loads(raw[raw.index('{'):raw.rindex('}')+1])
+    assert envelope['status']=='invalid_query'and envelope['error_class']=='validation'
+    expected='pages.0.'+('regions.0.'if bad_field=='source_text'else'')+bad_field
+    assert envelope['hints']==[f'{expected}:string_too_long:max_length={maximum}']
+    assert backend.calls==[]
+    target[bad_field]=marker if bad_field=='source_text'else'columns'
+    result=await server.call_tool('book_ingest',args)
+    assert not result.is_error
+    assert backend.calls==[('book_ingest','stage')]

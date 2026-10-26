@@ -19,7 +19,7 @@ from mcp.server.auth.settings import (
     RevocationOptions,
 )
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, ValidationError
 
 from starlette.routing import Route
 from mcp.server.auth.routes import build_metadata, cors_middleware
@@ -265,6 +265,29 @@ def _book_mcp_error_boundary(handler):
     return call
 
 
+def _book_argument_error(error: ValidationError) -> ToolError:
+    """SDK argument validation runs before the registered book error boundary."""
+    from .stage_file import StageFile
+    schema = StageFile.model_json_schema()
+    fields = {'command', 'cursor', 'batch_size', 'file', 'metadata',
+              'source_import', 'telegram_original', 'document_id'}
+    for model in (schema, *schema.get('$defs', {}).values()):
+        fields.update(model.get('properties', {}))
+    hints = []
+    for issue in error.errors(include_input=False, include_url=False)[:2]:
+        path = '.'.join(str(p) if (type(p) is int and 0 <= p <= 9999) or
+                        (type(p) is str and p in fields) else '*'
+                        for p in issue['loc'][:8])
+        kind = issue['type']
+        if re.fullmatch(r'[a-z][a-z0-9_]{0,47}', kind) is None:
+            kind = 'invalid_input'
+        maximum = issue.get('ctx', {}).get('max_length')
+        bound = f':max_length={maximum}' if type(maximum) is int and 0 <= maximum <= 10**7 else ''
+        hints.append(f'{path}:{kind}{bound}'[:96])
+    return ToolError(json.dumps(dict(status='invalid_query', reason='invalid_input',
+        error_class='validation', hints=hints), separators=(',', ':')))
+
+
 def _transport_security(resource_url: str | None = None) -> TransportSecuritySettings:
     resource = (
         resource_url
@@ -335,7 +358,16 @@ class KnowledgeMCPServer(MCPServer):
             raise ToolError('{"status":"unavailable","reason":"tool_not_supported_in_profile"}')
         from .read_issuance import capture_read_output, bind_request_output
         with capture_read_output() as calls:
-            result = await super().call_tool(name, arguments, context)
+            try:
+                result = await super().call_tool(name, arguments, context)
+            except ToolError as exc:
+                # An output/backend crash can also wrap ValidationError: only
+                # the SDK's exact anticipated argument error proves no dispatch.
+                if (name not in {'book_ingest', 'book_pages'} or type(exc) is not ToolError
+                        or type(exc.__cause__) is not ValidationError):
+                    raise
+                logging.getLogger(__name__).info('book_tool_rejected tool=%s reason=invalid_input', name)
+                raise _book_argument_error(exc.__cause__) from None
             if calls:
                 if name == 'fetch':
                     # FastMCP wraps this typed union in {result: ...}.
