@@ -270,7 +270,7 @@ async def test_hydrate_30_acceptance_union_and_top_ten(env):
     conn = await connect()
     try:
         async def encode(_): return [1] + [0] * 1023
-        filters = QueryFilters(source_ids=(source, other))
+        filters = QueryFilters(source_ids=(source, other), kinds=('source',))
         normal = await fused_search(conn, 'needle', encode=encode, filters=filters, top_k=10)
         assert len(normal.evidence) == 10
         diagnostic = await acceptance_search(conn, 'needle', encode=encode, filters=filters,
