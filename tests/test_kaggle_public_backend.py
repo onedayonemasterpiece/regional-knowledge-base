@@ -142,6 +142,7 @@ async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_an
     dispatched = await work(s)
     assert dispatched.query.filters.source_ids == ('00000000-0000-0000-0000-000000000001',)
     assert dispatched.query.filters.kinds == ('source',)
+    assert dispatched.query.evidence_limit == 3
     assert dispatched.query.min_data_seq == 5
     assert dispatched.query.actor.person_id == s.auth.p.other.subject
     await settle(s, dispatched)
@@ -152,6 +153,9 @@ async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_an
     assert rows[0].id == 'passage:/1' and rows[0].url == 'urn:rkb:passage:passage%3A%2F1'
     if evidence:
         assert rows[0].text == 'Evidence' and len(rows[0].metadata['source_revisions']) == 2
+    else:
+        assert rows[0].text == 'Evidence' and rows[0].incomplete is False
+        assert rows[0].next_id is None and len(rows[0].metadata['source_revisions']) == 2
     assert len(calls) == 1 and not s.gate.released
     authority = s.gate.permits[0].authority
     assert await s.auth.resolver.recheck(authority)

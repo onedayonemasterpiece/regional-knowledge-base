@@ -426,6 +426,11 @@ class SearchResult(BaseModel):
     id: str
     title: str
     url: str
+    # Optional to preserve older search adapters; Kaggle returns all four.
+    text: str | None = None
+    incomplete: bool | None = None
+    next_id: str | None = None
+    metadata: dict[str, Any] | None = None
     ranking_signals: list[dict[str, Any]] = Field(default_factory=list)
 
 

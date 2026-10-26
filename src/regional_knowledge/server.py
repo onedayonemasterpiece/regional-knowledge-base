@@ -1318,9 +1318,10 @@ def build_server(
     @mcp.tool(
         title="Search regional knowledge",
         description=(
-            "Search accessible regional books and journals. Returns citable IDs and URLs. "
-            "When Kaggle is cold, returns pending with startup ref; check startup_status "
-            "and retry as a NEW read after ready. Use fetch for complete evidence."
+            "Search accessible regional books and journals. Results include citable IDs/URLs; "
+            "source-backed hits include bounded text, provenance, incomplete and next_id. "
+            "Use fetch(id=next_id) to continue an incomplete hit; fetch also reads neighboring pages. "
+            "If Kaggle is cold, check startup_status and retry as a NEW read after ready."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )

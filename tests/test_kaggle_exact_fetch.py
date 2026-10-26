@@ -86,8 +86,66 @@ def test_search_evidence_and_exact_fetch_share_catalog_title_without_changing_lo
     assert thin.title == evidence.title == fetched.title == title
     assert thin.id == evidence.id == fetched.id == passage_fetch_id(loc)
     assert thin.url == evidence.url == fetched.url == 'urn:rkb:passage:' + PASSAGE
-    assert fetched.text == evidence.text == row.text
-    assert fetched.metadata['source_revisions'] == [loc.source.model_dump()]
+    assert fetched.text == evidence.text == thin.text == row.text
+    assert thin.incomplete is False and thin.next_id is None
+    assert thin.metadata['continuation_complete'] is True
+    assert thin.metadata['source_provenance'] == row.metadata.source_provenance
+    assert thin.metadata['source_revisions'] == fetched.metadata['source_revisions'] == [loc.source.model_dump()]
+
+
+def test_inline_search_k3_marks_partial_and_exposes_exact_fetch_next_id():
+    from test_kaggle_protocol import item
+    loc = locator()
+    metadata = {'locator': 'pages 13', 'citation': 'Source, page 13',
+        'source_provenance': {'catalog': {'title': 'Book', 'language': 'de'}}}
+    dependencies = {'source_ids': (SOURCE,), 'source_revisions': (loc.source,),
+        'variant_refs': (), 'grant_refs': ()}
+    continued = locator(text_offset=8000, bibliography_offset=1024)
+    partial = item(kind='source', id=PASSAGE, text='x' * 8000, metadata=metadata,
+        dependencies=dependencies, text_form='excerpt', continuation='exact-bounded',
+        source_continuation=continued, continuation_complete=False)
+    complete = item(kind='source', id=PASSAGE, text='short', metadata=metadata,
+        dependencies=dependencies)
+    search = QueryResult(request_id='inline', connection_generation=4, turn_generation=9,
+        status='ok', mode='hybrid', evidence=(partial, complete, complete),
+        observed_data_seq=12, observed_projection_seq=12,
+        observed_visibility_epoch=loc.visibility_epoch,
+        observed_database_generation=loc.database_generation)
+    rendered = KaggleSourceBackend._render(search, evidence=False,
+        attempt=ReadAttempt('c' * 32)).model_dump(mode='json')
+    assert len(rendered['results']) == 3  # S2a does not expand K.
+    first, second, third = rendered['results']
+    assert first['text'] == 'x' * 8000 and first['incomplete'] is True
+    assert first['id'] == passage_fetch_id(loc)
+    assert parse_passage_fetch_id(first['next_id']) == continued
+    assert first['metadata']['citation'] == metadata['citation']
+    assert first['metadata']['source_provenance'] == metadata['source_provenance']
+    assert first['metadata']['continuation_complete'] is False
+    assert second['text'] == third['text'] == 'short'
+    assert second['incomplete'] is False and second['next_id'] is None
+    assert second['metadata']['continuation_complete'] is True
+
+
+def test_inline_search_without_continuation_keeps_incomplete_hit_and_other_results():
+    from test_kaggle_protocol import item
+    loc = locator()
+    dependencies = {'source_ids': (SOURCE,), 'source_revisions': (loc.source,),
+        'variant_refs': (), 'grant_refs': ()}
+    partial = item(kind='source', id=PASSAGE, text='partial', text_form='excerpt',
+        continuation='legacy-unfetchable', dependencies=dependencies)
+    complete = item(kind='source', id=PASSAGE, text='complete', dependencies=dependencies)
+    search = QueryResult(request_id='inline', connection_generation=4, turn_generation=9,
+        status='ok', mode='hybrid', evidence=(partial, complete), observed_data_seq=12,
+        observed_projection_seq=12, observed_visibility_epoch=loc.visibility_epoch,
+        observed_database_generation=loc.database_generation)
+    rows = KaggleSourceBackend._render(search, evidence=False,
+        attempt=ReadAttempt('d' * 32)).results
+    assert len(rows) == 2  # One uncontinuable excerpt must not drop the whole search.
+    assert rows[0].text == 'partial' and rows[0].incomplete is True
+    assert rows[0].next_id is None and rows[0].metadata['continuation_complete'] is False
+    assert rows[0].id == passage_fetch_id(loc)  # fetch(id) remains available.
+    assert rows[1].text == 'complete' and rows[1].incomplete is False
+    assert rows[1].next_id is None and rows[1].metadata['continuation_complete'] is True
 
 
 @pytest.mark.asyncio
