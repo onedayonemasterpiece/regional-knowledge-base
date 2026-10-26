@@ -90,3 +90,5 @@ The official Slack Socket Mode client uses at most one second for its WebSocket 
 ### Book tool argument errors
 
 Server-side MCP argument validation for `book_ingest` and `book_pages` returns `invalid_query/invalid_input`, `error_class=validation` and bounded field/type/length hints without input values. This precedes backend dispatch; it does not change import limits or reinterpret backend/output failures as rejected input. A client validating the published JSON Schema before sending HTTP must redact its own diagnostics too: formatting an outer `anyOf` error can otherwise include the complete source packet. The server boundary cannot sanitize an exception created entirely in that client.
+
+On restart, source configuration may advance to the same Dataset/stream’s existing verified checkpoint. Selection uses the stored publication receipt and checks the covered manifest’s hash, size, database generation and applied sequence. It does not list external latest versions, download PG archives or relax restore validation. A corrupt or uncovered manifest fails closed; a newer explicit pin is never downgraded.

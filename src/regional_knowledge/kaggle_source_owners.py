@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import stat
@@ -22,6 +23,47 @@ from .read_authority import ReadAuthority
 from .recovery_journal import RecoveryJournal
 from .recovery_s3 import S3ConditionalRecoveryStore
 from .queue_writer import QueueWriterAuthority
+
+
+def _verified_restart_restore(queue, restore, stream):
+    """Resume only a checkpoint already verified by this stream's publisher."""
+    from dataclasses import replace
+    from .kaggle_dataset_base import DatasetCheckpoint
+    from .recovery_journal import JournalConflict, ObjectRef
+
+    initial=restore.dataset_checkpoint
+    if initial is None:return restore
+    prefix='recovery/v1/'+hashlib.sha256(stream.encode()).hexdigest()+'/'
+    storage=hashlib.sha256(json.dumps(['kaggle-dataset',initial.owner_slug,
+        initial.dataset_slug,prefix],separators=(',',':')).encode()).hexdigest()
+    with queue.connect(write=False) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rkb_dataset_recovery_store'").fetchone():
+            return restore
+        row=db.execute('SELECT latest_json FROM rkb_dataset_recovery_store WHERE storage=?',(storage,)).fetchone()
+        if row is None or not row['latest_json']:return restore
+        checkpoint=DatasetCheckpoint.from_wire(json.loads(row['latest_json']))
+        if (checkpoint.owner_slug,checkpoint.dataset_slug,checkpoint.database_generation)!=(
+                initial.owner_slug,initial.dataset_slug,initial.database_generation):
+            raise JournalConflict('verified_restart_checkpoint_identity_changed')
+        if (checkpoint.dataset_version<=initial.dataset_version
+                or checkpoint.base_sequence<initial.base_sequence):return restore
+        key=prefix+'snapshots/manifests/'+checkpoint.manifest.sha256
+        manifest=db.execute('SELECT data,covered_version FROM rkb_dataset_recovery_objects '
+            'WHERE storage=? AND key=?',(storage,key)).fetchone()
+    if (manifest is None or manifest['covered_version']!=checkpoint.dataset_version
+            or len(manifest['data'])!=checkpoint.manifest.size
+            or hashlib.sha256(manifest['data']).hexdigest()!=checkpoint.manifest.sha256):
+        raise JournalConflict('verified_restart_manifest_unavailable')
+    document=json.loads(manifest['data'])
+    if (document['database_generation']!=checkpoint.database_generation
+            or document['applied_sequence']!=checkpoint.base_sequence):
+        raise JournalConflict('verified_restart_manifest_cursor_changed')
+    resumed=replace(restore,dataset_checkpoint=checkpoint,
+        manifest=ObjectRef(key,checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence),
+        versions=document['versions'])
+    logging.getLogger(__name__).info('source_checkpoint_selected previous_version=%s dataset_version=%s base_sequence=%s origin=verified_store',
+        initial.dataset_version,checkpoint.dataset_version,checkpoint.base_sequence)
+    return resumed
 
 
 def compose_source_service(*,queue,oauth_provider,participants,object_store,stream,registry,
@@ -238,6 +280,7 @@ def configured_source_service():
     if 'source_restore' in value:
         from .kaggle_restore_startup import SourceRestoreConfig
         restore=SourceRestoreConfig.from_wire(value['source_restore'])
+        restore=_verified_restart_restore(queue,restore,value['stream'])
     snapshot=None
     if 'source_snapshot' in value:
         from .kaggle_snapshot_startup import SourceSnapshotConfig
