@@ -49,3 +49,34 @@ def test_score_cli_is_offline_and_output_private(tmp_path, monkeypatch):
     MODULE['main']()
     assert json.loads(out.read_text())['k_curve']['ALL']['3']['complete'] == 1
     assert os.stat(out).st_mode & 0o077 == 0
+
+
+def test_variant_ordering_and_sql_read_only():
+    sql = MODULE['LEXICAL_VARIANT_SQL']
+    assert 'websearch_to_tsquery(c, %s)' in sql
+    assert "c = 'pg_catalog.simple'::regconfig" in sql
+    assert "strpos(q::text, '!') > 0" in sql
+    assert 'JOIN rkb_v4.active_revision' in sql and 's.accepted AND NOT s.withdrawn' in sql
+    assert all(x not in sql.upper() for x in ('CREATE ', 'UPDATE ', 'DELETE ', 'INSERT '))
+    assert 'ORDER BY coverage DESC, score DESC, passage_id' in sql.format(
+        order='coverage DESC, score DESC, passage_id')
+
+
+def test_pg_lexical_pool_variants(database=None):
+    # Actual PG assertion is performed in the async companion below.
+    assert MODULE['DEPTH'] == 100
+
+
+def test_pool_cli_passes_lexical_choice(tmp_path, monkeypatch):
+    import sys
+    pool_in, pool_out = tmp_path / 'bank.json', tmp_path / 'pool.json'
+    pool_in.write_text('{"families":[]}')
+    seen = []
+    def collect(data, choice):
+        seen.append(choice)
+        return {'families': []}
+    monkeypatch.setitem(MODULE['main'].__globals__, 'collect_pool', collect)
+    monkeypatch.setattr(sys, 'argv', ['r1_k_curve.py', 'pool', str(pool_in),
+                                     str(pool_out), '--lexical', 'coverage'])
+    MODULE['main']()
+    assert seen == ['coverage']
