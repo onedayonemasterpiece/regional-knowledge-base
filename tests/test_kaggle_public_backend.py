@@ -140,20 +140,21 @@ async def release(s, value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('evidence', [False, True])
-async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_and_correlates(target, evidence):
+@pytest.mark.parametrize('top_k', [3, 10])
+async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_and_correlates(target, evidence, top_k):
     s = target
     async def read():
         with capture_read_output() as calls:
-            result = await (s.backend.search_evidence('synthetic query', s.principal,
+            result = await (s.backend.search_evidence('synthetic query', s.principal, max_evidence=top_k,
                 document_ids=['00000000-0000-0000-0000-000000000001'])
-                if evidence else s.backend.search('synthetic query', s.principal,
+                if evidence else s.backend.search('synthetic query', s.principal, top_k=top_k,
                     document_ids=['00000000-0000-0000-0000-000000000001']))
         return result, calls
     task = asyncio.create_task(read())
     dispatched = await work(s)
     assert dispatched.query.filters.source_ids == ('00000000-0000-0000-0000-000000000001',)
     assert dispatched.query.filters.kinds == ('source',)
-    assert dispatched.query.evidence_limit == 3
+    assert dispatched.query.evidence_limit == top_k
     assert dispatched.query.min_data_seq == 5
     assert dispatched.query.actor.person_id == s.auth.p.other.subject
     await settle(s, dispatched)

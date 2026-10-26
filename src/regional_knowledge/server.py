@@ -1301,14 +1301,14 @@ def build_server(
         )
         async def knowledge_search(
             query: str,
-            max_evidence: int = 3,
+            max_evidence: Annotated[int, Field(ge=1, le=10)] = 3,
             main_job_id: str | None = None,
             document_ids: list[str] | None = None,
         ) -> EvidenceSearchOutput:
             return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
                 query.strip(),
                 _principal(),
-                max_evidence=max(1, min(max_evidence, 5)),
+                max_evidence=max_evidence,
                 **({'main_job_id': main_job_id} if main_job_id else {}),
                 **({'document_ids': document_ids} if document_ids is not None else {}),
             )))
@@ -1335,9 +1335,12 @@ def build_server(
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
-    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None, document_ids: list[str] | None = None) -> SearchOutput:
+    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None,
+                     document_ids: list[str] | None = None, top_k: Annotated[int, Field(ge=1, le=10)] = 3) -> SearchOutput:
         options={}
         if document_ids is not None:options['document_ids']=document_ids
+        if selected=='kaggle_source':options['top_k']=top_k
+        elif top_k!=3:raise ToolError('{"status":"unavailable","reason":"unsupported_target_search_option"}')
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
         return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))

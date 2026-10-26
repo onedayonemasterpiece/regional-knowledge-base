@@ -209,7 +209,7 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                     budget = 24000
                     evidence = []
                     for hit in searched.evidence:
-                        # Share finite text budget across remaining items; preserve all<=5.
+                        # Share finite text budget across remaining items; preserve all<=10.
                         per_item = min(8000, budget // (len(searched.evidence) - len(evidence)))
                         if query.filters.kinds == ("story",):
                             from .kaggle_story_read import story_item

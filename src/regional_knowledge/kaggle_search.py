@@ -110,8 +110,8 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
             or len(query.encode("utf-8")) > 4096):
         raise ValueError("query requires 1..1000 characters and <=4096 UTF-8 bytes")
     if (type(top_k) is not int or type(candidate_budget) is not int
-            or not 1 <= top_k <= 5 or not top_k <= candidate_budget <= 200):
-        raise ValueError("require integer 1 <= top_k <= 5 and top_k <= budget <= 200")
+            or not 1 <= top_k <= 10 or not top_k <= candidate_budget <= 200):
+        raise ValueError("require integer 1 <= top_k <= 10 and top_k <= budget <= 200")
     if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
             or not 0 < timeout_seconds <= 2):
         raise ValueError("deadline must be within 2 seconds")

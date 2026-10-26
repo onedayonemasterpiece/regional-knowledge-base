@@ -68,9 +68,12 @@ class ExpertEvidenceReceiver:
         self.authority = backend.read_authority
 
     def _input(self, payload):
-        if (type(payload) is not dict or set(payload)!={
+        if (type(payload) is not dict or not {
                 'codec','request_id','generation','execution_token',
-                'min_data_seq','deadline_monotonic'} or payload['codec']!=CODEC):
+                'min_data_seq','deadline_monotonic'}.issubset(payload)
+                or set(payload)-{'codec','request_id','generation','execution_token',
+                                 'min_data_seq','deadline_monotonic','top_k'}
+                or payload['codec']!=CODEC):
             raise ValueError('exact delegated request required')
         if (type(payload['request_id']) is not str
                 or not 1<=len(payload['request_id'])<=128
@@ -81,7 +84,8 @@ class ExpertEvidenceReceiver:
                 or not 0<=payload['min_data_seq']<2**63
                 or type(payload['deadline_monotonic']) not in (int,float)
                 or not math.isfinite(payload['deadline_monotonic'])
-                or payload['deadline_monotonic']>time.monotonic()+2.05):
+                or payload['deadline_monotonic']>time.monotonic()+2.05
+                or type(payload.get('top_k',3)) is not int or not 1<=payload.get('top_k',3)<=10):
             raise ValueError('invalid delegated request bounds')
         return ReadContext(payload['request_id'],payload['generation'],
                            payload['min_data_seq'],payload['deadline_monotonic'])
@@ -140,7 +144,7 @@ class ExpertEvidenceReceiver:
                         turn_generation=context.turn_generation,
                         min_data_seq=context.min_data_seq,
                         deadline_monotonic=context.deadline_monotonic,
-                        destination=destination,limit=3))
+                        destination=destination,limit=value.get('top_k',3)))
                     if len(calls)!=1:
                         raise RuntimeError('retained source provenance required')
                     # The ASGI issuance middleware runs after the handler's

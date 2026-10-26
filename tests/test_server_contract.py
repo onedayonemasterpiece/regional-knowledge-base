@@ -181,3 +181,16 @@ async def test_rejected_request_still_records_idle_activity(name):
     with pytest.raises((ToolError,ValueError)):
         await server.call_tool(name,{})
     assert calls==[name]
+
+
+@pytest.mark.asyncio
+async def test_search_k_ten_is_declared_in_full_and_live_mcp_without_default_change(monkeypatch):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    for profile, name, field_name in (("full", "search", "top_k"),
+                                      ("live", "knowledge_search", "max_evidence")):
+        tools = {tool.name: tool for tool in await build_server(profile=profile).list_tools()}
+        tool = tools[name]
+        field = tool.input_schema["properties"][field_name]
+        assert (field["minimum"], field["maximum"], field["default"]) == (1, 10, 3)
+        if profile == "full":
+            assert "For overview questions, top_k can be increased up to 10." not in tool.description

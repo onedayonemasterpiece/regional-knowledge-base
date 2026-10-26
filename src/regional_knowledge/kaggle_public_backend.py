@@ -721,10 +721,10 @@ class KaggleSourceBackend:
         finally:
             if authority is not None:self.read_authority.release(authority)
 
-    async def search(self, query, principal, *, document_ids=None, main_job_id=None, aliases=None):
+    async def search(self, query, principal, *, document_ids=None, main_job_id=None, aliases=None, top_k=3):
         if main_job_id or aliases:
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_search_option"}')
-        return await self._search(query, principal, evidence=False, source_ids=document_ids)
+        return await self._search(query, principal, evidence=False, source_ids=document_ids, limit=top_k)
 
     async def search_evidence(self, query, principal, *, max_evidence=3, document_ids=None, main_job_id=None):
         if main_job_id:

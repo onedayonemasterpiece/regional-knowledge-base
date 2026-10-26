@@ -42,12 +42,15 @@ async def _receiver(s,*,group=False):
 
 
 @pytest.mark.asyncio
-async def test_real_asgi_expert_identity_is_verified_and_uses_single_kaggle_read(service):
+@pytest.mark.parametrize('top_k', [3, 10])
+async def test_real_asgi_expert_identity_is_verified_and_uses_single_kaggle_read(service, top_k):
     s=service;receiver,app,payload,headers,link,req=await _receiver(s)
+    if top_k!=3:payload['top_k']=top_k
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
                                  base_url='http://127.0.0.1') as client:
         task=asyncio.create_task(client.post(PATH,json=payload,headers=headers))
         issued=await work(s.target)
+        assert issued.query.evidence_limit==top_k
         assert issued.query.actor.person_id==s.target.auth.p.other.subject
         assert issued.query.actor.person_id!=s.target.auth.p.owner.subject
         assert issued.query.request_id!=req['request_id']
@@ -184,6 +187,9 @@ async def test_denied_unsigned_or_forged_expert_caller_never_dispatches(service)
                                  base_url='http://127.0.0.1') as client:
         r=await client.post(PATH,json={**payload,'query':'FORGED OWNER INPUT'},headers=headers)
         assert r.status_code==422 and not r.json().get('evidence')
+        for bad_k in (0, 11, True, 3.5, '10'):
+            r=await client.post(PATH,json={**payload,'top_k':bad_k},headers=headers)
+            assert r.status_code==422 and not r.json().get('evidence')
         r=await client.post(PATH,json=payload,headers={**headers,'Authorization':'Bearer fake-token'})
         assert r.status_code in (200,403) and not r.json().get('evidence')
         assert not s.target.gate.permits
