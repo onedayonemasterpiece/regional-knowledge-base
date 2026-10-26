@@ -236,11 +236,13 @@ class ExpertSlackSearchReply:
                 raise PermissionError("verified Slack binding changed")
             query=re.sub(r"<@"+re.escape(self.control.bot_user_id)+r"(?:\|[^>]+)?>",
                          "",row["input_text"]).strip()
-            if not 1<=len(query)<=1000:raise ValueError("bounded query required")
             ctx=ReadContext(request_id,0,0,time.monotonic()+10)
             issued=None
             try:
                 with capture_read_output() as calls:
+                    if not 1<=len(query)<=1000:
+                        _LOG.info("rkb_slack_query_rejected request_id=%s reason=query_length query_chars=%s",request_id,len(query))
+                        raise ToolError('{"status":"invalid_query","reason":"query_length"}')
                     outcome=await self.evidence.backend.search_adapter(query,authority=authority,
                         request_id=request_id,turn_generation=0,min_data_seq=0,
                         deadline_monotonic=ctx.deadline_monotonic,destination=destination,limit=3)
@@ -253,10 +255,13 @@ class ExpertSlackSearchReply:
                 if isinstance(exc,ToolError):
                     try:details=json.loads(str(exc))
                     except (ValueError,TypeError):raise
-                    if type(details) is not dict or details.get("status") not in ("unavailable","pending"):
+                    if details=={"status":"invalid_query","reason":"query_length"}:
+                        text="Запрос должен содержать от 1 до 1000 символов без упоминания бота. Сократите вопрос и отправьте его снова."
+                    elif type(details) is not dict or details.get("status") not in ("unavailable","pending"):
                         raise
-                    text=(_error_reply(details.get("reason")) if details["status"]=="unavailable"
-                          else _TEMPORARILY_UNAVAILABLE)
+                    else:
+                        text=(_error_reply(details.get("reason")) if details["status"]=="unavailable"
+                              else _TEMPORARILY_UNAVAILABLE)
             else:
                 if (not calls and type(outcome) is EvidenceSearchOutput
                         and outcome.status=="pending" and outcome.reason=="target_warming"

@@ -293,3 +293,7 @@ No new service, LLM, external Request URL, Dataset delivery stages or grants.
 Actual owner/nonowner live acceptance remains NOT RUN. The external Slack
 Socket Mode connection, runtime configuration and E2E replay require
 separate operator authorization; only Opus may review and merge this source.
+
+### Invalid Slack search input
+
+An empty question or a question longer than 1000 characters after removing the bot mention receives one explicit length-validation reply through the ordinary authenticated send permit. It performs no search and completes the request so later questions in that dialog can proceed. Duplicate delivery and an unknown POST retain the existing no-resend rules.
