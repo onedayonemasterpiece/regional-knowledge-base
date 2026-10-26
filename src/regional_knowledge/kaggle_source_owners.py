@@ -38,7 +38,7 @@ def _verified_restart_restore(queue, restore, stream):
     storage=hashlib.sha256(json.dumps(['kaggle-dataset',initial.owner_slug,
         initial.dataset_slug,prefix],separators=(',',':')).encode()).hexdigest()
     with queue.connect(write=False) as db:
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rkb_dataset_recovery_store'").fetchone():
+        if 'latest_json' not in {row[1] for row in db.execute('PRAGMA table_info(rkb_dataset_recovery_store)')}:
             return restore
         row=db.execute('SELECT latest_json FROM rkb_dataset_recovery_store WHERE storage=?',(storage,)).fetchone()
         if row is None or not row['latest_json']:return restore
