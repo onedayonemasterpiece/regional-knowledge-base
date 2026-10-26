@@ -438,7 +438,8 @@ class NativeSnapshotFactory:
         if not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('native_restore_operation_key_required')
         request=sha(encode({'manifest':arguments.get('expected_manifest_sha256'),
-            'control':sha(arguments.get('control_bytes',b'')),'identity':self.identity}))
+            'control':sha(arguments.get('control_bytes',b'')),
+            'expected_versions':arguments.get('expected_versions'),'identity':self.identity}))
         previous=self._operations.get(operation_key)
         if previous is not None:
             digest,session=previous
