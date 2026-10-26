@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+import time
 
 from .expert_request_control import _verified_slack_observation
 from .expert_slack_ingress import ExpertSlackIngress
@@ -83,7 +84,16 @@ class ExpertSlackSocketMode:
             yield self
         finally:
             try:
+                # Bound only the closing handshake, after the SDK disables
+                # reconnect. Its default 10s delays the entire API restart.
+                session = getattr(client, 'current_session', None)
+                if session is not None and (session.close_timeout is None or session.close_timeout > 1):
+                    session.close_timeout = 1
+                started = time.monotonic()
+                _LOG.info('rkb_socket_close state=start')
                 await client.close()
+                _LOG.info('rkb_socket_close state=complete elapsed_ms=%.1f',
+                          (time.monotonic() - started) * 1000)
             finally:
                 self._client = None
 
