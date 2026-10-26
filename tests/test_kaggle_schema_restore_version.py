@@ -129,7 +129,7 @@ async def test_native_restore_n_minus_two_migrates_before_tail_and_readiness():
     ('0.8.4','0.8.2','0.8.4',False,'native_restore_version_mismatch'),
 ])
 async def test_isolated_restore_vector_transition_precedes_schema_and_readiness(
-        monkeypatch,base_version,target_version,actual_version,expected_alter,failed):
+        monkeypatch,tmp_path,base_version,target_version,actual_version,expected_alter,failed):
     """Source-only SQL fixture: real 0.8.4 package/corpus belongs to Shkiper."""
     import regional_knowledge.kaggle_schema_migrate as schema
     import regional_knowledge.kaggle_owned_pg as owned
@@ -183,12 +183,18 @@ async def test_isolated_restore_vector_transition_precedes_schema_and_readiness(
     version=lambda v:dict(server_version_num=170011,pgvector_version=v,
         schema_version=42,model_sha256='a'*64,tokenizer_sha256='b'*64)
     manifest=dict(versions=version(base_version),applied_sequence=853)
+    selected=version(target_version)
+    if (base_version,target_version)==('0.8.2','0.8.4'):
+        from test_verified_restart_checkpoint import setup
+        from regional_knowledge.kaggle_source_owners import _verified_restart_restore
+        p,config,_,_=setup(tmp_path,base_vector=base_version,selected_vector=target_version)
+        selected=dict(_verified_restart_restore(p.q,config,'stream').versions)
     if failed:
         with pytest.raises(SnapshotError,match=failed):
-            await factory._upgrade_restored(NS(acquire=acquire),manifest,version(target_version))
+            await factory._upgrade_restored(NS(acquire=acquire),manifest,selected)
         assert 'schema_migrate' not in events and 'probe_readiness' not in events
     else:
-        await factory._upgrade_restored(NS(acquire=acquire),manifest,version(target_version))
+        await factory._upgrade_restored(NS(acquire=acquire),manifest,selected)
         alter=[event for event in events if event=="ALTER EXTENSION vector UPDATE TO '0.8.4'"]
         assert bool(alter)==expected_alter
         assert events.index('transaction_commit')<events.index('schema_migrate')<events.index('probe_readiness')

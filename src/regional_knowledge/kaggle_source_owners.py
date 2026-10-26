@@ -59,14 +59,15 @@ def _verified_restart_restore(queue, restore, stream):
     if (document['database_generation']!=checkpoint.database_generation
             or document['applied_sequence']!=checkpoint.base_sequence):
         raise JournalConflict('verified_restart_manifest_cursor_changed')
-    # A newer Saved must not silently change the operator-selected runtime ABI.
-    if document['versions'].get('pgvector_version')!=restore.versions['pgvector_version']:
+    # Saved describes immutable base bytes; preserve the selected runtime pin.
+    versions=dict(document['versions'],pgvector_version=restore.versions['pgvector_version'])
+    if not compatible_versions(document['versions'],versions):
         raise JournalConflict('verified_restart_pgvector_selection_changed')
-    if not compatible_versions(dict(restore.versions),document['versions']):
+    if not compatible_versions(dict(restore.versions),versions):
         raise JournalConflict('verified_restart_versions_changed')
     resumed=replace(restore,dataset_checkpoint=checkpoint,
         manifest=ObjectRef(key,checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence),
-        versions=document['versions'])
+        versions=versions)
     logging.getLogger(__name__).info('source_checkpoint_selected previous_version=%s dataset_version=%s base_sequence=%s origin=verified_store',
         initial.dataset_version,checkpoint.dataset_version,checkpoint.base_sequence)
     return resumed
