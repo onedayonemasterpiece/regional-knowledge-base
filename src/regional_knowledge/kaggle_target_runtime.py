@@ -229,7 +229,7 @@ class TargetRuntime:
         if recovery_worker is not None:self._recovery_available.set()
         self.restored_database=restored_database
         if restored_database is not None and not self._custom_probe:
-            self.probe=restored_database._factory.probe
+            self.probe=getattr(restored_database._factory,'probe',self.probe)
 
     def _bind_read_handler_maintenance(self):
         """Bind the one owned PG/BGE read slot, regardless of preparation order.
@@ -412,7 +412,7 @@ class TargetRuntime:
         if self.recovery_worker is not None:
             self.restored_database=await self.recovery_worker.wait_initialized(self.database,*identity)
             if not self._custom_probe:
-                self.probe=self.recovery_worker.factory.probe
+                self.probe=getattr(self.recovery_worker.factory,'probe',self.probe)
         if self.restored_database is not None:
             reader_kwargs=await self.restored_database.verify_for(self.database,run_id,launch_nonce,runtime_incarnation)
             if (not isinstance(reader_kwargs,dict) or any(reader_kwargs.get(key)!=self.database.connection()[key]
