@@ -719,3 +719,83 @@ async def test_pending_native_result_resync_preserves_runtime_and_auth_fences(mo
         stop.set()
         await asyncio.gather(task, return_exceptions=True)
     assert closes == ['close']
+
+
+@pytest.mark.asyncio
+async def test_document_forward_error_reconnects_same_claim_and_next_document_runs(capsys):
+    calls = []
+    def encoder(text):
+        calls.append(text)
+        if calls == ['first document']:
+            raise RuntimeError('private synthetic inference failure')
+        return [1.] + [0.] * 1023
+    async def handler(frame, *, encode):
+        await encode(frame['query'])
+        return result(frame)
+    async with running(handler, encoder) as (peer, task, loads):
+        await peer.put(dict(type='DISPATCH', id='first', claim='first-claim',
+            kind='document', texts=['first document'], space=SPACE,
+            compute_claim='first-compute', dispatch_generation=1))
+        recovered = await peer.wait('RESULT', predicate=lambda f: f['job_id'] == 'first')
+        assert recovered['claim'] == 'first-claim'
+        assert recovered['connection_generation'] == 2
+        assert calls == ['first document', 'first document']
+        await peer.put(dict(type='RESULT_ACK', job_id='first', claim='first-claim', status='accepted'))
+        await peer.put(dict(type='DISPATCH', id='second', claim='second-claim',
+            kind='document', texts=['second document'], space=SPACE,
+            compute_claim='second-compute', dispatch_generation=2))
+        await peer.wait('RESULT', predicate=lambda f: f['job_id'] == 'second')
+        await peer.put(dict(type='RESULT_ACK', job_id='second', claim='second-claim', status='accepted'))
+        await peer.put(query(2, request='after-document-error'))
+        await peer.wait('QUERY_RESULT', predicate=lambda f: f['request_id'] == 'after-document-error')
+        assert calls == ['first document', 'first document', 'second document', 'fixture query']
+        assert loads == ['loaded'] and not task.done()
+
+    logs = capsys.readouterr().out
+    assert 'private synthetic inference failure' not in logs
+    event = next(json.loads(line) for line in logs.splitlines() if 'native_job_retry' in line)
+    assert event == dict(event='native_job_retry', run_id=CONFIG['run_id'], job_id='first',
+        kind='document', error_class='RuntimeError')
+
+
+@pytest.mark.asyncio
+async def test_persistent_document_forward_error_exhausts_existing_reconnect_budget(monkeypatch):
+    transport = module('bge_wss_transport')
+    monkeypatch.setattr(transport.random, 'uniform', lambda *_: .0001)
+    peer = Peer()
+    calls, loads, clock = [], [], [0.]
+
+    def encoder(text):
+        calls.append(text)
+        raise RuntimeError('synthetic persistent failure')
+
+    def load():
+        loads.append('loaded')
+        return encoder
+
+    async def handler(frame, *, encode):
+        return result(frame)
+
+    def tick():
+        clock[0] += 1
+        return clock[0]
+
+    worker = transport.BgeWssTransport(dict(CONFIG, shared_reads=True), load, lambda: {},
+        query_handler=handler, connector=peer.connect, maximum_seconds=3,
+        heartbeat_seconds=.01, reconnect_grace_seconds=3)
+    worker._retry_clock = tick
+    task = asyncio.create_task(worker.run())
+    try:
+        await peer.wait('READY')
+        await peer.put(dict(type='DISPATCH', id='failed-document', claim='retained-claim',
+            kind='document', texts=['same document'], space=SPACE,
+            compute_claim='retained-compute', dispatch_generation=1))
+        with pytest.raises(transport.BgeChannelStopped, match='reconnect exhausted'):
+            await asyncio.wait_for(task, 1)
+        assert 1 < len(calls) < 10 and calls == ['same document'] * len(calls)
+        assert loads == ['loaded'] and not peer.frames('RESULT')
+    finally:
+        if not task.done():
+            worker.stop.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

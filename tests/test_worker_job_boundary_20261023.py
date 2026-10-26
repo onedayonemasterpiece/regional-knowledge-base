@@ -37,9 +37,7 @@ def source_command(worker):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('kind', ['document'])
-async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
-        kind, capsys, monkeypatch):
+async def test_transient_document_failure_reconnects_same_warm_worker_and_reads(capsys, monkeypatch):
     transport=module('bge_wss_transport')
     monkeypatch.setattr(transport.random, 'uniform', lambda *_: .0001)
     peer=Peer();stop=asyncio.Event();calls=[];loads=[];closes=[]
@@ -48,7 +46,8 @@ async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
     def native(text):
         if len(text.split()) > 512:
             calls.append(('encode',text))
-            raise ValueError('more than 512 tokens: '+secret)
+            if len(calls)==1:
+                raise ValueError('more than 512 tokens: '+secret)
         return [1.]+[0.]*1023
 
     async def read(frame, *, encode):
@@ -75,33 +74,32 @@ async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
     task=asyncio.create_task(worker.run())
     try:
         await peer.wait('READY')
-        frame=document(worker) if kind=='document' else source_command(worker)
+        frame=document(worker)
         await peer.put(frame)
-        await peer.wait('RESOURCE_RELEASED', predicate=lambda f:
-            f['resource_id']=='unresolved-job' and f['compute_claim']=='original-compute')
-        # Releasing a compute permit no longer means the durable attempt ran.
+        recovered=await peer.wait('RESULT',generation=2)
+        assert recovered['job_id']=='unresolved-job' and recovered['claim']=='same-claim'
         await asyncio.wait_for(asyncio.shield(worker.encoding),1)
         assert worker.job is not None and worker.job['claim']=='same-claim'
-        assert worker.pending is None and not peer.frames('RESULT')
+        assert worker.pending is not None
         assert not peer.frames('SOURCE_COMMAND_RESULT')
-        assert len(calls)==1 and not task.done()
+        assert len(calls)==2 and not task.done()
+        await peer.put(dict(type='RESULT_ACK',job_id='unresolved-job',claim='same-claim',status='accepted'))
         await peer.put(frame)  # Exact duplicate is not permission to reexecute.
-        await peer.put(query(request='still-serving',claim='fresh-read'))
+        await peer.put(query(2,request='still-serving',claim='fresh-read'))
         reply=await peer.wait('QUERY_RESULT',predicate=lambda f:
             f['request_id']=='still-serving')
         assert reply['status']=='degraded'
-        assert len(calls)==1 and loads==['loaded']
-        assert worker.pending is None and worker.job['id']=='unresolved-job'
-        assert peer.sessions==1 and not task.done()
-        assert not peer.frames('RESULT') and not peer.frames('SOURCE_COMMAND_RESULT')
+        assert len(calls)==2 and loads==['loaded']
+        assert worker.pending is None and worker.job is None
+        assert peer.sessions==2 and not task.done()
+        assert len(peer.frames('RESULT'))==1 and not peer.frames('SOURCE_COMMAND_RESULT')
         output=capsys.readouterr().out
         assert secret not in output
         events=[json.loads(line) for line in output.splitlines()
                 if line.startswith('{"event":')]
         events=[event for event in events if event['event']!='worker_bootstrap']
-        assert events==[dict(event='native_job_outcome_unresolved',
-            job_id='unresolved-job',kind=kind,phase=None,
-            error_class='ValueError' if kind=='document' else 'ModuleNotFoundError')]
+        assert events==[dict(event='native_job_retry',run_id=CONFIG['run_id'],
+            job_id='unresolved-job',kind='document',error_class='ValueError')]
         assert secret not in json.dumps(events)
     finally:
         stop.set()
@@ -111,16 +109,24 @@ async def test_unexpected_durable_job_failure_keeps_same_warm_worker_and_reads(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['document','query'])
-async def test_unexpected_legacy_vector_error_uses_unresolved_boundary(kind,capsys):
+async def test_legacy_vector_error_preserves_document_reconciliation_and_query_boundary(kind,capsys):
     transport=module('bge_wss_transport')
     worker=transport.BgeWssTransport(CONFIG, lambda:None, lambda:{})
     def bad(_):
         raise ValueError('private over-512-token text')
     worker.encoder=bad
-    await worker._encode(dict(kind=kind,id='legacy-job',claim='claim',texts=['secret']))
+    job=dict(kind=kind,id='legacy-job',claim='claim',texts=['secret'])
+    if kind=='document':
+        with pytest.raises(ConnectionError,match='outcome reconciliation'):
+            await worker._encode(job)
+        assert worker.waiting_job is job and worker.job is None
+    else:
+        await worker._encode(job)
     assert worker.pending is None
-    assert json.loads(capsys.readouterr().out)==dict(event='native_job_outcome_unresolved',
-        job_id='legacy-job',kind=kind,phase=None,error_class='ValueError')
+    event=json.loads(capsys.readouterr().out)
+    assert event==(dict(event='native_job_retry',run_id=CONFIG['run_id'],
+        job_id='legacy-job',kind=kind,error_class='ValueError') if kind=='document' else
+        dict(event='native_job_outcome_unresolved',job_id='legacy-job',kind=kind,phase=None,error_class='ValueError'))
 
 
 
@@ -130,11 +136,13 @@ async def test_oversized_vector_is_not_published_as_success(capsys):
     transport=module('bge_wss_transport')
     worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{})
     worker.encoder=lambda _: [1.]*100000  # Far beyond channel RESULT bound.
-    await worker._encode(dict(kind='document',id='oversize-vector',claim='claim',
-        texts=['fixture document']))
+    job=dict(kind='document',id='oversize-vector',claim='claim',texts=['fixture document'])
+    with pytest.raises(ConnectionError,match='outcome reconciliation'):
+        await worker._encode(job)
     assert worker.pending is None
-    assert json.loads(capsys.readouterr().out)==dict(event='native_job_outcome_unresolved',
-        job_id='oversize-vector',kind='document',phase=None,error_class='ValueError')
+    assert worker.waiting_job is job and worker.job is None
+    assert json.loads(capsys.readouterr().out)==dict(event='native_job_retry',run_id=CONFIG['run_id'],
+        job_id='oversize-vector',kind='document',error_class='ValueError')
 
 
 @pytest.mark.asyncio

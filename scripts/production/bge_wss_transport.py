@@ -389,9 +389,11 @@ class BgeWssTransport:
                         'compute_claim', 'dispatch_generation')})
                 self.changed.set()
                 return
-            if job['kind'] == 'source_command':
+            if job['kind'] in ('source_command', 'document'):
+                print(json.dumps({'event':'native_job_retry', 'run_id':self.config['run_id'],
+                    'job_id':job['id'], 'kind':job['kind'], 'error_class':type(error).__name__}), flush=True)
                 self.waiting_job, self.job = job, None
-                raise ConnectionError('source command requires outcome reconciliation') from error
+                raise ConnectionError('durable job requires outcome reconciliation') from error
             # Unexpected effects are not proof of failure or permission to
             # reexecute. This one bounded safe event excludes payload and text.
             print(json.dumps({'event':'native_job_outcome_unresolved',
