@@ -74,6 +74,7 @@ def make_encoder():
 def collect_pool(bank):
     import psycopg
     from regional_knowledge.kaggle_search import vector_literal
+    from uuid import UUID
     families = bank['families']
     if len(families) != 36 or len({f['id'] for f in families}) != 36:
         raise ValueError('expected the frozen 36-family question-only bank from PR 527')
@@ -113,7 +114,7 @@ def collect_pool(bank):
                     rows = timed('metadata', '''SELECT p.passage_id,p.source_id,length(p.body)
                         FROM rkb_v4.passage_search p JOIN rkb_v4.active_revision a USING(source_id,revision)
                         JOIN rkb_v4.sources s USING(source_id)
-                        WHERE s.accepted AND NOT s.withdrawn AND p.passage_id=ANY(%s::uuid[])''', (ids,))
+                        WHERE s.accepted AND NOT s.withdrawn AND p.passage_id=ANY(%s::uuid[])''', ([UUID(x) for x in ids],))
                     meta = {str(p): (str(d), n) for p, d, n in rows}
                     if len(meta) != len(ids):
                         raise ValueError('ranked candidates missing from eligible snapshot')
