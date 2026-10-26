@@ -213,7 +213,7 @@ async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_f
             request.scope[_SCOPE_KEY][1].release()
             await release(s.target,dispatched)
         for tool in ('book_find','graph_fetch','illustration_fetch','catalog','document_access'):
-            with pytest.raises(ToolError,match='target_domain_unavailable'):
+            with pytest.raises(ToolError,match='tool_not_supported_in_profile'):
                 await full.call_tool(tool,{})
 
 
@@ -315,7 +315,7 @@ async def test_native_story_tools_require_installed_v2_and_share_current_source_
             assert call.gate is startup.gate
             assert call.gated.result.record['default_variant_ref']==row['default_variant_ref']
             call.release();await release(s,dispatched)
-        with pytest.raises(ToolError,match='target_domain_unavailable'):
+        with pytest.raises(ToolError,match='tool_not_supported_in_profile'):
             await server.call_tool('story_operation',{})
 
 

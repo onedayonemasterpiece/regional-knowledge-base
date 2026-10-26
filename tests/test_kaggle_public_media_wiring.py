@@ -165,7 +165,7 @@ async def test_missing_issuer_gate_remains_unadvertised_without_legacy_fallback(
     context=SimpleNamespace(request_context=SimpleNamespace(
         request=Request({"type":"http","method":"POST","path":"/mcp","headers":[]}),
         request_id="closed-media"))
-    with pytest.raises(ToolError,match="target_domain_unavailable"):
+    with pytest.raises(ToolError,match="tool_not_supported_in_profile"):
         await server.call_tool("illustration_fetch",
             {"id":f"rkb:illustration:v1:{SOURCE}:{ILLUSTRATION}"},context)
     assert s.startup.backend.public_media_gate is None

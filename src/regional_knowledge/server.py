@@ -333,7 +333,7 @@ class KnowledgeMCPServer(MCPServer):
         if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
         if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
-            raise ToolError('{"status":"unavailable","reason":"target_domain_unavailable"}')
+            raise ToolError('{"status":"unavailable","reason":"tool_not_supported_in_profile"}')
         from .read_issuance import capture_read_output, bind_request_output
         with capture_read_output() as calls:
             result = await super().call_tool(name, arguments, context)
