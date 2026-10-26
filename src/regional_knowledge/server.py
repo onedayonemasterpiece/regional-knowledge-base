@@ -1331,7 +1331,6 @@ def build_server(
             "Search accessible regional books and journals. Results include citable IDs/URLs; "
             "source-backed hits include bounded text, provenance, incomplete and next_id. "
             "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
-            "For overview questions, top_k can be increased up to 10. "
             "If Kaggle is cold, check startup_status and retry as a NEW read after ready.\n" + _search_policy
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),

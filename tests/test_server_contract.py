@@ -193,4 +193,4 @@ async def test_search_k_ten_is_declared_in_full_and_live_mcp_without_default_cha
         field = tool.input_schema["properties"][field_name]
         assert (field["minimum"], field["maximum"], field["default"]) == (1, 10, 3)
         if profile == "full":
-            assert "For overview questions, top_k can be increased up to 10." in tool.description
+            assert "For overview questions, top_k can be increased up to 10." not in tool.description
