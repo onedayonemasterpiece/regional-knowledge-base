@@ -171,7 +171,9 @@ class ExpertSlackSearchReply:
         with self.control.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
-            if row is None or row["state"]!="searching":return None
+            if (row is None or row["state"]!="searching"
+                    or not request_order.is_head(db,row)):
+                return None
             origin=self._verified(db,row)
             marker=row["event_id"]
             db.execute("UPDATE rkb_expert_requests SET state='sending',delivery_id=?,"

@@ -535,3 +535,36 @@ async def test_generic_post_unknown_never_resends_after_provider_lost_ack(servic
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)
     assert len(posts) == 1 and _delivery_row(control, request_id) == saved
+
+
+@pytest.mark.asyncio
+async def test_unknown_legacy_dialog_head_blocks_later_slack_post_without_resend(
+        service,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    ctl,receiver,reply,first,posts=_temporary_reply_harness(service,lost_ack=True)
+    async def transient(query,**kwargs):
+        raise ToolError('{"status":"unavailable","reason":"target_warming"}')
+    monkeypatch.setattr(receiver.backend,"search_adapter",transient)
+    # First provider POST may have succeeded but its ACK was lost.
+    with pytest.raises(httpx.ReadTimeout):
+        await reply._answer(first)
+    first_saved=_delivery_row(ctl,first)
+    assert first_saved["state"]=="unknown"
+    assert first_saved["delivery_attempt"]==1
+    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
+
+    ctl.clock=lambda:1792000002.0
+    second=ctl.accept(_observation(n=2))["request_id"]
+    # Both questions remain in the same original Slack thread.
+    assert ctl._row(first)["dialog_id"]==ctl._row(second)["dialog_id"]
+    with pytest.raises(PermissionError,match="not claimable"):
+        await reply._answer(second)
+    assert _delivery_row(ctl,second)["state"]=="searching"
+    assert _delivery_row(ctl,second)["delivery_attempt"]==0
+    assert _delivery_row(ctl,first)==first_saved
+    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
+    # Re-reading the same waiting result never grants a second Slack effect.
+    with pytest.raises(PermissionError,match="not claimable"):
+        await reply._answer(second)
+    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
+    assert _delivery_row(ctl,second)["delivery_attempt"]==0
