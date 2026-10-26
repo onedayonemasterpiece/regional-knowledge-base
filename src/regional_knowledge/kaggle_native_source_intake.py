@@ -184,6 +184,14 @@ class NativeSourceIntake:
             await asyncio.to_thread(self._update,row,accepted_page_batches_json=canonical(heads).decode())
         return heads
 
+    def _last_rejection_is_semantic(self, row):
+        with self.queue.connect(write=False) as db:
+            last=db.execute("SELECT operation_key FROM rkb_control_operations "
+                "WHERE source_id=? AND person_id=? AND apply_state='REJECTED_PRECONDITION' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (row['source_id'],row['person_id'])).fetchone()
+        return bool(last and last[0].startswith(f"source-packet:{row['ingestion_id']}:"))
+
     async def with_import_hints(self, row, output):
         # Guidance describes a settled result, never a wait/rejection receipt.
         if output.state!='staged': return output
@@ -629,10 +637,11 @@ class NativeSourceIntake:
             if previous is None and correction is not None:
                 raise _failure(f'page_{index}_has_no_prior_selection: omit corrects_batch_index on new pages',
                     status='invalid_query')
-            # Existing retry-after-rejection semantics remain valid: the
-            # rejected packet can be reviewed/retried without a new correction marker.
-            if (previous is not None and correction!=previous
-                    and previous!=state.get('rejected_batch_index')):
+            # Retry a semantically rejected packet, but do not let a separately
+            # rejected stage make an older accepted page eligible for replay.
+            if previous is not None and correction!=previous and not (
+                    previous==state.get('rejected_batch_index')
+                    and await asyncio.to_thread(self._last_rejection_is_semantic,row)):
                 raise _failure(f'page_{index}_already_accepted: do not resend accepted pages; '
                     f'only for a deliberate correction set pages[].corrects_batch_index={previous} '
                     'to match its last accepted selection',status='invalid_query')
