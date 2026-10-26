@@ -69,3 +69,10 @@ def test_no_verified_advance_and_other_stream_leave_config_unchanged(tmp_path):
     assert _verified_restart_restore(p.q,newer,'stream') is newer
     with p.q.connect() as db:db.execute('UPDATE rkb_dataset_recovery_store SET latest_json=NULL')
     assert _verified_restart_restore(p.q,config,'stream') is config
+
+
+def test_verified_advance_cannot_change_pinned_model(tmp_path):
+    p,config,latest,key=setup(tmp_path)
+    changed=replace(config,versions={**config.versions,'model_sha256':'d'*64})
+    with pytest.raises(JournalConflict,match='versions_changed'):
+        _verified_restart_restore(p.q,changed,'stream')

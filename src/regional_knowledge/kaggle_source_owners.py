@@ -29,6 +29,7 @@ def _verified_restart_restore(queue, restore, stream):
     """Resume only a checkpoint already verified by this stream's publisher."""
     from dataclasses import replace
     from .kaggle_dataset_base import DatasetCheckpoint
+    from .kaggle_pg_snapshot_native import compatible_versions
     from .recovery_journal import JournalConflict, ObjectRef
 
     initial=restore.dataset_checkpoint
@@ -58,6 +59,8 @@ def _verified_restart_restore(queue, restore, stream):
     if (document['database_generation']!=checkpoint.database_generation
             or document['applied_sequence']!=checkpoint.base_sequence):
         raise JournalConflict('verified_restart_manifest_cursor_changed')
+    if not compatible_versions(dict(restore.versions),document['versions']):
+        raise JournalConflict('verified_restart_versions_changed')
     resumed=replace(restore,dataset_checkpoint=checkpoint,
         manifest=ObjectRef(key,checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence),
         versions=document['versions'])
