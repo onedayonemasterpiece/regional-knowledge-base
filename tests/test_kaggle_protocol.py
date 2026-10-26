@@ -179,7 +179,7 @@ def test_total_text_and_response_byte_caps_are_independent():
     with pytest.raises(ValueError, match="response too large"):
         encode_envelope(large)
     with pytest.raises(ValueError):
-        result(evidence=tuple(item(id=str(i)) for i in range(6)))
+        result(evidence=tuple(item(id=str(i)) for i in range(11)))
 
 
 def test_cancel_has_identity_and_does_not_claim_compute_termination():

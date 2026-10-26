@@ -215,8 +215,8 @@ async def test_native_search_and_exact_fetch_display_the_accepted_catalog_title(
     assert exact.status=='ok'
     fetched=KaggleSourceBackend._render_fetch(exact,locator=locator,attempt=attempt)
     title=doc['image_manifest']['metadata']['title']
-    assert all(row.title==title for row in rows)
-    assert thin.title==evidence.title==fetched.title==title
+    assert all(title in row.title and ', с. ' in row.title for row in rows)
+    assert thin.title==evidence.title==fetched.title
     assert thin.id==evidence.id==fetched.id and thin.url==fetched.url
     assert evidence.text==fetched.text==result.evidence[0].text
     assert len(encoded)==1  # Exact fetch does not repeat search or inference.

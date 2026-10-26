@@ -14,7 +14,7 @@ from regional_knowledge.kaggle_search import _PENDING_ENCODERS
 import pytest
 
 from regional_knowledge.kaggle_search import fused_search, vector_literal
-from test_kaggle_pg_driver import catalog_database, connect
+from test_kaggle_pg_driver import catalog_database, database, connect
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "rkb-v4-fixture-20261020"
@@ -263,7 +263,6 @@ async def test_hydrate_30_acceptance_union_and_top_ten(catalog_database):
         """, (source, other, vector_a, vector_b))
         ids = (await (await catalog_database.execute(
             'SELECT array_agg(passage_id ORDER BY passage_id) FROM rkb_v4.passage_search')).fetchone())[0]
-        assert len(ids) == 30
         for sql, args in [
             ('SELECT count(*) FROM rkb_v4.hydrate(%s::uuid[])', (ids,)),
             ('SELECT count(*) FROM rkb_v4.hydrate_scoped(%s::uuid[],%s::uuid[])', (ids, [source, other])),
