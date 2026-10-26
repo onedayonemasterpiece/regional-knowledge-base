@@ -44,6 +44,39 @@ def score_pool(pool, gold):
                 'mean_read_chars': round(statistics.mean(sizes), 1),
                 'median_read_chars': statistics.median(sizes)}
     return {'k_curve': result, 'read_chars_basis': 'full stored passage bodies, hypothetical top-K read'}
+# Pool-only SQL: same eligible corpus/configs/budget as SQL 040; never installed.
+# Match terms come from websearch_to_tsquery (not separately tokenized input).
+LEXICAL_VARIANT_SQL = """
+WITH configs AS (
+    SELECT c, raw.q,
+        ARRAY(SELECT DISTINCT replace(m.term[1], '''''', '''')
+              FROM regexp_matches(raw.q::text, $'((?:''|[^'])+)'$, 'g') AS m(term)) terms
+    FROM unnest(ARRAY['pg_catalog.russian'::regconfig,
+                      'pg_catalog.german'::regconfig, 'pg_catalog.simple'::regconfig]) c
+    CROSS JOIN LATERAL (SELECT websearch_to_tsquery(c, %s) q) raw
+), queries AS (
+    SELECT c, terms,
+           CASE WHEN c = 'pg_catalog.simple'::regconfig
+                      OR strpos(q::text, '!') > 0 OR cardinality(terms) = 0 THEN q
+                ELSE (SELECT string_agg(quote_literal(t), ' | ' ORDER BY t)::tsquery
+                      FROM unnest(terms) AS u(t)) END match_q
+    FROM configs
+), candidates AS (
+    SELECT hit.* FROM queries CROSS JOIN LATERAL (
+        SELECT p.passage_id, ts_rank_cd(p.lexemes, match_q)::double precision score,
+               (SELECT count(*)::double precision FROM unnest(terms) AS t(term)
+                WHERE t.term = ANY(tsvector_to_array(p.lexemes)))
+               / greatest(1, cardinality(terms)) coverage
+        FROM rkb_v4.passage_search p
+        JOIN rkb_v4.active_revision a USING (source_id, revision)
+        JOIN rkb_v4.sources s USING (source_id)
+        WHERE s.accepted AND NOT s.withdrawn AND p.config = c AND p.lexemes @@ match_q
+        ORDER BY {order}
+        LIMIT %s
+    ) hit
+)
+SELECT passage_id, score FROM candidates ORDER BY {order} LIMIT %s
+"""
 def make_encoder():
     # Executed only inside the operator's isolated Kaggle environment; NEVER on Dev.
     from transformers import AutoModel, AutoTokenizer
@@ -71,7 +104,7 @@ def make_encoder():
             cls = model(**tokens).last_hidden_state[:, 0]
             return torch.nn.functional.normalize(cls, p=2, dim=1)[0].tolist()
     return encode
-def collect_pool(bank):
+def collect_pool(bank, lexical_mode='and'):
     import psycopg
     from regional_knowledge.kaggle_search import vector_literal
     from uuid import UUID
@@ -105,7 +138,12 @@ def collect_pool(bank):
                     t = time.perf_counter()
                     vector = vector_literal(encode(question))
                     elapsed['encode_ms'] = round((time.perf_counter() - t) * 1000, 2)
-                    lexical = timed('lexical', 'SELECT * FROM rkb_v4.lexical_candidates(%s,%s)', (question, DEPTH))
+                    ordering = ('coverage DESC, score DESC, passage_id'
+                                if lexical_mode == 'coverage' else 'score DESC, passage_id')
+                    lex_sql = ('SELECT * FROM rkb_v4.lexical_candidates(%s,%s)' if lexical_mode == 'and'
+                               else LEXICAL_VARIANT_SQL.format(order=ordering))
+                    lex_params = (question, DEPTH) if lexical_mode == 'and' else (question, DEPTH, DEPTH)
+                    lexical = timed('lexical', lex_sql, lex_params)
                     dense = timed('dense', 'SELECT * FROM rkb_v4.dense_candidates(%s::public.vector,%s)', (vector, DEPTH))
                     t = time.perf_counter()
                     fused, scores = fused_ids(lexical, dense)
@@ -127,8 +165,8 @@ def collect_pool(bank):
                         'lexical': project(lexical), 'dense': project(dense),
                         'fused': project([(ident, scores[ident]) for ident in fused]),
                         'timings_ms': elapsed})
-    return {'method': 'global lexical AND / BGE-M3 CLS-L2-512 HNSW / equal RRF k=60',
-            'scores': {'lexical': 'ts_rank_cd (higher better)', 'dense': 'cosine distance (lower better)',
+    return {'method': f'global lexical {lexical_mode} / BGE-M3 CLS-L2-512 HNSW / equal RRF k=60',
+            'scores': {'lexical': 'ts_rank_cd (coverage mode sorts first by distinct-query-term fraction)', 'dense': 'cosine distance (lower better)',
                        'fused': 'RRF (higher better)'},
             'candidate_depth_per_branch': DEPTH, 'model_load_ms': model_ms, 'families': output}
 def main():
@@ -137,11 +175,12 @@ def main():
     p.add_argument('input', type=Path)
     p.add_argument('output', type=Path)
     p.add_argument('--gold', type=Path)
+    p.add_argument('--lexical', choices=('and', 'or', 'coverage'), default='and', help='pool mode only')
     a = p.parse_args()
     if a.mode == 'score' and a.gold is None:
         p.error('--gold required for score mode')
     data = json.loads(a.input.read_text(encoding='utf-8'))
-    result = collect_pool(data) if a.mode == 'pool' else score_pool(
+    result = collect_pool(data, a.lexical) if a.mode == 'pool' else score_pool(
         data, json.loads(a.gold.read_text(encoding='utf-8')))
     # Exclusive new file: no overwrite, no world-readable intermediate artifacts.
     with os.fdopen(os.open(a.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
