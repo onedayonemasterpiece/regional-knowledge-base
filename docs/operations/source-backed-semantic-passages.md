@@ -31,3 +31,5 @@ The same model review saves facts/dates/observations/entities independently of S
 ### Corrected bibliography in passage fetch
 
 Numbered migration 041 makes passage citation metadata use the latest accepted source catalog correction, matching book_find. Sources without a correction retain manifest bibliography. Original stage/manifest bytes and page, region, passage and original-file provenance remain unchanged; correcting bibliography does not require reimporting or reembedding accepted pages.
+
+Migration 042 also maintains the derived source bibliography used by citation strings when an accepted catalog correction is inserted, and repairs existing corrected sources. The display projection accepts the existing 16 KiB correction envelope; import input bounds and paginated citation output are unchanged. Metadata-only updates retain current readiness through the existing atomic frontier proof and advance visibility fences; lagged projections are not promoted to ready. Immutable source bytes, manifests, passages and embeddings remain unchanged.

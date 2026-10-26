@@ -134,6 +134,11 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
         before_metadata=(await (await db.execute(
             'SELECT metadata FROM rkb_v4.source_passage_metadata_v1(%s::uuid[])',([passage],))).fetchone())[0]
         assert before_metadata['catalog']==original_manifest['metadata']
+        # Reproduce a pre-042 database with accepted corrections but stale
+        # projected citation. The migration below must repair it atomically.
+        await db.execute('DROP TRIGGER project_catalog_bibliography ON rkb_v4.source_catalog_corrections')
+        await db.execute('DROP FUNCTION rkb_v4.project_catalog_bibliography_v1()')
+        await db.execute('DROP FUNCTION rkb_v4.catalog_bibliography_v1(jsonb)')
 
     # Closed group SQL integrity does not compare original stage person_id with the
     # current accepted catalog actor. Existing controller OAuth/owned-ingestion checks
@@ -181,6 +186,15 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
         assert passage_metadata['catalog']==current[0][1]
         assert {k:v for k,v in passage_metadata.items() if k!='catalog'}=={
             k:v for k,v in before_metadata.items() if k!='catalog'}
+        readiness=(await (await db.execute(
+            'SELECT text_ready,dense_ready FROM rkb_v4.read_frontier WHERE singleton')).fetchone())
+        await db.execute((Path(__file__).resolve().parents[1]/
+            'sql/kaggle/042_corrected_citation_projection.sql').read_text(),prepare=False)
+        assert (await (await db.execute(
+            'SELECT bibliography FROM rkb_v4.sources WHERE source_id=%s',(SOURCE,))).fetchone())[0]==(
+                'Corrected author; Omega title corrected')
+        assert (await (await db.execute(
+            'SELECT text_ready,dense_ready FROM rkb_v4.read_frontier WHERE singleton')).fetchone())==readiness
         assert await (await db.execute(
             'SELECT source_id FROM rkb_v4.find_source_catalog_v1(%s,%s)',
             ('Alpha',8))).fetchall()==[]
@@ -198,3 +212,16 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
             (canonical(wrong),json.dumps(dict(second.ids)),
              json.dumps(dict(second.expected_revisions)),TIME))).fetchone())[0]
         assert ok is False
+    # Later accepted corrections maintain the projection without replaying
+    # the migration. The existing 16 KiB correction envelope stays supported.
+    long_author='A'*8100
+    third=correction(dict(expected_revision=1,authors=[long_author],publication_year=1988),
+        'catalog-correction:third')
+    assert (await accepted(env,third)).status=='applied'
+    async with db.transaction():
+        assert (await (await db.execute(
+            'SELECT bibliography FROM rkb_v4.sources WHERE source_id=%s',(SOURCE,))).fetchone())[0]==(
+                long_author+'; Omega title corrected; 1988')
+        frontier=(await (await db.execute(
+            'SELECT projection_seq,text_ready,dense_ready FROM rkb_v4.read_frontier WHERE singleton')).fetchone())
+        assert frontier==(third.sequence,*readiness)
