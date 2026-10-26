@@ -49,11 +49,18 @@ def _evidence_title(item) -> str:
     names = ', '.join(a.strip() for a in authors if isinstance(a, str) and a.strip()) if isinstance(authors, list) else ''
     year = catalog.get('publication_year')
     title = catalog['title'].strip() + (f' ({year})' if type(year) is int and 1 <= year <= 3000 else '')
-    page = re.search(r'(?:\bpages?\b|\bpp?\.|с\.|стр\.)\s*(\d+(?:\s*(?:,|[-–])\s*\d+)*)', item.metadata.locator or '', re.I)
-    if page:
-        numbers = [int(n) for n in re.findall(r'\d+', page[1])]
-        span = f'{numbers[0]}–{numbers[-1]}' if '-' in page[1] or '–' in page[1] or len(numbers) > 1 and numbers == list(range(numbers[0], numbers[-1] + 1)) else ', '.join(map(str, numbers))
-        title += f', с. {span}'
+    # Legacy "pages N" may be a physical scan, so do not claim it is printed.
+    pattern = r'(?<!\w)(printed page|scan|pp?\.|с\.|стр\.)\s*((?:\d+[a-z]?|[ivxlcdm]+)(?:\s*(?:,|[-–])\s*(?:\d+[a-z]?|[ivxlcdm]+))*)(?=$|[;,])'
+    for page in re.finditer(pattern, item.metadata.locator or '', re.I):
+        raw = page[2]
+        if re.fullmatch(r'\d+(?:\s*(?:,|[-–])\s*\d+)*', raw):
+            numbers = [int(n) for n in re.findall(r'\d+', raw)]
+            span = (f'{numbers[0]}–{numbers[-1]}' if '-' in raw or '–' in raw
+                    or len(numbers) > 1 and numbers == list(range(numbers[0], numbers[-1] + 1))
+                    else ', '.join(map(str, numbers)))
+        else:
+            span = raw
+        title += f', {"скан" if page[1].lower() == "scan" else "с."} {span}'
     return ((names + '. ' if names else '') + title)[:2048]
 
 
