@@ -43,10 +43,24 @@ def test_https_only_plan_needs_no_provider_observation():
     assert result.ready and result.dataset_count==result.file_count==0 and not api.calls
 
 
-def test_a_newer_ready_version_never_replaces_the_selected_immutable_version():
+def test_additive_latest_keeps_selected_version_and_mount_metadata_compatible():
     api=Api();api.versions=[9,9]
+    api.pages.append(dict(files=[dict(name='native.tar',total_bytes=3),
+        dict(name='native084.tar',total_bytes=4)]))
     assert probe_stage0_datasets(api,plan()).ready
     assert ('files','fixture-owner/rkb-bootstrap/7',None,100) in api.calls
+    assert ('files','fixture-owner/rkb-bootstrap/9',None,100) in api.calls
+
+
+@pytest.mark.parametrize('rows,reason',[
+    ([dict(name='native.tar',total_bytes=4)],'dataset_mount_file_metadata_differs'),
+    ([dict(name='replacement.tar',total_bytes=3)],'dataset_mount_files_pending'),
+])
+def test_selected_ready_version_cannot_hide_incompatible_latest_mount(rows,reason):
+    api=Api();api.versions=[9];api.pages.append(dict(files=rows))
+    result=probe_stage0_datasets(api,plan())
+    assert not result.ready and result.reason==reason
+    assert len([c for c in api.calls if c[0]=='files'])==2
 
 
 @pytest.mark.parametrize('versions,statuses,reason',[

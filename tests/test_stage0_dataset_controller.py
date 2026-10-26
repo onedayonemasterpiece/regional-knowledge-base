@@ -14,7 +14,7 @@ from test_stage0_dataset_readiness import Api
 
 
 @pytest.mark.parametrize('scenario',[
-    'warming_then_ready','warming_only','observation_error','writer_conflict','lost_push_ack','already_unknown',
+    'warming_then_ready','warming_only','observation_error','writer_conflict','lost_push_ack','already_unknown','incompatible_latest',
 ])
 def test_main_observes_dataset_before_claim_and_preserves_existing_launch_boundaries(
         tmp_path,monkeypatch,caplog,scenario):
@@ -40,6 +40,10 @@ def test_main_observes_dataset_before_claim_and_preserves_existing_launch_bounda
             self.statuses=['preparing','ready','ready'] if scenario=='warming_then_ready' else ['ready']*6
             if scenario=='warming_only':self.statuses=['preparing']*6
             self.pages=[dict(files=[dict(name='native/initdb',total_bytes=1)])]*3
+            if scenario=='incompatible_latest':
+                self.versions=[8]*6
+                self.pages=[dict(files=[dict(name='native/initdb',total_bytes=size)])
+                            for size in (1,2,1,2,1,2)]
         def authenticate(self):pass
         def get_dataset(self,request):
             events.append('dataset_observation');return super().get_dataset(request)
@@ -83,7 +87,7 @@ def test_main_observes_dataset_before_claim_and_preserves_existing_launch_bounda
         assert events.index('dataset_observation')<events.index('claim')<events.index('push')
         assert events.count('claim')==events.count('push')==1
         assert state['launch_state']=='dispatched' and state['provider_version']==7
-    elif scenario in ('warming_only','observation_error'):
+    elif scenario in ('warming_only','observation_error','incompatible_latest'):
         assert 'claim' not in events and 'push' not in events
         assert state['launch_state']=='pending' and state['provider_version'] is None
         assert events.count('dataset_observation')==2  # t=100/130; not every tick.
