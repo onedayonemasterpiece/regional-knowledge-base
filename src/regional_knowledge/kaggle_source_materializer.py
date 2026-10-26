@@ -498,10 +498,11 @@ class NativeSourceCompiler:
         for ordinal,(chunk,tokens) in enumerate(zip(graph.chunks,counts,strict=True)):
             if chunk.article_id or (chunk.illustration_ids and not include_illustrations):
                 raise failure('native_source_component_activation_unavailable')
-            locators=[('printed page ' + page.printed_page_number.strip()
-                       if page.printed_page_number and page.printed_page_number.strip()
-                       else f'scan {page.physical_page_index+1}')
-                      for p in chunk.page_ids for page in [pages[str(p)]]]
+            locators=[]
+            for p in chunk.page_ids:
+                page=pages[str(p)]
+                printed=(page.printed_page_number or '').strip()
+                locators.append(f'printed page {printed}' if printed else f'scan {page.physical_page_index+1}')
             passages.append(dict(passage_id=str(chunk.chunk_id),ordinal=ordinal,locator='; '.join(locators),
                 body=chunk.text,language=language,input_tokens=tokens))
         row=dict(source_id=source_id,person_id=person_id,
