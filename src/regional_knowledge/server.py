@@ -1340,7 +1340,8 @@ def build_server(
                      document_ids: list[str] | None = None, top_k: Annotated[int, Field(ge=1, le=10)] = 3) -> SearchOutput:
         options={}
         if document_ids is not None:options['document_ids']=document_ids
-        options['top_k']=top_k
+        if selected=='kaggle_source':options['top_k']=top_k
+        elif top_k!=3:raise ToolError('{"status":"unavailable","reason":"unsupported_target_search_option"}')
         if main_job_id:options['main_job_id']=main_job_id
         if aliases:options['aliases']=aliases
         return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))
