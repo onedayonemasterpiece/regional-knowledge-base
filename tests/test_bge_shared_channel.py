@@ -410,6 +410,7 @@ def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monk
         heartbeat_waiting = asyncio.Event()
         resume_writer = asyncio.Event()
         handler_finished = asyncio.Event()
+        ready_received = asyncio.Event()
         admission_held = threading.Event()
         stop = asyncio.Event()
 
@@ -431,7 +432,11 @@ def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monk
                         await asyncio.to_thread(websocket.send_text, raw)
 
                     async def receive(self):
-                        return await asyncio.to_thread(websocket.receive_text)
+                        raw = await asyncio.to_thread(websocket.receive_text)
+                        frame = json.loads(raw)
+                        if frame['type'] == 'READY_ACK' and frame['status'] == 'ready':
+                            ready_received.set()
+                        return raw
 
                 yield Socket()
 
@@ -452,9 +457,7 @@ def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monk
             heartbeat_seconds=.4, maximum_seconds=6, stop=stop)
         task = asyncio.create_task(worker.run())
         try:
-            async with asyncio.timeout(2):
-                while worker._connection_generation is None:
-                    await asyncio.sleep(.005)
+            await asyncio.wait_for(ready_received.wait(), 2)
             ticket = await asyncio.to_thread(begin, p, worker._connection_generation, 'queued-read-first')
             await asyncio.wait_for(handler_finished.wait(), 1.5)
             # Let states() enqueue QUERY_RESULT, RESOURCE_RELEASED and RESOURCE_STATE
