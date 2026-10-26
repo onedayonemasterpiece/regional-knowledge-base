@@ -22,6 +22,10 @@ would serialize each QUERY behind a queue writer; the ASGI regression holds a
 real SQLite writer while busy/result/release frames still complete. The first
 owned-run baseline remains an explicit startup write.
 
+Each backend call mints a fresh ephemeral wire request ID, including repeated
+reads for one adapter question. The adapter keeps its original logical question
+ID in its context and response; it is not reused as a worker replay identity.
+
 ## Controller calls
 
 All async/sync consumer methods run on one controller event loop. SQLite and

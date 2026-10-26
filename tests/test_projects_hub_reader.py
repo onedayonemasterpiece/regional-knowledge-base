@@ -55,10 +55,11 @@ async def test_actual_asgi_verified_human_link_same_queue_and_typed_http_final_i
         dispatched=await work(s)
         assert dispatched.query.actor.person_id==s.auth.p.other.subject
         assert dispatched.query.actor.person_id != body['actor_sub'] and dispatched.query.turn_generation==7
-        assert dispatched.query.request_id==body['request_id'] and dispatched.query.min_data_seq==5
+        assert dispatched.query.request_id!=body['request_id'] and dispatched.query.min_data_seq==5
         await settle(s,dispatched)
         response=await request
         value=response.json()
+        assert value['request_id']==body['request_id']
         assert response.status_code==200 and value['codec']=='rkb.knowledge-search.v2'
         assert value['status']=='degraded' and value['mode']=='hybrid' and value['evidence'][0]['text']=='Evidence'
         assert value['observed_data_seq']==value['observed_projection_seq']==5 and value['min_data_seq']==5

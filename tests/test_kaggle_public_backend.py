@@ -594,7 +594,7 @@ async def test_fastmcp_fetch_schema_matches_guarded_structured_wire(branch):
 @pytest.mark.asyncio
 async def test_direct_adapter_reads_renew_idle_without_renewing_from_heartbeat(target):
     from regional_knowledge.bge_queue import IDLE_SECONDS
-    s=target
+    s=target;wire_ids=[]
     for minute in range(1,32):
         now=1000.+60*minute
         s.queue.clock=lambda:now
@@ -604,12 +604,13 @@ async def test_direct_adapter_reads_renew_idle_without_renewing_from_heartbeat(t
         async def read():
             with capture_read_output() as calls:
                 result=await s.backend.search_adapter('synthetic query',authority=authority,
-                    request_id=f'adapter-minute-{minute}',turn_generation=0,min_data_seq=0,
+                    request_id='same-adapter-question',turn_generation=0,min_data_seq=0,
                     deadline_monotonic=asyncio.get_running_loop().time()+2,
                     destination=s.backend.destination)
             return result,calls
         task=asyncio.create_task(read())
         dispatched=await work(s)
+        wire_ids.append(dispatched.query.request_id)
         await settle(s,dispatched)
         result,calls=await task
         for call in calls:
@@ -620,6 +621,7 @@ async def test_direct_adapter_reads_renew_idle_without_renewing_from_heartbeat(t
             resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
         with s.queue.connect(write=False) as db:
             assert db.execute('SELECT useful FROM runs WHERE id=?',(s.run,)).fetchone()[0]==now
+    assert len(set(wire_ids))==31  # repeated logical question, fresh ephemeral reads
     # Keep heartbeats healthy after the last read without adding user demand.
     for elapsed in range(60,IDLE_SECONDS,60):
         s.queue.clock=lambda:now+elapsed
