@@ -93,10 +93,14 @@ def _entry(source,tmp_path):
     tree=ast.parse(source);entry=tree.body.pop()
     namespace={'__name__':'generated_fixture','__file__':str(tmp_path/'main.py')}
     exec(compile(ast.Module(body=tree.body,type_ignores=[]),'fixture','exec'),namespace)
+    namespace['RUN_CONFIG']['prepared_model']['root']=str(tmp_path)
     class Redirect(ast.NodeTransformer):
         def visit_Constant(self,node):
-            if isinstance(node.value,str) and node.value.startswith('/kaggle/working/r-'):
-                return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
+            if isinstance(node.value,str):
+                if node.value=='/kaggle/working':
+                    return ast.copy_location(ast.Constant(str(tmp_path)),node)
+                if node.value.startswith('/kaggle/working/r-'):
+                    return ast.copy_location(ast.Constant(str(tmp_path/Path(node.value).name)),node)
             return node
     return namespace,ast.fix_missing_locations(Redirect().visit(ast.Module(body=[entry],type_ignores=[])))
 
