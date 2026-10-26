@@ -59,6 +59,8 @@ async def image_pg(database):
     await initialize_database(connection,database_generation=DB,writer_generation=WRITER,revisions=ACTIVATION_REVISIONS)
     async with connection.transaction():
         for name in SQL:await connection.execute((ROOT/'sql/kaggle'/name).read_text(),prepare=False)
+        await connection.execute('CREATE TABLE rkb_v4.source_catalog_corrections '
+                                 '(source_id uuid, accepted_sequence bigint, metadata jsonb)')
         await connection.execute('SELECT rkb_v4.publish_read_frontier(%s,%s,0,0,true,true)',(DB,WRITER))
     handlers=[]
     for route,suffix in [(STAGE_ROUTE,'source_stage_v2'),(SEAL_ROUTE,'source_stage_seal_v2'),
@@ -215,8 +217,8 @@ async def test_native_search_and_exact_fetch_display_the_accepted_catalog_title(
     assert exact.status=='ok'
     fetched=KaggleSourceBackend._render_fetch(exact,locator=locator,attempt=attempt)
     title=doc['image_manifest']['metadata']['title']
-    assert all(row.title==title for row in rows)
-    assert thin.title==evidence.title==fetched.title==title
+    assert all(title in row.title and ', с. ' in row.title for row in rows)
+    assert thin.title==evidence.title==fetched.title
     assert thin.id==evidence.id==fetched.id and thin.url==fetched.url
     assert evidence.text==fetched.text==result.evidence[0].text
     assert len(encoded)==1  # Exact fetch does not repeat search or inference.

@@ -232,10 +232,16 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         hydration = ('rkb_v4.hydrate(%s::uuid[])' if source_ids is None else
                                      'rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])')
                         await execute(f"""SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
-                            jsonb_build_object('catalog',jsonb_build_object('title',c.metadata->>'title'))
+                            jsonb_build_object('catalog',jsonb_build_object('title',picked.metadata->>'title',
+                                'authors',picked.metadata->'authors','publication_year',picked.metadata->'publication_year'))
                             FROM {hydration} WITH ORDINALITY h
                             LEFT JOIN rkb_v4.source_catalog c
                               ON c.source_id=h.source_id AND c.source_revision=h.revision
+                            LEFT JOIN LATERAL (
+                              SELECT k.metadata FROM rkb_v4.source_catalog_corrections k
+                              WHERE k.source_id=h.source_id ORDER BY k.accepted_sequence DESC LIMIT 1
+                            ) corrected ON true
+                            CROSS JOIN LATERAL (SELECT coalesce(corrected.metadata,c.metadata) AS metadata) picked
                             ORDER BY h.ordinality""", (ids,) if source_ids is None else (ids,source_ids))
                     rows = await cursor.fetchall()
                     if observe and (len(rows) != len(ids) or {row[0] for row in rows} != set(ids)):

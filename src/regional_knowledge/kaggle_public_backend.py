@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import re
 import time
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -42,8 +43,18 @@ _PASSAGE_ID = 'rkb:passage:v1:'
 
 def _evidence_title(item) -> str:
     catalog = (item.metadata.source_provenance or {}).get('catalog')
-    title = catalog.get('title') if isinstance(catalog, dict) else None
-    return title[:2048] if isinstance(title, str) and title.strip() else item.id
+    if not isinstance(catalog, dict) or not isinstance(catalog.get('title'), str) or not catalog['title'].strip():
+        return item.id
+    authors = catalog.get('authors')
+    names = ', '.join(a.strip() for a in authors if isinstance(a, str) and a.strip()) if isinstance(authors, list) else ''
+    year = catalog.get('publication_year')
+    title = catalog['title'].strip() + (f' ({year})' if type(year) is int and 1 <= year <= 3000 else '')
+    page = re.search(r'(?:\bpages?\b|\bpp?\.|с\.|стр\.)\s*(\d+(?:\s*(?:,|[-–])\s*\d+)*)', item.metadata.locator or '', re.I)
+    if page:
+        numbers = [int(n) for n in re.findall(r'\d+', page[1])]
+        span = f'{numbers[0]}–{numbers[-1]}' if '-' in page[1] or '–' in page[1] or len(numbers) > 1 and numbers == list(range(numbers[0], numbers[-1] + 1)) else ', '.join(map(str, numbers))
+        title += f', с. {span}'
+    return ((names + '. ' if names else '') + title)[:2048]
 
 
 def passage_fetch_id(locator: PassageContinuation) -> str:
