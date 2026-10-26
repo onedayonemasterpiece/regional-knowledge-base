@@ -497,7 +497,7 @@ class BgeWssTransport:
                 # independently of the next read consumer. Server finish_read
                 # still checks its original ticket/deadline/current authority.
                 read_sent = result
-                await put(result, priority=1)
+                await put(result, priority=0)
 
         ready_confirmed=False
         telegram_request_pending=False
