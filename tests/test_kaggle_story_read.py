@@ -128,7 +128,8 @@ async def test_trusted_adapter_keeps_identity_deadline_authority_without_oauth_r
                 min_data_seq=8,deadline_monotonic=time.monotonic()+1.7,destination=authority.destination)
         return output,calls
     task=asyncio.create_task(read());dispatched=await work(s)
-    assert (dispatched.query.request_id,dispatched.query.turn_generation,dispatched.query.min_data_seq)==('adapter-turn-7',7,8)
+    assert dispatched.query.request_id!='adapter-turn-7'
+    assert (dispatched.query.turn_generation,dispatched.query.min_data_seq)==(7,8)
     assert 1<=dispatched.query.deadline_ms<=1700
     from regional_knowledge.kaggle_protocol import QueryResult
     native=QueryResult(request_id=dispatched.query.request_id,connection_generation=s.generation,

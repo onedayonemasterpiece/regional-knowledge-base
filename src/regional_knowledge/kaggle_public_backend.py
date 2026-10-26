@@ -431,7 +431,7 @@ class KaggleSourceBackend:
         telemetry = self.read_telemetry
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
-        attempt = telemetry.begin_attempt(operation,**({'request_id':trusted['request_id']} if trusted else {}))
+        attempt = telemetry.begin_attempt(operation)
         authority = trusted['authority'] if trusted is not None else None
         destination=trusted['destination'] if trusted is not None else self.destination
         ticket = permit = gated = None

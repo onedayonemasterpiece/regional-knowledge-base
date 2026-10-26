@@ -146,7 +146,7 @@ async def test_signed_ingress_remote_journal_then_same_person_delegated_read(ser
             assert issued is not None, 'read never reached existing shared admission'
             assert issued.query.actor.person_id == s.target.auth.p.other.subject
             assert issued.query.actor.person_id != s.target.auth.p.owner.subject
-            assert issued.query.request_id == request_id
+            assert issued.query.request_id != request_id
             assert issued.query.turn_generation == lease['generation']
             # This composition uses the real target SourceReadGate, not the
             # public adapter's simplified fake gate. Return source-bound

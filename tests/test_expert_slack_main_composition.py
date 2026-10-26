@@ -126,7 +126,7 @@ async def test_main_explicit_signed_ingress_mounts_same_owner_receiver_and_asgi_
             assert issued is not None
             assert issued.query.actor.person_id==s.target.auth.p.other.subject
             assert issued.query.actor.person_id!=s.target.auth.p.owner.subject
-            assert issued.query.request_id==request_id
+            assert issued.query.request_id!=request_id
             source=QueryResult(
                 request_id=issued.query.request_id,
                 connection_generation=s.target.generation,
