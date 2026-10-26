@@ -242,9 +242,17 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   provider echo records delivered. Any uncertain send becomes UNKNOWN and
   must **never** trigger an automatic second post. Source/person/channel
   eligibility is rechecked before sending.
+- Socket startup and completion wake existing dialog heads through the same
+  `notify`; later questions do not run searches before becoming the head.
+  UNKNOWN is read back with bounded, authenticated Slack thread pagination,
+  using the event ID in `rkb_slack_reply` message metadata (Slack may omit
+  `client_msg_id` from history). A matching bot reply records `delivered`.
+  A complete scan without that marker records `abandoned_no_resend`, not
+  successful delivery; incomplete or denied reads retain UNKNOWN. This also
+  handles old unmarked sends without claiming that an unmarked reply was absent.
 - This does not install a callback, do a live Slack E2E, impersonate a nonowner,
-  guarantee recovery after process crash during an acknowledged read, or grant
-  any new account permission. Tests are synthetic. Run live owner/nonowner
+  or grant any new account permission. Recovery tests are synthetic; native
+  metadata readback alone is not full request E2E. Run live owner/nonowner
   acceptance separately after authorized install with Shkiper; Opus reviews
   and merges source only.
 

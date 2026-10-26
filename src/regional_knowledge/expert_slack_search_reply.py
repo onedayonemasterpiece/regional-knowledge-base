@@ -66,18 +66,14 @@ class SlackChatSender:
                         current=None, claim=None):
         headers={"Authorization":"Bearer "+self.token}
         async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
-            auth=(await http.post("https://slack.com/api/auth.test",headers=headers)).json()
-            if (auth.get("ok") is not True or auth.get("team_id")!=self.team_id
-                    or auth.get("user_id")!=self.bot_user_id or not self.current()
-                    or (current is not None and not current())):
-                raise PermissionError("Slack bot identity or evidence changed")
+            await self._authenticate(http,current)
             if claim is not None:
                 args=await claim()
                 event_id,channel,thread,text=(args["event_id"],args["channel"],
                                                args["thread"],args["text"])
             response=await http.post("https://slack.com/api/chat.postMessage",headers=headers,
                 json={"channel":channel,"thread_ts":thread,"text":text,
-                      "client_msg_id":event_id,"unfurl_links":False,"unfurl_media":False})
+                      "client_msg_id":event_id,"metadata":{"event_type":"rkb_slack_reply","event_payload":{"event_id":event_id}},"unfurl_links":False,"unfurl_media":False})
             data=response.json()
         message=data.get("message")
         # Slack's documented chat.postMessage response need not echo optional
@@ -92,6 +88,28 @@ class SlackChatSender:
             raise RuntimeError("Slack native provider echo unverified")
         return {"event_id":event_id,"channel":channel,"thread_ts":thread,
                 "ts":data["ts"],"bot_user_id":self.bot_user_id}
+
+    async def _authenticate(self,http,current=None):
+        auth=(await http.post("https://slack.com/api/auth.test",headers={"Authorization":"Bearer "+self.token})).json()
+        if (auth.get("ok") is not True or auth.get("team_id")!=self.team_id
+                or auth.get("user_id")!=self.bot_user_id or not self.current()
+                or current is not None and not current()):
+            raise PermissionError("Slack bot identity or evidence changed")
+
+    async def find_post(self,origin,marker):
+        async with asyncio.timeout(30), httpx.AsyncClient(transport=self.transport,timeout=8) as http:
+            await self._authenticate(http)
+            cursor=""
+            for _ in range(16):
+                response=await http.get("https://slack.com/api/conversations.replies",headers={"Authorization":"Bearer "+self.token},params={"channel":origin["channel_id"],"ts":origin["thread_ts"],"limit":100,"cursor":cursor,"include_all_metadata":True})
+                response.raise_for_status();data=response.json()
+                if data.get("ok") is not True or type(data.get("messages")) is not list:raise PermissionError("Slack thread reconciliation unavailable")
+                found=next((m for m in data.get("messages",[]) if (m.get("client_msg_id")==marker or m.get("metadata")=={"event_type":"rkb_slack_reply","event_payload":{"event_id":marker}}) and m.get("user")==self.bot_user_id and m.get("thread_ts")==origin["thread_ts"]),None)
+                if found:return {"channel":origin["channel_id"],"ts":found["ts"],"event_id":marker}
+                cursor=data.get("response_metadata",{}).get("next_cursor","")
+                if not cursor and not data.get("has_more"):return None
+                if not cursor:break
+            raise RuntimeError("Slack thread reconciliation incomplete")
 
 
 class ExpertSlackSearchReply:
@@ -116,7 +134,13 @@ class ExpertSlackSearchReply:
             except asyncio.CancelledError:pass
             except Exception as exc:_LOG.warning("rkb_slack_search_pending error_type=%s",
                                                 type(exc).__name__)
+            else:self.resume_pending()
         task.add_done_callback(finish)
+
+    def resume_pending(self):
+        with self.control.corpus.connect() as db:
+            rows=db.execute("SELECT r.id FROM rkb_expert_requests r JOIN rkb_request_dialogs d ON d.id=r.dialog_id AND d.head_seq=r.dialog_seq WHERE r.state IN ('received','searching','unknown') ORDER BY r.created_at LIMIT 16").fetchall()
+        for row in rows:self.notify(row["id"])
 
     async def _answer_until_sent(self, request_id):
         # Retry the same acknowledged request only before any POST permit.
@@ -124,15 +148,20 @@ class ExpertSlackSearchReply:
         delay=2
         while True:
             try:
-                await self._answer(request_id)
+                row=await asyncio.to_thread(self._row,request_id,("received","searching","unknown"))
+                if row and row["state"]=="unknown":
+                    receipt=await self.sender.find_post(json.loads(row["origin"]),row["delivery_id"] or row["event_id"])
+                    if await asyncio.to_thread(self._finish,request_id,"unknown","delivered" if receipt else "abandoned_no_resend",receipt or {"marker_not_found":True}):
+                        _LOG.info("rkb_slack_reconciled request_id=%s native_found=%s",request_id,bool(receipt))
+                else:await self._answer(request_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _LOG.warning("rkb_slack_reply_deferred error_type=%s",
-                             type(exc).__name__)
+                _LOG.warning("rkb_slack_reply_deferred request_id=%s error_type=%s",
+                             request_id,type(exc).__name__)
             try:
-                row=await asyncio.to_thread(self.control._row,request_id)
-                if row is None or row["state"] not in ("received","searching"):
+                row=await asyncio.to_thread(self._row,request_id,("received","searching","unknown"))
+                if row is None:
                     return
             except asyncio.CancelledError:
                 raise
@@ -160,7 +189,7 @@ class ExpertSlackSearchReply:
         with self.control.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE" if begin else "BEGIN")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
-            if row is None or row["state"] not in states:return None
+            if row is None or row["state"] not in states or not request_order.is_head(db,row):return None
             origin=self._verified(db,row)
             if begin and row["state"]=="received":
                 db.execute("UPDATE rkb_expert_requests SET state='searching',updated_at=? WHERE id=?",
@@ -188,7 +217,7 @@ class ExpertSlackSearchReply:
             if row is None or row["state"]!=expected:return False
             db.execute("UPDATE rkb_expert_requests SET state=?,delivery_receipt=?,updated_at=? WHERE id=?",
                        (state,json.dumps(receipt) if receipt else None,self.control.clock(),request_id))
-            if state=="delivered":request_order.advance(db,row["dialog_id"])
+            if state in ("delivered","abandoned_no_resend"):request_order.advance(db,row["dialog_id"])
             return True
 
     async def _answer(self, request_id):

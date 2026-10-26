@@ -538,11 +538,14 @@ async def test_generic_post_unknown_never_resends_after_provider_lost_ack(servic
 
 
 @pytest.mark.asyncio
-async def test_unknown_legacy_dialog_head_blocks_later_slack_post_without_resend(
-        service,monkeypatch):
+@pytest.mark.parametrize("observation",["found","absent","partial","denied","failed_http"])
+async def test_restart_recovers_head_without_repeating_search_or_unknown_post(
+        service,monkeypatch,observation):
     from mcp.server.mcpserver.exceptions import ToolError
     ctl,receiver,reply,first,posts=_temporary_reply_harness(service,lost_ack=True)
+    searches=[]
     async def transient(query,**kwargs):
+        searches.append(query)
         raise ToolError('{"status":"unavailable","reason":"target_warming"}')
     monkeypatch.setattr(receiver.backend,"search_adapter",transient)
     # First provider POST may have succeeded but its ACK was lost.
@@ -557,14 +560,57 @@ async def test_unknown_legacy_dialog_head_blocks_later_slack_post_without_resend
     second=ctl.accept(_observation(n=2))["request_id"]
     # Both questions remain in the same original Slack thread.
     assert ctl._row(first)["dialog_id"]==ctl._row(second)["dialog_id"]
-    with pytest.raises(PermissionError,match="not claimable"):
-        await reply._answer(second)
-    assert _delivery_row(ctl,second)["state"]=="searching"
+    searches.clear()
+    await reply._answer(second)
+    await reply._answer(second)
+    assert searches==[]
+    assert _delivery_row(ctl,second)["state"]=="received"
     assert _delivery_row(ctl,second)["delivery_attempt"]==0
     assert _delivery_row(ctl,first)==first_saved
     assert [x["client_msg_id"] for x in posts]==["Ev-1"]
-    # Re-reading the same waiting result never grants a second Slack effect.
-    with pytest.raises(PermissionError,match="not claimable"):
-        await reply._answer(second)
-    assert [x["client_msg_id"] for x in posts]==["Ev-1"]
-    assert _delivery_row(ctl,second)["delivery_attempt"]==0
+    reads=[];lookup=asyncio.Event()
+    def provider(request):
+        if request.url.path.endswith("auth.test"):
+            lookup.set()
+            return httpx.Response(200,json={"ok":True,"team_id":"T111",
+                "user_id":"OTHER" if observation=="denied" else "UBOT"})
+        if request.url.path.endswith("conversations.replies"):
+            cursor=request.url.params["cursor"];reads.append(cursor);lookup.set()
+            assert request.url.params["include_all_metadata"]=="true"
+            if observation=="failed_http":return httpx.Response(503,json={"ok":True,"messages":[],"has_more":False})
+            if not cursor:
+                return httpx.Response(200,json={"ok":True,"messages":[{
+                    "user":"OTHER","client_msg_id":"Ev-1","thread_ts":"1792000000.100"}],
+                    "has_more":True,"response_metadata":{} if observation=="partial"
+                    else {"next_cursor":"page2"}})
+            return httpx.Response(200,json={"ok":True,"messages":[{
+                "user":"UBOT","metadata":{"event_type":"rkb_slack_reply","event_payload":{"event_id":"Ev-1"}},"thread_ts":"1792000000.100",
+                "ts":"1792000001.100"}] if observation=="found" else [],"has_more":False})
+        data=json.loads(request.content);posts.append(data)
+        assert data["client_msg_id"]=="Ev-2"  # never resend unknown Ev-1
+        assert data["metadata"]=={"event_type":"rkb_slack_reply","event_payload":{"event_id":"Ev-2"}}
+        return httpx.Response(200,json={"ok":True,"channel":data["channel"],"ts":"1792000003.100",
+            "message":{"user":"UBOT","thread_ts":data["thread_ts"],"client_msg_id":"Ev-2","text":data["text"]}})
+    # New sender/worker, same committed control rows: no original in-memory task.
+    restarted=ExpertSlackSearchReply(ingress=reply.ingress,evidence=receiver,
+        sender=_sender(transport=httpx.MockTransport(provider)))
+    restarted.resume_pending()
+    try:
+        await asyncio.wait_for(lookup.wait(),1)
+        if observation in ("partial","denied","failed_http"):
+            await asyncio.sleep(.03)
+            assert _delivery_row(ctl,first)==first_saved
+            assert _delivery_row(ctl,second)["state"]=="received"
+            assert searches==[] and len(posts)==1
+        else:
+            async with asyncio.timeout(2):
+                while _delivery_row(ctl,second)["state"]!="delivered":await asyncio.sleep(.01)
+            assert reads==["","page2"]
+            assert _delivery_row(ctl,first)["state"]==("delivered" if observation=="found" else "abandoned_no_resend")
+            assert _delivery_row(ctl,first)["delivery_attempt"]==1
+            assert len(searches)==1
+            assert [post["client_msg_id"] for post in posts]==["Ev-1","Ev-2"]
+    finally:
+        tasks=list(restarted._tasks.values())
+        for task in tasks:task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
