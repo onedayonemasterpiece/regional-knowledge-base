@@ -113,6 +113,9 @@ bounded historical sweep remains an explicit diagnostic operation.
 
 Physical restore reconciles retained local source jobs only after native tail
 replay, exact remote outcome persistence and final initialized-database verification.
+An API-only restart checks the already active, verified writer before starting
+restore-plan reconciliation: an applied schema checkpoint can supersede that
+run's original bootstrap versions without requiring another restore.
 The original accepted bytes, actor, writer identity and attempt remain unchanged;
 the stored apply/outcome receipts settle the job before ordinary dispatch resumes.
 An unreconciled job must not be redispatched with its historical writer on the

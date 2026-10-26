@@ -16,12 +16,15 @@ from test_kaggle_target_runtime import spec
 
 
 @pytest.mark.asyncio
-async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg_replay():
+@pytest.mark.parametrize('active',[True,False])
+async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg_replay(active):
     from regional_knowledge.kaggle_restore_startup import SourceRestoreCoordinator
+    from regional_knowledge.recovery_journal import StaleWriter
     coordinator=SourceRestoreCoordinator.__new__(SourceRestoreCoordinator)
     binding=SimpleNamespace(database_generation='db',writer_generation='writer')
-    async def begin(*args,**kwargs):pass
-    coordinator.writer=SimpleNamespace(begin_restore=begin,current=lambda **kwargs:True)
+    async def begin(*args,**kwargs):
+        raise StaleWriter('retained recovery plan differs after schema checkpoint')
+    coordinator.writer=SimpleNamespace(begin_restore=begin,current=lambda **kwargs:active)
     coordinator.config=SimpleNamespace()
     coordinator.startup=SimpleNamespace(dataset_seed=object())
     coordinator.journal=object();coordinator.complete=False
@@ -31,6 +34,11 @@ async def test_api_restart_of_active_restore_recreates_capture_facade_without_pg
     def compose(observed,nonce):
         composed.append((observed,nonce));coordinator.dispatch=object();coordinator.physical=object()
     coordinator._compose=compose
+    if not active:
+        with pytest.raises(StaleWriter,match='retained recovery plan differs'):
+            await coordinator.refresh()
+        assert not coordinator.complete and not composed
+        return
     assert await coordinator.refresh()
     assert coordinator.complete and coordinator.physical is not None and composed==[(binding,'nonce')]
     assert await coordinator.refresh()

@@ -176,7 +176,6 @@ class SourceRestoreCoordinator:
     async def refresh(self):
         if self.complete:return True
         binding,nonce=self._observe()
-        await self.writer.begin_restore(self.journal,binding,plan=self.config)
         if self.writer.current(database_generation=binding.database_generation,writer_generation=binding.writer_generation):
             # Exact persisted activation already completed. Ordinary accepted
             # writes may have advanced since then: never replay the old base.
@@ -189,6 +188,7 @@ class SourceRestoreCoordinator:
                 self._compose(binding,nonce)
             self.complete=True
             return True
+        await self.writer.begin_restore(self.journal,binding,plan=self.config)
         if self.dispatch is None:self._compose(binding,nonce)
         if self.binding is not None and self.binding.runtime_incarnation!=binding.runtime_incarnation:
             raise SnapshotError('restore_retained_incarnation_changed')
