@@ -198,8 +198,13 @@ class TargetRuntime:
         self.owner = owner_factory(self.database)
         self._custom_probe = probe is not None
         from .kaggle_owned_pg import pinned_pgvector_version
-        version=(pinned_pgvector_version(self.database.native_paths)
-            if self.database.mode=='NEW_EMPTY_GENERATION' else '0.8.2')
+        version='0.8.2'
+        if self.database.mode=='NEW_EMPTY_GENERATION':
+            # Inert synthetic target specs may use placeholder paths; actual
+            # start_empty rejects them before an initialized/readable PG exists.
+            name=Path(self.database.native_paths['vector_sql']).name
+            if name.startswith('vector--'):
+                version=pinned_pgvector_version(self.database.native_paths)
         self.probe = probe or native_probe_for_schema(pgvector_version=version)
         self.prepare_resident = prepare
         self.pool = None
