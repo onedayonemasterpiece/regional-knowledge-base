@@ -6,7 +6,6 @@ from functools import wraps
 import logging
 import re
 import os
-import uvicorn
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -1817,7 +1816,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         expert_slack_socket_mode=expert_slack_socket_mode)
     # The MCP SDK's .run() configures Uvicorn without a graceful timeout.
     # Keep its actual ASGI app/lifespan and bound only the HTTP connection drain.
-    uvicorn.run(
+    from .http_shutdown import run_http_server
+    run_http_server(
         mcp.streamable_http_app(
             stateless_http=True,
             json_response=True,

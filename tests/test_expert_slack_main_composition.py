@@ -49,7 +49,7 @@ def _capture_main(monkeypatch):
 
     # Compose the real MCP/ASGI stack, intercept ONLY its network launch.
     monkeypatch.setattr(server.KnowledgeMCPServer,'streamable_http_app',capture_app)
-    monkeypatch.setattr(server.uvicorn,'run',capture_run)
+    monkeypatch.setattr('regional_knowledge.http_shutdown.run_http_server',capture_run)
     return captured
 
 
