@@ -244,7 +244,6 @@ async def test_hydrate_30_acceptance_union_and_top_ten(catalog_database):
     from regional_knowledge.kaggle_search import acceptance_search
     source = '00000000-0000-0000-0000-000000000001'
     other = '00000000-0000-0000-0000-000000000004'
-    vector_a = '[' + ','.join(['1'] + ['0'] * 1023) + ']'
     vector_b = '[' + ','.join(['0', '1'] + ['0'] * 1022) + ']'
     async with catalog_database.transaction():
         await catalog_database.execute((ROOT / 'sql/kaggle/043_hydrate_window.sql').read_text(), prepare=False)
@@ -260,7 +259,7 @@ async def test_hydrate_30_acceptance_union_and_top_ten(catalog_database):
                 'simple','pg_catalog.simple',
                 CASE WHEN n<=15 THEN %s::vector ELSE %s::vector END
             FROM generate_series(2,30) g(n)
-        """, (source, other, vector_a, vector_b))
+        """, (source, other, vector_literal([1] + [0] * 1023), vector_b))
         ids = (await (await catalog_database.execute(
             'SELECT array_agg(passage_id ORDER BY passage_id) FROM rkb_v4.passage_search')).fetchone())[0]
         for sql, args in [
