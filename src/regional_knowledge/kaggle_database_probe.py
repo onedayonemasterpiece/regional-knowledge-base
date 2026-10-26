@@ -12,13 +12,16 @@ from psycopg.rows import tuple_row
 from psycopg.errors import QueryCanceled
 
 
+PGVECTOR_VERSIONS = frozenset(('0.8.2', '0.8.4'))
+
+
 class DatabaseProbeUnavailable(RuntimeError):
     """Sanitized fixed code; never native diagnostics or private values."""
 
 
-def native_probe_for_schema(schema_revision=None,*,timeout_seconds=2.0):
-    """Legacy selector is ignored; readiness reads the installed integer ledger."""
-    return NativeDatabaseProbe(timeout_seconds=timeout_seconds)
+def native_probe_for_schema(schema_revision=None,*,timeout_seconds=2.0,pgvector_version='0.8.2'):
+    """Legacy schema selector is ignored; the explicit extension pin is not."""
+    return NativeDatabaseProbe(timeout_seconds=timeout_seconds,pgvector_version=pgvector_version)
 
 
 def _state(state):
@@ -48,11 +51,14 @@ class NativeDatabaseProbe:
     collation, definitions or ACLs and is independent of PG patch releases.
     """
     timeout_seconds: float = 2.0
+    pgvector_version: str = '0.8.2'
 
     def __post_init__(self):
         if (type(self.timeout_seconds) not in (int,float) or not math.isfinite(self.timeout_seconds)
                 or not 0 < self.timeout_seconds <= 10):
             raise ValueError('bounded native probe deadline required')
+        if self.pgvector_version not in PGVECTOR_VERSIONS:
+            raise ValueError('explicit supported pgvector version required')
 
     async def __call__(self,*,acquire):
         try:
@@ -77,7 +83,7 @@ class NativeDatabaseProbe:
                         if (type(state.get('schema_version')) is not int or state['schema_version']<1
                                 or type(state.get('server_version_num')) is not int
                                 or state['server_version_num']//10000!=17
-                                or state.get('pgvector_version')!='0.8.2'):
+                                or state.get('pgvector_version')!=self.pgvector_version):
                             raise DatabaseProbeUnavailable('database_native_runtime_mismatch')
                         fields=_state(state)
                         fields['schema_version']=state['schema_version']
