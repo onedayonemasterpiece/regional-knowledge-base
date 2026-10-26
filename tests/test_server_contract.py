@@ -91,7 +91,7 @@ async def test_adaptive_p1_policy_is_in_actual_search_and_fetch_descriptions(mon
         for phrase in (
             "Search/fetch checklist:", "user's language", "document_ids immediately",
             "inline search text", "incomplete and next_id", "After EACH read",
-            "For ONE gap choose ONE action", "fetch(id=next_id)", "fetch(id=hit ID)",
+            "For ONE gap choose ONE action", "fetch(id=next_id)", "fetch using the hit's id",
             "source language/rephrase", "Never mix languages", "short OPEN question",
             "AND needs one entity", "do not prove NOT", "at most 6 sequential",
             "evidenced part and remaining question", "1-4 sentence Russian answer",
