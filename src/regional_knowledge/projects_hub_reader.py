@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+from urllib.parse import quote
 import stat
 import time
 from uuid import UUID
@@ -23,6 +24,7 @@ from starlette.responses import JSONResponse
 
 from .read_authority import TrustedReadDestination
 from .read_issuance import capture_read_output, bind_json_output
+from .kaggle_public_backend import parse_passage_fetch_id
 
 CODEC = 'rkb.knowledge-search.v2'
 PATH = '/internal/projects-hub/knowledge-search'
@@ -95,6 +97,31 @@ def render(value, context):
     if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > MAX_BYTES:
         return failure(context, 'response_bound')
     return result
+
+
+def render_fetch(value, context):
+    """Adapt existing exact/page fetch to the bounded v2 evidence envelope."""
+    value = value.model_dump(mode='json') if hasattr(value, 'model_dump') else value
+    if value.get('status') != 'ok':
+        return failure(context, value.get('reason') or 'source_not_ready')
+    evidence = []
+    if 'chunks' in value:
+        for raw in value['chunks']:
+            item = raw.model_dump(mode='json') if hasattr(raw, 'model_dump') else raw
+            pages = [page.model_dump(mode='json') if hasattr(page, 'model_dump') else page
+                     for page in item['pages']]
+            regions = [part.model_dump(mode='json') if hasattr(part, 'model_dump') else part
+                       for part in item['regions']]
+            evidence.append(dict(id=item['chunk_id'], title=f"Source {item['source_id']}, scans {value['page_start']}–{value['page_end']}",
+                text=item['text'], url='urn:rkb:passage:'+quote(item['chunk_id'],safe=''),
+                metadata=dict(source_id=item['source_id'],ordinal=item['ordinal'],pages=pages,
+                    regions=regions,next_after_ordinal=value['next_after_ordinal'],has_more=value['has_more'])))
+    else:
+        evidence.append({key:value.get(key) for key in ('id','title','text','url','metadata')})
+    return render(dict(status='ok',reason=None,mode='hybrid',evidence=evidence,
+        observed_data_seq=value.get('observed_data_seq'),
+        observed_projection_seq=value.get('observed_projection_seq')),
+        context)
 
 
 class _ServiceFence:
@@ -171,12 +198,47 @@ class ProjectsHubReader:
             provider_tenant=value['provider_tenant'], bindings=value['bindings'],current=config.current)
 
     def _query(self, value):
-        required = {'codec','query','actor_sub','workspace_id','provider_tenant','link_id','link_revision',
+        common = {'codec','actor_sub','workspace_id','provider_tenant','link_id','link_revision',
             'request_id','turn_generation','min_data_seq','deadline_monotonic','max_evidence'}
-        if type(value) is not dict or set(value) != required or value['codec'] != 'rkb.knowledge-query.v2':
+        if type(value) is not dict:
             raise ValueError('invalid query')
-        if (type(value['query']) is not str or not value['query'].strip() or len(value['query']) > 1000
-                or len(value['query'].encode()) > 4096 or type(value['request_id']) is not str
+        codec, operation = value.get('codec'), value.get('operation')
+        if codec == 'rkb.knowledge-query.v2':
+            if set(value) != common | {'query'}:
+                raise ValueError('invalid query')
+        elif codec == 'rkb.knowledge-query.v3':
+            if operation == 'search':
+                if set(value) not in (common | {'operation','query'},
+                        common | {'operation','query','document_ids'}):
+                    raise ValueError('invalid query')
+                ids = value.get('document_ids')
+                if ids is not None and (type(ids) is not list or not 1 <= len(ids) <= 5
+                        or len(set(ids)) != len(ids) or not all(_canonical_uuid(v) for v in ids)):
+                    raise ValueError('invalid source scope')
+            elif operation == 'fetch':
+                keys = common | {'operation'}
+                by_id = keys | {'id'}
+                by_pages = keys | {'source_id','page_start','page_end'}
+                if set(value) not in (by_id, by_pages, by_pages | {'after_ordinal'}):
+                    raise ValueError('invalid fetch selector')
+                if 'id' in value:
+                    parse_passage_fetch_id(value['id'])
+                elif (not _canonical_uuid(value['source_id'])
+                        or any(type(value[k]) is not int or not 0 <= value[k] <= 2499
+                               for k in ('page_start','page_end'))
+                        or not value['page_start'] <= value['page_end'] < value['page_start'] + 4
+                        or ('after_ordinal' in value and (type(value['after_ordinal']) is not int
+                            or not 0 <= value['after_ordinal'] < 2**63))):
+                    raise ValueError('invalid page range')
+            else:
+                raise ValueError('invalid operation')
+        else:
+            raise ValueError('invalid codec')
+        if (codec == 'rkb.knowledge-query.v2' or operation == 'search') and (
+                type(value['query']) is not str or not value['query'].strip() or len(value['query']) > 1000
+                or len(value['query'].encode()) > 4096):
+            raise ValueError('invalid query')
+        if (type(value['request_id']) is not str
                 or not re.fullmatch(r'[A-Za-z0-9._:-]{1,256}',value['request_id'])
                 or any(type(value[k]) is not int or not 0 <= value[k] < 2**63 for k in ('turn_generation','min_data_seq'))
                 or type(value['max_evidence']) is not int or not 1 <= value['max_evidence'] <= 5
@@ -227,14 +289,31 @@ class ProjectsHubReader:
                 with capture_read_output() as calls:
                     # Authority ownership transfers to this exact backend attempt.
                     transferred, authority = authority, None
-                    result = await _connected_read(request,self.backend.search_adapter(value['query'],authority=transferred,
-                        request_id=context.request_id,turn_generation=context.turn_generation,min_data_seq=context.min_data_seq,
-                        deadline_monotonic=context.deadline_monotonic,destination=destination,limit=value['max_evidence']))
+                    trusted = dict(authority=transferred,request_id=context.request_id,
+                        turn_generation=context.turn_generation,min_data_seq=context.min_data_seq,
+                        deadline=context.deadline_monotonic,destination=destination)
+                    fetching = value.get('codec') == 'rkb.knowledge-query.v3' and value.get('operation') == 'fetch'
+                    if fetching:
+                        # Exactly the same Kaggle _search admission, read gate and issuance as MCP fetch.
+                        selector = (dict(exact_locator=parse_passage_fetch_id(value['id']))
+                            if 'id' in value else dict(catalog_request=dict(operation='accepted_chunks',
+                                source_id=value['source_id'],page_start=value['page_start'],
+                                page_end=value['page_end'],after_ordinal=value.get('after_ordinal'),
+                                limit=value['max_evidence'])))
+                        operation = self.backend._search(None,None,evidence=True,trusted=trusted,**selector)
+                    else:
+                        operation = self.backend.search_adapter(value['query'],authority=transferred,
+                            request_id=context.request_id,turn_generation=context.turn_generation,
+                            min_data_seq=context.min_data_seq,deadline_monotonic=context.deadline_monotonic,
+                            destination=destination,source_ids=value.get('document_ids'),
+                            limit=value['max_evidence'])
+                    result = await _connected_read(request,operation)
                     if len(calls) != 1:
                         raise RuntimeError('current output provenance required')
                     calls[0].gate = _ServiceFence(calls[0].gate,lambda: self.current() and self.provider.service_credential_current(service) and time.monotonic() < context.deadline_monotonic)
-                    bind_json_output(request,calls,context.request_id,lambda output:render(output,context),lambda:failure(context))
-                    return JSONResponse(render(result,context),headers={'Cache-Control':'no-store'})
+                    projector = render_fetch if fetching else render
+                    bind_json_output(request,calls,context.request_id,lambda output:projector(output,context),lambda:failure(context))
+                    return JSONResponse(projector(result,context),headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
         except TimeoutError:
