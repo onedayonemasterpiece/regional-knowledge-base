@@ -517,8 +517,6 @@ def build_server(
     _answer_instructions = (
         " For a factual question, give ONE direct answer in the language of the user's question, grounded in search/fetch evidence; a hit list or opaque UUID is not an answer. "
         "When a question names a specific author or book, never attribute another author's passage to it. "
-        "For every search, use one line with the query in Russian plus German equivalents of keywords, names and historical place names "
-        "(use historical German forms), regardless of the question's language; these two languages suffice; omit service labels and guessed answers. "
         "Verify claims using fetch evidence; cite only matching passages and then add a brief source list (for Russian questions, 'Источники:'). "
         "If retrieval succeeds but finds no relevant supporting passage, say so (for Russian, 'В доступной базе подтверждений не найдено'), without inventing a claim. "
         "Distinguish insufficient evidence from pending, timeout or unavailable retrieval (for Russian, 'Не удалось проверить базу сейчас'). "
@@ -1283,8 +1281,6 @@ def build_server(
         title="Search regional knowledge",
         description=(
             "Search accessible regional books and journals. Returns citable IDs and URLs. "
-            "Query in one line: Russian plus German equivalents of keywords, names and historical place names (use historical German forms), "
-            "regardless of the question's language; these two languages suffice; omit service labels and guessed answers. "
             "When Kaggle is cold, returns pending with startup ref; check startup_status "
             "and retry as a NEW read after ready. Use fetch for complete evidence."
         ),
