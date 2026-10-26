@@ -79,6 +79,7 @@ class ExpertSlackSocketMode:
         client.socket_mode_request_listeners.append(self.handle)
         try:
             await client.connect()
+            getattr(self.ingress._reply,"resume_pending",lambda:None)()
             yield self
         finally:
             try:

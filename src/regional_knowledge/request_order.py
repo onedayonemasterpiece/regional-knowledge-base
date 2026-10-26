@@ -65,7 +65,7 @@ def assign_slack(db,request_id,person_id,origin):
 
 
 def advance(db,dialog_id):
-    row=db.execute("SELECT dialog_seq,person_id FROM rkb_expert_requests WHERE dialog_id=? AND state!='delivered' ORDER BY dialog_seq LIMIT 1",(dialog_id,)).fetchone()
+    row=db.execute("SELECT dialog_seq,person_id FROM rkb_expert_requests WHERE dialog_id=? AND state NOT IN ('delivered','abandoned_no_resend') ORDER BY dialog_seq LIMIT 1",(dialog_id,)).fetchone()
     if row:
         db.execute('UPDATE rkb_request_dialogs SET head_seq=?,head_person_id=? WHERE id=?',(row['dialog_seq'],row['person_id'],dialog_id))
     else:
