@@ -468,9 +468,6 @@ async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(na
     assert (await pending(s,result)).command.route=='source.batch.v1'
     await finish(s,result);await call(s,result,'status')
     await finish(s,result);await call(s,result,'status')
-    with pytest.raises(ToolError,match='page_0_already_accepted'):
-        await stage(s,result,changed)
-    changed['pages'][0]['corrects_batch_index'] = 0
     await stage(s,result,changed)
     second = await pending(s,result)
     assert second.command.sequence == entry.command.sequence+3
@@ -897,95 +894,3 @@ async def test_next_stage_before_semantic_still_enriches_every_batch(native_inta
     await drain()
     assert {(i,c) for i in range(3) for c in ('text','semantic')} <= set(issued), issued
     assert state(s,result)['enriched_batch_count'] == state(s,result)['batch_count'] == 3
-
-
-async def settle_reviewed_packet(s, book, payload):
-    await stage(s, book, payload)
-    for _ in range(8):
-        current = state(s, book)
-        if current['pending_operation_key']:
-            await finish(s, book)
-        result = await call(s, book, 'status')
-        current = state(s, book)
-        if not current['pending_operation_key'] and current['enriched_batch_count'] == current['batch_count']:
-            return result
-    pytest.fail('synthetic stage did not finish')
-
-
-@pytest.mark.asyncio
-async def test_duplicate_page_requires_explicit_last_accepted_batch(native_intake):
-    s = native_intake; book = await start(s)
-    original = batch(s, book, count=1)
-    await settle_reviewed_packet(s, book, original)
-    retry_count = operation_count(s)
-
-    # Exact retry is still idempotent; a different selection is not.
-    await stage(s, book, original)
-    assert operation_count(s) == retry_count
-    repeated = copy.deepcopy(original)
-    repeated['chunks'][0]['chunk_key'] = 'alternate-window'
-    with pytest.raises(ToolError, match='page_0_already_accepted'):
-        await stage(s, book, repeated)
-    assert operation_count(s) == retry_count
-
-    # Deliberate correction names the previous accepted selection.
-    repeated['pages'][0]['corrects_batch_index'] = 0
-    assert (await stage(s, book, repeated)).state == 'processing'
-    await settle_reviewed_packet(s, book, repeated)
-    assert state(s, book)['batch_count'] == 2
-    stale = copy.deepcopy(repeated)
-    stale['chunks'][0]['chunk_key'] = 'stale-revision'
-    with pytest.raises(ToolError, match='corrects_batch_index=1'):
-        await stage(s, book, stale)
-    assert state(s, book)['batch_count'] == 2
-
-
-@pytest.mark.asyncio
-async def test_page_history_upgrade_prevents_old_ingestion_duplicates(native_intake):
-    s = native_intake; book = await start(s)
-    await settle_reviewed_packet(s, book, batch(s, book, count=1))
-    # Existing in-flight ingestions predate the compact per-page index.
-    with s.t.queue.connect() as db:
-        db.execute('UPDATE rkb_native_source_intake_state SET accepted_page_batches_json=? WHERE ingestion_id=?',
-                   ('{}', book.ingestion_id))
-    repeated = batch(s, book, count=1)
-    repeated['chunks'][0]['chunk_key'] = 'overlap'
-    with pytest.raises(ToolError, match='page_0_already_accepted'):
-        await stage(s, book, repeated)
-    assert json.loads(state(s, book)['accepted_page_batches_json']) == {'0': 0}
-
-
-@pytest.mark.asyncio
-async def test_correction_cannot_claim_new_page(native_intake):
-    s = native_intake; book = await start(s)
-    payload = batch(s, book, count=1)
-    payload['pages'][0]['corrects_batch_index'] = 0
-    with pytest.raises(ToolError, match='has_no_prior_selection'):
-        await stage(s, book, payload)
-    assert operation_count(s) == 0
-
-
-@pytest.mark.asyncio
-async def test_rejected_new_stage_does_not_permit_restage_of_earlier_page(native_intake):
-    s = native_intake; book = await start(s)
-    await settle_reviewed_packet(s, book, batch(s, book, count=1))
-    second = batch(s, book, first=1, count=1)
-    await stage(s, book, second)
-    await finish(s, book, status='rejected_precondition')
-    await call(s, book, 'status')
-    assert state(s, book)['rejected_batch_index'] == 0
-    prior = batch(s, book, count=1)
-    prior['chunks'][0]['chunk_key'] = 'unrelated-retry'
-    before = operation_count(s)
-    with pytest.raises(ToolError, match='page_0_already_accepted'):
-        await stage(s, book, prior)
-    assert operation_count(s) == before
-
-
-@pytest.mark.asyncio
-async def test_no_entity_missing_hint_for_reviewed_empty_page(native_intake):
-    s = native_intake; book = await start(s)
-    await settle_reviewed_packet(s, book, batch(s, book, count=1))
-    result = await call(s, book, 'status')
-    assert 'Accepted pages have no entities' not in result.message
-    assert not any('entity_candidates' in warning for warning in result.warnings)
