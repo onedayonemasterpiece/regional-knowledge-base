@@ -174,6 +174,28 @@ async def staged(s,metadata=None):
     return result
 
 
+@pytest.mark.asyncio
+async def test_legacy_importer_writes_explicit_printed_or_scan_locator(intake):
+    s=intake;result=await start(s);payload=stage_payload(s,result)
+    payload['pages'][0]['printed_page_number']='36'
+    payload['pages'][1]['printed_page_number']='37'
+    for begin in (0,8):
+        await s.importer.book_ingest(command='stage',principal=s.principal,ingestion_id=result.ingestion_id,
+            payload={**payload,'pages':payload['pages'][begin:begin+8],
+                'chunks':payload['chunks'][begin:begin+8]},
+            source_import=options(research=True,ingestion_id=result.ingestion_id))
+    captured=[];previous=s.importer._passages
+    async def observe(*args):
+        graph,passages=await previous(*args)
+        captured.extend(passages)
+        return graph,passages
+    s.importer._passages=observe
+    ready=await s.importer.book_ingest(command='validate',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert ready.state=='ready'
+    assert [row['locator'] for row in captured[:3]]==[
+        'printed page 36','printed page 37','scan 3']
+
+
 def test_optional_owner_rights_keep_typed_limits_without_second_legal_check():
     # The owner has already authorized legal shared import. Legacy typed
     # claims remain optional and bounded, not another mandatory approval.
