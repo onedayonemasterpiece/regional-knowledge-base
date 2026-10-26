@@ -171,3 +171,19 @@ async def test_controller_boundary_timings_are_bounded_numeric_whitelist_only():
     terminal=next(r for r in records if r.get('terminal'))
     assert terminal['controller_stages_ms']=={'auth_ms':1.25,'admission_ms':2.,'dispatch_to_result_ms':40.}
     assert 'PRIVATE_' not in json.dumps(records)
+
+
+def test_channel_timing_metadata_is_bounded_and_request_identity_is_hashed():
+    from regional_knowledge.query_telemetry import ReadRuntime
+    from hashlib import sha256
+    records=[];telemetry=ReadTelemetry(sink=lambda raw:records.append(json.loads(raw)))
+    identity=dict(request_id='PRIVATE_REQUEST_LABEL',runtime=ReadRuntime('run','incarnation'),
+        connection_generation=1,turn_generation=0,started_ns=1000000,finished_ns=3000000)
+    telemetry.channel_timing('write',**identity)
+    telemetry.channel_timing('PRIVATE_PROMPT',**identity)
+    telemetry.channel_timing('receive',**dict(identity,finished_ns=0))
+    telemetry._queue.join()
+    assert len(records)==1 and telemetry.failed==2
+    assert records[0]['request_ref']==sha256(identity['request_id'].encode()).hexdigest()
+    assert records[0]['elapsed_ms']==2
+    assert 'PRIVATE_' not in json.dumps(records)

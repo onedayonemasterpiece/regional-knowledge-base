@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import secrets
+import time
 from itertools import count
 
 import anyio
@@ -206,17 +207,31 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             encoded=json.dumps(frame,allow_nan=False,separators=(',',':'))
                     if frame.get('type')=='RKB1_BIND_PENDING':
                         telegram_inflight=False;telegram_challenge=None
+                    write_started=time.monotonic_ns()
                     try:
                         await asyncio.wait_for(socket.send_text(encoded), SEND_TIMEOUT_SECONDS)
                     finally:
                         if frame.get('type')=='RKB1_BIND_GRANT':
                             for key in ('bundle_b64','api_id','api_hash'):frame.pop(key,None)
                         encoded=None
+                    if work is not None and work.query is not None:
+                        observe_boundary('write',frame,write_started,time.monotonic_ns())
                     if frame.get('type')=='READY_ACK' and frame.get('status')=='ready':
                         ready_ack_sent=True
 
             async def status():
                 return await queue_call(queue.channel_status, run_id, token, generation)
+
+            def observe_boundary(phase,frame,started,finished,**durations):
+                observe=getattr(read_telemetry,'channel_timing',None)
+                if observe is None:return
+                try:
+                    from .query_telemetry import ReadRuntime
+                    observe(phase,request_id=frame['request_id'],
+                        runtime=ReadRuntime(run_id,hello['runtime_incarnation']),
+                        connection_generation=generation,turn_generation=frame['turn_generation'],
+                        started_ns=started,finished_ns=finished,**durations)
+                except Exception:pass  # Optional observation cannot affect a frame/result.
 
             stop_sent = False
             stop_checkpoint = None
@@ -390,6 +405,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 nonlocal ready, promoted, probe_nonce, runtime_readiness, runtime_blocked, telegram_inflight, telegram_challenge
                 while True:
                     message = await (service_frames.get() if service else socket.receive())
+                    received_at=time.monotonic_ns()
                     if message['type'] == 'websocket.disconnect':
                         return
                     frame = message if service else _decode(message)
@@ -399,7 +415,9 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         continue
                     if type(frame.get('connection_generation')) is not int or frame['connection_generation'] != generation:
                         raise StaleAttachment('generation')
+                    status_started=time.monotonic_ns()
                     observed = await status()
+                    status_ms=(time.monotonic_ns()-status_started)/1e6
                     common = ('type', 'protocol_version', 'connection_generation')
                     if shared is None and frame['type'] == 'RESOURCE_STATE':
                         _fields(frame, (*common, 'state'))
@@ -440,7 +458,11 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             raise ValueError('query_result_required')
                         if not ready or observed['provider_version'] is None:
                             raise ValueError('not_ready')
+                        settle_started=time.monotonic_ns()
                         await shared.finish_read(run_id, token, generation, result)
+                        finished=time.monotonic_ns()
+                        observe_boundary('receive',frame,received_at,finished,status_ms=status_ms,
+                            settle_ms=(finished-settle_started)/1e6)
                         if events is not None and read_telemetry is not None:
                             read_telemetry.native_events(events,request_id=result.request_id,run_id=run_id,
                                 runtime_incarnation=hello['runtime_incarnation'],connection_generation=generation,
