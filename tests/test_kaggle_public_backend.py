@@ -23,12 +23,23 @@ from test_kaggle_protocol import item
 
 @pytest.mark.parametrize('catalog, locator, expected', [
     ({'title': 'Кёнигсберг в Пруссии', 'authors': ['Фриц Гаузе'], 'publication_year': 1994},
-     'pages 141', 'Фриц Гаузе. Кёнигсберг в Пруссии (1994), с. 141'),
-    ({'title': 'Atlas', 'publication_year': 1880}, 'pages 12-13', 'Atlas (1880), с. 12–13'),
-    ({'title': 'Учебник', 'authors': ['А. Автор']}, 'pages 141, 142',
-     'А. Автор. Учебник, с. 141–142'),
+     'p. 141', 'Фриц Гаузе. Кёнигсберг в Пруссии (1994), с. 141'),
+    ({'title': 'Atlas', 'publication_year': 1880},
+     'pp. 12-13', 'Atlas (1880), с. 12–13'),
+    ({'title': 'Учебник', 'authors': ['А. Автор']},
+     'с. 141, 142', 'А. Автор. Учебник, с. 141–142'),
+    ({'title': 'Разворот'}, 'p. 36; p. 37; стр. 39',
+     'Разворот, с. 36–37, 39'),
+    ({'title': 'Несмежные'}, 'pp. 36, 38, 39',
+     'Несмежные, с. 36, 38–39'),
+    ({'title': 'Римские'}, 'стр. IV', 'Римские, с. IV'),
+    ({'title': 'Legacy'}, 'pages 141, 142', 'Legacy'),
+    ({'title': 'Физический номер'}, 'page 5', 'Физический номер'),
+    ({'title': 'Без печатной страницы'}, 'scan 5', 'Без печатной страницы'),
+    ({'title': 'Новый формат отложен'}, 'printed page 17; scan 19',
+     'Новый формат отложен'),
     ({'title': 'Без даты', 'authors': []}, 'unknown', 'Без даты'),
-    ({}, 'pages 9', 'passage-1'),
+    ({}, 'p. 9', 'passage-1'),
 ])
 def test_evidence_title_uses_existing_catalog_and_page(catalog, locator, expected):
     from regional_knowledge.kaggle_public_backend import _evidence_title

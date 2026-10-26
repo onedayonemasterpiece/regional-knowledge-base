@@ -49,11 +49,28 @@ def _evidence_title(item) -> str:
     names = ', '.join(a.strip() for a in authors if isinstance(a, str) and a.strip()) if isinstance(authors, list) else ''
     year = catalog.get('publication_year')
     title = catalog['title'].strip() + (f' ({year})' if type(year) is int and 1 <= year <= 3000 else '')
-    page = re.search(r'(?:\bpages?\b|\bpp?\.|с\.|стр\.)\s*(\d+(?:\s*(?:,|[-–])\s*\d+)*)', item.metadata.locator or '', re.I)
-    if page:
-        numbers = [int(n) for n in re.findall(r'\d+', page[1])]
-        span = f'{numbers[0]}–{numbers[-1]}' if '-' in page[1] or '–' in page[1] or len(numbers) > 1 and numbers == list(range(numbers[0], numbers[-1] + 1)) else ', '.join(map(str, numbers))
-        title += f', с. {span}'
+    # Explicit p./pp./с./стр. are printed pages; legacy "pages N" can be a scan.
+    pattern = r'(?<!\w)(pp?\.|с\.|стр\.)\s*((?:\d+[a-z]?|[ivxlcdm]+)(?:\s*(?:,|[-–])\s*(?:\d+[a-z]?|[ivxlcdm]+))*)(?=$|[;,])'
+    groups = []
+    for page in re.finditer(pattern, item.metadata.locator or '', re.I):
+        prefix = 'с.'
+        values = [part.strip().replace('-', '–') for part in page[2].split(',')]
+        if groups and groups[-1][0] == prefix:
+            groups[-1][1].extend(values)
+        else:
+            groups.append((prefix, values))
+    for prefix, values in groups:
+        spans, run = [], []
+        for value in values:
+            if run and value.isdecimal() and run[-1].isdecimal() and int(value) == int(run[-1]) + 1:
+                run.append(value)
+            else:
+                if run:
+                    spans.append(f'{run[0]}–{run[-1]}' if len(run) > 1 else run[0])
+                run = [value]
+        if run:
+            spans.append(f'{run[0]}–{run[-1]}' if len(run) > 1 else run[0])
+        title += f', {prefix} ' + ', '.join(spans)
     return ((names + '. ' if names else '') + title)[:2048]
 
 

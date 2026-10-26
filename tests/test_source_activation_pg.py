@@ -217,7 +217,8 @@ async def test_native_search_and_exact_fetch_display_the_accepted_catalog_title(
     assert exact.status=='ok'
     fetched=KaggleSourceBackend._render_fetch(exact,locator=locator,attempt=attempt)
     title=doc['image_manifest']['metadata']['title']
-    assert all(title in row.title and ', с. ' in row.title for row in rows)
+    # Historical synthetic fixture uses ambiguous "page N", not an explicit scan locator.
+    assert all(title in row.title and ', с. ' not in row.title for row in rows)
     assert thin.title==evidence.title==fetched.title
     assert thin.id==evidence.id==fetched.id and thin.url==fetched.url
     assert evidence.text==fetched.text==result.evidence[0].text
