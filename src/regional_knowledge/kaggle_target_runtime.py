@@ -417,7 +417,7 @@ class TargetRuntime:
         if self.recovery_worker is not None:
             self.restored_database=await self.recovery_worker.wait_initialized(self.database,*identity)
             if not self._custom_probe:
-                self.probe=getattr(self.recovery_worker.factory,'probe',self.probe)
+                self.probe=getattr(getattr(self.recovery_worker,'factory',None),'probe',self.probe)
         if self.restored_database is not None:
             reader_kwargs=await self.restored_database.verify_for(self.database,run_id,launch_nonce,runtime_incarnation)
             if (not isinstance(reader_kwargs,dict) or any(reader_kwargs.get(key)!=self.database.connection()[key]
