@@ -49,11 +49,11 @@ def _evidence_title(item) -> str:
     names = ', '.join(a.strip() for a in authors if isinstance(a, str) and a.strip()) if isinstance(authors, list) else ''
     year = catalog.get('publication_year')
     title = catalog['title'].strip() + (f' ({year})' if type(year) is int and 1 <= year <= 3000 else '')
-    # Legacy "pages N" may be a physical scan, so do not claim it is printed.
-    pattern = r'(?<!\w)(printed page|scan|pp?\.|с\.|стр\.)\s*((?:\d+[a-z]?|[ivxlcdm]+)(?:\s*(?:,|[-–])\s*(?:\d+[a-z]?|[ivxlcdm]+))*)(?=$|[;,])'
+    # Explicit p./pp./с./стр. are printed pages; legacy "pages N" can be a scan.
+    pattern = r'(?<!\w)(pp?\.|с\.|стр\.)\s*((?:\d+[a-z]?|[ivxlcdm]+)(?:\s*(?:,|[-–])\s*(?:\d+[a-z]?|[ivxlcdm]+))*)(?=$|[;,])'
     groups = []
     for page in re.finditer(pattern, item.metadata.locator or '', re.I):
-        prefix = 'скан' if page[1].lower() == 'scan' else 'с.'
+        prefix = 'с.'
         values = [part.strip().replace('-', '–') for part in page[2].split(',')]
         if groups and groups[-1][0] == prefix:
             groups[-1][1].extend(values)

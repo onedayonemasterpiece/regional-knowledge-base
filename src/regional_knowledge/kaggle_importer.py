@@ -548,13 +548,10 @@ class KaggleSourceImporter:
             body = chunk.text
             if not 1 <= tokens <= MAX_TOKENS:
                 raise failure('complete_source_input_exceeds_512_tokens', status='invalid_query')
-            locators=[]
-            for p in chunk.page_ids:
-                page=pages[str(p)]
-                printed=(page.printed_page_number or '').strip()
-                locators.append(f'printed page {printed}' if printed else f'scan {page.physical_page_index+1}')
+            locators = [pages[str(page)].printed_page_number or str(pages[str(page)].physical_page_index+1)
+                for page in chunk.page_ids]
             passages.append(dict(passage_id=str(chunk.chunk_id), ordinal=ordinal,
-                locator='; '.join(locators), body=body, language=language, input_tokens=tokens))
+                locator='pages '+', '.join(locators), body=body, language=language, input_tokens=tokens))
         if sum(len(value['body'].encode()) for value in passages) > MAX_BODY_BYTES:
             raise failure('small_source_body_bound', status='invalid_query')
         return graph, passages
