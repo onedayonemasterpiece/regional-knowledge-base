@@ -560,6 +560,14 @@ class NativeSourceIntake:
         if (self._request_hash(doc)==state['last_request_sha256']
                 and state.get('rejected_batch_index') is None):
             return self._output(row,await self._packet_progress(access,row,state))
+        if state['enriched_batch_count']<state['batch_count']:
+            # Only the newest packet is ever enriched; accepting the next one
+            # now would silently drop the previous packet's entities/stories.
+            state=await self._packet_progress(access,row,state)
+            if state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count']:
+                return self.importer._output(row,'processing','Previous packet is still being applied; '
+                    'call status, then resend this same stage','wait',source_archive_status='verified',
+                    warnings=['previous_packet_applying'])
         builder=lambda **values: resolved_native_stage_command(route=STAGE_ROUTE,**values)
         await self._stage_exact(access,row,kind='stage',key=self._stage_key(row,state),
             route=STAGE_ROUTE,payload=doc,builder=builder)
