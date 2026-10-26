@@ -320,7 +320,7 @@ class TargetRuntime:
             ticket_channel=ticket_channel,transfer=transfer,acquire=acquire,model_pins=model_pins,
             **({'dataset_checkpoint':self.target['dataset_checkpoint']} if self.target.get('dataset_checkpoint') is not None else {}),
             source_materializer=self._native_source_materializer(encoder))
-        if self.database.mode=='NEW_EMPTY_GENERATION':
+        if self.database.mode=='NEW_EMPTY_GENERATION' and getattr(worker,'factory',None) is not None:
             # A first-base capture and its restore drill use the same fresh pin.
             worker.factory.probe=self.probe
         self.recovery_worker=worker
