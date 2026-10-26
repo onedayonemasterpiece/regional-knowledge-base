@@ -72,14 +72,34 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     assert "never UUIDs" in server.instructions
     assert "book_pages" in server.instructions and "book_ingest(reprocess)" in server.instructions
     assert "model performs semantic reading" in server.instructions
-    for phrase in ("ONE direct answer", "language of the user's question",
-                   "names a specific author or book", "fetch evidence",
+    for phrase in ("ONE direct answer", "in Russian",
+                   "names a specific author or book", "inline search or fetch evidence",
                    "Источники:", "В доступной базе подтверждений не найдено",
                    "Не удалось проверить базу сейчас", "printed-page numbers from scan numbers"):
         assert phrase in server.instructions
     live = {tool.name for tool in await build_server(profile="live").list_tools()}
     assert "book_find" not in live and "book_ingest" not in live
 
+
+
+@pytest.mark.asyncio
+async def test_adaptive_p1_policy_is_in_actual_search_and_fetch_descriptions(monkeypatch):
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    tools = {tool.name: tool for tool in await build_server().list_tools()}
+    for name in ("search", "fetch"):
+        guide = tools[name].description
+        for phrase in (
+            "Search/fetch checklist:", "user's language", "document_ids immediately",
+            "inline search text", "incomplete and next_id", "After EACH read",
+            "For ONE gap choose ONE action", "fetch(id=next_id)", "fetch(id=hit ID)",
+            "source language/rephrase", "Never mix languages", "short OPEN question",
+            "AND needs one entity", "do not prove NOT", "at most 6 sequential",
+            "evidenced part and remaining question", "1-4 sentence Russian answer",
+            "cite ALL supporting passages",
+        ):
+            assert phrase in guide, (name, phrase)
+    assert "document_ids" in tools["search"].input_schema["properties"]
+    assert "source_id" in tools["fetch"].input_schema["properties"]
 
 
 def test_auth_uses_application_issuer_not_supabase(monkeypatch):
