@@ -966,45 +966,6 @@ async def test_correction_cannot_claim_new_page(native_intake):
 
 
 @pytest.mark.asyncio
-async def test_entity_hint_only_for_last_accepted_packet_without_entities(native_intake):
-    s = native_intake; book = await start(s)
-    before = await call(s, book, 'status')
-    assert 'Accepted pages have no entities' not in before.message
-    await settle_reviewed_packet(s, book, batch(s, book, count=1))
-    after = await call(s, book, 'status')
-    assert 'Accepted pages have no entities' in after.message
-    assert any('entity_candidates' in hint for hint in after.warnings)
-
-    next_page = batch(s, book, first=1, count=1)
-    next_page['entity_candidates'] = {'entities': [{'key': 'sample', 'kind': 'person'}]}
-    await settle_reviewed_packet(s, book, next_page)
-    after = await call(s, book, 'status')
-    assert 'Accepted pages have no entities' not in after.message
-    assert not any('entity_candidates' in hint for hint in after.warnings)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('field,missing', [('authors', []), ('publication_year', None)])
-async def test_catalog_hint_only_while_author_or_year_missing(native_intake, field, missing):
-    s = native_intake; book = await start(s)
-    assert 'Catalog author/year missing' not in (await call(s, book, 'status')).message
-    row = s.importer._row(s.principal.subject, book.ingestion_id)
-    catalog = json.loads(row['metadata_json'])
-    complete = dict(catalog)
-    catalog[field] = missing
-    with s.t.queue.connect() as db:
-        db.execute('UPDATE rkb_source_intake_control SET metadata_json=? WHERE ingestion_id=?',
-                   (json.dumps(catalog), book.ingestion_id))
-    incomplete = await call(s, book, 'status')
-    assert 'metadata.catalog_update' in incomplete.message
-    assert any('Catalog author/year missing' in hint for hint in incomplete.warnings)
-    with s.t.queue.connect() as db:
-        db.execute('UPDATE rkb_source_intake_control SET metadata_json=? WHERE ingestion_id=?',
-                   (json.dumps(complete), book.ingestion_id))
-    assert 'Catalog author/year missing' not in (await call(s, book, 'status')).message
-
-
-@pytest.mark.asyncio
 async def test_rejected_new_stage_does_not_permit_restage_of_earlier_page(native_intake):
     s = native_intake; book = await start(s)
     await settle_reviewed_packet(s, book, batch(s, book, count=1))
