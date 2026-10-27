@@ -9,6 +9,79 @@ def run_details(queue):
         run=dict(db.execute("select * from runs where status='starting' order by started desc limit 1").fetchone())
     return run['id'],(queue.path.parent/'bge-worker-credentials'/run['id']).read_text()
 
+
+@pytest.mark.parametrize('missing',[
+    ('bge_retention',),('bge_assigned',),('bge_retention','bge_assigned'),
+    ('bge_live',),('bge_retention','bge_assigned','bge_live'),
+])
+def test_existing_queue_upgrades_missing_maintenance_indexes_without_changing_jobs(tmp_path,missing):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    job=queue.enqueue('actor','retained-command',['accepted input'],kind='document')
+    with queue.connect() as db:
+        before=dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())
+        for name in missing:db.execute('DROP INDEX '+name)
+    reopened=BgeQueue(queue.path)
+    with reopened.connect(write=False) as db:
+        indexes={row['name'] for row in db.execute('PRAGMA index_list(jobs)')}
+        assert {'bge_retention','bge_assigned','bge_live'}<=indexes
+        assert dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())==before
+    assert reopened._schema_current()
+
+
+@pytest.mark.parametrize('sql,arguments,index,bounds',[
+    ("DELETE FROM jobs WHERE kind='query' AND state='done' AND updated<?",
+        (1000.,),'bge_retention',('state=?','kind=?','updated<?')),
+    ("DELETE FROM jobs WHERE kind='document' AND state='done' AND updated<? "
+        "AND json_extract(identity,'$.audit') IS NOT NULL",
+        (1000.,),'bge_retention',('state=?','kind=?','updated<?')),
+    ("SELECT 1 FROM jobs WHERE run_id=? AND state='claimed' "
+        "AND kind IN ('source_command','recovery_phase') LIMIT 1",
+        ('retained-run',),'bge_assigned',('run_id=?','state=?')),
+])
+def test_maintenance_plans_bound_retention_time_and_assigned_run(tmp_path,sql,arguments,index,bounds):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    with queue.connect() as db:
+        # Include the serving admission index, which previously won these
+        # lookups while leaving retention time/run identity as row filters.
+        db.execute('CREATE INDEX bge_admission_actor ON jobs(state,kind,actor,created,id)')
+    with queue.connect(write=False) as db:
+        plan=' '.join(row['detail'] for row in db.execute('EXPLAIN QUERY PLAN '+sql,arguments))
+    assert 'SEARCH jobs USING INDEX '+index in plan or 'SEARCH jobs USING COVERING INDEX '+index in plan
+    assert all(bound in plan for bound in bounds),plan
+
+
+def test_live_job_plans_skip_completed_recovery_history(tmp_path):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    with queue.connect() as db:
+        db.execute('CREATE INDEX bge_admission_actor ON jobs(state,kind,actor,created,id)')
+        db.executemany('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,run_id) '
+            "VALUES(?,'maintenance:old',?,'recovery_phase','[]','{}','done',1,1,'old')",
+            ((str(i),str(i)) for i in range(1000)))
+    with queue.connect(write=False) as db:
+        plan=' '.join(row['detail'] for row in db.execute(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM jobs WHERE state!='done'"))
+        assert 'SCAN jobs USING COVERING INDEX bge_live' in plan,plan
+        assert db.execute("SELECT 1 FROM jobs WHERE state!='done'").fetchone() is None
+        plan=' '.join(row['detail'] for row in db.execute(
+            "EXPLAIN QUERY PLAN UPDATE jobs SET state='done',updated=?,"
+            "result=coalesce(result,'{\"value\":{\"error\":\"run_expired\"}}') "
+            "WHERE kind='recovery_phase' AND state!='done' "
+            "AND actor IN (SELECT 'maintenance:'||id FROM runs WHERE status IN ('expired','failed'))",(2.,)))
+        assert 'SEARCH jobs USING INDEX bge_live (kind=?)' in plan,plan
+
+
+def test_live_index_retains_other_nondone_states_and_retirement_semantics(tmp_path):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    with queue.connect() as db:
+        db.execute("INSERT INTO runs(id,status,token_hash,started,heartbeat,useful) "
+            "VALUES('old','expired','fixture',0,0,0)")
+        db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim) '
+            "VALUES('retained','maintenance:old','retained','recovery_phase','[]','{}','future_state',1,1,'old','original-claim')")
+        assert db.execute("SELECT id FROM jobs WHERE state!='done'").fetchone()[0]=='retained'
+        queue._retire_recovery_jobs(db,2.)
+        row=db.execute("SELECT state,run_id,claim,result FROM jobs WHERE id='retained'").fetchone()
+        assert tuple(row)==('done','old','original-claim','{"value":{"error":"run_expired"}}')
+
 def test_atomic_start_and_durable_replayed_job(tmp_path):
     queue=BgeQueue(tmp_path/'queue.sqlite')
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
