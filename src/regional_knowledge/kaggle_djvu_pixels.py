@@ -24,8 +24,7 @@ from .native_snapshot_transfer import _blocking
 
 PRIVATE_ROOT = Path('/kaggle/temp')
 MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
-MAX_RENDER_EDGE = MODEL_PAGE_MAX_EDGE; MAX_RENDER_PIXELS = MAX_RENDER_EDGE**2
-MAX_PPM_BYTES = MAX_RENDER_PIXELS * 3 + 1024; MAX_JPEG_BYTES = MODEL_PAGE_BYTE_LIMIT
+MAX_RENDER_EDGE = MODEL_PAGE_MAX_EDGE; MAX_RENDER_PIXELS = MAX_RENDER_EDGE**2; MAX_PPM_BYTES = MAX_RENDER_PIXELS * 3 + 1024; MAX_JPEG_BYTES = MODEL_PAGE_BYTE_LIMIT
 
 
 class DjvuPixelsUnavailable(ValueError):
@@ -228,8 +227,7 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
         raise DjvuPixelsUnavailable('djvu_source_or_decoder_changed')
     jpeg,quality,edge,width,height=output
     page=inventory.pages[index]
-    render=dict(policy='rkb.model-page.v2',width=width,height=height,scale=min(width/page.width,height/page.height),
-        max_edge=edge,jpeg_quality=quality,byte_limit=MAX_JPEG_BYTES,image_bytes=len(jpeg),preview_only=True)
+    render=dict(policy='rkb.model-page.v2',width=width,height=height,scale=min(width/page.width,height/page.height),max_edge=edge,jpeg_quality=quality,byte_limit=MAX_JPEG_BYTES,image_bytes=len(jpeg),preview_only=True)
     return dict(format='djvu',page_count=inventory.page_count,physical_page_index=index,
         width=page.width,height=page.height,
         native_cursor=dict(block=0,offset=0,text=0),next_native=None,
