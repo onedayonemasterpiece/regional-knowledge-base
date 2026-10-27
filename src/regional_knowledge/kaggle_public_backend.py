@@ -575,7 +575,10 @@ class KaggleSourceBackend:
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     raise failure(status,reason)
-                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:self._render_chunks(value,attempt=attempt,request=catalog_request)) if catalog_request is not None and catalog_request.get('operation')=='accepted_chunks' else (lambda value:BookFindOutput(
+                render = (lambda value:self._render_graph(value,attempt=attempt)) if graph_request is not None else (lambda value:self._render_chunks(value,attempt=attempt,request=catalog_request)) if catalog_request is not None and catalog_request.get('operation')=='accepted_chunks' else (lambda value:dict(status='ok',source_id=catalog_request['source_id'],
+                    units=list(value.records),next_after_ordinal=value.next_after_ordinal))
+                    if catalog_request is not None and catalog_request.get('operation')=='source_units'
+                    else (lambda value:BookFindOutput(
                     query=catalog_request['query'],results=list(value.records))) if catalog_request is not None else (lambda value:self._render_fact(value,attempt=attempt,comparison=fact_request['action']=='observation_compare')) if fact_request is not None else (lambda value:self._render_story(value,attempt=attempt)) if story_request is not None else (lambda value: self._render_fetch(value, locator=exact_locator, attempt=attempt)) if exact_locator is not None else (
                     lambda value: self._render(value, evidence=evidence, attempt=attempt))
                 output = None if illustration else render(gated.result)
@@ -747,6 +750,12 @@ class KaggleSourceBackend:
 
     async def book_find(self,query,principal,*,limit=8):
         return await self._search(None,principal,evidence=True,catalog_request=dict(query=query,limit=limit))
+
+    async def source_units(self,source_id,principal,*,after_ordinal=None,limit=8):
+        """Existing authorized source read path; no new importer or search backend."""
+        return await self._search(None,principal,evidence=True,catalog_request=dict(
+            operation='source_units',source_id=source_id,after_ordinal=after_ordinal,
+            limit=limit))
 
     async def search_adapter(self,query,*,authority,request_id,turn_generation,min_data_seq,
                              deadline_monotonic,destination,source_ids=None,limit=3):
