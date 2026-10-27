@@ -99,6 +99,27 @@ def test_i02_next_confirmed_boundary_closes_previous_at_interior_region_offset()
     assert [s["physical_page_index"] for s in a["source_spans"]]==[0,1,2,3]
 
 
+def test_i02_next_chapter_start_is_confirmed_end_without_redundant_end_marker():
+    """The next page's model-confirmed heading is sufficient to close A."""
+    first="Глава А. Отдельное повествование."
+    next_text="Глава Б. Совсем другой авторский текст."
+    pages=[
+        reviewed(0,[("a","heading",first)],[
+            event("chapter-a","start","a",0,kind="chapter",title="А")]),
+        reviewed(1,[("b","heading",next_text)],[
+            event("chapter-b","start","b",0,kind="chapter",title="Б")]),
+    ]
+    old,new=resolve_source_units([projection(p) for p in pages],
+        source_id=SOURCE,page_count=3,read_complete=False)
+    assert old["boundary_status"]=="closed"
+    assert old["state"]=="complete" and old["close_reason"]=="next_boundary"
+    assert old["end_anchor"]["physical_page_index"]==1
+    assert old["end_anchor"]["offset"]==0
+    assert spans_text(old,pages)==first
+    assert next_text not in spans_text(old,pages)
+    assert new["boundary_status"]=="open" and new["state"]=="unit_not_ready"
+
+
 def test_i03_two_articles_one_region_have_disjoint_half_open_spans_and_existing_ids():
     text="Повествование А. Статья Б: собственный текст."
     boundary=text.index("Статья Б")
