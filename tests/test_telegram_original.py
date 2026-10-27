@@ -190,3 +190,30 @@ async def test_native_archive_original_presence_and_unknown_never_resends(native
     first=(await n.handler(unknown))['value']
     assert first['error']=='original_telegram_send_unknown'
     assert (await n.handler(unknown))['value']==first and client.send_calls==2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy',[False,True])
+async def test_native_restore_reads_registered_telegram_document_without_rewriting_receipt(native,legacy):
+    """One synthetic upload followed by an actual Kaggle-native Telegram restore."""
+    from test_kaggle_original_intake import acquire, SOURCE, INGEST, REQUEST
+    from regional_knowledge.original_intake import VerifiedOriginalReceipt
+    client=Client();n=native;n.handler.telegram_downloader=downloader(client)
+    _,record=await acquire(n)
+    args=dict(handle=record['handle'],original_sha256=record['sha256'])
+    value=(await n.handler(frame('original_archive',args,key='restore-upload')))['value']
+    loc=TelegramOriginalLocator.from_wire(value['telegram_locator'])
+    receipt=VerifiedOriginalReceipt(SOURCE,INGEST,REQUEST,1,record['sha256'],record['size'],
+        value['key'],value['native_version'],'pdf',record['page_count'],record['parser_sha256'],
+        record['acquisition_sha256'],value['native_verification_sha256'])
+    if legacy:
+        receipt=replace(receipt,key='originals/legacy/exact-source',native_version='old-etag')
+    immutable=receipt.wire()
+    n.handler._records.clear()
+    restored=frame('original_acquire',dict(spec=record['spec'],restore_receipt=immutable,
+        restore_nonce='a'*48,telegram_locator=loc.wire()),key='restore-from-topic2')
+    result=(await n.handler(restored))['value']
+    assert result['restored_from_receipt_sha256']==receipt.receipt_sha256
+    assert result['sha256']==record['sha256'] and result['parser_sha256']==record['parser_sha256']
+    assert receipt.wire()==immutable and client.send_calls==client.downloads==1
+    assert n.download.calls==1  # initial fixture acquisition; restore never fetched S3 or Dev
