@@ -1358,6 +1358,9 @@ def build_server(
         if aliases:options['aliases']=aliases
         return _require_hybrid_read(await read_telemetry.measure("search", backend.search(query.strip(), _principal(),**options)))
 
+    diagnostic_pdf_resource_enabled = (selected=='kaggle_source' and profile=='full'
+        and os.getenv('RKB_DIAGNOSTIC_PDF_RESOURCE_LINK','')=='1')
+
     @mcp.tool(
         title="Fetch regional evidence",
         description=(
@@ -1392,6 +1395,10 @@ def build_server(
                 after_ordinal=after_ordinal,limit=limit)))
         if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
+        if diagnostic_pdf_resource_enabled:
+            from .diagnostic_pdf_resource import FIXTURE_ID, fetch_fixture
+            if id==FIXTURE_ID:
+                return await fetch_fixture(target_startup,_principal())
         return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
