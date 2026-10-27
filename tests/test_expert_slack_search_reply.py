@@ -220,7 +220,7 @@ def _delivery_row(control, request_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("query",["", "я"*1001])
+@pytest.mark.parametrize("query",["", "я"*1001, "*Sent using* <@U123>"])
 async def test_invalid_query_completes_once_without_search_and_unblocks_dialog(service,monkeypatch,query):
     control,receiver,reply,request_id,posts=_temporary_reply_harness(service)
     with control.corpus.connect() as db:
@@ -237,6 +237,35 @@ async def test_invalid_query_completes_once_without_search_and_unblocks_dialog(s
     control.clock=lambda:1792000002.0
     second=control.accept(_observation(n=2))["request_id"]
     assert reply._row(second,("received",),begin=True) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("message", "expected"), [
+    ("Gentzen *Sent using* <@U123>", "Gentzen"),
+    ("Gentzen\n\n*Sent using* <@U123|ChatGPT>", "Gentzen"),
+    ("Что означает Sent using?", "Что означает Sent using?"),
+    ("*Sent using* <@U123> — часть цитаты", "*Sent using* <@U123> — часть цитаты"),
+])
+async def test_connector_attribution_is_not_searched_or_removed_from_accepted_input(
+        service, monkeypatch, message, expected):
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+    original = "<@UBOT> " + message
+    with control.corpus.connect() as db:
+        db.execute("UPDATE rkb_expert_requests SET input_text=? WHERE id=?", (original, request_id))
+    searched = []
+
+    async def search(query, **kwargs):
+        searched.append(query)
+        from mcp.server.mcpserver.exceptions import ToolError
+        raise ToolError('{"status":"pending","reason":"target_warming"}')
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", search)
+    await reply._answer(request_id)
+    assert searched == [expected]
+    assert len(posts) == 1 and _delivery_row(control, request_id)["state"] == "delivered"
+    with control.corpus.connect() as db:
+        assert db.execute("SELECT input_text FROM rkb_expert_requests WHERE id=?",
+                          (request_id,)).fetchone()[0] == original
 
 
 @pytest.mark.asyncio

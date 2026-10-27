@@ -297,3 +297,8 @@ separate operator authorization; only Opus may review and merge this source.
 ### Invalid Slack search input
 
 An empty question or a question longer than 1000 characters after removing the bot mention receives one explicit length-validation reply through the ordinary authenticated send permit. It performs no search and completes the request so later questions in that dialog can proceed. Duplicate delivery and an unknown POST retain the existing no-resend rules.
+
+The search adapter also excludes a trailing Slack connector attribution,
+`*Sent using* <@APP_USER>`, from the query before that length check. The original
+accepted event text remains unchanged; ordinary mentions and attribution text
+inside a question are retained.
