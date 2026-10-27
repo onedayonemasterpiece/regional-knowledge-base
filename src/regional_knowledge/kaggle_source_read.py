@@ -218,17 +218,23 @@ async def execute_source_read(request, *, acquire):
                         elif request.operation == 'source_units':
                             records, evidence, next_ordinal = await _source_units(request,cursor,execute)
                         else:
-                            await execute('SELECT * FROM rkb_v4.find_source_catalog_v1(%s,%s)',
+                            await execute('''SELECT c.source_id,c.source_revision,c.eligibility_revision,c.metadata,
+                                convert_from(decode(s.manifest->>'original_receipt_b64','base64'),'UTF8')::jsonb->>'format'
+                                FROM rkb_v4.find_source_catalog_v1(%s,%s) c
+                                LEFT JOIN rkb_v4.source_manifests s ON s.source_id=c.source_id
+                                    AND s.source_revision=c.source_revision''',
                                 (request.query,request.limit))
                             rows = await cursor.fetchall()
                             if len(rows) > request.limit:
                                 raise ReadUnavailable('internal_error')
                             records, evidence = [], []
-                            for source, revision, eligibility, metadata in rows:
+                            for source, revision, eligibility, metadata, source_format in rows:
+                                if source_format not in (None,'pdf','djvu'):
+                                    raise ReadUnavailable('internal_error')
                                 source = str(source)
                                 record = dict(document_id=source,title=metadata['title'],
                                     authors=metadata['authors'],publication_year=metadata['publication_year'],
-                                    active_revision=revision,source_format='pdf',
+                                    active_revision=revision,source_format=source_format,
                                     source_archive_status='verified')
                                 item = EvidenceItem(id=source,kind='source',text=record['title'],
                                     metadata=EvidenceMetadata(title=record['title'],locator='source:'+source),

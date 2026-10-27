@@ -19,3 +19,8 @@ The existing MCP fetch principal, `public_search` capability, controller `Source
 The native `SOURCE_READ` operation `accepted_chunks` selects only accepted, non-withdrawn `passage_search` rows with the active revision. It joins existing `source_passage_provenance`, `source_stage_pages`, `source_regions` and `source_visibility` in a bounded read-only repeatable-read transaction. No new SQL migration, table, service, durable queue, source import, model execution or search-ranking change is introduced. A missing or inconsistent region/page/offset binding fails closed instead of inventing the missing provenance.
 
 Tests: `tests/test_kaggle_source_read.py`, `tests/test_source_read_gate.py` and `tests/test_kaggle_public_backend.py`.
+
+The native catalogue lookup reports `source_format` from the original receipt
+inside the accepted manifest for the current source revision. Only the format
+leaves PostgreSQL; the receipt stays there. Sources without that manifest report
+an unknown format (`null`) rather than an assumed PDF.
