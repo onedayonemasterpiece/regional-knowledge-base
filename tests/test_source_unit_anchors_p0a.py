@@ -228,3 +228,41 @@ def test_conflicting_cross_page_duplicate_ids_and_reversed_closures_fail_closed(
         with pytest.raises(SourceUnitBoundaryError):
             resolve_source_units([projection(start),projection(other)],
                 source_id=SOURCE,page_count=2,read_complete=True)
+
+
+
+@pytest.mark.asyncio
+async def test_i07_native_materializer_opt_in_accepts_existing_article_id_but_legacy_replay_does_not():
+    """Real native stage compilation; versionless historical article scope stays unsupported."""
+    from regional_knowledge.kaggle_source_materializer import (
+        NativeSourceCompiler, SourceMaterializationRejected,
+    )
+    from regional_knowledge.source_stage import canonical, digest
+    from test_native_source_materializer import exact_batch, PERSON
+    from test_source_stage import original, SOURCE as STAGED_SOURCE
+
+    async def count(text):
+        return len(text.split()) + 2
+
+    compiler = NativeSourceCompiler(count=count,current=lambda: True)
+    old = exact_batch(count=1,receipt=original(page_count=1))
+    old['model_payload']['chunks'][0]['article_id'] = 'article-p0'
+    encoded=canonical(old)
+    with pytest.raises(SourceMaterializationRejected,match='native_source_component_activation_unavailable'):
+        await compiler.compile([encoded],source_id=STAGED_SOURCE,person_id=PERSON,
+                               last_batch_sha256=digest(encoded))
+    new = copy.deepcopy(old)
+    page = new['model_payload']['pages'][0]
+    region = page['regions'][0]
+    original_text=region['source_text']
+    page['source_unit_version'] = 1
+    page['source_unit_boundaries']=[
+        event('article-p0','start',region['region_key'],0,kind='article',title='Published article'),
+        event('article-p0','end',region['region_key'],len(original_text)),
+    ]
+    encoded=canonical(new)
+    knowledge=await compiler.compile([encoded],source_id=STAGED_SOURCE,person_id=PERSON,
+                                     last_batch_sha256=digest(encoded))
+    assert len(knowledge['passages'])==1
+    assert knowledge['passages'][0]['body']==original_text.strip()
+    assert new['model_payload']['chunks'][0]['article_id']==page['source_unit_boundaries'][0]['article_id']
