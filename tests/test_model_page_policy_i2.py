@@ -1,6 +1,8 @@
 """I2: one dense synthetic spread crosses the existing page-image boundaries."""
 import base64
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import replace
+from uuid import UUID,uuid5
 from io import BytesIO
 import random
 import sqlite3
@@ -136,7 +138,7 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     assert returned_page == first and returned_data == pdf_image
 
     receipt = VerifiedOriginalReceipt(
-        SOURCE, INGEST, REQUEST, 1, original_sha, path.stat().st_size,
+        SOURCE, INGEST, str(uuid5(UUID(INGEST), 'original:source-original:'+INGEST)), 1, original_sha, path.stat().st_size,
         "originals/i2/fixture", "etag", "pdf", 1, n.parser_sha256,
         "a" * 64, "b" * 64)
     db = sqlite3.connect(":memory:")
@@ -163,14 +165,16 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     importer._row = lambda person_id, ingestion_id: dict(ingestion_id=INGEST, source_id=SOURCE)
     async def verified(access_value, row):
         return receipt
-    importer._receipt = verified
+    async def check(authority, context, binding):return None
+    importer._check = check
+    importer.parser_sha256 = receipt.parser_sha256
     async def model_pages(context, ingestion_id, cursor=None, batch_size=1):
         assert batch_size == 1
         return RenderedPageBatch((RenderedPage(
             first["page_id"], 0, None, "image/jpeg", pdf_image,
             first["native_text"], tuple(first["native_blocks"]),
             first["native_text_info"]),), None)
-    importer.originals = SimpleNamespace(pages=model_pages)
+    importer.originals = SimpleNamespace(pages=model_pages, verified=verified)
     async def reply(access_value, result, *, render=None):
         return result
     importer._reply = reply
@@ -182,3 +186,57 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
           f"q{render['jpeg_quality']},{len(pdf_image)}B; "
           f"DjVu={meta['width']}x{meta['height']},q{meta['jpeg_quality']},"
           f"{len(djvu_image)}B")
+
+    # Legacy DjVu pin: genuine importer _receipt and a previously unissued
+    # physical page, using the already pinned native page path (no stub _receipt).
+    from regional_knowledge.kaggle_original_native import NativeOriginalIntake,OriginalIntakeConfig
+    from mcp.server.mcpserver.exceptions import ToolError
+    import regional_knowledge.kaggle_original_native as native_module
+    monkeypatch.setattr(native_module.importlib.metadata,'version',lambda name:'1.28.2')
+    previous_root=tmp_path/'previous-native'
+    previous_root.mkdir(mode=0o700)
+    restored=NativeOriginalIntake(
+        config=OriginalIntakeConfig(('https://archive.invalid',),(('pymupdf','1.28.2'),)),
+        database=n.database,identity=n.identity,workspace=previous_root,current=n.current,
+        downloader=n.downloader,parser=n.parser,transfer=n.transfer,
+        native_bundle=SimpleNamespace(current=lambda:True))
+    restored.attached(1)
+    old_pin=restored.previous_parser_sha256
+    assert old_pin=='adca0115e43da61713a048f8a816c1b40a885925320b916b68f3daaec0aa961b'
+    assert restored._parser_script(old_pin).name=='kaggle_original_parser.py'
+    previous_inventory=DjvuInventory(2,0,0,length,
+        (DjvuPage(0,4680,3310,length,0),DjvuPage(1,4680,3310,length,0)))
+    old_sha=digest(djvu_path.read_bytes())
+    restored._records['prior-djvu']=dict(path=djvu_path,sha256=old_sha,size=length,format='djvu',
+        page_count=2,inventory=previous_inventory,pages={},verified={'source':'fixture'},
+        parser_sha256=old_pin,spec={'source_id':SOURCE,'ingestion_id':INGEST})
+    page1=(await restored(frame('original_pages',
+        dict(handle='prior-djvu',original_sha256=old_sha,index=1),key='i2-djvu-first-page1')))['value']
+    assert page1['physical_page_index']==1 and page1['parser_sha256']==old_pin
+    assert 256*1024<page1['image_size']<=MODEL_PAGE_BYTE_LIMIT
+    old_receipt=replace(receipt,sha256=old_sha,size=length,format='djvu',
+        page_count=2,parser_sha256=old_pin)
+    # Index 1 has never been issued in this ingestion; real controller records it.
+    assert controller._record_issued_image(old_receipt,page1)['image_sha256']==page1['image_sha256']
+    async def prior_verified(context,ingestion_id):
+        assert ingestion_id==INGEST
+        return old_receipt
+    async def prior_page(context,ingestion_id,cursor=None,batch_size=1):
+        assert cursor=='1' and batch_size==1
+        blob=restored._records['prior-djvu']['pages'][1]['path'].read_bytes()
+        return RenderedPageBatch((RenderedPage(
+            page1['page_id'],1,None,'image/jpeg',blob,
+            page1['native_text'],tuple(page1['native_blocks']),page1['native_text_info']),),None)
+    importer.originals=SimpleNamespace(verified=prior_verified,pages=prior_page)
+    access_value=SimpleNamespace(authority=object(),context=object(),binding=object())
+    assert await KaggleSourceImporter._receipt(importer,access_value,
+        dict(ingestion_id=INGEST,source_id=SOURCE)) == old_receipt
+    resumed=await KaggleSourceImporter._pages(importer,principal='fixture',
+        ingestion_id=INGEST,cursor='1')
+    assert resumed.pages[0].physical_page_index==1
+    assert resumed.pages[0].data==restored._records['prior-djvu']['pages'][1]['path'].read_bytes()
+    async def forged_verified(context,ingestion_id):
+        return replace(old_receipt,parser_sha256='f'*64)
+    importer.originals=SimpleNamespace(verified=forged_verified,pages=prior_page)
+    with pytest.raises(ToolError,match='verified_small_original_required'):
+        await KaggleSourceImporter._receipt(importer,access_value,dict(ingestion_id=INGEST,source_id=SOURCE))
