@@ -19,6 +19,7 @@ import sys
 import time
 from uuid import UUID,uuid5
 
+from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
 from .original_intake import (OriginalIntakeSpec,OriginalIntakeError,OriginalIntakeRejected,
     VerifiedOriginalReceipt,PHASES,canonical,digest,hash_value)
 from .native_snapshot_transfer import NativeSnapshotTransfer,SnapshotTicket,_blocking
@@ -99,6 +100,7 @@ class NativeOriginalIntake:
         # running a second copy of the PDF parser.
         legacy_code=HISTORICAL_PDF_SCRIPT_SHA256
         self.legacy_parser_sha256=digest(canonical(dict(packages=actual,code=legacy_code)))
+        self.previous_parser_sha256=digest(canonical(dict(packages=actual,code='20532723f1fc88d895e639f5f82427b6e600e5ffea9a6bf8790d81a2f6c2ca0c',djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),legacy_pdf_parser_sha256=legacy_code)))
         self.parser_sha256=digest(canonical(dict(packages=actual,
             code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
             djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),
@@ -112,7 +114,7 @@ class NativeOriginalIntake:
         self.telegram_downloader=telegram_downloader
         self.parser=parser or self._parse
         self.native_bundle=native_bundle
-        self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,256*1024),timeout_seconds=config.seconds)
+        self.transfer=transfer or NativeSnapshotTransfer(allowed_origins=frozenset(config.allowed_origins),max_bytes=max(config.max_bytes,MODEL_PAGE_BYTE_LIMIT),timeout_seconds=config.seconds)
         self.generation=None;self.closed=False;self._records={};self._requests={};self._results={};self._lock=asyncio.Lock()
         self._prebinding_retry=set();self.telegram_channel=None;self.snapshot_io=None
 
@@ -133,7 +135,7 @@ class NativeOriginalIntake:
     def _parser_script(self,pin):
         # Historical receipts keep their original identity. Both accepted PDF
         # revisions execute the same PDF branch of the current isolated parser.
-        if pin not in (self.parser_sha256,self.legacy_parser_sha256):
+        if pin not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256):
             raise OriginalIntakeError('original_parser_pin_unavailable')
         return Path(__file__).with_name('kaggle_original_parser.py')
 
@@ -299,7 +301,7 @@ class NativeOriginalIntake:
             folder=self.root/secrets.token_hex(24);folder.mkdir(mode=0o700)
             acquired=False
             try:
-                if shutil.disk_usage(folder).free<2*spec.max_bytes+32*256*1024+16*1024*1024:
+                if shutil.disk_usage(folder).free<2*spec.max_bytes+32*MODEL_PAGE_BYTE_LIMIT+16*1024*1024:
                     raise OriginalIntakeError('original_private_disk_reservation_unavailable')
                 prior=None
                 if restore:
@@ -307,7 +309,7 @@ class NativeOriginalIntake:
                     ticket=SnapshotTicket.from_wire(private['ticket'])
                     if ((prior.source_id,prior.ingestion_id,prior.request_id,prior.revision)!=(
                             spec.source_id,spec.ingestion_id,spec.request_id,spec.revision)
-                            or prior.parser_sha256 not in (self.parser_sha256,self.legacy_parser_sha256)
+                            or prior.parser_sha256 not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256)
                             or (prior.parser_sha256==self.legacy_parser_sha256 and prior.format!='pdf')
                             or prior.size>spec.max_bytes
                             or type(args['restore_nonce']) is not str or len(args['restore_nonce'])!=48
@@ -415,7 +417,7 @@ class NativeOriginalIntake:
                 _LOG.info('native_original_page stage=parse_render_complete run_id=%s job_id=%s page_index=%s format=%s elapsed_ms=%.3f',
                     self.identity[0],frame['id'],index,record['format'],(time.monotonic()-started)*1000)
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
-                if not 1<=len(image)<=256*1024:
+                if not 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:
                     raise OriginalIntakeError('original_page_render_invalid')
                 page_path=record['path'].parent/f'page-{index}.jpg'
                 with page_path.open('xb') as stream:stream.write(image)

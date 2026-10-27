@@ -61,7 +61,7 @@ async def test_target_only_dependency_missing_before_fix_real_inspect_render_and
     text=await f.owner._parse(f.pdf,'text')
     assert page['native_text']==text['native_text']=='Synthetic source page\n'
     assert page['image_b64'] and page['image_sha256']
-    assert page['preview_render']['byte_limit']==256*1024
+    assert page['preview_render']['byte_limit']==8*1024*1024
 
 
 @pytest.mark.asyncio

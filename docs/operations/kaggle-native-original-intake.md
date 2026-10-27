@@ -98,12 +98,20 @@ Model-authored accepted passages still use the existing DOCUMENT jobs and exact
 materialized tokenizer counts; there is no second encoding phase or local BGE.
 
 The initial PDF path admits up to 32 pages (including the independently found
-10-page acceptance candidate), with one page rendered per call. A finite JPEG
-preview policy tries edge/quality settings (1600/82, 1600/70, 1600/55, 1280/70,
-1280/55), and refuses previews that still exceed 256 KiB before archive admission.
-Actual pixel dimensions, scale and JPEG quality appear in `preview_render`, also
-forwarded through `native_text_info`. Original physical page dimensions remain
-separate. Original PDF bytes and complete native text are not reduced by this
+10-page acceptance candidate), with one page rendered per call. The shared PDF/DjVu
+model-reader page policy preserves RGB colour and starts at JPEG q85, up to the
+source's native long edge (at most 3200 px). Its 8 MiB output budget falls back
+through q80/q70/q55, then 2400/1600 px (never upscale DjVu above native resolution).
+The former 1600/1280 px and 256 KiB ceiling was a 2026-10-20 pilot transport
+limit, not a product requirement. Actual width, height, scale, quality, JPEG
+bytes and byte limit appear in `preview_render` and `native_text_info`;
+`preview_only` still means a model-reading derivative, not archival source proof.
+Already issued page receipts are immutable. After native/runtime replacement,
+controller resolves the previous JPEG by its original/issued SHA256 under the
+same content-addressed page archive and bound HEAD/conditional GET; its byte
+hash, preview geometry and page proof must match the earlier issuance. A newly
+unissued page uses the new policy. Missing or changed archive bytes fail closed. Original physical page dimensions
+remain separate. Original PDF bytes and complete native text are not reduced by this
 preview policy. The parser child
 has fixed code, a 30-second CPU budget, 60-second wall budget, 2-GiB address-space
 limit and bounded output. Scratch lives only under the verified `/kaggle/temp`
