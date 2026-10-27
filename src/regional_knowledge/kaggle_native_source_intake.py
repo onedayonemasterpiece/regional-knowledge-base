@@ -361,15 +361,17 @@ class NativeSourceIntake:
         _LOG.info('native_intake_progress ingestion_id=%s kind=%s remote_durable=%s next_ordinal=%s',
             row['ingestion_id'],kind,entry.outcome_state=='DURABLE',updated['next_ordinal'])
         # Applied != Saved: log only, do not modify actual remote receipt.
-        from .product_telemetry import emit_import_event, import_metadata
-        phase=doc['component'] if kind=='batch' else kind
-        import_metadata(ingestion_id=row['ingestion_id'],operation_key=entry.command.operation_key,
-            batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
-            enriched_batch_count=updated['enriched_batch_count'])
-        emit_import_event(ingestion_id=row['ingestion_id'],operation_key=entry.command.operation_key,
-            event='import.phase',phase=phase,status='applied',command_sequence=entry.command.sequence,
-            batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
-            enriched_batch_count=updated['enriched_batch_count'])
+        try:
+            from .product_telemetry import emit_import_event, import_metadata
+            phase=doc['component'] if kind=='batch' else kind
+            import_metadata(ingestion_id=row['ingestion_id'],operation_key=entry.command.operation_key,
+                batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
+                enriched_batch_count=updated['enriched_batch_count'])
+            emit_import_event(ingestion_id=row['ingestion_id'],operation_key=entry.command.operation_key,
+                event='import.phase',phase=phase,status='applied',command_sequence=entry.command.sequence,
+                batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
+                enriched_batch_count=updated['enriched_batch_count'])
+        except Exception: pass  # Incomplete diagnostics cannot alter a settled result.
         return updated
 
     async def _drive(self, access, row, state):
