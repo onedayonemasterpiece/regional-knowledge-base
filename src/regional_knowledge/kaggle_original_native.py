@@ -394,6 +394,8 @@ class NativeOriginalIntake:
                 if locator is None:raise OriginalIntakeError('original_telegram_send_unknown')
             else:
                 locator=await self.telegram_downloader.archive(record['path'],**options,
+                    file_name=record['spec'].get('file_name') or 'original.'+record['format'],
+                    mime_type='application/pdf' if record['format']=='pdf' else 'image/vnd.djvu',
                     previous=TelegramOriginalLocator.from_wire(old) if old is not None else None)
             value=dict(key='telegram/'+digest(canonical(locator.wire())),
                 native_version='message:'+str(locator.message_id),telegram_locator=locator.wire(),

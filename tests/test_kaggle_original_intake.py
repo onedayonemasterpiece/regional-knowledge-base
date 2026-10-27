@@ -44,7 +44,10 @@ class Transfer:
 
 @pytest.fixture
 def native(tmp_path,monkeypatch):
+    import sys
     import regional_knowledge.kaggle_original_native as module
+    monkeypatch.setitem(sys.modules,'telethon.tl.types',SimpleNamespace(
+        DocumentAttributeFilename=lambda file_name:SimpleNamespace(file_name=file_name)))
     root=tmp_path/'native';root.mkdir(mode=0o700)
     monkeypatch.setattr(module,'PRIVATE_ROOT',tmp_path)
     monkeypatch.setattr(module.importlib.metadata,'version',lambda name:'pinned-version')

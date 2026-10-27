@@ -123,7 +123,7 @@ class NativeTelegramOriginalDownloader:
             raise OriginalIntakeError('original_telegram_lease_changed')
         return None
 
-    async def archive(self, path, *, sha256, size, ingestion_id, current, previous=None):
+    async def archive(self, path, *, sha256, size, ingestion_id, current, previous=None, file_name=None, mime_type=None):
         """One document per immutable intake, using only the retained leased client."""
         if previous is not None:
             await self.presence(previous, current=current)
@@ -134,8 +134,10 @@ class NativeTelegramOriginalDownloader:
         try:
             if self._current() is not True or current() is not True:
                 raise OriginalIntakeError('original_telegram_lease_changed')
+            from telethon.tl.types import DocumentAttributeFilename
             sent = await self._client.send_file(self._chat_id, str(path), caption='RKB-original ' + ingestion_id,
-                reply_to=self._topic_id, force_document=True)
+                reply_to=self._topic_id, force_document=True, mime_type=mime_type,
+                attributes=[DocumentAttributeFilename(file_name or Path(path).name)])
             doc = getattr(sent, 'document', None)
             locator = TelegramOriginalLocator(self._chat_id, self._topic_id,
                 getattr(sent, 'id', 0), getattr(doc, 'id', 0), sha256, size)

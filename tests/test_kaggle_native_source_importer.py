@@ -157,29 +157,42 @@ async def call(s, result, command, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_mcp_archive_action_uses_current_owner_and_existing_migration(native_intake,monkeypatch):
+async def test_mcp_normal_status_archives_once_with_current_owner(native_intake,monkeypatch):
     from regional_knowledge.server import build_server
     from regional_knowledge.read_issuance import _SCOPE_KEY
     from starlette.requests import Request
-    s=native_intake;book=await start(s);calls=[]
-    async def migrate(context,ingestion_id):
+    s=native_intake;book=await start(s);calls=[];sidecars=[];status_calls=[]
+    async def authorize(context):
         assert context.route=='owner' and context.principal.subject==s.principal.subject
+        return s.principal.subject,s.startup.binding
+    async def archive(context,ingestion_id):
         calls.append(ingestion_id)
-    monkeypatch.setattr(s.originals,'migrate_s3_original_to_telegram',migrate)
+        sidecars.append('registered')
+    monkeypatch.setattr(s.originals,'_authorize',authorize)
+    monkeypatch.setattr(s.originals,'_row',lambda actor,ingestion:dict(failure_code=None,
+        telegram_locator_json=sidecars[0] if sidecars else None))
+    monkeypatch.setattr(s.originals,'_archive_verified_original',archive)
+    async def original_status(context,ingestion_id):
+        status_calls.append(ingestion_id)
+        return await OriginalIntakeController.status(s.originals,context,ingestion_id)
+    monkeypatch.setattr(s.originals,'status',original_status)
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
     server=build_server(target_startup=s.startup)
     async def invoke():
         request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
             'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
-        context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='archive-action'))
+        context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='normal-status'))
         try:
-            return await server.call_tool('book_ingest',dict(command='archive',ingestion_id=book.ingestion_id),context)
+            return await server.call_tool('book_ingest',dict(command='status',ingestion_id=book.ingestion_id),context)
         finally:
             retained=request.scope.pop(_SCOPE_KEY,None)
             if retained:retained[1].release()
     output=await invoke()
     assert calls==[book.ingestion_id] and output.structured_content['source_archive_status']=='verified'
-    assert output.structured_content['message'].startswith('Telegram original archive verified.')
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    s.importer.native_intake._state(row,create=True)  # Existing-stage status branch also checks original progress.
+    assert (await invoke()).structured_content['source_archive_status']=='verified'
+    assert calls==[book.ingestion_id] and status_calls==[book.ingestion_id]*2
     other=Principal(subject=s.t.auth.p.other.subject,client_id=s.principal.client_id,
         issuer=s.principal.issuer,access_token=s.t.auth.tokens.access_token)
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:other)

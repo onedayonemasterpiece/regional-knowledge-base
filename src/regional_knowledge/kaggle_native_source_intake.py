@@ -802,6 +802,9 @@ class NativeSourceIntake:
     async def status(self, access, row):
         """Resume existing intent; a status read never invents a seal/finalize."""
         await self._check(access,row)
+        original=await self.importer.originals.status(access.context,row['ingestion_id'])
+        await self._check(access,row)
+        if not original.verified:return await self.importer._original_pending(row,original)
         state=await asyncio.to_thread(self._state,row)
         if state is None:
             receipt=await self.importer._receipt(access,row)
@@ -809,7 +812,6 @@ class NativeSourceIntake:
                 # No native stage exists yet. Read the same durable original
                 # failure_code as start; do not turn terminal PDF rejection
                 # back into perpetual processing on the next MCP status.
-                original=await self.importer.originals.status(access.context,row['ingestion_id'])
                 return await self.importer._original_pending(row,original)
             if receipt is not None and row['phase']=='acquiring':
                 row=await asyncio.to_thread(self.importer._save,row,phase='staging')

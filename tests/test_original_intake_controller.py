@@ -79,7 +79,8 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
     task=asyncio.create_task(peer())
     try:
         status=await controller.begin(e.auth.p.admin,operation_id='lost-ack',source_id=SOURCE,ingestion_id=INGEST,
-            file=ChatFile(download_url='https://attachment.invalid/private',file_id='fixture',mime_type='application/pdf'),max_bytes=len(PDF))
+            file=ChatFile(download_url='https://attachment.invalid/private',file_id='fixture',mime_type='application/pdf',
+                file_name='Retained fixture.pdf'),max_bytes=len(PDF))
         assert not status.verified and status.reason=='original_telegram_binding_required' and client.send_calls==0
         n.handler.telegram_downloader=downloader(client);client.preflight_error=True
         assert not (await controller.status(e.auth.p.admin,INGEST)).verified and client.send_calls==0
@@ -94,6 +95,7 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
         client.visible=True
         status=await controller.status(e.auth.p.admin,INGEST)
         assert status.verified and client.send_calls==1 and client.downloads==0 and client.lookups==4
+        assert (client.sent_file_name,client.sent_mime_type)==('Retained fixture.pdf','application/pdf')
         assert [p for p,_ in phases]==['original_acquire']+['original_archive']*3+['original_verify']*2
         assert len({key for _,key in phases})==6
         with e.q.connect(write=False) as db:
@@ -109,25 +111,25 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
         heads=[]
         async def head(*args):heads.append(args);return 'legacy-etag'
         controller._head=head
-        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy and len(heads)==1
-        with e.q.connect() as db:db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=? WHERE ingestion_id=?',(sidecar,INGEST))
+        e.c.generate_presigned_url=lambda *a,**k:'https://archive.invalid/synthetic-ticket'
+        n.transfer.objects[legacy.key]=PDF
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy and heads
         async def forbidden(*args):pytest.fail('migrated legacy receipt still depends on S3 HEAD')
         controller._head=forbidden
         assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy
         with e.q.connect(write=False) as db:
             assert db.execute('SELECT receipt_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()[0]==immutable
-        assert (await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)).wire()==json.loads(sidecar)
         assert client.send_calls==1  # Already migrated originals are reused.
-        # A separate legacy migration loses its upload ACK. The second archive
-        # action must retain its restored handle and observe, never restore/send again.
+        # A second synthetic legacy receipt loses its archive ACK. Normal
+        # status must retain the restored handle and observe, never send again.
+        legacy=replace(legacy,key='originals/legacy/retry-source')
+        immutable=canonical(legacy.wire()).decode()
         with e.q.connect() as db:
-            db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=NULL WHERE ingestion_id=?',(INGEST,))
+            db.execute('UPDATE rkb_original_intakes SET receipt_json=?,telegram_locator_json=NULL WHERE ingestion_id=?',(immutable,INGEST))
         controller._head=head
-        e.c.generate_presigned_url=lambda *a,**k:'https://archive.invalid/synthetic-ticket'
         n.transfer.objects[legacy.key]=PDF
         client.sent=None;client.visible=False;client.send_error=False;client.post_send_presence_error=True
-        with pytest.raises(OriginalIntakeError,match='original_telegram_send_unknown'):
-            await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)
+        assert not (await controller.status(e.auth.p.admin,INGEST)).verified
         with e.q.connect(write=False) as db:
             restored=json.loads(db.execute('SELECT acquisition_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()[0])
         assert restored['restored_from_receipt_sha256']==legacy.receipt_sha256
@@ -136,14 +138,14 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
         migration_unknown=canonical(n.handler._results[migration_key])
         # Lost native bytes cannot turn an unresolved send into another upload.
         retained=n.handler._records.pop(restored['handle'])
-        with pytest.raises(OriginalIntakeError,match='original_telegram_send_unknown'):
-            await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)
+        assert not (await controller.status(e.auth.p.admin,INGEST)).verified
         n.handler._records[restored['handle']]=retained
         client.visible=True
-        await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy
         assert [p for p,_ in phases[after_send:]]==['original_verify','original_verify']
         assert client.send_calls==2 and client.downloads==0  # One send in each independent fixture scenario.
-        assert n.transfer.calls==['download']
+        assert n.transfer.calls==['download','download']
+        assert (client.sent_file_name,client.sent_mime_type)==('Retained fixture.pdf','application/pdf')
         assert canonical(n.handler._results[migration_key])==migration_unknown
         with e.q.connect(write=False) as db:
             final=db.execute('SELECT acquisition_json,receipt_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()

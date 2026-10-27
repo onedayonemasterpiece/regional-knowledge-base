@@ -45,10 +45,12 @@ class Client:
         assert chat_id==locator().chat_id and limit==10
         if self.sent is not None and self.sent.message==search:yield self.sent
 
-    async def send_file(self,chat_id,path,*,caption,reply_to,force_document):
+    async def send_file(self,chat_id,path,*,caption,reply_to,force_document,mime_type,attributes):
         from pathlib import Path
         assert chat_id==locator().chat_id and reply_to==2 and force_document
         assert Path(path).read_bytes()==self.data
+        self.sent_file_name,self.sent_mime_type=attributes[0].file_name,mime_type
+        assert not self.sent_file_name.endswith('.source')
         self.send_calls+=1
         self.sent=SimpleNamespace(id=11,chat_id=chat_id,message=caption,
             reply_to=SimpleNamespace(reply_to_top_id=2),

@@ -292,10 +292,12 @@ class OriginalIntakeController:
     async def status(self,context,ingestion_id):
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         if row['failure_code'] is not None:return OriginalIntakeStatus(ingestion_id,'rejected',reason=row['failure_code'])
-        receipt=await self.verified(context,ingestion_id)
-        if receipt is not None:
-            return OriginalIntakeStatus(ingestion_id,'verified',receipt)
         try:
+            receipt=await self.verified(context,ingestion_id)
+            if receipt is not None:
+                if row['telegram_locator_json'] is None:
+                    await self._archive_verified_original(context,ingestion_id)
+                return OriginalIntakeStatus(ingestion_id,'verified',receipt)
             record=json.loads(row['acquisition_json']) if row['acquisition_json'] else None
             if record is None:
                 spec=json.loads(row['spec_json']);args={'spec':spec}
@@ -534,8 +536,8 @@ class OriginalIntakeController:
                 (canonical(restored).decode(),receipt.ingestion_id))
             return restored
 
-    async def migrate_s3_original_to_telegram(self,context,ingestion_id):
-        """Owner-only migration: S3 GET and Telethon send both execute in Kaggle."""
+    async def _archive_verified_original(self,context,ingestion_id):
+        """Finish the normal archive for a retained original without rewriting its receipt."""
         actor,binding=await self._authorize(context)
         row=self._row(actor,ingestion_id)
         if row['receipt_json'] is None:

@@ -22,22 +22,22 @@ A retained `original_telegram_send_unknown` result is reconciled on the next
 normal status call through a fresh `original_verify` metadata observation.
 It searches the exact intake caption in the configured topic and never sends
 when no document is visible. Both original unknown receipts remain unchanged.
-Legacy S3 receipts remain verified before migration; a matching Telegram
-sidecar removes their S3 HEAD dependency without rewriting the receipt.
-
-After reviewed native/API rollout, the owner invokes the existing MCP tool
-`book_ingest(command='archive', ingestion_id='<existing ingestion UUID>')`
-once for each historical original. Current owner authorization and the owned
-intake row select the source; the action calls the existing `original_acquire`
+After reviewed native/API rollout, normal owner `book_ingest(status)` continues
+the archive of an already verified original when its Telegram sidecar is absent,
+including books with accepted stage state. Each call progresses original status
+once. Current owner authorization and the owned intake row select the source;
+the normal flow calls the existing `original_acquire`
 restore phase (S3 GET into Kaggle) and the native `original_archive` phase
 (Telethon send from Kaggle) before writing a sidecar locator. It does not
-download original bytes to Dev. The action returns the current ingestion status
-with archive verification reported, without restaging accepted pages. No forged
-Principal, standalone runtime access or arbitrary-code WSS operation is needed.
-Repeated archive actions reuse the restored handle for the same immutable
-receipt. If an unresolved send also loses native bytes, the action remains
+download original bytes to Dev. No repair command, script, forged Principal or
+standalone runtime access is required. Provider unavailability remains pending;
+the immutable old receipt is retained. Existing sidecars avoid S3 HEAD checks.
+Repeated status calls reuse the restored handle for the same immutable
+receipt. If an unresolved send also loses native bytes, status remains
 unresolved instead of creating a fresh restore/upload attempt. Existing
 sidecars are reused, so eight locators need not mean eight new documents.
+Uploads preserve the retained original filename (or an original.pdf/.djvu
+fallback) and the native-verified format's MIME, rather than the workspace .source name.
 
 ## Media success: presence, not custom byte verification
 
