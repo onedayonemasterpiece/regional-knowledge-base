@@ -18,7 +18,7 @@ from .kaggle_query import ReadUnavailable, _frontier, _identity
 class SourceReadRequest(ReadIdentity):
     type: Literal['SOURCE_READ'] = 'SOURCE_READ'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units'] = 'source_catalog'
     operation_version: Literal[1] = 1
     query: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
     source_id: Identifier | None = None
@@ -39,6 +39,16 @@ class SourceReadRequest(ReadIdentity):
                 raise ValueError('exact accepted illustration selector required')
             if any(str(UUID(x))!=x for x in (self.source_id,self.query)):
                 raise ValueError('canonical illustration UUIDs required')
+            return self
+        if self.operation == 'source_units':
+            if (self.query is not None or self.source_id is None
+                    or self.page_start is not None or self.page_end is not None):
+                raise ValueError('unit read needs one exact accepted source ID')
+            try:
+                if str(UUID(self.source_id)) != self.source_id:
+                    raise ValueError
+            except (TypeError, ValueError, AttributeError):
+                raise ValueError('canonical unit source ID required') from None
             return self
         if self.operation == 'source_catalog':
             if (self.query is None or not self.query.strip() or len(self.query.encode()) > 4096
@@ -61,7 +71,7 @@ class SourceReadRequest(ReadIdentity):
 class SourceReadResult(ReadIdentity):
     type: Literal['SOURCE_READ_RESULT'] = 'SOURCE_READ_RESULT'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units'] = 'source_catalog'
     status: Literal['ok','unavailable','invalid_query','denied','cancelled']
     records: tuple[dict,...] = Field(default=(), max_length=8)
     evidence: tuple[EvidenceItem,...] = Field(default=(), max_length=8)
@@ -148,6 +158,24 @@ async def _accepted_chunks(request, cursor, execute):
     return tuple(records), tuple(evidence), next_ordinal
 
 
+async def _source_units(request, cursor, execute):
+    """Only text-published original page projections, never unaccepted stage."""
+    from .source_units import resolve_source_units, bounded_unit_records
+    await execute('''SELECT physical_page_index,page,page_count,read_complete
+        FROM rkb_v4.read_source_unit_pages_v1(%s::uuid)
+        ORDER BY physical_page_index''', (request.source_id,))
+    rows = await cursor.fetchall()
+    if not rows:
+        return (), (), None
+    if len(rows) > 2500 or len({row[2] for row in rows}) != 1 or len({row[3] for row in rows}) != 1:
+        raise ReadUnavailable('internal_error')
+    units = resolve_source_units([row[1] for row in rows],source_id=request.source_id,
+        page_count=rows[0][2],read_complete=rows[0][3])
+    records, next_ordinal = bounded_unit_records(
+        units,after_ordinal=request.after_ordinal,limit=request.limit)
+    return records, (), next_ordinal
+
+
 async def execute_source_read(request, *, acquire):
     if type(request) is not SourceReadRequest:
         raise TypeError('fixed native source read required')
@@ -183,6 +211,8 @@ async def execute_source_read(request, *, acquire):
                             records,evidence,next_ordinal=await read_source_illustration(request,cursor,execute)
                         elif request.operation == 'accepted_chunks':
                             records, evidence, next_ordinal = await _accepted_chunks(request,cursor,execute)
+                        elif request.operation == 'source_units':
+                            records, evidence, next_ordinal = await _source_units(request,cursor,execute)
                         else:
                             await execute('SELECT * FROM rkb_v4.find_source_catalog_v1(%s,%s)',
                                 (request.query,request.limit))
