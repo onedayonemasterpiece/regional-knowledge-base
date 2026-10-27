@@ -288,6 +288,13 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     assert reissued_page['page_receipt_sha256']==first['page_receipt_sha256']
     assert reissued_page['preview_render']==first['preview_render']
     assert controller._record_issued_image(receipt,reissued_page)==issued
+    # Same-size corrupt archive bytes may not masquerade as the saved image.
+    def corrupted(**kwargs):
+        return dict(ContentLength=len(pdf_image),Body=BytesIO(b'X'+pdf_image[1:]))
+    controller.store.client.get_object=corrupted
+    with pytest.raises(OriginalIntakeError,match='original_render_storage_invalid'):
+        await controller._page_data(rebound_binding,rebound,0,native_cursor,restore=lambda old:None)
+    controller.store.client.get_object=read_jpeg
     _,new_page,new_image=await controller._page_data(
         rebound_binding,rebound,1,native_cursor,restore=lambda old:None)
     assert new_image==second_jpeg and newly_archived==[1]
