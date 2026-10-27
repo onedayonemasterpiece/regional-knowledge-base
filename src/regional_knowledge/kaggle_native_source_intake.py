@@ -432,7 +432,10 @@ class NativeSourceIntake:
                     'wait',source_archive_status='verified')
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
-                return self.importer._output(row,'staged',reason+': correct or retry this packet; earlier packets remain searchable',
+                message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
+                    'Correct and retry this packet under the same ingestion.\n'
+                    'For unreadable spans use [?] with needs_review=false; never guess.')
+                return self.importer._output(row,'staged',message,
                     'continue_pages',source_archive_status='verified',warnings=[reason])
             return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
                 'continue_pages',source_archive_status='verified')
