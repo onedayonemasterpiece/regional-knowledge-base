@@ -51,7 +51,7 @@ def _timed_native_phase(phase):
                 # A malformed observer input must not replace the domain
                 # result, cancellation or exception being returned.
                 try:
-                    emit_import_event(ingestion_id=row['ingestion_id'],event='import.phase',phase=phase,
+                    emit_import_event(ingestion_id=row['ingestion_id'],source_id=row['source_id'],event='import.phase',phase=phase,
                         status=status,duration_ms=(time.monotonic()-started)*1000)
                 except Exception:
                     pass
@@ -261,7 +261,7 @@ class NativeSourceIntake:
             observed=await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
             try:
                 from .product_telemetry import import_metadata, emit_import_event
-                import_metadata(ingestion_id=row['ingestion_id'],operation_key=key,
+                import_metadata(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=key,
                     batch_index=payload.get('batch_index'),command_sequence=entry.command.sequence,
                     packet_bytes=len(entry.command.payload),attempt=observed['command_attempt'],
                     batch_count=observed['batch_count'],published_batch_count=observed['published_batch_count'],
@@ -271,10 +271,13 @@ class NativeSourceIntake:
                 if kind=='stage':
                     model=payload['model_payload'];pages=model['pages']
                     import_metadata(page_count=len(pages),physical_page_index=pages[0]['physical_page_index'],
+                        physical_page_indices=[p['physical_page_index'] for p in pages],
                         region_count=sum(len(p['regions']) for p in pages),chunk_count=len(model['chunks']),
                         story_candidate_count=len(model.get('story_candidates',[])),
+                        entity_candidate_count=len(model.get('entity_candidates',{}).get('entities',[])),
+                        poi_candidate_count=len(model.get('poi_facts',[])),
                         unit_marker_count=sum(len(p.get('source_unit_boundaries',[])) for p in pages))
-                emit_import_event(ingestion_id=row['ingestion_id'],operation_key=key,event='import.phase',
+                emit_import_event(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=key,event='import.phase',
                     phase='admission',status='staged',command_sequence=entry.command.sequence,
                     component=component,packet_bytes=len(entry.command.payload))
             except Exception: pass  # Observation cannot change a committed stage.
@@ -364,10 +367,10 @@ class NativeSourceIntake:
         try:
             from .product_telemetry import emit_import_event, import_metadata
             phase=doc['component'] if kind=='batch' else kind
-            import_metadata(ingestion_id=row['ingestion_id'],operation_key=entry.command.operation_key,
+            import_metadata(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=entry.command.operation_key,
                 batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
                 enriched_batch_count=updated['enriched_batch_count'])
-            emit_import_event(ingestion_id=row['ingestion_id'],operation_key=entry.command.operation_key,
+            emit_import_event(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=entry.command.operation_key,
                 event='import.phase',phase=phase,status='applied',command_sequence=entry.command.sequence,
                 batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
                 enriched_batch_count=updated['enriched_batch_count'])
