@@ -236,6 +236,9 @@ class ExpertSlackSearchReply:
                 raise PermissionError("verified Slack binding changed")
             query=re.sub(r"<@"+re.escape(self.control.bot_user_id)+r"(?:\|[^>]+)?>",
                          "",row["input_text"]).strip()
+            # The Slack connector's presentation footer is not the question.
+            query=re.sub(r"(?:^|\s+)\*Sent using\* <@[UW][A-Z0-9]+(?:\|[^>]+)?>\s*\Z",
+                         "",query).strip()
             ctx=ReadContext(request_id,0,0,time.monotonic()+10)
             issued=None
             try:
