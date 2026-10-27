@@ -5,17 +5,17 @@ import json
 import pytest
 
 from regional_knowledge.kaggle_dataset_base import DatasetFile
-from regional_knowledge.kaggle_pg_snapshot_native import encode, sha
+from regional_knowledge.kaggle_pg_snapshot_native import compatible_versions, encode, sha
 from regional_knowledge.kaggle_restore_startup import SourceRestoreConfig
 from regional_knowledge.kaggle_source_owners import _verified_restart_restore
-from regional_knowledge.recovery_journal import JournalConflict
+from regional_knowledge.recovery_journal import JournalConflict, ObjectRef
 from test_dataset_recovery_store import prepared
 
 
-def setup(tmp_path,*,base_vector='0.8.2',selected_vector='0.8.2'):
+def setup(tmp_path,*,base_vector='0.8.2',selected_vector='0.8.2',base_schema=42):
     p=prepared(tmp_path)
     versions=dict(server_version_num=170011,pgvector_version=base_vector,
-                  model_sha256='a'*64,tokenizer_sha256='b'*64,schema_version=42)
+                  model_sha256='a'*64,tokenizer_sha256='b'*64,schema_version=base_schema)
     config=SourceRestoreConfig(p.ref,'restore-fixture',versions|{'pgvector_version':selected_vector},'c'*64,
         ('https://storage.googleapis.com',),dataset_checkpoint=p.checkpoint)
     raw=encode(dict(database_generation='db',applied_sequence=9,versions=versions))
@@ -68,8 +68,12 @@ def test_stale_restart_selects_exact_verified_checkpoint_without_provider_io(tmp
 
 
 @pytest.mark.parametrize('bad',['bytes','coverage','missing','database','cursor'])
-def test_unverified_or_inconsistent_manifest_cannot_promote(tmp_path,bad):
+@pytest.mark.parametrize('already_selected',[False,True])
+def test_unverified_or_inconsistent_manifest_cannot_promote(tmp_path,bad,already_selected):
     p,config,latest,key=setup(tmp_path)
+    if already_selected:
+        config=replace(config,dataset_checkpoint=latest,
+            manifest=ObjectRef(key,latest.manifest.sha256,latest.manifest.size,latest.base_sequence))
     with p.q.connect() as db:
         if bad=='bytes':
             db.execute('UPDATE rkb_dataset_recovery_objects SET data=? WHERE key=?',(b'corrupt',key))
@@ -96,6 +100,38 @@ def test_verified_advance_cannot_change_pinned_model(tmp_path):
     p,config,latest,key=setup(tmp_path)
     changed=replace(config,versions={**config.versions,'model_sha256':'d'*64})
     with pytest.raises(JournalConflict,match='versions_changed'):
+        _verified_restart_restore(p.q,changed,'stream')
+
+
+@pytest.mark.parametrize('selected_vector',['0.8.2','0.8.4'])
+def test_already_selected_checkpoint_refreshes_stale_template_schema_from_verified_manifest(tmp_path,selected_vector):
+    """Actual target-binding shape: latest base selected, old template pins kept."""
+    p,config,latest,key=setup(tmp_path,base_schema=44,selected_vector=selected_vector)
+    selected=replace(config,dataset_checkpoint=latest,
+        manifest=ObjectRef(key,latest.manifest.sha256,latest.manifest.size,latest.base_sequence),
+        versions={**config.versions,'schema_version':42})
+    before=list(p.reads)
+    with p.q.connect(write=False) as db:
+        raw=db.execute('SELECT data FROM rkb_dataset_recovery_objects WHERE key=?',(key,)).fetchone()[0]
+    base=json.loads(raw)['versions']
+    assert not compatible_versions(base,dict(selected.versions))
+    resumed=_verified_restart_restore(p.q,selected,'stream')
+    assert compatible_versions(base,dict(resumed.versions))
+    assert resumed.versions['schema_version']==44
+    assert resumed.versions['pgvector_version']==selected_vector
+    assert resumed.dataset_checkpoint==latest and resumed.manifest==selected.manifest
+    assert resumed.operation_key==selected.operation_key
+    assert resumed.launch_config_sha256==selected.launch_config_sha256
+    assert selected.versions['schema_version']==42 and p.reads==before
+    assert _verified_restart_restore(p.q,resumed,'stream') is resumed
+    with p.q.connect(write=False) as db:
+        assert db.execute('SELECT data FROM rkb_dataset_recovery_objects WHERE key=?',(key,)).fetchone()[0]==raw
+
+
+def test_equal_dataset_version_cannot_select_different_checkpoint_identity(tmp_path):
+    p,config,latest,key=setup(tmp_path)
+    changed=replace(config,dataset_checkpoint=replace(config.dataset_checkpoint,dataset_version=latest.dataset_version))
+    with pytest.raises(JournalConflict,match='checkpoint_identity_changed'):
         _verified_restart_restore(p.q,changed,'stream')
 
 

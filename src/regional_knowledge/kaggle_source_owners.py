@@ -46,8 +46,12 @@ def _verified_restart_restore(queue, restore, stream):
         if (checkpoint.owner_slug,checkpoint.dataset_slug,checkpoint.database_generation)!=(
                 initial.owner_slug,initial.dataset_slug,initial.database_generation):
             raise JournalConflict('verified_restart_checkpoint_identity_changed')
-        if (checkpoint.dataset_version<=initial.dataset_version
-                or checkpoint.base_sequence<initial.base_sequence):return restore
+        # Target binding may already select this checkpoint while retaining
+        # stale template versions. Equality still requires verified base pins.
+        if checkpoint.dataset_version<initial.dataset_version:return restore
+        if checkpoint.dataset_version==initial.dataset_version and checkpoint!=initial:
+            raise JournalConflict('verified_restart_checkpoint_identity_changed')
+        if checkpoint.base_sequence<initial.base_sequence:return restore
         key=prefix+'snapshots/manifests/'+checkpoint.manifest.sha256
         manifest=db.execute('SELECT data,covered_version FROM rkb_dataset_recovery_objects '
             'WHERE storage=? AND key=?',(storage,key)).fetchone()
@@ -68,6 +72,7 @@ def _verified_restart_restore(queue, restore, stream):
     resumed=replace(restore,dataset_checkpoint=checkpoint,
         manifest=ObjectRef(key,checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence),
         versions=versions)
+    if resumed==restore:return restore
     logging.getLogger(__name__).info('source_checkpoint_selected previous_version=%s dataset_version=%s base_sequence=%s origin=verified_store',
         initial.dataset_version,checkpoint.dataset_version,checkpoint.base_sequence)
     return resumed
