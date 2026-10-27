@@ -118,6 +118,31 @@ def _media_selector(value):
     return source_id, illustration_id
 
 
+def _illustration_caption(record: dict) -> str:
+    """Model-readable credit from existing, source-verified public fields only."""
+    lines = []
+    catalog = record.get("_citation_catalog")
+    if type(catalog) is dict:
+        title = catalog.get("title")
+        if type(title) is str and title.strip():
+            lines.append("Книга: " + title.strip()[:2048])
+        authors = catalog.get("authors")
+        if type(authors) is list:
+            names = ", ".join(a.strip() for a in authors if type(a) is str and a.strip())
+            if names:
+                lines.append("Автор: " + names[:2048])
+        year = catalog.get("publication_year")
+        if type(year) is int and 1 <= year <= 3000:
+            lines.append(f"Год: {year}")
+    page_index = record.get("physical_page_index")
+    if type(page_index) is int and 0 <= page_index <= 2499:
+        lines.append(f"Страница файла (не печатная нумерация): {page_index + 1}")
+    caption = record.get("caption_text")
+    if type(caption) is str and caption.strip():
+        lines.append("Подпись под рисунком: " + caption.strip())
+    return "\n".join(lines) if lines else "Иллюстрация без подписи."
+
+
 @dataclass(frozen=True)
 class _GatedMedia:
     """Request-local immutable bytes, never a user-returned artifact capability."""
@@ -217,6 +242,7 @@ class KaggleSourceBackend:
             TextContent(type="text", text=value.issued.frame.model_dump_json()),
             ImageContent(type="image", data=base64.b64encode(
                 value.pixels.data).decode("ascii"), mimeType=value.pixels.mime_type),
+            TextContent(type="text", text=_illustration_caption(value.issued.frame.metadata)),
         ])
 
     async def illustration_fetch(self, locator, principal):
@@ -620,9 +646,10 @@ class KaggleSourceBackend:
                                 text=json.dumps(dict(status=value.status,reason=value.reason)))])
                         return CallToolResult(content=[TextContent(type='text',text=json.dumps(
                             dict(status='ready',metadata={k:v for k,v in value.records[0].items()
-                                if k!='ingestion_id'}),ensure_ascii=False)),
+                                if k not in ('ingestion_id', '_citation_catalog')}),ensure_ascii=False)),
                             ImageContent(type='image',data=base64.b64encode(pixels).decode('ascii'),
-                                mimeType='image/jpeg')])
+                                mimeType='image/jpeg'),
+                            TextContent(type='text', text=_illustration_caption(value.records[0]))])
                     empty=render(gated.result).model_dump(mode='json',by_alias=True,exclude_none=True)
                     overhead=len(json.dumps(empty,ensure_ascii=False,separators=(',',':')).encode())
                     # Existing response ceiling includes base64 and metadata.

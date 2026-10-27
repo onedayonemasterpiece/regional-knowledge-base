@@ -386,11 +386,13 @@ async def test_local_native_owner_real_mcp_image_boundary_source_only(service,mo
         output,raw=await call_http(harness)
         assert output["result"]["isError"] is False
         contents=output["result"]["content"]
-        assert len(contents)==2
+        assert len(contents)==3
         assert contents[0]["type"]=="text"
         assert json.loads(contents[0]["text"])["metadata"]["status"]=="ready"
         assert contents[1]["type"]=="image" and contents[1]["mimeType"]=="image/png"
         assert base64.b64decode(contents[1]["data"])==png(width=800,height=670)
+        assert contents[2]["type"]=="text"
+        assert contents[2]["text"]=="Подпись под рисунком: Synthetic printed caption"
         assert bridge.byte_reads==1
         assert "iter-download" in client.events
         assert client.events.count("read-message")>=4

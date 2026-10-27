@@ -5,7 +5,10 @@ from __future__ import annotations
 async def read_source_illustration(request,cursor,execute):
     from .kaggle_protocol import EvidenceItem,EvidenceMetadata,ItemDependencies,SourceDependency
     from .kaggle_query import ReadUnavailable
-    await execute('''SELECT i.data,pg.physical_page_index,v.eligibility_revision,session.ingestion_id
+    await execute('''SELECT i.data,pg.physical_page_index,v.eligibility_revision,session.ingestion_id,
+            jsonb_build_object('title',picked.metadata->>'title',
+                'authors',picked.metadata->'authors',
+                'publication_year',picked.metadata->'publication_year')
         FROM rkb_v4.source_illustrations i
         JOIN rkb_v4.sources s USING(source_id)
         JOIN rkb_v4.active_revision a USING(source_id)
@@ -13,14 +16,24 @@ async def read_source_illustration(request,cursor,execute):
         JOIN rkb_v4.source_stage_sessions session ON session.source_id=i.source_id
         JOIN rkb_v4.source_stage_pages pg ON pg.source_id=i.source_id
             AND pg.page_id=(i.data->>'page_id')::uuid
+        LEFT JOIN rkb_v4.source_catalog catalog ON catalog.source_id=i.source_id
+            AND catalog.source_revision=a.revision
+        LEFT JOIN LATERAL (
+            SELECT k.metadata FROM rkb_v4.source_catalog_corrections k
+            WHERE k.source_id=i.source_id ORDER BY k.accepted_sequence DESC LIMIT 1
+        ) corrected ON true
+        CROSS JOIN LATERAL (
+            SELECT coalesce(corrected.metadata,catalog.metadata) AS metadata
+        ) picked
         WHERE i.source_id=%s::uuid AND i.illustration_id=%s::uuid
             AND s.accepted AND NOT s.withdrawn AND a.revision=1 LIMIT 1''',
         (request.source_id,request.query))
     row=await cursor.fetchone()
     if row is None:raise ReadUnavailable('evidence_withdrawn')
-    data,physical,eligibility,ingestion=row
+    data,physical,eligibility,ingestion,catalog=row
     figure={key:value for key,value in data.items() if key!='crop_binding'}
-    figure.update(source_id=request.source_id,physical_page_index=physical,ingestion_id=str(ingestion))
+    figure.update(source_id=request.source_id,physical_page_index=physical,
+                  ingestion_id=str(ingestion),_citation_catalog=catalog)
     evidence=EvidenceItem(id=request.query,kind='source',
         text=(data.get('caption_text') or data.get('visual_description') or data['illustration_key'])[:2000],
         metadata=EvidenceMetadata(locator='source:'+request.source_id),

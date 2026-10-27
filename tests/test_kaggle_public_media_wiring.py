@@ -139,7 +139,7 @@ async def test_existing_illustration_fetch_real_sdk_tool_and_final_imagecontent(
         result=data["result"]
         assert data["id"]=="real-media-fixture-id"
         assert result["isError"] is False
-        assert len(result["content"])==2
+        assert len(result["content"])==3
         assert result["content"][0]["type"]=="text"
         public=json.loads(result["content"][0]["text"])
         assert public["status"]=="ready"
@@ -148,6 +148,12 @@ async def test_existing_illustration_fetch_real_sdk_tool_and_final_imagecontent(
         assert result["content"][1]["type"]=="image"
         assert result["content"][1]["mimeType"]=="image/png"
         assert base64.b64decode(result["content"][1]["data"])==image_bytes()
+        assert result["content"][2]["type"]=="text"
+        assert result["content"][2]["text"]=="Подпись под рисунком: Synthetic printed caption"
+        assert "Книга:" not in result["content"][2]["text"]
+        assert "Автор:" not in result["content"][2]["text"]
+        assert "Год:" not in result["content"][2]["text"]
+        assert "Страница" not in result["content"][2]["text"]
         assert c.archive.read_count==1 and c.native.calls>=5
         assert not c.gate._tickets  # request-local release, not retained as bearer
         for secret in ("archive_locator","crop_binding","chat_id","topic_id",
@@ -219,6 +225,7 @@ async def test_actual_handler_preserves_current_fences_without_media_hash_compar
         assert '"status":"unavailable"' in data["result"]["content"][0]["text"]
         assert '"type":"image"' not in wire.decode()
         assert "iVBOR" not in wire.decode()
+        assert "Подпись под рисунком" not in wire.decode()
         assert not c.gate._tickets
 
 
