@@ -92,7 +92,8 @@ class OriginalIntakeController:
     async def dispatch_transfer(self,identity,binding):
         if identity['phase'] not in PHASES or not self.binding_current(binding):raise PermissionError('original transfer binding unavailable')
         if identity['phase']=='original_pages':return {}
-        if identity['phase']=='original_archive' and 'page_index' not in identity['arguments']:
+        if (identity['phase']=='original_archive' and 'page_index' not in identity['arguments']
+                and identity['operation_key'] not in self._private):
             return None
         if identity['phase']=='original_acquire' and set(identity['arguments'])=={'spec','telegram_locator'}:
             # The immutable document locator is already in the request hash;
