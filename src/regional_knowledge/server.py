@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import asyncio
 from functools import wraps
@@ -651,6 +649,7 @@ def build_server(
             "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
             "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
             "6. For next_action=wait, call status; when told to retry stage, resend the identical stage, not a new operation.\n"
+            "Revising an accepted book is unsupported in this profile; never resend accepted pages.\n"
             + "7. " + _SOURCE_TRANSCRIPTION_INSTRUCTIONS + "\n" +
             "The Kaggle native importer accepts an owner-authorized PDF/DjVu original up to 128 MiB and 2500 physical pages, subject to verified original intake. Ordinary owner-only start is shared-searchable without a mandatory per-book public_rights declaration; the owner's legal attestation is retained. Authentication does not grant another actor access to private Case, original or scan proof. Use exactly the ordinary workflow: book_ingest(start) with the attached original, then book_pages (default 1 page, maximum requested 4; the renderer may return just one actual ImageContent), model visual/source review, book_ingest(stage) with up to four reviewed pages and source passage evidence (page_id and region_key with a current chunk_key or an already accepted chunk_id), repeat with returned cursor/next_action, then book_ingest(finalize) only to record that reading ended. One accepted native text packet becomes searchable by registered search, knowledge_search or fetch after its actual apply, not merely after a pending stage request. There is no whole-book activation or extra validation step before the first page can be found. A rejected page can be corrected and retried in the same ingestion; an independently accepted earlier page remains searchable. Optional story, fact, illustration, map and POI enrichment may remain pending or reject without rolling back accepted source text. "
             "Build semantically coherent source chunks with model-chosen boundaries at changes of thought, typically about 256 BGE tokens (roughly 800-1000 characters when appropriate; a guideline rather than a hard limit), within the existing exact token bound; a printed paragraph, physical page or stage packet is not a mandatory chunk boundary. Preserve whole sentences: split a long or visually unbroken paragraph at a complete sentence when the idea changes, using exact span_refs and source_text offsets; combine short adjacent paragraphs about the same idea into one appropriately sized chunk using source-backed region_refs or span_refs. Read continuing text with book_pages; one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages, not one oversized chunk. If a completed thought spans pages and fits current limits, one chunk may use ordered region_refs OR exact span_refs from both real page_ids and source regions; preserve original page/region/span provenance and never invent unseen continuation or force a whole packet into one chunk. "
@@ -1467,6 +1466,10 @@ def build_server(
             limit=max(1, min(int(limit), 8)),
         )
 
+    IngestCommand = (Literal['start', 'stage', 'validate', 'finalize', 'status']
+        if selected == 'kaggle_source' else
+        Literal['start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status'])
+
     @mcp.tool(
         title=("Import and continue an attached scanned book" if selected=='kaggle_source'
             else "Add, reprocess or continue a book"),
@@ -1550,6 +1553,7 @@ def build_server(
             "a POI candidate is not a verified historical geometry."
         ) if selected!='kaggle_source' else (
             _SOURCE_TRANSCRIPTION_INSTRUCTIONS +
+            "Revising an accepted book is unsupported in this profile; never resend accepted pages. " +
             "Use one owner-authorized native PDF/DjVu book intake (128 MiB, 2500 physical pages maximum, subject to verified original receipt). Ordinary start requires an attached original and no per-book public_rights declaration; an honest owner attestation is retained, and current actor/source/Case ACL still applies. Workflow: book_ingest(command=start) -> book_pages (default 1, maximum 4 requested pages; actual renderer may deliver only one visual page) -> model-reviewed book_ingest(command=stage) in bounded packets of 1-4 pages -> after actual accepted text-packet apply, that page's text is searchable by registered search/knowledge_search/fetch -> book_ingest(command=finalize) means only reading ended. Do not wait for an entire book, a separate validation/activation step, GEO bootstrap, semantic comparison, media or Story completeness before searching an accepted page. Later optional semantic, story and illustration enrichment does not undo accepted text; if a packet is rejected, correct and retry that page under the SAME ingestion and preserve earlier published pages. On the first stage set source_import.research: pending with the exact owned book_pages continuation (ingestion_id, cursor, batch_size=1), or complete with empty continuation if actually finished. Return processing/wait/UNKNOWN/pending truthfully, retain current model-authored research continuation and check status after progress; do not claim the page applied or Saved until confirmed, and do not tight-poll. Use exact source image, page, region, passage and evidence refs, and stage coherent semantic passages rather than arbitrary page-sized chunks. Include a meaningful section heading before its related body in that passage's ordered region_refs or span_refs; do not omit it, attach it to unrelated passages or make a heading-only chunk just for coverage. Review stories, dates, quantities, people, events, places and figures in that SAME page pass; set knowledge_reviewed/story_candidates_reviewed honestly. For a supported narrative supply story_candidates.basic_variant.body with evidence-mapped blocks. When evidence is insufficient, omit basic_variant and explicitly mark narrative_outcome=needs_context or facts_only; title/summary is not a body. Optional stage JSON-file TRANSPORT bound is <=1 MiB; the separate <=700 KiB canonical native envelope includes source metadata, model data and INCLUDING issued image receipts. Keep exact accepted source IDs, no fabricated map geometry/POI. Use registered search/knowledge_search/fetch for accepted source assertions. When disagreement_search is registered, find bounded actor-authorized Case candidates by subject/place/source in the SAME page review, follow next_after_case while has_more, and inspect a selected Case through disagreement_get before using disagreement_edit(add_evidence). Create a new Case with disagreement_edit(create) then add_evidence only if no suitable existing Case is identified and the tools and actor permissions allow it. This is model-led candidate evaluation, not backend automatic matching, a second required scan or a proof of absence; pending/UNKNOWN is not Saved, and retries reuse the same operation_key. For title-page bibliography corrections use a separate book_ingest(stage, metadata.catalog_update={expected_revision:1,...}) without pages/chunks. An accepted source.catalog.v1 command preserves original stage bytes and source revision; APPLIED is not yet Dataset Saved. On the SAME visually reviewed page record each confirmed chapter/article/section boundary in source_unit_boundaries, with source_unit_version=1, existing article_id, observed kind/title on starts and original region_key plus Unicode codepoint offset. Use end markers at real next boundaries, not guessed ends from page counts. Subsequent pages may set source_unit_version=1 without duplicating starts; open units do not block accepted text/search and stay unit_not_ready until a confirmed end or verified EOF. Do not invent tools or bypass source/Case authorization."
         ),
         annotations=ToolAnnotations(
@@ -1562,7 +1566,7 @@ def build_server(
     )
     @_book_mcp_error_boundary
     async def book_ingest(
-        command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
+        command: IngestCommand,
         file: ChatFile | None = None,
         document_id: str | None = None,
         ingestion_id: str | None = None,

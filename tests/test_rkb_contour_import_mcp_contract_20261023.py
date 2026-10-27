@@ -5,6 +5,7 @@ not a per-book legal questionnaire. Private Case and original grants remain
 separate from the import capability.
 """
 from dataclasses import replace
+from copy import deepcopy
 from pydantic import ValidationError
 
 import pytest
@@ -82,6 +83,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     native_tools = {tool.name: tool for tool in await native.list_tools()}
     imported = native_tools["book_ingest"]
     native_text = imported.description
+    for text in (native.instructions, native_text):
+        assert 'Revising an accepted book is unsupported in this profile' in text
     assert imported.title == "Import and continue an attached scanned book"
     assert "book_ingest(command=start)" in native_text
     assert "book_pages (default 1, maximum 4" in native_text
@@ -229,14 +232,23 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         assert obsolete not in native_text, obsolete
         assert obsolete not in native.instructions, obsolete
 
-    # Same wire tool, same accepted arguments and actual MCP schema; only the
-    # descriptions and native-specific display title differ.
+    # The native profile excludes unsupported repair commands. The legacy
+    # profile retains its implemented commands and otherwise identical schema.
     monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
     legacy = build_server(backend_profile="legacy")
     legacy_tools = {tool.name: tool for tool in await legacy.list_tools()}
     legacy_ingest = legacy_tools["book_ingest"]
     assert imported.name == legacy_ingest.name == "book_ingest"
-    assert imported.input_schema == legacy_ingest.input_schema
+    native_schema = deepcopy(imported.input_schema)
+    legacy_schema = deepcopy(legacy_ingest.input_schema)
+    native_commands = native_schema['properties']['command'].pop('enum')
+    legacy_commands = legacy_schema['properties']['command'].pop('enum')
+    assert native_commands == ['start', 'stage', 'validate', 'finalize', 'status']
+    assert legacy_commands == ['start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status']
+    assert native_schema == legacy_schema
+    for command in ('reprocess', 'rechunk'):
+        with pytest.raises(ToolError, match='invalid_query'):
+            await native.call_tool('book_ingest', {'command': command})
     assert imported.output_schema == legacy_ingest.output_schema
     assert imported.meta == legacy_ingest.meta == {"openai/fileParams": ["file"]}
     assert legacy_ingest.title == "Add, reprocess or continue a book"
