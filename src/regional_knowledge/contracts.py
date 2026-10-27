@@ -276,6 +276,9 @@ class StagePageInput(BaseModel):
     printed_page_number: str | None = Field(default=None, max_length=40)
     layout_kind: str | None = Field(default=None, max_length=80)
     regions: list[StageRegionInput] = Field(default_factory=list, max_length=500)
+    # Explicit new source-packet data boundary: old accepted stages lack this
+    # opt-in and retain their original native materialization semantics.
+    source_unit_version: Literal[1] | None = None
     source_unit_boundaries: list[StageSourceUnitBoundary] = Field(default_factory=list, max_length=500)
     relations: list[StageRelationInput] = Field(default_factory=list, max_length=1_000)
     illustrations: list[StageIllustrationInput] = Field(
@@ -318,6 +321,8 @@ class StagePageInput(BaseModel):
                 raise ValueError('figure exclusion requires a figure region and bounded reason')
         # Region/span positions are original Unicode codepoint offsets. The
         # model supplies the boundary; no text search or page-count inference.
+        if self.source_unit_boundaries and self.source_unit_version != 1:
+            raise ValueError("explicit source unit version required for new boundaries")
         by_key = {region.region_key: region for region in self.regions}
         previous = (-1, -1, -1)
         observed = set()
