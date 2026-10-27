@@ -2,6 +2,14 @@
 
 Active target2026-10-20. Source pages/chunks/evidence/hash/revision are immutable after acceptance; [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) governs storage/recovery.
 
+Native stage intake returns `unavailable` with reason
+`source_stage_not_accepted_retry_same_stage` when SQLite reports native
+`SQLITE_BUSY` (code 5) in the local spool stage transaction, which rolls back
+before acceptance. Retry the same stage payload and ingestion. Errors after
+that transaction, including the pending-progress update, and other SQLite
+errors retain their existing reconciliation behavior; this reason does not
+describe an accepted or unknown write.
+
 Use catalog.update with typed descriptive whitelist, expected_revision and source-owner personal authority. Cached-schema clients may use existing book_ingest(stage, metadata.catalog_update) on finalized owned checkpoint; same implementation/validation applies. Do not combine catalog correction with file/source/story/entity payloads. Explicit null publication_year clears an unverified year; it does not invent a date. Article registration uses verified parent/region boundaries without changing original bytes.
 
 Header/footer/page-number-only passages remain preserved and explicitly fetchable but are excluded from ordinary serving projection and continuation neighbors. Mixed passages, semantic headings, footnotes/captions/tables/marginalia and genuine illustration-bearing material stay searchable. Incomplete provenance fails to a visible review state, not silent deletion. PG query eligibility is before the branch limit; ANN filtering still needs bounded refill/iterative or exact narrow-scope handling. No lexical prefilter of dense and no remote Supabase path.
