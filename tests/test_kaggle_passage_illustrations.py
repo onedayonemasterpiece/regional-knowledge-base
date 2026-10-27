@@ -53,3 +53,31 @@ async def test_verbose_figures_do_not_expand_text_metadata_and_report_more():
     assert len(descriptors)==200 and more
     assert len(encode_envelope(result))<256*1024
     assert 'illustrations' not in item.metadata.source_provenance
+
+
+@pytest.mark.asyncio
+async def test_exact_figure_uses_current_corrected_catalog_without_leaking_crop():
+    from regional_knowledge.kaggle_passage_illustrations import read_source_illustration
+    from test_kaggle_public_illustration_gate import SOURCE, ILLUSTRATION
+    calls = []
+    async def execute(sql, params):
+        calls.append((sql, params))
+    async def fetchone():
+        return (dict(illustration_key='figure',caption_text='Printed caption',
+                     crop_binding={'secret': 'private'}), 6, 1, 'internal-ingestion',
+                dict(title='Accepted book',authors=['Current author'],publication_year=2020))
+    records,evidence,next_ordinal = await read_source_illustration(
+        SimpleNamespace(source_id=SOURCE,query=ILLUSTRATION),
+        SimpleNamespace(fetchone=fetchone), execute)
+    assert next_ordinal is None
+    assert len(records)==len(evidence)==1
+    assert records[0]['_citation_catalog']==dict(
+        title='Accepted book',authors=['Current author'],publication_year=2020)
+    assert records[0]['physical_page_index']==6
+    assert records[0]['caption_text']=='Printed caption'
+    assert 'crop_binding' not in records[0]
+    sql,params = calls[0]
+    assert 'source_catalog_corrections' in sql
+    assert 'coalesce(corrected.metadata,catalog.metadata)' in sql
+    assert 's.accepted AND NOT s.withdrawn' in sql
+    assert params==(SOURCE,ILLUSTRATION)
