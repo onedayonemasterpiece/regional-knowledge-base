@@ -54,6 +54,64 @@ assert not {'torch','transformers','tensorflow','flax'} & sys.modules.keys()
     assert completed.returncode == 0, completed.stderr[-4000:]
 
 
+def test_shipped_source_units_executes_lazy_resolver_without_checkout_or_network(tmp_path):
+    _, files, _ = source_bundle(Path(__file__).resolve().parents[1])
+    for relative, encoded in files.items():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(encoded.encode('utf-8'))
+    script = """
+import asyncio,pathlib,socket,sys
+from types import SimpleNamespace
+root=pathlib.Path(sys.argv[1]).resolve()
+def denied(*args,**kwargs):raise AssertionError('source units attempted network')
+socket.socket.connect=denied;socket.create_connection=denied
+sys.path.insert(0,str(root))
+from regional_knowledge.kaggle_source_read import _source_units
+assert 'regional_knowledge.source_units' not in sys.modules
+source='10000000-0000-0000-0000-000000000001'
+page_id='20000000-0000-0000-0000-000000000001'
+page=dict(physical_page_index=0,page_id=page_id,
+ regions=[dict(region_key='body',reading_order=0,kind='paragraph',source_length=24)],
+ source_unit_boundaries=[
+  dict(region_key='body',offset=0,action='start',article_id='first',kind='article',title='First unit'),
+  dict(region_key='body',offset=10,action='start',article_id='second',kind='article',title='Second unit')])
+class Cursor:
+ async def fetchall(self):return [(0,page,1,True)]
+calls=[]
+async def execute(sql,params):
+ assert 'read_source_unit_pages_v1' in sql and params==(source,)
+ calls.append(params)
+async def main():
+ records,evidence,next_ordinal=await _source_units(
+  SimpleNamespace(source_id=source,after_ordinal=None,limit=1),Cursor(),execute)
+ assert evidence==() and next_ordinal==1
+ assert len(records)==1 and records[0]['article_id']=='first'
+ first=records[0]
+ assert first['title']=='First unit' and first['state']=='complete'
+ assert first['source_id']==source and first['close_reason']=='next_boundary'
+ assert first['start_anchor']['offset']==0 and first['end_anchor']['offset']==10
+ assert first['source_spans'][0]['page_id']==page_id
+ assert (first['source_spans'][0]['start'],first['source_spans'][0]['end'])==(0,10)
+ records,evidence,next_ordinal=await _source_units(
+  SimpleNamespace(source_id=source,after_ordinal=1,limit=1),Cursor(),execute)
+ assert evidence==() and next_ordinal is None
+ assert len(records)==1 and records[0]['article_id']=='second'
+ assert records[0]['ordinal']==2 and records[0]['close_reason']=='verified_eof'
+ assert (records[0]['source_spans'][0]['start'],records[0]['source_spans'][0]['end'])==(10,24)
+ assert len(calls)==2
+asyncio.run(main())
+for name in ('regional_knowledge.kaggle_source_read','regional_knowledge.source_units'):
+ assert pathlib.Path(sys.modules[name].__file__).resolve().is_relative_to(root)
+assert not {'torch','transformers','tensorflow','flax'} & sys.modules.keys()
+"""
+    completed = subprocess.run(
+        [sys.executable, '-I', '-c', script, str(tmp_path)],
+        cwd=tmp_path, env={'PATH': os.defpath}, capture_output=True, timeout=20, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr[-4000:]
+
+
 def test_shipped_original_page_executes_and_replays_without_controller_telemetry(tmp_path):
     _,files,_=source_bundle(Path(__file__).resolve().parents[1])
     for relative,encoded in files.items():
