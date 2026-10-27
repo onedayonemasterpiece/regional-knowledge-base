@@ -16,7 +16,10 @@ loop. Creation or an actual schema upgrade still uses the serialized write path.
 
 Queue upgrades add `bge_retention` on jobs `(state, kind, updated)` and
 `bge_assigned` on `(run_id, state)` to bound retention and assigned-job lookups.
-Opening an existing queue missing either index installs it before returning to
+The partial `bge_live` index on `(kind, state, run_id)` uses the unchanged
+`state!='done'` predicate, excluding completed history from live-demand scans
+and bounding recovery-job retirement by kind without narrowing allowed states.
+Opening an existing queue missing any of these indexes installs it before returning to
 the read-only schema fast path. Initial index construction takes the SQLite
 writer lock and requires additional disk space; retention, lease expiry,
 claim ownership and UNKNOWN handling remain unchanged.
