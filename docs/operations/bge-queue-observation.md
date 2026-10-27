@@ -14,6 +14,12 @@ Opening an already compatible queue probes the schema read-only instead of
 running migrations per search; the search constructs its queue off the event
 loop. Creation or an actual schema upgrade still uses the serialized write path.
 
+Controller maintenance retries native `SQLITE_BUSY` (code 5) on its existing
+five-second loop after the queue transaction rolls back. The failed tick skips
+all launch processing and retains unknown submissions for reconciliation.
+Other SQLite failures still propagate; this retry does not remove lock
+contention or establish its cause. Failure logs include `retry_next_tick`.
+
 Local result waiters are notified only after completion commits, including
 between queue instances in the same process. A bounded 250 ms reconciliation
 path observes completions from other processes and recovers missed hints. A

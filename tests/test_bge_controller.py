@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 from enum import Enum
 import json
+import pytest
 from uuid import uuid4
 
 
@@ -78,42 +79,131 @@ def controller():
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
 
-def test_maintenance_sqlite_failure_is_logged_and_reraised(monkeypatch, tmp_path, caplog):
-    import sqlite3
+def maintenance_main_fixture(monkeypatch,tmp_path):
     import sys
     from types import SimpleNamespace
-    import pytest
     from regional_knowledge.bge_queue import BgeQueue
 
-    module = controller()
-    queue = BgeQueue(tmp_path / 'PRIVATE.sqlite')
-    monkeypatch.setattr(module, 'BgeQueue', lambda _: queue)
-    monkeypatch.setattr(module, 'reconcile_provider_history', lambda *a, **kw: None)
-    monkeypatch.setitem(sys.modules, 'kaggle.api.kaggle_api_extended',
-                        SimpleNamespace(KaggleApi=lambda: SimpleNamespace(authenticate=lambda: None)))
-    read_text = Path.read_text
-    monkeypatch.setattr(Path, 'read_text', lambda self, *a, **kw:
-                        '' if self == Path('/home/dev/.env') else read_text(self, *a, **kw))
-    monkeypatch.setenv('RKB_BGE_TARGET_CONFIG', '')
-    monkeypatch.setenv('RKB_BGE_QUEUE_PATH', str(queue.path))
-    monkeypatch.setenv('RKB_BGE_BROKER_URL', 'https://fixture.invalid')
-    with sqlite3.connect(queue.path) as holder:
-        holder.execute('BEGIN IMMEDIATE')
-        with pytest.raises(sqlite3.OperationalError) as caught:
-            module.main()
-    assert caught.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
-    events = [json.loads(record.message) for record in caplog.records
-              if 'bge_controller_maintenance_failed' in record.message]
-    assert len(events) == 1
-    event = events[0]
-    assert event['error_type'] == 'OperationalError'
-    assert event['sqlite_errorcode'] == sqlite3.SQLITE_BUSY
-    assert event['sqlite_errorname'] == 'SQLITE_BUSY'
-    assert event['error_frames'][0]['file'] == 'bge_kaggle_controller.py'
-    assert event['error_frames'][-1]['file'] == 'bge_queue.py'
-    assert event['error_frames'][-1]['function'] == 'connect'
-    assert 1 <= len(event['error_frames']) <= 3
+    module=controller();queue=BgeQueue(tmp_path/'PRIVATE.sqlite')
+    monkeypatch.setattr(module,'BgeQueue',lambda _:queue)
+    monkeypatch.setattr(module,'reconcile_provider_history',lambda *a,**kw:None)
+    api=SimpleNamespace(authenticate=lambda:None)
+    monkeypatch.setitem(sys.modules,'kaggle.api.kaggle_api_extended',
+        SimpleNamespace(KaggleApi=lambda:api))
+    read_text=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda self,*a,**kw:
+        '' if self==Path('/home/dev/.env') else read_text(self,*a,**kw))
+    monkeypatch.setenv('RKB_BGE_TARGET_CONFIG','')
+    monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(queue.path))
+    monkeypatch.setenv('RKB_BGE_BROKER_URL','https://fixture.invalid')
+    return module,queue
+
+
+def sqlite_failure(code=None,name=None):
+    import sqlite3
+    error=sqlite3.OperationalError('PRIVATE database or provider payload')
+    if code is not None:error.sqlite_errorcode=code
+    if name is not None:error.sqlite_errorname=name
+    return error
+
+
+def assert_maintenance_log(caplog,tmp_path,*,retry):
+    events=[json.loads(record.message) for record in caplog.records
+        if 'bge_controller_maintenance_failed' in record.message]
+    assert len(events)==1
+    event=events[0]
+    assert event['error_type']=='OperationalError'
+    assert event['retry_next_tick'] is retry
     assert 'PRIVATE' not in json.dumps(event) and str(tmp_path) not in json.dumps(event)
+    return event
+
+
+def test_maintenance_busy_retries_next_tick_without_repeating_unknown_launch(monkeypatch,tmp_path,caplog):
+    import sqlite3
+    import pytest
+    module,queue=maintenance_main_fixture(monkeypatch,tmp_path)
+    run=queue.request_startup()['run_id']
+    queue.launch_claim(run,provider_ref='fixture-owner/stable-slug')
+    holder=sqlite3.connect(queue.path);holder.execute('BEGIN IMMEDIATE')
+    observations=[];sleeps=[];owner_reads=[]
+    owners=queue.provider_owned_run_ids
+    def read_owners():
+        assert sleeps==[5]  # No owner/launch processing on the failed tick.
+        owner_reads.append(True)
+        return owners()
+    monkeypatch.setattr(queue,'provider_owned_run_ids',read_owners)
+    def observe(*args,**kwargs):
+        observations.append(True)
+        return False  # Exact original launch remains unknown.
+    monkeypatch.setattr(module,'reconcile_launch_due',observe)
+    monkeypatch.setattr(queue,'launch_claim',lambda *a,**kw:pytest.fail('repeat launch claim'))
+    class StopLoop(BaseException):pass
+    def tick(seconds):
+        assert seconds==5
+        sleeps.append(seconds)
+        if len(sleeps)==1:holder.rollback()
+        else:raise StopLoop
+    monkeypatch.setattr(module.time,'sleep',tick)
+    try:
+        with pytest.raises(StopLoop):module.main()
+    finally:holder.close()
+    assert sleeps==[5,5] and len(owner_reads)==len(observations)==1
+    with queue.connect(write=False) as db:
+        assert db.execute('SELECT launch_state FROM runs WHERE id=?',(run,)).fetchone()[0]=='dispatching'
+        assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==1
+    event=assert_maintenance_log(caplog,tmp_path,retry=True)
+    assert event['sqlite_errorcode']==sqlite3.SQLITE_BUSY
+    assert event['sqlite_errorname']=='SQLITE_BUSY'
+    assert event['error_frames'][0]['file']=='bge_kaggle_controller.py'
+    assert event['error_frames'][-1]['function']=='connect'
+    assert 1<=len(event['error_frames'])<=3
+
+
+def test_maintenance_busy_rolls_back_before_next_tick(monkeypatch,tmp_path,caplog):
+    import sqlite3
+    import pytest
+    module,queue=maintenance_main_fixture(monkeypatch,tmp_path)
+    run=queue.request_startup()['run_id']
+    with queue.connect(write=False) as db:
+        before=db.execute('SELECT useful FROM runs WHERE id=?',(run,)).fetchone()[0]
+    expire=queue._expire;failed=[];sleeps=[]
+    def fail_once(db,now):
+        if not failed:
+            failed.append(True)
+            db.execute('UPDATE runs SET useful=-1 WHERE id=?',(run,))
+            raise sqlite_failure(sqlite3.SQLITE_BUSY,'SQLITE_BUSY')
+        return expire(db,now)
+    monkeypatch.setattr(queue,'_expire',fail_once)
+    def owners():
+        assert sleeps==[5]
+        return []  # Recovery reaches successful maintenance without provider I/O.
+    monkeypatch.setattr(queue,'provider_owned_run_ids',owners)
+    class StopLoop(BaseException):pass
+    def tick(seconds):
+        assert seconds==5
+        sleeps.append(seconds)
+        with queue.connect(write=False) as db:
+            assert db.execute('SELECT useful FROM runs WHERE id=?',(run,)).fetchone()[0]==before
+        if len(sleeps)==2:raise StopLoop
+    monkeypatch.setattr(module.time,'sleep',tick)
+    with pytest.raises(StopLoop):module.main()
+    assert sleeps==[5,5]
+    assert_maintenance_log(caplog,tmp_path,retry=True)
+
+
+@pytest.mark.parametrize('code,name',[
+    (10,'SQLITE_IOERR'),(1,'SQLITE_ERROR'),(6,'SQLITE_LOCKED'),
+    (517,'SQLITE_BUSY_SNAPSHOT'),(None,None),
+])
+def test_maintenance_nonbusy_failure_is_logged_and_reraised(monkeypatch,tmp_path,caplog,code,name):
+    module,queue=maintenance_main_fixture(monkeypatch,tmp_path)
+    error=sqlite_failure(code,name)
+    def fail():raise error
+    monkeypatch.setattr(queue,'maintenance',fail)
+    monkeypatch.setattr(module.time,'sleep',lambda _:pytest.fail('nonbusy retry'))
+    with pytest.raises(type(error)) as caught:module.main()
+    assert caught.value is error
+    assert_maintenance_log(caplog,tmp_path,retry=False)
 
 def test_disconnected_planned_drain_probes_before_lease_expiry_with_existing_rate_limit():
     module=controller()

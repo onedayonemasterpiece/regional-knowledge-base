@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shlex
 import re
+import sqlite3
 import time
 from regional_knowledge.bge_queue import BgeQueue
 from regional_knowledge.bge_error_facts import failure_facts
@@ -306,8 +307,15 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
         try:
             runs=queue.maintenance()
         except Exception as error:
+            retry=(isinstance(error,sqlite3.OperationalError)
+                   and getattr(error,'sqlite_errorcode',None)==sqlite3.SQLITE_BUSY)
             logging.error(json.dumps({'event':'bge_controller_maintenance_failed',
-                'error_type':type(error).__name__, **failure_facts(error)}))
+                'error_type':type(error).__name__,'retry_next_tick':retry, **failure_facts(error)}))
+            if retry:
+                # The queue transaction already rolled back/closed. Skip all
+                # launch processing and retry only on the existing loop cadence.
+                time.sleep(5)
+                continue
             raise
         owners=queue.provider_owned_run_ids()
         for run in runs:
