@@ -10,6 +10,7 @@ from .read_authority import ReadAuthorityError
 FIXTURE_ID = 'diagnostic:synthetic-pdf-resource-link:v1'
 FIXTURE_URL = 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf'
 LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.INFO)
 
 
 async def fetch_fixture(startup, principal):
