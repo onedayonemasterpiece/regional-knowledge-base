@@ -112,6 +112,18 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
     assert rows2[1]['saved'] is None and rows2[0]['saved'] == 'yes'
     assert summary2['orphan_apply_events'] == 0
 
+    # A single real stage packet may cover two (even nonadjacent) pages.
+    later_ops = {hashlib.sha256(f'{kind}-1'.encode()).hexdigest()
+                 for kind in ('stage', 'text', 'semantic')}
+    combined = [dict(e) for e in records if e.get('trace_id') not in ('stage1','status1')
+                and e.get('operation_ref') not in later_ops]
+    for event in combined:
+        if event.get('trace_id') == 'stage0' and event.get('event') == 'import.call':
+            event['physical_page_indices'], event['page_count'] = [0,1], 2
+    shared_rows, shared_summary = timeline.report(combined, ingestion_ref)
+    assert len(shared_rows) == 2 and all(r['saved'] == 'yes' for r in shared_rows)
+    assert shared_summary['packet_counts_are_shared'] is True
+
     # Total volume estimate for the fixture and a 200-page book: no rotation
     # or arbitrary deletion is needed for this event rate.
     assert sum(len(json.dumps(e)) for e in all_emitted) * 100 < 32 * 1024 * 1024
