@@ -77,6 +77,44 @@ def controller():
     spec=importlib.util.spec_from_file_location('bge_controller_test',Path(__file__).resolve().parents[1]/'scripts/production/bge_kaggle_controller.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
+
+def test_maintenance_sqlite_failure_is_logged_and_reraised(monkeypatch, tmp_path, caplog):
+    import sqlite3
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    from regional_knowledge.bge_queue import BgeQueue
+
+    module = controller()
+    queue = BgeQueue(tmp_path / 'PRIVATE.sqlite')
+    monkeypatch.setattr(module, 'BgeQueue', lambda _: queue)
+    monkeypatch.setattr(module, 'reconcile_provider_history', lambda *a, **kw: None)
+    monkeypatch.setitem(sys.modules, 'kaggle.api.kaggle_api_extended',
+                        SimpleNamespace(KaggleApi=lambda: SimpleNamespace(authenticate=lambda: None)))
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda self, *a, **kw:
+                        '' if self == Path('/home/dev/.env') else read_text(self, *a, **kw))
+    monkeypatch.setenv('RKB_BGE_TARGET_CONFIG', '')
+    monkeypatch.setenv('RKB_BGE_QUEUE_PATH', str(queue.path))
+    monkeypatch.setenv('RKB_BGE_BROKER_URL', 'https://fixture.invalid')
+    with sqlite3.connect(queue.path) as holder:
+        holder.execute('BEGIN IMMEDIATE')
+        with pytest.raises(sqlite3.OperationalError) as caught:
+            module.main()
+    assert caught.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+    events = [json.loads(record.message) for record in caplog.records
+              if 'bge_controller_maintenance_failed' in record.message]
+    assert len(events) == 1
+    event = events[0]
+    assert event['error_type'] == 'OperationalError'
+    assert event['sqlite_errorcode'] == sqlite3.SQLITE_BUSY
+    assert event['sqlite_errorname'] == 'SQLITE_BUSY'
+    assert event['error_frames'][0]['file'] == 'bge_kaggle_controller.py'
+    assert event['error_frames'][-1]['file'] == 'bge_queue.py'
+    assert event['error_frames'][-1]['function'] == 'connect'
+    assert 1 <= len(event['error_frames']) <= 3
+    assert 'PRIVATE' not in json.dumps(event) and str(tmp_path) not in json.dumps(event)
+
 def test_disconnected_planned_drain_probes_before_lease_expiry_with_existing_rate_limit():
     module=controller()
     class Queue:

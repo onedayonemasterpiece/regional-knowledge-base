@@ -19,6 +19,7 @@ from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
 from .bge_contract import REVISION, SPACE
+from .bge_error_facts import failure_facts
 from .bge_queue import StaleClaim, StaleAttachment
 from .kaggle_protocol import RESULT_MAX_BYTES, decode_envelope, QueryResult, PassageReadResult, StoryReadResult
 from .kaggle_protocol import SqlHealthResult
@@ -671,7 +672,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
         except Exception as error:
             logger.warning(json.dumps({'event': 'bge_channel_failed', 'run_id': run_id,
                                        'connection_generation': generation,
-                                       'error_type': type(error).__name__}))
+                                       'error_type': type(error).__name__, **failure_facts(error)}))
             await socket.close(code=1011)
         finally:
             with anyio.move_on_after(6, shield=True):

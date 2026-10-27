@@ -1,6 +1,8 @@
 """Socket contract tests; real queue/attachment transaction tests live separately."""
 import threading
 import asyncio
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -114,6 +116,38 @@ def result(socket, generation, claim='claim'):
     send(socket, generation, 'RESULT', job_id='job', claim=claim, space=SPACE,
          vectors=[[1., *([0.] * 1023)]], timings={'encoder_seconds': .01})
     return socket.receive_json()
+
+
+def test_sqlite_contention_keeps_channel_close_and_reports_safe_facts(queue, monkeypatch, tmp_path, caplog):
+    path = tmp_path / 'PRIVATE.sqlite'
+    with sqlite3.connect(path) as holder:
+        holder.execute('CREATE TABLE fixture (value INTEGER)')
+        holder.commit()
+        holder.execute('BEGIN EXCLUSIVE')
+
+        def blocked_status(*args):
+            with sqlite3.connect(path, timeout=0) as reader:
+                reader.execute('SELECT value FROM fixture').fetchall()
+
+        monkeypatch.setattr(queue, 'channel_status', blocked_status)
+        with client(queue) as app:
+            with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer secret'}) as socket:
+                generation = attach(socket)['connection_generation']
+                send(socket, generation, 'HEARTBEAT', diagnostics={'private': 'PRIVATE_PAYLOAD'})
+                with pytest.raises(WebSocketDisconnect) as disconnected:
+                    socket.receive_json()
+                assert disconnected.value.code == 1011
+    events = [json.loads(record.message) for record in caplog.records if 'bge_channel_failed' in record.message]
+    assert len(events) == 1
+    event = events[0]
+    assert event['run_id'] == 'run' and event['connection_generation'] == generation
+    assert event['error_type'] == 'OperationalError'
+    assert event['sqlite_errorcode'] == sqlite3.SQLITE_BUSY
+    assert event['sqlite_errorname'] == 'SQLITE_BUSY'
+    assert 1 <= len(event['error_frames']) <= 3
+    assert all(frame['file'] == 'bge_channel.py' for frame in event['error_frames'])
+    assert queue.detached == [generation]
+    assert 'PRIVATE' not in json.dumps(event) and str(tmp_path) not in json.dumps(event)
 
 
 def test_socket_run_auth_and_no_public_query(queue):
