@@ -494,9 +494,16 @@ class NativeSourceCompiler:
         language=language if re.fullmatch(r'[a-z][a-z0-9-]{1,23}',language) else 'simple'
         pages={str(p.page_id):p for p in graph.pages}
         counts=await self._counts([chunk.text for chunk in graph.chunks])
+        # Historical accepted packets have no explicit unit schema marker and
+        # must keep the original article-id rejection (no replay reinterpretation).
+        # New model-authored page packets opt in with source_unit_version=1.
+        # Their article_id is the same existing chunk scope identifier.
+        unit_pages = {p['page_id'] for d in documents for p in d['model_payload']['pages']
+                      if p.get('source_unit_version') == 1}
         passages=[]
         for ordinal,(chunk,tokens) in enumerate(zip(graph.chunks,counts,strict=True)):
-            if chunk.article_id or (chunk.illustration_ids and not include_illustrations):
+            if ((chunk.article_id and not any(str(p) in unit_pages for p in chunk.page_ids))
+                    or (chunk.illustration_ids and not include_illustrations)):
                 raise failure('native_source_component_activation_unavailable')
             locators=[pages[str(p)].printed_page_number or str(pages[str(p)].physical_page_index+1) for p in chunk.page_ids]
             passages.append(dict(passage_id=str(chunk.chunk_id),ordinal=ordinal,locator='pages '+', '.join(locators),
