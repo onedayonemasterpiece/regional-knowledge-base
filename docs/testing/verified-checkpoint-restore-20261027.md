@@ -11,7 +11,8 @@ fail closed. Already correct configurations retain their original object identit
 
 The selected pgvector runtime pin remains unchanged; incompatible model,
 tokenizer or native versions still fail. The base schema comes from the verified
-manifest. The target database schema remains a separate migration/readiness
+manifest even when the template integer names a newer target schema. The target
+database schema remains a separate native migration/readiness
 requirement. No checkpoint bytes, retained restore plans or live state are rewritten.
 
 Synthetic regression checks cover an already selected schema-44 base with stale

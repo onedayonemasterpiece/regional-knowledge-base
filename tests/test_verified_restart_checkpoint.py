@@ -45,8 +45,12 @@ def test_newest_saved_preserves_selected_runtime_without_rewriting_base(tmp_path
     assert _verified_restart_restore(p.q,resumed,'stream') is resumed
 
 
-def test_newest_saved_cannot_downgrade_selected_runtime(tmp_path):
-    p,config,_,_=setup(tmp_path,base_vector='0.8.4',selected_vector='0.8.2')
+@pytest.mark.parametrize('already_selected',[False,True])
+def test_newest_saved_cannot_downgrade_selected_runtime(tmp_path,already_selected):
+    p,config,latest,key=setup(tmp_path,base_vector='0.8.4',selected_vector='0.8.2')
+    if already_selected:
+        config=replace(config,dataset_checkpoint=latest,
+            manifest=ObjectRef(key,latest.manifest.sha256,latest.manifest.size,latest.base_sequence))
     with pytest.raises(JournalConflict,match='pgvector_selection_changed'):
         _verified_restart_restore(p.q,config,'stream')
 
@@ -133,6 +137,33 @@ def test_equal_dataset_version_cannot_select_different_checkpoint_identity(tmp_p
     changed=replace(config,dataset_checkpoint=replace(config.dataset_checkpoint,dataset_version=latest.dataset_version))
     with pytest.raises(JournalConflict,match='checkpoint_identity_changed'):
         _verified_restart_restore(p.q,changed,'stream')
+
+
+def test_already_selected_older_base_keeps_target_schema_migration_separate(tmp_path):
+    p,config,latest,key=setup(tmp_path,base_schema=42)
+    selected=replace(config,dataset_checkpoint=latest,
+        manifest=ObjectRef(key,latest.manifest.sha256,latest.manifest.size,latest.base_sequence),
+        versions={**config.versions,'schema_version':44})
+    resumed=_verified_restart_restore(p.q,selected,'stream')
+    assert resumed.versions['schema_version']==42
+    assert resumed.dataset_checkpoint==latest and resumed.manifest==selected.manifest
+    assert selected.versions['schema_version']==44
+    # The independent target schema remains the native migration/readiness
+    # requirement. An older verified base remains physically compatible.
+    assert compatible_versions(dict(resumed.versions),dict(selected.versions))
+
+
+@pytest.mark.parametrize('field,value',[
+    ('model_sha256','d'*64),('tokenizer_sha256','d'*64),
+    ('protocol_version',2),('postgis_version','3.5'),
+])
+def test_equal_checkpoint_schema_refresh_cannot_change_runtime_abi(tmp_path,field,value):
+    p,config,latest,key=setup(tmp_path,base_schema=42)
+    selected=replace(config,dataset_checkpoint=latest,
+        manifest=ObjectRef(key,latest.manifest.sha256,latest.manifest.size,latest.base_sequence),
+        versions={**config.versions,'schema_version':44,field:value})
+    with pytest.raises(JournalConflict,match='versions_changed'):
+        _verified_restart_restore(p.q,selected,'stream')
 
 
 @pytest.mark.parametrize('legacy',[False,True])

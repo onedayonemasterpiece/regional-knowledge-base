@@ -67,7 +67,12 @@ def _verified_restart_restore(queue, restore, stream):
     versions=dict(document['versions'],pgvector_version=restore.versions['pgvector_version'])
     if not compatible_versions(document['versions'],versions):
         raise JournalConflict('verified_restart_pgvector_selection_changed')
-    if not compatible_versions(dict(restore.versions),versions):
+    # A template integer may describe the target schema rather than the base.
+    # Native restore separately enforces database.schema_version after ordered
+    # migrations; only verified manifest bytes establish this base's integer.
+    prior_versions=dict(restore.versions)
+    prior_versions.pop('schema_version',None)
+    if not compatible_versions(prior_versions,versions):
         raise JournalConflict('verified_restart_versions_changed')
     resumed=replace(restore,dataset_checkpoint=checkpoint,
         manifest=ObjectRef(key,checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence),
