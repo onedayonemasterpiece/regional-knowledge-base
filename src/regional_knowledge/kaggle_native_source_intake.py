@@ -662,6 +662,49 @@ class NativeSourceIntake:
             payload=dict(codec='rkb.source-finish.v1',ingestion_id=row['ingestion_id']),builder=resolved_command)
         return self._output(row,await self._drive(access,row,await asyncio.to_thread(self._state,row)))
 
+    async def _accepted_input_review(self, row, state):
+        """Factual input flags, never a reconstructed native rejection reason."""
+        if (state['phase']!='staging' or state['pending_operation_key']
+                or state.get('rejected_batch_index') is None or state['command_attempt']<1):return []
+        try:
+            index=state['rejected_batch_index']
+            for component in ('text','semantic'):
+                packet=await self._entry(self._operation(row,'batch',f'{index}:{component}'))
+                if (packet is None or packet.seal_state!='ACCEPTED' or packet.apply_state!='REJECTED_PRECONDITION'
+                        or packet.apply_receipt is None or packet.apply_receipt.status!='rejected_precondition'
+                        or packet.outcome_state not in ('NOT_SENT','DURABLE')):continue
+                command=packet.command;doc=json.loads(command.payload)
+                if (command.route!='source.batch.v1' or command.person_id!=row['person_id']
+                        or command.ids!={'source_id':row['source_id']} or doc['ingestion_id']!=row['ingestion_id']
+                        or doc['batch_index']!=index or doc['component']!=component):continue
+                staged=await self._entry(self._operation(row,'stage',f"{index}:{state['command_attempt']-1}"))
+                if (staged is None or staged.seal_state!='ACCEPTED' or staged.apply_state!='APPLIED'
+                        or staged.apply_receipt is None or staged.apply_receipt.status!='applied'
+                        or staged.outcome_state not in ('NOT_SENT','DURABLE')):continue
+                original=staged.command;accepted=json.loads(original.payload)
+                if (original.route!=STAGE_ROUTE or original.person_id!=row['person_id']
+                        or original.ids!={'source_id':row['source_id']} or original.sequence>=command.sequence
+                        or original.request_id!=command.request_id
+                        or staged.database_generation!=packet.database_generation
+                        or digest(original.payload)!=doc['last_batch_sha256']
+                        or accepted['ingestion_id']!=row['ingestion_id'] or accepted['batch_index']!=index):continue
+                warnings=[]
+                for page in sorted(accepted['model_payload']['pages'],key=lambda p:p['physical_page_index']):
+                    number=page['physical_page_index'];page_id=UUID(page['page_id'])
+                    if (type(number) is not int or number<0
+                            or page_id!=uuid5(UUID(row['source_id']),f'page:1:{number}')):return []
+                    for region in sorted(page['regions'],key=lambda r:r['reading_order']):
+                        if region.get('needs_review') is not True:continue
+                        order=region['reading_order']
+                        if type(order) is not int or order<0 or type(region['region_key']) is not str:return []
+                        if len(warnings)==32:return warnings+['accepted_input_needs_review:truncated']
+                        ident=uuid5(page_id,'region:'+region['region_key'])
+                        warnings.append(f'accepted_input_needs_review:region_id={ident}:page_index={number}:reading_order={order}')
+                return warnings
+        except Exception:
+            return []  # Optional diagnostics cannot replace the existing status or UNKNOWN.
+        return []
+
     async def status(self, access, row):
         """Resume existing intent; a status read never invents a seal/finalize."""
         await self._check(access,row)
@@ -684,4 +727,10 @@ class NativeSourceIntake:
         state=await self._drive(access,row,state)
         state=await self._packet_progress(access,row,state)
         tails=await self._tail_output(access,row,state)
-        return tails if tails is not None else self._output(row,state)
+        if tails is not None:return tails
+        output=self._output(row,state)
+        warnings=await self._accepted_input_review(row,state)
+        if warnings:
+            await self._check(access,row)
+            output=output.model_copy(update={'warnings':output.warnings+warnings})
+        return output

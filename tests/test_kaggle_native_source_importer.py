@@ -221,7 +221,7 @@ def operation_count(s):
         return db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]
 
 
-async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
+async def finish(s, result, *, publish=True, total_inputs=2, status='applied', empty_result=False):
     """Synthetic worker result; actual ControlSpool/RecoveryJournal durability."""
     entry = await pending(s,result)
     command = entry.command
@@ -243,7 +243,7 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
     else:
         assert command.route == ACTIVATE_ROUTE
         output = dict(source_id=result.document_id,accepted=True,knowledge_sha256='e'*64)
-    raw = canonical(output)
+    raw = b'' if empty_result else canonical(output)
     outcome = canonical(dict(codec='rkb.applied-outcome.v1',operation_key=command.operation_key,
         command_sha256=entry.command_sha256,cursor=command.sequence,status=status,ids=dict(command.ids),
         request_id=command.request_id,person_id=command.person_id,route=command.route,logical_time=command.logical_time,
@@ -894,3 +894,143 @@ async def test_next_stage_before_semantic_still_enriches_every_batch(native_inta
     await drain()
     assert {(i,c) for i in range(3) for c in ('text','semantic')} <= set(issued), issued
     assert state(s,result)['enriched_batch_count'] == state(s,result)['batch_count'] == 3
+
+
+async def rejected_review_packet(s, *, region_count=2, mismatch=False):
+    book=await start(s);payload=batch(s,book,count=1);page=payload['pages'][0]
+    template=page['regions'][0]
+    page['regions']=[dict(template,region_key=f'PRIVATE-KEY-{i}',reading_order=i,needs_review=True,
+        source_text=f'PRIVATE-BOOK-TEXT-{i}',normalized_text=f'PRIVATE-NORMALIZED-{i}') for i in range(region_count)]
+    payload['chunks'][0].update(title='PRIVATE-TITLE',region_refs=[
+        dict(page_id=page['page_id'],region_key=r['region_key']) for r in page['regions']])
+    await stage(s,book,payload)
+    staged=await finish(s,book)
+    if mismatch:
+        # Produce a real accepted packet with a different stage hash, not a
+        # corrupt row whose receipt verifier would already reject it.
+        async with s.importer._access(s.principal) as access:
+            row=s.importer._row(access.authority.person_id,book.ingestion_id)
+            value=await s.importer.native_intake._drive(access,row,state(s,book))
+            s.importer.native_intake._update(row,last_batch_sha256='f'*64)
+    assert (await call(s,book,'status')).state=='processing'
+    rejected=await finish(s,book,status='rejected_precondition',empty_result=True)
+    assert json.loads((await s.spool.get(rejected.command.operation_key)).apply_receipt.outcome)['result_b64']==''
+    return book,payload,staged,rejected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('region_count',[2,40])
+async def test_status_reports_bounded_accepted_input_review_after_restart(native_intake,region_count,monkeypatch):
+    from regional_knowledge.kaggle_importer import KaggleSourceImporter
+    from regional_knowledge.server import build_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    from starlette.requests import Request
+    s=native_intake;book,payload,staged,rejected=await rejected_review_packet(s,region_count=region_count)
+    first=await call(s,book,'status')
+    assert first.state=='staged' and first.next_action=='continue_pages'
+    page=payload['pages'][0]
+    expected=['native_source_packet_requires_review']+[
+        f"accepted_input_needs_review:region_id={uuid5(UUID(page['page_id']),'region:'+r['region_key'])}:page_index=0:reading_order={r['reading_order']}"
+        for r in page['regions'][:32]]
+    if region_count>32:expected.append('accepted_input_needs_review:truncated')
+    assert first.warnings==expected
+    s.importer=KaggleSourceImporter(s.startup,originals=s.originals,tokenizer=s.importer.tokenizer)
+    s.startup.importer=s.importer
+    server=build_server(target_startup=s.startup)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(r) for r in db.execute('SELECT * FROM rkb_control_operations ORDER BY sequence')]
+        jobs=[tuple(r) for r in db.execute('SELECT * FROM jobs ORDER BY id')]
+    for request_id in ('new-http-status-after-restart-1','different-http-status-after-restart-2'):
+        request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
+            'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
+        context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id=request_id))
+        try:
+            result=await server.call_tool('book_ingest',dict(command='status',ingestion_id=book.ingestion_id),context)
+            assert result.structured_content['warnings']==expected and result.structured_content['state']=='staged'
+            assert 'PRIVATE-' not in result.model_dump_json()
+        finally:
+            retained=request.scope.pop(_SCOPE_KEY,None)
+            if retained:retained[1].release()
+    with s.t.queue.connect(write=False) as db:
+        assert before==[tuple(r) for r in db.execute('SELECT * FROM rkb_control_operations ORDER BY sequence')]
+        assert jobs==[tuple(r) for r in db.execute('SELECT * FROM jobs ORDER BY id')]
+    assert not s.token_calls
+
+
+@pytest.mark.asyncio
+async def test_status_review_diagnostics_require_exact_stage_hash(native_intake):
+    s=native_intake;book,_,_,_=await rejected_review_packet(s,mismatch=True)
+    result=await call(s,book,'status')
+    assert result.state=='staged' and result.warnings==['native_source_packet_requires_review']
+    assert not s.token_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',['missing_stage','unknown_outcome','other_person','other_source','other_ingestion'])
+async def test_status_review_diagnostics_fail_closed_without_packet_proof(native_intake,case):
+    s=native_intake;book,_,staged,_=await rejected_review_packet(s)
+    assert (await call(s,book,'status')).warnings[1].startswith('accepted_input_needs_review:')
+    if case in ('missing_stage','unknown_outcome'):
+        with s.t.queue.connect() as db:
+            if case=='missing_stage':db.execute('DELETE FROM rkb_control_operations WHERE operation_key=?',(staged.command.operation_key,))
+            else:db.execute("UPDATE rkb_control_operations SET outcome_state='SENT_UNKNOWN',remote_receipt_bytes=NULL WHERE operation_key=?",(staged.command.operation_key,))
+        result=await call(s,book,'status')
+        assert result.warnings==['native_source_packet_requires_review']
+    else:
+        # Keep the journal and native receipt valid; mismatch the ownership or
+        # intake selector handed to the optional projector itself.
+        row=dict(s.importer._row(s.principal.subject,book.ingestion_id))
+        field={'other_person':'person_id','other_source':'source_id','other_ingestion':'ingestion_id'}[case]
+        row[field]=str(uuid5(UUID(book.ingestion_id),case))
+        assert await s.importer.native_intake._accepted_input_review(row,state(s,book))==[]
+    assert not s.token_calls
+
+
+@pytest.mark.asyncio
+async def test_pending_review_input_does_not_expose_diagnostics_or_add_jobs(native_intake):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    payload['pages'][0]['regions'][0]['needs_review']=True
+    await stage(s,book,payload)
+    with s.t.queue.connect(write=False) as db:before=[tuple(r) for r in db.execute('SELECT * FROM jobs ORDER BY id')]
+    result=await call(s,book,'status')
+    assert result.state=='processing' and not any(w.startswith('accepted_input_needs_review:') for w in result.warnings)
+    with s.t.queue.connect(write=False) as db:assert before==[tuple(r) for r in db.execute('SELECT * FROM jobs ORDER BY id')]
+
+
+@pytest.mark.asyncio
+async def test_rejected_stage_without_applied_stage_keeps_generic_status(native_intake):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    payload['pages'][0]['regions'][0]['needs_review']=True
+    await stage(s,book,payload)
+    await finish(s,book,status='rejected_precondition',empty_result=True)
+    result=await call(s,book,'status')
+    assert result.state=='staged' and result.warnings==['native_source_packet_requires_review']
+    assert operation_count(s)==1 and not s.token_calls
+
+
+@pytest.mark.asyncio
+async def test_review_diagnostics_recheck_withdrawal_before_output(native_intake,monkeypatch):
+    s=native_intake;book,_,_,_=await rejected_review_packet(s)
+    projector=s.importer.native_intake._accepted_input_review
+    async def revoked(*args):
+        warnings=await projector(*args)
+        assert warnings
+        await s.t.auth.provider.revoke_token(await s.t.auth.provider.load_access_token(s.principal.access_token))
+        return warnings
+    monkeypatch.setattr(s.importer.native_intake,'_accepted_input_review',revoked)
+    with pytest.raises(ToolError,match='access_denied'):
+        await call(s,book,'status')
+
+
+@pytest.mark.asyncio
+async def test_other_authenticated_person_cannot_read_import_review_diagnostics(native_intake,monkeypatch):
+    s=native_intake;book,_,_,_=await rejected_review_packet(s)
+    other=Principal(subject=s.t.auth.p.other.subject,client_id=s.t.auth.provider.client.client_id,
+        issuer=s.t.auth.provider.issuer,access_token=s.t.auth.tokens.access_token)
+    async def forbidden(*args):pytest.fail('non-owner reached private accepted input projector')
+    monkeypatch.setattr(s.importer.native_intake,'_accepted_input_review',forbidden)
+    before=operation_count(s)
+    with pytest.raises(ToolError,match='access_denied'):
+        await s.importer.book_ingest(command='status',principal=other,ingestion_id=book.ingestion_id)
+    assert operation_count(s)==before
