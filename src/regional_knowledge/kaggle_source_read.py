@@ -169,8 +169,12 @@ async def _source_units(request, cursor, execute):
         return (), (), None
     if len(rows) > 2500 or len({row[2] for row in rows}) != 1 or len({row[3] for row in rows}) != 1:
         raise ReadUnavailable('internal_error')
+    # Validate the complete accepted boundary chain, but only materialize
+    # spans for this requested page plus one lookahead unit for next_cursor.
     units = resolve_source_units([row[1] for row in rows],source_id=request.source_id,
-        page_count=rows[0][2],read_complete=rows[0][3])
+        page_count=rows[0][2],read_complete=rows[0][3],
+        after_ordinal=request.after_ordinal,limit=request.limit + 1,
+        span_preview_limit=16)
     records, next_ordinal = bounded_unit_records(
         units,after_ordinal=request.after_ordinal,limit=request.limit)
     return records, (), next_ordinal
