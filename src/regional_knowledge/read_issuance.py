@@ -18,6 +18,19 @@ _capture = ContextVar('rkb_read_output_capture', default=None)
 MAX_RESPONSE_BYTES = 512 * 1024
 
 
+def _response_limit(gated):
+    from .backend import RenderedPageBatch
+    from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
+    result = getattr(gated, 'result', None)
+    # Only the trusted, already authorized single-page result gets its actual
+    # JPEG's base64 allowance. Text and caller JSON retain the existing bound.
+    if type(result) is RenderedPageBatch and len(result.pages) == 1:
+        size = len(result.pages[0].data)
+        if 0 < size <= MODEL_PAGE_BYTE_LIMIT:
+            return MAX_RESPONSE_BYTES + 4 * ((size + 2) // 3)
+    return MAX_RESPONSE_BYTES
+
+
 @dataclass
 class GuardedOutput:
     gate: object
@@ -173,7 +186,9 @@ class ReadIssuanceMiddleware:
                 await send(message)
                 return
             buffered.extend(message.get('body', b''))
-            if len(buffered) > MAX_RESPONSE_BYTES:
+            bound = scope.get(_SCOPE_KEY)
+            limit = _response_limit(bound[1].gated) if bound else MAX_RESPONSE_BYTES
+            if len(buffered) > limit:
                 raise RuntimeError('bounded MCP read response required')
             if message.get('more_body', False):
                 return
@@ -213,7 +228,7 @@ class ReadIssuanceMiddleware:
                         envelope['result'] = rendered
                     data = json.dumps(envelope, ensure_ascii=False, allow_nan=False,
                                       separators=(',', ':')).encode('utf-8')
-                    if len(data) > MAX_RESPONSE_BYTES:
+                    if len(data) > _response_limit(issued.gated):
                         raise ValueError('response bound')
                     if issued.gate.issuance_current(issued.gated.ticket):
                         payload = rendered if typed_denied is not None else rendered.get('structuredContent', {})

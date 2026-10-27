@@ -287,3 +287,44 @@ def test_guarded_server_rejects_non_json_or_stateful_transport(options):
     server._current_read_output_required = True
     with pytest.raises(RuntimeError, match='stateless JSON HTTP'):
         server.streamable_http_app(**options)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revoked',[False,True])
+async def test_real_mcp_large_page_jpeg_is_delivered_or_revoked_as_one_frame(revoked):
+    import base64,random
+    from regional_knowledge.backend import RenderedPage,RenderedPageBatch
+    from regional_knowledge.server import KnowledgeMCPServer,_book_page_tool_result
+    from mcp.server.transport_security import TransportSecuritySettings
+    fitz=pytest.importorskip('pymupdf')
+    pixels=fitz.Pixmap(fitz.csRGB,1600,1200,random.Random(1).randbytes(1600*1200*3),False)
+    jpeg=pixels.tobytes('jpeg',jpg_quality=85)
+    assert len(jpeg)>1024*1024  # Real encoded pixels, not a tiny mocked ImageContent.
+    batch=RenderedPageBatch((RenderedPage('synthetic-page',51,None,'image/jpeg',jpeg),),'52')
+    class PageGate(Gate):
+        async def refresh(self,gated):
+            self.refreshes+=1;return gated
+    gate=PageGate(current=(False,False) if revoked else (True,))
+    server=KnowledgeMCPServer('page-issuance-test')
+    server._current_read_output_required=True
+    @server.tool()
+    async def book_pages():
+        gated=SimpleNamespace(ticket=object(),result=batch)
+        render=lambda value:_book_page_tool_result('synthetic-ingestion',value)
+        assert retain_read_output(gate,gated,render)
+        return render(batch)
+    app=server.streamable_http_app(json_response=True,stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://localhost') as client:
+            response=await client.post('/mcp',json={'jsonrpc':'2.0','id':51,'method':'tools/call',
+                'params':{'name':'book_pages','arguments':{}}},
+                headers={'accept':'application/json, text/event-stream'})
+    assert response.status_code==200
+    value=response.json()['result']
+    assert value['isError'] is revoked and len(gate.released)==1
+    if revoked:
+        assert len(response.content)<1024 and 'synthetic-page' not in response.text
+    else:
+        assert base64.b64decode(value['content'][1]['data'],validate=True)==jpeg
+        assert value['content'][1]['mimeType']=='image/jpeg'
