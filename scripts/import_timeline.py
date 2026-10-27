@@ -123,7 +123,7 @@ def report(events, ingestion_ref=None):
             if len(value['_saved'] & value['_ops']) >= 3: value['saved'] = 'yes'
         value['text_lag_ms'] = interval(value['_times'].get('stage'), value['_times'].get('text'))
         value['semantic_lag_ms'] = interval(value['_times'].get('text'), value['_times'].get('semantic'))
-        value['status_observed'], value['fetch_observed'] = 0, None
+        value['status_observed'], value['fetch_observed'] = None, None
     for e in calls:
         if e.get('tool') == 'fetch':
             pg, end = integer(e,'physical_page_index'), integer(e,'physical_page_end')
@@ -138,7 +138,7 @@ def report(events, ingestion_ref=None):
             eligible = [(v['_issued'], p) for p, v in rows.items()
                         if v['_issued'] is not None and v['_issued'] <= at]
             linked = max(eligible)[1] if eligible else None
-        if linked is not None: rows[linked]['status_observed'] += 1
+        if linked is not None: rows[linked]['status_observed'] = (rows[linked]['status_observed'] or 0) + 1
     for first, selected in multipage.items():
         for page in selected:
             if page == first: continue
