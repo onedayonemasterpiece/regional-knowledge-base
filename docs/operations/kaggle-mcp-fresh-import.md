@@ -75,6 +75,12 @@ Pending work retains its operation key; unknown, denied or conflicting HEAD
 results do not authorize another PUT. Accepted source pages are never restaged
 to repair this transport step.
 
+The final MCP JSON guard retains the 512 KiB metadata/text ceiling. A trusted
+single `RenderedPageBatch` additionally receives exactly its encoded JPEG's
+base64 allowance, within the parser's image-byte limit. The same bound applies
+before and after the final current-authority refresh; revocation withholds the
+whole text/image frame. Caller JSON cannot select this image allowance.
+
 1. Call the ordinary `book_ingest(start)` with the attached PDF, normal metadata
    and `source_import.public_rights`. The existing public rights policy must
    allow the explicitly supplied status/evidence/policy version. The server
