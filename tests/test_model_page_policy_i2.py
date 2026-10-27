@@ -1,0 +1,184 @@
+"""I2: one dense synthetic spread crosses the existing page-image boundaries."""
+import base64
+from contextlib import asynccontextmanager, contextmanager
+from io import BytesIO
+import random
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+
+from regional_knowledge import kaggle_djvu_pixels as djvu
+from regional_knowledge.backend import RenderedPage, RenderedPageBatch
+from regional_knowledge.kaggle_djvu_inspect import DjvuInventory, DjvuPage
+from regional_knowledge.kaggle_importer import KaggleSourceImporter
+from regional_knowledge.kaggle_original_parser import (
+    MODEL_PAGE_BYTE_LIMIT, MODEL_PAGE_QUALITIES, parse,
+)
+from regional_knowledge.original_intake import (
+    OriginalIntakeError, VerifiedOriginalReceipt, digest,
+)
+from regional_knowledge.original_intake_controller import OriginalIntakeController
+from test_kaggle_original_intake import INGEST, REQUEST, SOURCE, frame, native
+
+
+@pytest.mark.asyncio
+async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_receipt(
+        native, tmp_path, monkeypatch):
+    fitz = pytest.importorskip("pymupdf")
+    texture = fitz.Pixmap(fitz.csRGB, 60, 42,
+                          random.Random(1).randbytes(60 * 42 * 3), False)
+    path = tmp_path / "i2-synthetic-spread.pdf"
+    with fitz.open() as document:
+        page = document.new_page(width=4680, height=3310)
+        page.insert_image(page.rect, pixmap=texture)
+        document.save(path)
+
+    # Explicit pre-change comparator: the 256 KiB pilot forced small pixels.
+    with fitz.open(path) as document:
+        source = document[0]
+        for old_edge, old_quality in ((1600, 82), (1600, 70), (1600, 55),
+                                      (1280, 70), (1280, 55)):
+            old_scale = min(2., old_edge / 4680)
+            old_pixmap = source.get_pixmap(
+                matrix=fitz.Matrix(old_scale, old_scale), alpha=False)
+            old_image = old_pixmap.tobytes("jpeg", jpg_quality=old_quality)
+            if len(old_image) <= 256 * 1024:
+                break
+        else:
+            pytest.fail("synthetic pilot comparator did not fit 256 KiB")
+    assert max(old_pixmap.width, old_pixmap.height) <= 1600
+
+    pdf = parse(path, "page", 0)
+    pdf_image = base64.b64decode(pdf["image_b64"], validate=True)
+    render = pdf["preview_render"]
+    assert (3000 <= max(render["width"], render["height"]) <= 3200
+            and render["jpeg_quality"] in MODEL_PAGE_QUALITIES
+            and render["jpeg_quality"] >= 80)
+    assert 256 * 1024 < len(pdf_image) == render["image_bytes"] <= MODEL_PAGE_BYTE_LIMIT
+    assert render["byte_limit"] == MODEL_PAGE_BYTE_LIMIT
+    assert pdf["native_text_info"]["preview_render"] == render
+    assert fitz.Pixmap(pdf_image).n == 3  # no grayscale conversion
+
+    # Synthetic DjVu decoder boundary: exercise PPM validation and real JPEG
+    # encoding; only the pinned executable process is replaced by a fixture.
+    import regional_knowledge.kaggle_djvu_pixels as pixels
+    djvu_path = tmp_path / "i2-synthetic-spread.djvu"
+    djvu_path.write_bytes(b"AT&TFORM" + b"0" * 32)
+    length = djvu_path.stat().st_size
+    inventory = DjvuInventory(1, 0, 0, length,
+                              (DjvuPage(0, 4680, 3310, length, 0),))
+    monkeypatch.setattr(pixels, "PRIVATE_ROOT", tmp_path)
+    monkeypatch.setattr(pixels, "_verified_decoder",
+                        lambda bundle: ("decoder", "loader", "lib", {}))
+
+    async def decoded_ppm(binary, loader, library_path, environment, original, index, edge):
+        with fitz.open(path) as document:
+            pix = document[0].get_pixmap(matrix=fitz.Matrix(edge / 4680, edge / 4680),
+                                        alpha=False)
+        return f"P6\n{pix.width} {pix.height}\n255\n".encode() + pix.samples
+
+    monkeypatch.setattr(pixels, "_decode_single", decoded_ppm)
+    page = await djvu.render_verified_djvu_page(
+        bundle=SimpleNamespace(current=lambda: True),
+        original_path=djvu_path, original_bytes=length, inventory=inventory, index=0)
+    djvu_image = base64.b64decode(page["image_b64"], validate=True)
+    meta = page["preview_render"]
+    assert 3000 <= max(meta["width"], meta["height"]) <= 3200
+    assert meta["jpeg_quality"] >= 80
+    assert 256 * 1024 < len(djvu_image) == meta["image_bytes"] <= MODEL_PAGE_BYTE_LIMIT
+    assert fitz.Pixmap(djvu_image).n == 3
+
+    # A real native one-page dispatch persists the JPEG once and reuses it for
+    # a distinct operation; no rerender, new key, or changed receipt.
+    n = native.handler
+    original_sha = digest(path.read_bytes())
+    handle = "i2-spread"
+    n._records[handle] = dict(path=path, sha256=original_sha, size=path.stat().st_size,
+                              format="pdf", page_count=1, pages={},
+                              verified={"synthetic": True}, parser_sha256=n.parser_sha256,
+                              spec={"source_id": SOURCE, "ingestion_id": INGEST})
+    parser_calls = []
+
+    async def selected_parser(selected, action, index=0, *, cursor=None):
+        parser_calls.append(action)
+        assert selected == path and action == "page" and index == 0
+        return dict(pdf)
+
+    n.parser = selected_parser
+    args = dict(handle=handle, original_sha256=original_sha, index=0)
+    first = (await n(frame("original_pages", args, key="i2-first")))["value"]
+    second = (await n(frame("original_pages", args, key="i2-second")))["value"]
+    assert first == second and parser_calls == ["page"]
+    assert first["image_size"] == len(pdf_image)
+    assert n._records[handle]["pages"][0]["path"].read_bytes() == pdf_image
+
+    controller = object.__new__(OriginalIntakeController)
+    controller.spool = SimpleNamespace(journal=SimpleNamespace(stream="fixture"))
+    async def head(key, size, version=None):
+        assert size == len(pdf_image)
+        return "etag"
+    controller._head = head
+    archived = await controller._archive(
+        SimpleNamespace(), dict(handle=handle, sha256=original_sha,
+                                spec={"source_id": SOURCE}), page=first)
+    assert archived["native_version"] == "etag"
+    controller.store = SimpleNamespace(bucket="fixture", client=SimpleNamespace(
+        get_object=lambda **kw: dict(ContentLength=len(pdf_image), Body=BytesIO(pdf_image))))
+    async def phase(binding, name, phase_args, private=None):
+        return first
+    controller._phase = phase
+    binding = SimpleNamespace(run_id="fixture")
+    _, returned_page, returned_data = await controller._page_data(
+        binding, dict(handle=handle, sha256=original_sha,
+                      spec={"source_id": SOURCE}), 0,
+        dict(block=0, offset=0, text=0), restore=lambda prior: None)
+    assert returned_page == first and returned_data == pdf_image
+
+    receipt = VerifiedOriginalReceipt(
+        SOURCE, INGEST, REQUEST, 1, original_sha, path.stat().st_size,
+        "originals/i2/fixture", "etag", "pdf", 1, n.parser_sha256,
+        "a" * 64, "b" * 64)
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("""CREATE TABLE rkb_original_image_issuance (
+        ingestion_id TEXT NOT NULL, physical_page_index INTEGER NOT NULL,
+        receipt_json TEXT NOT NULL, PRIMARY KEY(ingestion_id, physical_page_index))""")
+    @contextmanager
+    def connect(write=True):
+        yield db
+        if write:
+            db.commit()
+    controller.queue = SimpleNamespace(connect=connect)
+    issued = controller._record_issued_image(receipt, first)
+    assert controller._record_issued_image(receipt, second) == issued
+    with pytest.raises(OriginalIntakeError, match="original_issued_image_changed"):
+        controller._record_issued_image(receipt, dict(first, image_sha256="f" * 64))
+
+    importer = object.__new__(KaggleSourceImporter)
+    @asynccontextmanager
+    async def access(principal):
+        yield SimpleNamespace(authority=SimpleNamespace(person_id="fixture"), context="fixture")
+    importer._access = access
+    importer._row = lambda person_id, ingestion_id: dict(ingestion_id=INGEST, source_id=SOURCE)
+    async def verified(access_value, row):
+        return receipt
+    importer._receipt = verified
+    async def model_pages(context, ingestion_id, cursor=None, batch_size=1):
+        assert batch_size == 1
+        return RenderedPageBatch((RenderedPage(
+            first["page_id"], 0, None, "image/jpeg", pdf_image,
+            first["native_text"], tuple(first["native_blocks"]),
+            first["native_text_info"]),), None)
+    importer.originals = SimpleNamespace(pages=model_pages)
+    async def reply(access_value, result, *, render=None):
+        return result
+    importer._reply = reply
+    batch = await KaggleSourceImporter._pages(
+        importer, principal="fixture", ingestion_id=INGEST, cursor=None)
+    assert batch.pages[0].data == pdf_image
+    print(f"I2_IMAGE_MEASURE pilot={old_pixmap.width}x{old_pixmap.height},"
+          f"q{old_quality},{len(old_image)}B; PDF={render['width']}x{render['height']},"
+          f"q{render['jpeg_quality']},{len(pdf_image)}B; "
+          f"DjVu={meta['width']}x{meta['height']},q{meta['jpeg_quality']},"
+          f"{len(djvu_image)}B")
