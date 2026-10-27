@@ -34,6 +34,8 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     with fitz.open() as document:
         page = document.new_page(width=4680, height=3310)
         page.insert_image(page.rect, pixmap=texture)
+        next_page = document.new_page(width=4680, height=3310)
+        next_page.insert_image(next_page.rect, pixmap=texture)
         document.save(path)
 
     # Explicit pre-change comparator: the 256 KiB pilot forced small pixels.
@@ -97,7 +99,7 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     original_sha = digest(path.read_bytes())
     handle = "i2-spread"
     n._records[handle] = dict(path=path, sha256=original_sha, size=path.stat().st_size,
-                              format="pdf", page_count=1, pages={},
+                              format="pdf", page_count=2, pages={},
                               verified={"synthetic": True}, parser_sha256=n.parser_sha256,
                               spec={"source_id": SOURCE, "ingestion_id": INGEST})
     parser_calls = []
@@ -139,7 +141,7 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
 
     receipt = VerifiedOriginalReceipt(
         SOURCE, INGEST, str(uuid5(UUID(INGEST), 'original:source-original:'+INGEST)), 1, original_sha, path.stat().st_size,
-        "originals/i2/fixture", "etag", "pdf", 1, n.parser_sha256,
+        "originals/i2/fixture", "etag", "pdf", 2, n.parser_sha256,
         "a" * 64, "b" * 64)
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
@@ -240,3 +242,55 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     importer.originals=SimpleNamespace(verified=forged_verified,pages=prior_page)
     with pytest.raises(ToolError,match='verified_small_original_required'):
         await KaggleSourceImporter._receipt(importer,access_value,dict(ingestion_id=INGEST,source_id=SOURCE))
+
+    # Two-page same-ingestion continuation across a changed native handle: the
+    # already issued first page must replay its exact archived JPEG and proof,
+    # while never-issued page 2 must retain q85 under the upgraded policy.
+    new_native=dict(first)
+    new_native['preview_render']=dict(first['preview_render'],jpeg_quality=70)
+    new_native['native_text_info']=dict(first['native_text_info'],
+        preview_render=new_native['preview_render'])
+    new_native.update(image_sha256=digest(b'changed-render'),image_size=len(b'changed-render'))
+    new_native['page_receipt_sha256']=digest(canonical(
+        {k:v for k,v in new_native.items() if k!='page_receipt_sha256'}))
+    second_native=parse(path,'page',1)
+    second_jpeg=base64.b64decode(second_native.pop('image_b64'),validate=True)
+    second_native.update(page_id=str(uuid5(UUID(SOURCE),'page:1:1')),
+        original_sha256=original_sha,parser_sha256=n.parser_sha256,
+        image_size=len(second_jpeg),mime_type='image/jpeg')
+    second_native['page_receipt_sha256']=digest(canonical(second_native))
+    async def after_restart(binding_value,name,args,private=None):
+        assert name=='original_pages' and args['handle']=='restored-new-handle'
+        return new_native if args['index']==0 else second_native
+    controller._phase=after_restart
+    async def saved_head(key,size,version=None):
+        assert key.endswith('/pages/0/'+digest(pdf_image)) and size is None
+        return ('etag',len(pdf_image))
+    controller._head=saved_head
+    newly_archived=[]
+    async def archive_new(binding_value,record,*,page=None):
+        newly_archived.append(page['physical_page_index'])
+        assert page['physical_page_index']==1
+        return dict(key='originals/synthetic/new-page1',native_version='etag')
+    controller._archive=archive_new
+    def read_jpeg(**args):
+        assert args.get('IfMatch')=='etag'
+        blob=pdf_image if args['Key'].endswith('/pages/0/'+digest(pdf_image)) else second_jpeg
+        return dict(ContentLength=len(blob),Body=BytesIO(blob))
+    controller.store=SimpleNamespace(bucket='synthetic',client=SimpleNamespace(get_object=read_jpeg))
+    rebound=dict(handle='restored-new-handle',sha256=original_sha,
+        size=path.stat().st_size,spec={'source_id':SOURCE,'ingestion_id':INGEST})
+    native_cursor=dict(block=0,offset=0,text=0)
+    rebound_binding=SimpleNamespace(run_id='new-native-runtime')
+    _,reissued_page,reissued_image=await controller._page_data(
+        rebound_binding,rebound,0,native_cursor,restore=lambda old:None)
+    assert reissued_image==pdf_image
+    assert reissued_page['page_receipt_sha256']==first['page_receipt_sha256']
+    assert reissued_page['preview_render']==first['preview_render']
+    assert controller._record_issued_image(receipt,reissued_page)==issued
+    _,new_page,new_image=await controller._page_data(
+        rebound_binding,rebound,1,native_cursor,restore=lambda old:None)
+    assert new_image==second_jpeg and newly_archived==[1]
+    assert new_page['preview_render']['jpeg_quality']==85
+    assert 3000<=max(new_page['preview_render']['width'],new_page['preview_render']['height'])<=3200
+    assert controller._record_issued_image(receipt,new_page)['image_sha256']==digest(second_jpeg)
