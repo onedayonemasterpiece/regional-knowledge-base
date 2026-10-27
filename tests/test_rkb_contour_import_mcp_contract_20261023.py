@@ -83,6 +83,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     native_tools = {tool.name: tool for tool in await native.list_tools()}
     imported = native_tools["book_ingest"]
     native_text = imported.description
+    for text in (native.instructions, native_text):
+        assert 'Revising an accepted book is unsupported in this profile' in text
     assert imported.title == "Import and continue an attached scanned book"
     assert "book_ingest(command=start)" in native_text
     assert "book_pages (default 1, maximum 4" in native_text

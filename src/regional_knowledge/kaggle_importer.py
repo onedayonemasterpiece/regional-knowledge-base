@@ -834,68 +834,9 @@ class KaggleSourceImporter:
         return self._output(row, 'processing', 'Accepted source command pending native apply and durable remote outcome', 'wait',
             source_archive_status='verified')
 
-    async def _native_reuse_or_resume(self, access, row, command):
-        """Reuse the *owned* archived original; never create a second book.
-
-        The current SQL013/014 native profile installs only source revision 1.
-        It would be unsafe to mint another source_id, restart ingestion, or
-        claim a revised source Saved while those exact functions still enforce
-        absent_source/revision=1. Existing in-flight commands may be resumed
-        through the same NativeSourceIntake, not replayed with fresh IDs.
-        """
-        native = getattr(self, 'native_intake', None)
-        if native is None:
-            raise failure('native_reuse_requires_installed_source_stage')
-        from .source_activation import ACTIVATION_REVISIONS
-        if self.import_revisions != ACTIVATION_REVISIONS:
-            raise failure('native_reuse_requires_installed_source_stage')
-        await self._check(access.authority, access.context, access.binding)
-        receipt = await self._receipt(access, row)
-        if receipt is None:
-            raise failure('verified_archived_original_required')
-        if (receipt.source_id, receipt.ingestion_id) != (row['source_id'], row['ingestion_id']):
-            raise failure('archived_source_identity_changed')
-
-        # This is a reader of the EXISTING source/control state, not a second
-        # ingest lease or alternative corpus. A different active source cannot
-        # be bypassed by invoking reprocess instead of start.
-        def another_active():
-            with self.queue.connect(write=False) as db:
-                return db.execute('''SELECT 1 FROM rkb_source_intake_control
-                    WHERE person_id=? AND ingestion_id<>? AND phase NOT IN ('finalized','failed')
-                    LIMIT 1''',(row['person_id'],row['ingestion_id'])).fetchone() is not None
-        if await asyncio.to_thread(another_active):
-            raise failure('another_native_ingestion_active')
-        state = await asyncio.to_thread(native._state, row)
-        if state is None:
-            raise failure('native_source_stage_state_unavailable')
-        if state['phase'] != 'finalized' or row['phase'] != 'finalized':
-            if command == 'rechunk':
-                raise failure('rechunk_requires_finalized_source', status='invalid_query')
-            if state['phase'] == 'failed' or row['phase'] == 'failed':
-                raise failure('native_source_terminal_failure')
-            # This resumes a preexisting original intent, including UNKNOWN
-            # reconciliation. It never calls originals.begin or mints a
-            # replacement revision, command key, source ID, or actor lease.
-            result = await native.status(access, row)
-            await self._check(access.authority, access.context, access.binding)
-            if result.state != 'finalized':
-                return result.model_copy(update={'message':
-                    'Existing owner-native intake resumed under the original operation; no second revision was started. '
-                    + result.message})
-            # A concurrent terminal transition is not a new reprocess result.
-            row = await asyncio.to_thread(self._row, row['person_id'], row['ingestion_id'])
-            state = await asyncio.to_thread(native._state, row)
-
-        # Source revision 2 and accepted_reuse re-chunk require a NEW ordered
-        # native SQL/activation contract. SQL013/014 explicitly disallow
-        # source_id already present in rkb_v4.sources. A source-only importer
-        # patch must not fake that capability or mutate immutable old pages.
-        raise failure('native_source_revision_upgrade_required')
-
     async def book_ingest(self, *, command, principal, file=None, ingestion_id=None,
                           cursor=None, payload=None, document_id=None, source_import=None, stage_file_sha256=None):
-        if command not in ('start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status'):
+        if command not in ('start', 'stage', 'validate', 'finalize', 'status'):
             raise failure('target_import_command_unavailable')
         if cursor is not None:
             raise failure('ingest_stage_cursor_unavailable', status='invalid_query')
@@ -916,11 +857,7 @@ class KaggleSourceImporter:
                         if file is not None:
                             raise failure('file_only_supported_for_original_start_or_stage_json', status='invalid_query')
                         row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id, document_id)
-                        if command in ('reprocess', 'rechunk'):
-                            if payload is not None or stage_file_sha256 is not None:
-                                raise failure('native_reuse_cannot_replace_accepted_input', status='invalid_query')
-                            output = await self._native_reuse_or_resume(access, row, command)
-                        elif command == 'stage':
+                        if command == 'stage':
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
                             output = await self._validate(access, row)
