@@ -195,7 +195,7 @@ async def test_accepted_pending_stage_returns_next_read_cursor_without_status_po
     state=e.helper._state(e.row);key=e.parent.command.operation_key
     # The actual accepted spool entry has not advanced compact intake progress.
     assert state['pending_kind']=='stage' and state['batch_count']==0
-    result=await e.helper._accepted_stage_output(e.row,state,key)
+    result=await e.helper._accepted_stage_output(None,e.row,state,key)
     assert (result.state,result.next_action,result.next_cursor)==('processing','continue_pages','1')
     assert 'not Dataset Saved' in result.message
     assert e.helper._output(e.row,state).next_action=='wait'  # Status/finalize unchanged.
@@ -204,10 +204,35 @@ async def test_accepted_pending_stage_returns_next_read_cursor_without_status_po
     monkeypatch.setattr(e.helper,'_entry',read_entry)
     for current in [replace(actual,apply_state='NOT_SENT',apply_receipt=None),
             replace(actual,apply_state='SENT_UNKNOWN',apply_receipt=None)]:
-        assert (await e.helper._accepted_stage_output(e.row,state,key)).next_action=='continue_pages'
+        assert (await e.helper._accepted_stage_output(None,e.row,state,key)).next_action=='continue_pages'
     for current in [replace(actual,accepted=None,seal_state='NOT_SENT'),
             replace(actual,accepted=None,seal_state='SENT_UNKNOWN'),
             replace(actual,apply_state='REJECTED_PRECONDITION')]:
-        assert (await e.helper._accepted_stage_output(e.row,state,key)).next_action=='wait'
+        assert (await e.helper._accepted_stage_output(None,e.row,state,key)).next_action=='wait'
     current=actual
-    assert (await e.helper._accepted_stage_output(e.row,state|{'read_completion_requested':1},key)).next_action=='wait'
+    assert (await e.helper._accepted_stage_output(None,e.row,state|{'read_completion_requested':1},key)).next_action=='wait'
+    from uuid import UUID,uuid5
+    page=json.loads(actual.command.payload)['model_payload']['pages'][0]
+    region=page['regions'][0]
+    ref=dict(page_id=page['page_id'],physical_page_index=page['physical_page_index'],
+        region_id=str(uuid5(UUID(page['page_id']),'region:'+region['region_key'])),
+        region_key=region['region_key'],source_text_sha256=digest(region['source_text'].encode()),
+        start=10,end=len(region['source_text']))
+    async def check(*args):pass
+    tail_calls=[]
+    async def tails(binding,source,ingestion):
+        assert (binding,source,ingestion)==(e.native.b,SOURCE,INGESTION)
+        tail_calls.append(ingestion)
+        return dict(tail_refs=[ref],has_more=False)
+    monkeypatch.setattr(e.helper,'_check',check)
+    e.startup.history=NS(source_tail_refs=tails)
+    completed=state|dict(batch_count=1,published_batch_count=1,enriched_batch_count=1,
+        pending_operation_key=None,pending_kind=None)
+    gap=completed|dict(enriched_batch_count=0)
+    result=await e.helper._accepted_stage_output(NS(binding=e.native.b),e.row,gap,key)
+    assert (result.state,result.next_action,result.next_cursor)==('processing','continue_pages','1')
+    assert not tail_calls  # No pending key does not prove current publication settled.
+    result=await e.helper._accepted_stage_output(NS(binding=e.native.b),e.row,completed,key)
+    assert (result.next_action,result.next_cursor)==('continue_tail','1')
+    assert [tail.model_dump() for tail in result.tail_refs]==[ref]
+    assert tail_calls==[INGESTION]
