@@ -344,3 +344,23 @@ exact verified Saved Dataset version. An API restart does not reset that age;
 quiet work-cycle and planned-stop checkpoints retain their existing triggers.
 Unavailable version metadata makes a pending checkpoint due immediately; an
 auxiliary clock read cannot postpone durability.
+
+
+## Approximate cold-start wait
+
+Authorized initial search and `startup_status` pending responses use the same
+read-only history estimate. The queue examines at most the latest 32 run rows
+and takes the median of up to eight successful starts for the current notebook,
+requiring at least three valid durations (30–1800 seconds). Before launch pins
+the provider, the recent successful sample must agree on one notebook. Provider
+versions share that notebook's history; other notebooks are excluded. Remaining
+wait is rounded up to whole minutes, and `message_ru` explicitly calls it an
+approximation. This is a hint, never proof of readiness or a launch deadline.
+
+Once elapsed startup exceeds the historical median, ETA becomes null and the
+message says startup is taking longer than usual. Missing, mixed, insufficient,
+invalid or stale/unknown history likewise returns null with explicit uncertainty.
+Ready and unavailable semantics are unchanged. Status polling creates no demand
+and renews no activity; fresh OAuth and final ACL checks still apply. Warm searches
+do not read startup history. Startup polls emit bounded sanitized read attempt
+start/terminal diagnostics with elapsed time, without locators or private input.
