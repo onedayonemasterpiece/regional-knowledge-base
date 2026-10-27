@@ -12,6 +12,13 @@ Original identity preserves edition, source revision and source metadata; archiv
 
 Only GEO content migrates. Old books, chunks, vectors, stories, drafts, contributions and cases are not copied into the new corpus; their functions remain required for fresh data. An existing original can be read from its registered archive without copying old accepted transcription/review stamps. A source hash or parser version cannot regenerate a model's accepted choices.
 
+For newly accepted originals, `original_archive` uses the existing leased
+Kaggle Telethon client, records the message/document locator in the intake row
+and creates a receipt only after document presence is checked. This first PR
+does not yet replace S3-based restoration of lost native handles: Telegram
+restore and eight historical-source migration belong to dependent PR2.
+Historical immutable receipts are not rewritten.
+
 ## Media success: presence, not custom byte verification
 
 The owner explicitly selected Telegram as a trusted media store. After an upload, verify that the returned registered locator resolves to an accessible expected photo/document in the intended archive. Retain that native reference and operation outcome. **Do not require another full download, a provider checksum or comparison of uploaded/downloaded SHA values before archive success.** Telegram photo processing may change bytes; this is not evidence of failure.

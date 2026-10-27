@@ -2,8 +2,8 @@
 
 The runtime owner supplies its already-authorized, exclusively leased Telethon
 client. A caller locator is not an archive grant: the configured chat/topic and
-live lease predicate are independently required. This module never logs in,
-reads environment credentials, closes the shared client or sends messages.
+live lease predicate are independently required. This module never logs in, reads credentials or closes the shared client;
+archive sends use that same leased client.
 """
 from __future__ import annotations
 
@@ -74,6 +74,61 @@ class NativeTelegramOriginalDownloader:
         if (locator.chat_id, locator.topic_id) != (self._chat_id, self._topic_id):
             raise OriginalIntakeError('original_telegram_scope_denied')
 
+    async def presence(self, locator, *, current):
+        """Metadata-only exact document check inside the leased topic."""
+        if type(locator) is not TelegramOriginalLocator or not callable(current):
+            raise OriginalIntakeError('original_telegram_locator_invalid')
+        self._check(locator, current)
+        try:
+            message = await self._client.get_messages(self._chat_id, ids=locator.message_id)
+        except Exception:
+            raise OriginalIntakeError('original_telegram_presence_unknown') from None
+        self._check(locator, current)
+        document = getattr(message, 'document', None)
+        reply = getattr(message, 'reply_to', None)
+        topic = getattr(reply, 'reply_to_top_id', None) or getattr(reply, 'reply_to_msg_id', None)
+        if (getattr(message, 'id', None) != locator.message_id
+                or getattr(message, 'chat_id', None) != self._chat_id
+                or topic != self._topic_id
+                or getattr(document, 'id', None) != locator.document_id
+                or getattr(document, 'size', None) != locator.size):
+            raise OriginalIntakeError('original_telegram_document_changed')
+        return message
+
+    async def archive(self, path, *, sha256, size, ingestion_id, current, previous=None):
+        """One document per immutable intake, using only the retained leased client."""
+        if not callable(current) or type(ingestion_id) is not str:
+            raise OriginalIntakeError('original_telegram_binding_required')
+        if self._current() is not True or current() is not True:
+            raise OriginalIntakeError('original_telegram_lease_changed')
+        if previous is not None:
+            await self.presence(previous, current=current)
+            return previous
+        caption = 'RKB-original ' + ingestion_id
+        try:
+            # Exact caption reconciliation precedes provider send after lost ACK.
+            async for candidate in self._client.iter_messages(self._chat_id, search=caption, limit=10):
+                if getattr(candidate, 'message', None) != caption:
+                    continue
+                doc = getattr(candidate, 'document', None)
+                locator = TelegramOriginalLocator(self._chat_id, self._topic_id,
+                    candidate.id, getattr(doc, 'id', 0), sha256, size)
+                await self.presence(locator, current=current)
+                return locator
+            if self._current() is not True or current() is not True:
+                raise OriginalIntakeError('original_telegram_lease_changed')
+            sent = await self._client.send_file(self._chat_id, str(path), caption=caption,
+                reply_to=self._topic_id, force_document=True)
+        except OriginalIntakeError:
+            raise
+        except Exception:
+            raise OriginalIntakeError('original_telegram_send_unknown') from None
+        doc = getattr(sent, 'document', None)
+        locator = TelegramOriginalLocator(self._chat_id, self._topic_id,
+            getattr(sent, 'id', 0), getattr(doc, 'id', 0), sha256, size)
+        await self.presence(locator, current=current)
+        return locator
+
     async def download(self, locator, directory, *, max_bytes, current):
         if type(locator) is not TelegramOriginalLocator or not callable(current):
             raise OriginalIntakeError('original_telegram_locator_invalid')
@@ -85,18 +140,8 @@ class NativeTelegramOriginalDownloader:
         acquired = False
         try:
             async with asyncio.timeout(120):
-                message = await self._client.get_messages(self._chat_id, ids=locator.message_id)
-                self._check(locator, current)
-                document = getattr(message, 'document', None)
-                reply = getattr(message, 'reply_to', None)
-                topic = getattr(reply, 'reply_to_top_id', None) or getattr(reply, 'reply_to_msg_id', None)
-                if (getattr(message, 'id', None) != locator.message_id
-                        or getattr(message, 'chat_id', None) != self._chat_id
-                        or topic != self._topic_id
-                        or getattr(document, 'id', None) != locator.document_id
-                        or getattr(document, 'size', None) != locator.size):
-                    raise OriginalIntakeError('original_telegram_document_changed')
-                iterator = self._client.iter_download(document, request_size=65536, chunk_size=65536)
+                message = await self.presence(locator, current=current)
+                iterator = self._client.iter_download(message.document, request_size=65536, chunk_size=65536)
                 size = 0
                 sha = hashlib.sha256()
                 with path.open('xb') as output:

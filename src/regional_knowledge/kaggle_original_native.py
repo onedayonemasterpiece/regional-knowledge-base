@@ -353,12 +353,31 @@ class NativeOriginalIntake:
                     value['restored_from_receipt_sha256']=prior.receipt_sha256
                     value['native_restore_sha256']=digest(canonical(dict(original=prior.receipt_sha256,
                         sha256=downloaded.sha256,size=downloaded.size_bytes,parser_sha256=selected_pin)))
-                self._records[handle]=dict(value,path=downloaded.path,pages={},verified=prior.wire() if prior is not None else None)
+                self._records[handle]=dict(value,path=downloaded.path,pages={},verified=prior.wire() if prior is not None else None,
+                    telegram_locator=locator.wire() if locator is not None else None)
                 acquired=True
                 return value
             finally:
                 if not acquired:await _blocking(shutil.rmtree,folder)
         record=self._record(args)
+        if phase=='original_archive' and private is None and set(args)=={'handle','original_sha256'}:
+            if self.telegram_downloader is None:
+                raise OriginalIntakeError('original_telegram_binding_required')
+            from .telegram_original import TelegramOriginalLocator
+            old=record.get('telegram_locator')
+            locator=await self.telegram_downloader.archive(record['path'],
+                sha256=record['sha256'],size=record['size'],
+                ingestion_id=record['spec']['ingestion_id'],
+                current=lambda:not self.closed and self.generation==frame['connection_generation']
+                    and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])),
+                previous=TelegramOriginalLocator.from_wire(old) if old is not None else None)
+            value=dict(key='telegram/'+digest(canonical(locator.wire())),
+                native_version='message:'+str(locator.message_id),telegram_locator=locator.wire(),
+                acquisition_sha256=record['acquisition_sha256'],
+                size=record['size'],sha256=record['sha256'])
+            value['native_verification_sha256']=digest(canonical(value))
+            record['verified']=value
+            return value
         if phase in ('original_archive','original_verify'):
             if (set(args) not in ({'handle','original_sha256'},{'handle','original_sha256','page_index'})
                     or type(private) is not dict or set(private)!={'ticket'}):

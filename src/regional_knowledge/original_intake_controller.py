@@ -92,6 +92,8 @@ class OriginalIntakeController:
     async def dispatch_transfer(self,identity,binding):
         if identity['phase'] not in PHASES or not self.binding_current(binding):raise PermissionError('original transfer binding unavailable')
         if identity['phase']=='original_pages':return {}
+        if identity['phase']=='original_archive' and 'page_index' not in identity['arguments']:
+            return None
         if identity['phase']=='original_acquire' and set(identity['arguments'])=={'spec','telegram_locator'}:
             # The immutable document locator is already in the request hash;
             # no ephemeral URL/session or separate private transfer is needed.
@@ -143,6 +145,14 @@ class OriginalIntakeController:
 
     async def _archive(self,binding,record,*,page=None):
         args=dict(handle=record['handle'],original_sha256=record['sha256'])
+        if page is None:
+            receipt=await self._phase(binding,'original_archive',args)
+            locator=TelegramOriginalLocator.from_wire(receipt['telegram_locator'])
+            if ((locator.sha256,locator.size)!=(record['sha256'],record['size'])
+                    or receipt.get('key')!='telegram/'+digest(canonical(locator.wire()))
+                    or receipt.get('acquisition_sha256')!=record['acquisition_sha256']):
+                raise OriginalIntakeError('original_telegram_archive_receipt_changed')
+            return receipt
         sha256,size=record['sha256'],record['size']
         key='originals/v1/'+digest(self.spool.journal.stream.encode())+'/'+record['spec']['source_id']+'/'+sha256
         if page is not None:
@@ -202,7 +212,7 @@ class OriginalIntakeController:
                     stored=OriginalIntakeSpec.from_wire(json.loads(prior['spec_json']))
                     if (prior['actor']!=actor or prior['operation_id']!=operation_id
                             or prior['storage_sha256']!=self._storage
-                            or prior['telegram_locator_json']!=locator_json
+                            or telegram and prior['telegram_locator_json']!=locator_json
                             or telegram and (stored.expected_sha256,stored.expected_size)!=(spec.expected_sha256,spec.expected_size)
                             or (stored.source_id,stored.ingestion_id,stored.request_id,stored.file_id,
                                 stored.file_name,stored.mime_type)!=(source_id,ingestion_id,request_id,
@@ -249,8 +259,9 @@ class OriginalIntakeController:
             native['key'],native['native_version'],record['format'],record['page_count'],record['parser_sha256'],
             record['acquisition_sha256'],native['native_verification_sha256'])
         await self._authorize(context)
-        with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET receipt_json=? WHERE ingestion_id=?',
-            (canonical(receipt.wire()).decode(),spec.ingestion_id))
+        with self.queue.connect() as db:db.execute(
+            'UPDATE rkb_original_intakes SET receipt_json=?,telegram_locator_json=COALESCE(telegram_locator_json,?) WHERE ingestion_id=?',
+            (canonical(receipt.wire()).decode(),canonical(native['telegram_locator']).decode(),spec.ingestion_id))
         _LOG.info('original_intake state=verified run_id=%s ingestion_id=%s',binding.run_id,spec.ingestion_id)
         return receipt
 
@@ -258,7 +269,12 @@ class OriginalIntakeController:
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         if row['receipt_json'] is None:return None
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
-        if await self._head(receipt.key,receipt.size,receipt.native_version) is None:
+        if receipt.key.startswith('telegram/'):
+            locator=TelegramOriginalLocator.from_wire(json.loads(row['telegram_locator_json']))
+            if (receipt.key!='telegram/'+digest(canonical(locator.wire()))
+                    or (receipt.sha256,receipt.size)!=(locator.sha256,locator.size)):
+                raise OriginalIntakeError('original_telegram_receipt_changed')
+        elif await self._head(receipt.key,receipt.size,receipt.native_version) is None:
             raise OriginalIntakeError('original_verified_object_missing')
         if not self.binding_current(binding):raise OriginalIntakeError('original_current_binding_required')
         return receipt
@@ -267,7 +283,10 @@ class OriginalIntakeController:
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         if row['failure_code'] is not None:return OriginalIntakeStatus(ingestion_id,'rejected',reason=row['failure_code'])
         receipt=await self.verified(context,ingestion_id)
-        if receipt is not None:return OriginalIntakeStatus(ingestion_id,'verified',receipt)
+        if receipt is not None:
+            if row['telegram_locator_json'] is not None:
+                return OriginalIntakeStatus(ingestion_id,'verified',receipt)
+            return OriginalIntakeStatus(ingestion_id,'pending',reason='original_telegram_archive_pending')
         try:
             record=json.loads(row['acquisition_json']) if row['acquisition_json'] else None
             if record is None:
