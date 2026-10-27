@@ -86,6 +86,9 @@ class BgeQueue:
               run_id text,claim text,lease_until real,result text,attempt integer not null default 0,
               unique(actor,idempotency));
             create index if not exists bge_pending on jobs(state,kind,created);
+            create index if not exists bge_retention on jobs(state,kind,updated);
+            create index if not exists bge_assigned on jobs(run_id,state);
+            create index if not exists bge_live on jobs(kind,state,run_id) where state!='done';
             ''')
             # executescript ends its caller's transaction. Serialize additive
             # migrations explicitly, including concurrent first-time openers.
@@ -128,6 +131,11 @@ class BgeQueue:
                 if db.execute('select cursor,next_cycle from bge_provider_reconciliation where id=1').fetchone() is None:
                     return False
                 db.execute('select id,actor,idempotency,kind,texts,identity,state,created,updated,run_id,claim,lease_until,result,attempt from jobs limit 0')
+                # Existing databases need the same bounded maintenance/claim
+                # lookups as new ones; the schema fast path must not skip them.
+                indexes={row['name'] for row in db.execute('pragma index_list(jobs)')}
+                if not {'bge_retention','bge_assigned','bge_live'}<=indexes:
+                    return False
             return True
         except sqlite3.OperationalError:
             return False
