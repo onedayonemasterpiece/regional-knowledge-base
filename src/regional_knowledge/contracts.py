@@ -234,6 +234,30 @@ class StageIllustrationInput(BaseModel):
     nearby_region_keys: list[str] = Field(default_factory=list, max_length=40)
 
 
+class StageSourceUnitBoundary(BaseModel):
+    """Model-chosen boundary in original source-region Unicode offsets.
+
+    article_id is the existing StageChunkInput.article_id/scope identifier,
+    not a new source, chunk, permission, or component identity.
+    """
+    model_config = {"extra": "forbid", "strict": True}
+    article_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+    action: Literal["start", "end"]
+    region_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    offset: int = Field(ge=0, le=8000)
+    kind: Literal["chapter", "article", "section"] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def explicit_metadata(self) -> "StageSourceUnitBoundary":
+        if self.action == "start":
+            if self.kind is None or self.title is None or not self.title.strip():
+                raise ValueError("a source unit start needs its observed kind and title")
+        elif self.kind is not None or self.title is not None:
+            raise ValueError("an end only cites the previously opened article_id")
+        return self
+
+
 class StagePageInput(BaseModel):
     # Optional legacy image receipt echo. Native stage resolves issued pixels
     # by owned ingestion/page index; this never certifies model-authored text.
@@ -252,6 +276,7 @@ class StagePageInput(BaseModel):
     printed_page_number: str | None = Field(default=None, max_length=40)
     layout_kind: str | None = Field(default=None, max_length=80)
     regions: list[StageRegionInput] = Field(default_factory=list, max_length=500)
+    source_unit_boundaries: list[StageSourceUnitBoundary] = Field(default_factory=list, max_length=500)
     relations: list[StageRelationInput] = Field(default_factory=list, max_length=1_000)
     illustrations: list[StageIllustrationInput] = Field(
         default_factory=list, max_length=100
@@ -291,6 +316,24 @@ class StagePageInput(BaseModel):
         for key, reason in self.excluded_figure_regions.items():
             if key not in known or by_key[key].kind is not RegionKind.FIGURE or not reason.strip() or len(reason)>500:
                 raise ValueError('figure exclusion requires a figure region and bounded reason')
+        # Region/span positions are original Unicode codepoint offsets. The
+        # model supplies the boundary; no text search or page-count inference.
+        by_key = {region.region_key: region for region in self.regions}
+        previous = (-1, -1, -1)
+        observed = set()
+        for boundary in self.source_unit_boundaries:
+            region = by_key.get(boundary.region_key)
+            if region is None or boundary.offset > len(region.source_text):
+                raise ValueError("unit anchor must name an exact reviewed region span")
+            if boundary.action == "start" and boundary.offset == len(region.source_text):
+                raise ValueError("unit start must point inside the original region")
+            order = (region.reading_order, boundary.offset,
+                     0 if boundary.action == "end" else 1)
+            identity = (boundary.article_id, boundary.action)
+            if order < previous or identity in observed:
+                raise ValueError("page unit anchors require exact reading order and unique events")
+            previous = order
+            observed.add(identity)
         return self
 
 
