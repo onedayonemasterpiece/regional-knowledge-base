@@ -86,7 +86,7 @@ def report(events, ingestion_ref=None):
             if operation:
                 operation_pages[operation] = page
                 value['_ops'].add(operation)
-            if batch is not None and count == 1: batches[batch] = page
+            if batch is not None: batches[batch] = page
     for e in admissions:
         op, component = e.get('operation_ref'), e.get('component')
         call = calls_by_trace.get(e.get('trace_id'), {})
