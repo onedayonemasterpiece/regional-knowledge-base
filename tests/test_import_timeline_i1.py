@@ -66,7 +66,7 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
              call_started_unix_ms=t + 150, duration_ms=100)
         emit('import.call', 'total', 'returned', t + 280,
              trace_id=f'status{number}', tool='book_ingest', command='status',
-             call_started_unix_ms=t + 260, duration_ms=20)
+             operation_ref=stage, call_started_unix_ms=t + 260, duration_ms=20)
         emit('command.phase', 'seal', 'acknowledged', t + 290, operation_ref=stage)
         emit('import.phase', 'stage', 'applied', t + 300,
              operation_ref=stage, batch_count=number + 1)
@@ -103,6 +103,14 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
         assert row['fetch_observed'] == 1
     assert 'PRIVATE_SYNTHETIC' not in csv_text + markdown
     assert ',yes,yes,yes,yes,' in csv_text
+    assert summary['uncorrelated_status'] == 0
+
+    # Removing operation evidence must not attach status to the last issued page.
+    unrelated = [{key: value for key, value in event.items() if key != 'operation_ref'}
+                 if event.get('command') == 'status' else event for event in records]
+    anonymous_rows, anonymous_summary = timeline.report(unrelated, ingestion_ref)
+    assert [value['status_observed'] for value in anonymous_rows] == [None, None]
+    assert anonymous_summary['uncorrelated_status'] == 2
 
     # Missing receipt must NEVER be interpreted as a negative or zero.
     missing = [e for e in records if not (e.get('event') == 'command.phase'
