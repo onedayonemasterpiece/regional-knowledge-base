@@ -6,6 +6,7 @@ The caller supplies *text-published* page projections in original reading order.
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from uuid import UUID, uuid5
 
 
@@ -13,18 +14,30 @@ class SourceUnitBoundaryError(ValueError):
     """Conflicting accepted unit boundaries: never infer a repair."""
 
 
-def resolve_source_units(pages, *, source_id: str, page_count: int, read_complete: bool):
-    """Resolve original Unicode-codepoint ranges without copying author text.
+def resolve_source_units(
+    pages, *, source_id: str, page_count: int, read_complete: bool,
+    after_ordinal: int | None = None, limit: int | None = None,
+    span_preview_limit: int | None = None,
+):
+    """Resolve half-open author spans from model-confirmed accepted boundaries.
 
-    An explicit end boundary closes a unit at an exact half-open coordinate.
-    Only verified reading completion AND publication of every physical page
-    can close otherwise open units at EOF. Gaps make even an ended unit unready.
+    Every accepted page/boundary is validated regardless of the requested
+    cursor. The ordered region index is built once; only selected units scan
+    their *own* nonempty region range. Read pagination never has to construct
+    the other units' spans. With no limits, retain the original full result.
     """
     UUID(source_id)
     if type(page_count) is not int or not 1 <= page_count <= 2500:
         raise SourceUnitBoundaryError("verified physical page count required")
     if type(read_complete) is not bool or type(pages) not in (tuple, list):
         raise SourceUnitBoundaryError("accepted source page projection required")
+    if after_ordinal is not None and (type(after_ordinal) is not int or after_ordinal < 0):
+        raise SourceUnitBoundaryError("nonnegative unit cursor required")
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise SourceUnitBoundaryError("positive unit limit required")
+    if span_preview_limit is not None and (type(span_preview_limit) is not int or span_preview_limit < 1):
+        raise SourceUnitBoundaryError("positive source span preview limit required")
+
     regions = []
     seen_pages = set()
     events = []
@@ -52,7 +65,8 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
                         region_key=key, reading_order=order, kind=raw["kind"],
                         source_length=length)
             keyed[key] = item
-            regions.append(item)
+        # Source regions need not arrive already sorted inside a model page.
+        regions.extend(sorted(keyed.values(), key=lambda r: r["reading_order"]))
         prior = (-1, -1, -1)
         for marker in page.get("source_unit_boundaries") or []:
             key = marker["region_key"]
@@ -71,45 +85,51 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
             prior = within_page
             events.append((position, dict(item, offset=offset), marker))
 
-    regions.sort(key=lambda r: (r["physical_page_index"], r["reading_order"]))
-    # A source with no unit declarations remains an ordinary accepted,
-    # searchable source; old replay does not invent section boundaries.
-    started, opened, ended, next_boundary_ends = {}, {}, {}, set()
+    # Build the index exactly once, including gaps and zero-length regions.
+    region_positions = [(r["physical_page_index"], r["reading_order"]) for r in regions]
+    nonempty_indices = [i for i, r in enumerate(regions) if r["source_length"] > 0]
+    missing_pages = sorted(set(range(page_count)) - seen_pages)
+
+    # The stable start ordinal is unchanged: source reading order, then ID
+    # for different unit kinds beginning at one exact coordinate.
+    started, opened, open_by_kind, ended, next_boundary_ends = {}, {}, {}, {}, set()
     for position, anchor, marker in events:
         ident = marker["article_id"]  # Reuse the existing StageChunkInput.article_id.
         if marker["action"] == "start":
             if ident in started:
                 raise SourceUnitBoundaryError("duplicate source article identity")
-            # A model-confirmed *next start* is itself an exact end boundary
-            # for the preceding unit of the same kind, even without a
-            # redundant explicit end marker. A chapter containing sections
-            # stays open when a nested, differently typed section begins.
-            for previous in tuple(opened):
-                if started[previous][2]["kind"] == marker["kind"]:
-                    if position <= opened[previous]:
-                        raise SourceUnitBoundaryError("overlapping same-kind starts")
-                    ended[previous] = (position, anchor)
-                    next_boundary_ends.add(previous)
-                    del opened[previous]
+            # At most one open unit per kind: a confirmed next same-kind start
+            # closes the prior one. Nested units of another kind stay open.
+            previous = open_by_kind.get(marker["kind"])
+            if previous is not None:
+                if position <= opened[previous]:
+                    raise SourceUnitBoundaryError("overlapping same-kind starts")
+                ended[previous] = (position, anchor)
+                next_boundary_ends.add(previous)
+                del opened[previous]
             started[ident] = (position, anchor, marker)
             opened[ident] = position
+            open_by_kind[marker["kind"]] = ident
         else:
             if ident not in opened or position <= opened[ident]:
                 raise SourceUnitBoundaryError("unmatched or reversed source unit end")
             ended[ident] = (position, anchor)
             del opened[ident]
+            del open_by_kind[started[ident][2]["kind"]]
 
-    has_eof = read_complete and seen_pages == set(range(page_count))
-    if has_eof and regions:
+    has_eof = read_complete and not missing_pages
+    if has_eof:
         final = next((r for r in reversed(regions) if r["source_length"]), None)
         eof = ((final["physical_page_index"], final["reading_order"], final["source_length"]),
                dict(final, offset=final["source_length"])) if final else None
     else:
         eof = None
 
+    starts = sorted(started.items(), key=lambda pair: (pair[1][0], pair[0]))
+    skipped = after_ordinal or 0
+    selected = starts[skipped:skipped + limit] if limit is not None else starts[skipped:]
     output = []
-    for ordinal, (ident, (start_pos, start, declaration)) in enumerate(
-            sorted(started.items(), key=lambda pair: (pair[1][0], pair[0])), start=1):
+    for ordinal, (ident, (start_pos, start, declaration)) in enumerate(selected, start=skipped + 1):
         finish = ended.get(ident)
         close_reason = ("next_boundary" if ident in next_boundary_ends
                         else "boundary" if finish is not None else None)
@@ -117,25 +137,38 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
             finish = eof
             close_reason = "verified_eof"
         stop_pos, stop = finish if finish is not None else (None, None)
-        pages_complete = bool(
-            stop_pos is not None and
-            set(range(start_pos[0], stop_pos[0] + 1)) <= seen_pages
-        )
+        pages_complete = False
+        if stop_pos is not None:
+            missing = bisect_left(missing_pages, start_pos[0])
+            pages_complete = (missing == len(missing_pages) or missing_pages[missing] > stop_pos[0])
+
         spans = []
+        span_count = 0
         if pages_complete:
-            for region in regions:
+            # Boundaries are exact *regions*, so half-open [start,end] region
+            # range lookup is logarithmic; offset=0 excludes the ending region.
+            left = bisect_left(region_positions, start_pos[:2])
+            right = bisect_right(region_positions, stop_pos[:2])
+            first_nonempty = bisect_left(nonempty_indices, left)
+            after_nonempty = bisect_left(nonempty_indices, right)
+            if (stop_pos[2] == 0 and right > left
+                    and regions[right - 1]["source_length"] > 0):
+                after_nonempty -= 1
+            span_count = after_nonempty - first_nonempty
+            take = span_count if span_preview_limit is None else min(span_count, span_preview_limit)
+            # Index the selected nonempty regions directly. No regions[:end]
+            # copy and no scan of unrelated unit regions (even for pagination).
+            for n in range(first_nonempty, first_nonempty + take):
+                region = regions[nonempty_indices[n]]
                 pos = (region["physical_page_index"], region["reading_order"])
-                if pos < start_pos[:2] or pos > stop_pos[:2]:
-                    continue
                 begin = start_pos[2] if pos == start_pos[:2] else 0
                 end = stop_pos[2] if pos == stop_pos[:2] else region["source_length"]
                 if begin < end:
                     spans.append({k: region[k] for k in (
                         "page_id", "physical_page_index", "region_id", "region_key", "kind")}
                         | {"start": begin, "end": end})
-        # An end that is known but separated by an unread page is not export ready.
-        # An open unit never gets an arbitrary last-visible-page endpoint.
-        output.append(dict(ordinal=ordinal, source_id=source_id, article_id=ident,
+
+        unit = dict(ordinal=ordinal, source_id=source_id, article_id=ident,
             kind=declaration["kind"], title=declaration["title"],
             start_anchor={k: start[k] for k in (
                 "page_id", "physical_page_index", "region_id", "region_key", "offset")},
@@ -144,8 +177,12 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
                 if pages_complete else None),
             close_reason=close_reason if pages_complete else None,
             boundary_status="closed" if finish is not None else "open",
-            state="complete" if pages_complete and spans else "unit_not_ready",
-            source_spans=spans if pages_complete else []))
+            state="complete" if pages_complete and span_count else "unit_not_ready",
+            source_spans=spans if pages_complete else [])
+        if span_preview_limit is not None:
+            unit["source_span_count"] = span_count
+            unit["source_spans_has_more"] = span_count > span_preview_limit
+        output.append(unit)
     return output
 
 
@@ -157,7 +194,8 @@ def bounded_unit_records(units, *, after_ordinal=None, limit=8):
     for unit in selected[:limit]:
         item = {k: v for k, v in unit.items() if k != "source_spans"}
         spans = unit["source_spans"]
-        item.update(source_spans=spans[:16], source_span_count=len(spans),
-                    source_spans_has_more=len(spans) > 16)
+        count = unit.get("source_span_count", len(spans))
+        item.update(source_spans=spans[:16], source_span_count=count,
+                    source_spans_has_more=count > 16)
         records.append(item)
     return tuple(records), records[-1]["ordinal"] if len(selected) > limit else None
