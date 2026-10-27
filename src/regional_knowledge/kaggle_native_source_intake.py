@@ -578,6 +578,20 @@ class NativeSourceIntake:
                 'Reading completed; accepted packets remain searchable and research continuation is retained','done',
                 source_archive_status='verified',warnings=[])
 
+    async def _accepted_stage_output(self,row,state,key):
+        entry=await self._entry(key)
+        if (state['packet_mode'] and state['phase']=='staging' and not state.get('read_completion_requested')
+                and state.get('rejected_batch_index') is None and entry is not None
+                and entry.accepted is not None and entry.seal_state=='ACCEPTED'
+                and entry.apply_state!='REJECTED_PRECONDITION'):
+            pages=json.loads(entry.command.payload)['model_payload']['pages']
+            pending=bool(state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count'])
+            return self.importer._output(row,'processing' if pending else 'staged',
+                'Stage input accepted; continue reading without resending these pages. '
+                'The server handles packet publication; acceptance is not Dataset Saved.',
+                'continue_pages',next_cursor=str(max(p['physical_page_index'] for p in pages)+1),source_archive_status='verified')
+        return self._output(row,state)
+
     async def _tail_output(self, access, row, state):
         if (not state['batch_count']
                 or state['pending_operation_key'] or state.get('rejected_batch_index') is not None
@@ -738,11 +752,13 @@ class NativeSourceIntake:
                     'call status, then resend this same stage','wait',source_archive_status='verified',
                     warnings=['previous_packet_applying'])
         builder=lambda **values: resolved_native_stage_command(route=STAGE_ROUTE,**values)
-        await self._stage_exact(access,row,kind='stage',key=self._stage_key(row,state),
+        key=self._stage_key(row,state)
+        await self._stage_exact(access,row,kind='stage',key=key,
             route=STAGE_ROUTE,payload=doc,builder=builder)
         await asyncio.to_thread(self.importer._save,row,research_json=canonical(research.model_dump(mode='json')).decode(),phase='staging')
         state=await asyncio.to_thread(self._state,row)
-        return self._output(row,await self._packet_progress(access,row,await self._drive(access,row,state)))
+        state=await self._packet_progress(access,row,await self._drive(access,row,state))
+        return await self._accepted_stage_output(row,state,key)
 
     async def _packet_progress(self, access, row, state):
         if (state['pending_operation_key'] or state['phase']!='staging'

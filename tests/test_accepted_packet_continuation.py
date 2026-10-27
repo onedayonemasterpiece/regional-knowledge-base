@@ -13,6 +13,7 @@ from regional_knowledge.control_spool import ControlSpool
 from regional_knowledge.kaggle_current_registry import current_registry
 from regional_knowledge.kaggle_native_source_bindings import resolved_native_stage_command
 from regional_knowledge.kaggle_native_source_intake import NativeSourceIntake
+from regional_knowledge.kaggle_importer import KaggleSourceImporter
 from regional_knowledge.kaggle_source_commands import AcceptedSourceDispatch
 from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS
@@ -186,3 +187,27 @@ async def test_accepted_packet_finishes_without_http_and_keeps_authority_scoped(
     # Historical settled jobs retain their independently authorized actor path.
     assert await e.bridge.authorize_job(e.people.admin,job)==e.row['person_id']
     with pytest.raises(PermissionError):await e.bridge.authorize_job(None,job)
+
+
+@pytest.mark.asyncio
+async def test_accepted_pending_stage_returns_next_read_cursor_without_status_poll(packet,monkeypatch):
+    e=packet;e.importer._output=KaggleSourceImporter._output
+    state=e.helper._state(e.row);key=e.parent.command.operation_key
+    # The actual accepted spool entry has not advanced compact intake progress.
+    assert state['pending_kind']=='stage' and state['batch_count']==0
+    result=await e.helper._accepted_stage_output(e.row,state,key)
+    assert (result.state,result.next_action,result.next_cursor)==('processing','continue_pages','1')
+    assert 'not Dataset Saved' in result.message
+    assert e.helper._output(e.row,state).next_action=='wait'  # Status/finalize unchanged.
+    actual=await e.spool.get(key)
+    async def read_entry(_):return current
+    monkeypatch.setattr(e.helper,'_entry',read_entry)
+    for current in [replace(actual,apply_state='NOT_SENT',apply_receipt=None),
+            replace(actual,apply_state='SENT_UNKNOWN',apply_receipt=None)]:
+        assert (await e.helper._accepted_stage_output(e.row,state,key)).next_action=='continue_pages'
+    for current in [replace(actual,accepted=None,seal_state='NOT_SENT'),
+            replace(actual,accepted=None,seal_state='SENT_UNKNOWN'),
+            replace(actual,apply_state='REJECTED_PRECONDITION')]:
+        assert (await e.helper._accepted_stage_output(e.row,state,key)).next_action=='wait'
+    current=actual
+    assert (await e.helper._accepted_stage_output(e.row,state|{'read_completion_requested':1},key)).next_action=='wait'

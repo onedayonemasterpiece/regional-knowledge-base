@@ -2,7 +2,9 @@
 
 An accepted visual stage authorizes deterministic publication of that exact
 packet's text and semantic components. Their existing source-command settlement
-wakes the next component without another client status call. An internal proof
+wakes the next component without another client status call. An accepted stage reply returns `continue_pages` and the
+next cursor from its frozen page packet while publication remains processing;
+acceptance does not assert APPLIED or Dataset Saved. An internal proof
 binds the accepted stage hash, person, source, ingestion, batch and current
 runtime; each new component rechecks canonical owner/import rights and existing
 history/UNKNOWN/writer fences. It grants no new stage, next page or finish, and
