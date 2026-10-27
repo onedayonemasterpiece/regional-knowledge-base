@@ -1467,6 +1467,11 @@ def build_server(
             limit=max(1, min(int(limit), 8)),
         )
 
+    def _book_ingest_profile(method):
+        if selected == 'kaggle_source':
+            method.__annotations__['command'] = Literal['start', 'stage', 'validate', 'finalize', 'status']
+        return method
+
     @mcp.tool(
         title=("Import and continue an attached scanned book" if selected=='kaggle_source'
             else "Add, reprocess or continue a book"),
@@ -1561,6 +1566,7 @@ def build_server(
         meta={"openai/fileParams": ["file"]},
     )
     @_book_mcp_error_boundary
+    @_book_ingest_profile
     async def book_ingest(
         command: Literal["start", "reprocess", "rechunk", "stage", "validate", "finalize", "status"],
         file: ChatFile | None = None,
