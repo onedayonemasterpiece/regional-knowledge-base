@@ -185,3 +185,27 @@ def test_orphan_heading_and_overwide_unbreakable_text_fail_explicitly():
         render_source_unit_pdf(**inputs([('heading','Unattached heading')]))
     with pytest.raises(SourceUnitPdfError,match='layout_bounds|fidelity|measurement'):
         render_source_unit_pdf(**inputs([('body','W'*500)]))
+
+
+def test_terminal_anchor_must_match_last_nonempty_span_exactly():
+    for mode in ('shortened','end_before_span','missing_terminal_region','wrong_page'):
+        values=inputs()
+        if mode=='shortened':values['unit']['source_spans'][-1]['end']-=1
+        elif mode=='end_before_span':values['unit']['end_anchor']['offset']-=1
+        elif mode=='missing_terminal_region':values['unit']['end_anchor']['region_id']='missing'
+        else:values['unit']['end_anchor']['physical_page_index']=1
+        with pytest.raises(SourceUnitPdfError,match='exact_source_end_required'):
+            render_source_unit_pdf(**values)
+
+
+def test_half_open_next_region_zero_offset_uses_accepted_endpoint_without_rendering_it():
+    values=inputs([('body','Complete author text.'),('heading','Next unit is excluded.')])
+    endpoint=values['unit']['source_spans'].pop()
+    values['unit']['end_anchor']=dict(endpoint,offset=0)
+    with render(values) as doc:
+        assert flatten(author_text(doc))==flatten('Complete author text.')
+        assert 'Next unit' not in author_text(doc)
+    # Offset zero does not excuse truncating the preceding author region.
+    values['unit']['source_spans'][-1]['end']-=1
+    with pytest.raises(SourceUnitPdfError,match='exact_source_end_required'):
+        render_source_unit_pdf(**values)

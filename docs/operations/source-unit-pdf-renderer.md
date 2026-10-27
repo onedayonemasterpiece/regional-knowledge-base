@@ -13,7 +13,13 @@ original `source_text`, verified `StartMetadataInput` / `CatalogMetadata` editio
 fields and original page labels. Never use BGE/search passages, normalized text,
 a public 16-span preview or model-generated replacement text. The helper checks
 completeness, exact span bounds, region identity/kind, order, overlap and review
-flags. These checks do not prove current actor/source/revision eligibility. The
+flags. The final span must reach the exact end anchor. A half-open end at the
+next region's offset zero is supported when the preceding span reaches its region
+end and the caller includes that accepted endpoint `Region` (it is not rendered).
+This checks endpoint identity/page/order; a supplied subset cannot prove that an
+entire middle region was omitted. The caller must establish the full accepted
+projection, including all intervening regions, before calling the helper.
+These checks do not prove current actor/source/revision eligibility. The
 existing source/actor gate must run before retrieval and again before delivery;
 withdrawn sources and stale revisions must remain fenced by that caller.
 

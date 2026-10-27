@@ -82,6 +82,26 @@ def _blocks(unit, regions, accepted_revision):
         if not text.strip() or any(ord(c) < 32 and c not in '\n\t\r' for c in text):
             raise SourceUnitPdfError('unsupported_source_text')
         blocks.append((region.kind.value, text))
+    last = unit['source_spans'][-1]
+    terminal = unit['end_anchor']
+    end_region = lookup.get(terminal.get('region_id'))
+    end_page, end_offset = terminal.get('physical_page_index'), terminal.get('offset')
+    if (end_region is None or end_region.page_id != terminal.get('page_id')
+            or type(end_page) is not int or end_page < 0 or type(end_offset) is not int
+            or not 0 <= end_offset <= len(end_region.source_text)):
+        raise SourceUnitPdfError('exact_source_end_required')
+    if end_region.region_id == last['region_id']:
+        if (end_page != last['physical_page_index'] or end_offset != last['end']):
+            raise SourceUnitPdfError('exact_source_end_required')
+    else:
+        # A half-open boundary at the next region's offset zero contributes no
+        # text there. The caller includes that accepted endpoint Region too,
+        # so its page/order can be checked without inventing an empty block.
+        last_region = lookup[last['region_id']]
+        if (end_offset != 0 or last['end'] != len(last_region.source_text)
+                or (end_page,end_region.reading_order) <=
+                   (last['physical_page_index'],last_region.reading_order)):
+            raise SourceUnitPdfError('exact_source_end_required')
     if sum(len(text) for _, text in blocks) > MAX_CHARACTERS:
         raise SourceUnitPdfError('render_limit_exceeded')
     return blocks
