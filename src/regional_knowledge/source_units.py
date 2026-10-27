@@ -74,12 +74,23 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
     regions.sort(key=lambda r: (r["physical_page_index"], r["reading_order"]))
     # A source with no unit declarations remains an ordinary accepted,
     # searchable source; old replay does not invent section boundaries.
-    started, opened, ended = {}, {}, {}
+    started, opened, ended, next_boundary_ends = {}, {}, {}, set()
     for position, anchor, marker in events:
         ident = marker["article_id"]  # Reuse the existing StageChunkInput.article_id.
         if marker["action"] == "start":
             if ident in started:
                 raise SourceUnitBoundaryError("duplicate source article identity")
+            # A model-confirmed *next start* is itself an exact end boundary
+            # for the preceding unit of the same kind, even without a
+            # redundant explicit end marker. A chapter containing sections
+            # stays open when a nested, differently typed section begins.
+            for previous in tuple(opened):
+                if started[previous][2]["kind"] == marker["kind"]:
+                    if position <= opened[previous]:
+                        raise SourceUnitBoundaryError("overlapping same-kind starts")
+                    ended[previous] = (position, anchor)
+                    next_boundary_ends.add(previous)
+                    del opened[previous]
             started[ident] = (position, anchor, marker)
             opened[ident] = position
         else:
@@ -100,7 +111,8 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
     for ordinal, (ident, (start_pos, start, declaration)) in enumerate(
             sorted(started.items(), key=lambda pair: (pair[1][0], pair[0])), start=1):
         finish = ended.get(ident)
-        close_reason = "boundary" if finish is not None else None
+        close_reason = ("next_boundary" if ident in next_boundary_ends
+                        else "boundary" if finish is not None else None)
         if finish is None and eof is not None and eof[0] > start_pos:
             finish = eof
             close_reason = "verified_eof"
@@ -131,6 +143,7 @@ def resolve_source_units(pages, *, source_id: str, page_count: int, read_complet
                 "page_id", "physical_page_index", "region_id", "region_key", "offset")}
                 if pages_complete else None),
             close_reason=close_reason if pages_complete else None,
+            boundary_status="closed" if finish is not None else "open",
             state="complete" if pages_complete and spans else "unit_not_ready",
             source_spans=spans if pages_complete else []))
     return output
