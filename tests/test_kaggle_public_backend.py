@@ -141,8 +141,10 @@ async def release(s, value):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('evidence', [False, True])
 @pytest.mark.parametrize('top_k', [3, 10])
-async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_and_correlates(target, evidence, top_k):
+async def test_actual_queue_roundtrip_preserves_authority_until_guard_release_and_correlates(target, evidence, top_k, monkeypatch):
     s = target
+    def forbidden_history(*args):raise AssertionError('warm read queried startup history')
+    monkeypatch.setattr(s.queue,'startup_estimate',forbidden_history)
     async def read():
         with capture_read_output() as calls:
             result = await (s.backend.search_evidence('synthetic query', s.principal, max_evidence=top_k,

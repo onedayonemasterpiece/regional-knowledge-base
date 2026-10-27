@@ -289,6 +289,43 @@ class BgeQueue:
             return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                     'status':'pending','reason':'target_warming'}
 
+    def startup_estimate(self, startup_ref):
+        """Read-only, bounded historical hint; never grants launch/read authority.
+
+        Before launch has a provider identity, use history only if the recent
+        successful sample agrees on one notebook. Versions of that stable
+        notebook share startup history; unrelated providers do not.
+        """
+        with self.connect(write=False) as db:
+            current=db.execute("""select r.* from control c join runs r on r.id=c.current_run
+                where c.id=1 and c.startup_ref=? and c.startup_state='pending'
+                and c.startup_failures<?""",(startup_ref,MAX_STARTUP_FAILURES)).fetchone()
+            if (current is None or current['status']!='starting'
+                    or self._run_expired(current,self.clock())):
+                return None,'unknown'
+            # Bound both fetched rows and the candidate window, without a new
+            # index/migration or scanning historical corpus/job data.
+            recent=db.execute("""select started,ready_at,provider_ref,provider_version from
+                (select * from runs order by rowid desc limit 32)
+                where ready_at>started and provider_ref is not null
+                and provider_version>0 order by ready_at desc limit 32""").fetchall()
+            provider=current['provider_ref']
+            if provider is None:
+                providers={r['provider_ref'] for r in recent}
+                if len(providers)!=1:return None,'unknown'
+                provider=next(iter(providers))
+            now=self.clock()
+            durations=[r['ready_at']-r['started'] for r in recent
+                if r['provider_ref']==provider and r['ready_at']<=now
+                and 30<=r['ready_at']-r['started']<=1800][:8]
+            if len(durations)<3 or now<current['started']:return None,'unknown'
+            from statistics import median
+            remaining=median(durations)-(now-current['started'])
+            if remaining<=0:return None,'overdue'
+            # Minute granularity communicates an estimate rather than a
+            # countdown; overdue launches explicitly stop offering an ETA.
+            return int(math.ceil(remaining/60)*60),'estimated'
+
     def finish_startup(self, run_id):
         """Mark ready only after current full history/PG/BGE proof on caller."""
         with self.connect() as db:

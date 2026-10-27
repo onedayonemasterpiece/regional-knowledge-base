@@ -231,7 +231,7 @@ async def test_pending_does_not_invent_an_estimate_or_restart_the_demand(auth,tm
         assert repeated.startup.eta_seconds is None and observed.eta_seconds is None
         assert repeated.startup.message_ru==observed.message_ru
         assert observed.message_ru.startswith('Запускаем инфраструктуру, подождите.')
-        assert 'неизвестен' not in observed.message_ru
+        assert 'Надёжной оценки' in observed.message_ru
         assert 'eta_seconds' not in observed.model_dump(exclude_none=True)
         with queue.connect(write=False) as db:
             assert db.execute('select count(*) from runs').fetchone()[0]==1
@@ -276,3 +276,114 @@ async def test_unverified_caller_cannot_create_cold_startup_demand(auth, tmp_pat
             assert db.execute("select count(*) from runs").fetchone()[0] == 0
     finally:
         admission.close()
+
+
+def successful_history(queue, *, provider='owner/stable-slug', count=8):
+    durations=[233.504,222.540,291.760,232.954,247.107,476.196,223.425,574.478]
+    with queue.connect() as db:
+        for number,duration in enumerate(durations[:count]):
+            started=number*1000
+            db.execute("""insert into runs(id,status,token_hash,started,heartbeat,useful,
+                ready_at,provider_ref,provider_version,launch_state)
+                values(?,?,?,?,?,?,?,?,?,?)""",(f'history-{provider}-{number}','expired','synthetic',
+                started,started,started,started+duration,provider,number+1,'terminal'))
+
+
+@pytest.mark.asyncio
+async def test_initial_pending_and_poll_share_real_history_estimate(auth,tmp_path):
+    import threading
+    from regional_knowledge.read_telemetry import ReadTelemetry
+    now=[10000.]
+    queue=BgeQueue(tmp_path/'history.sqlite',clock=lambda:now[0])
+    successful_history(queue)
+    admission=queue.configure_shared_reads(auth.resolver)
+    records=[]
+    telemetry=ReadTelemetry(sink=lambda record:records.append(json.loads(record)))
+    backend=KaggleSourceBackend(worker_queue=queue,read_authority=auth.resolver,
+        source_gate=Gate(auth.resolver),destination_ref='synthetic-response',read_telemetry=telemetry)
+    principal=SimpleNamespace(access_token=auth.tokens.access_token)
+    original=queue.startup_estimate
+    def estimate(ref):
+        assert threading.current_thread() is not threading.main_thread()
+        return original(ref)
+    queue.startup_estimate=estimate
+    try:
+        first=await backend.search('private synthetic question',principal)
+        ref=first.startup.startup_ref
+        assert first.status=='pending' and first.startup.eta_seconds==300
+        assert 'Примерное' in first.startup.message_ru and '5 мин.' in first.startup.message_ru
+        with queue.connect(write=False) as db:
+            before=[tuple(r) for r in db.execute('select * from control')]
+            before_runs=[tuple(r) for r in db.execute('select * from runs')]
+        now[0]+=120
+        poll=await backend.startup_status(ref,principal)
+        assert poll.status=='pending' and poll.eta_seconds==180
+        repeated=await backend.search_evidence('another private query',principal)
+        assert repeated.startup.startup_ref==ref
+        assert repeated.startup.eta_seconds==poll.eta_seconds
+        assert repeated.startup.message_ru==poll.message_ru
+        now[0]+=181
+        for _ in range(2):
+            poll=await backend.startup_status(ref,principal)
+            assert poll.status=='pending' and poll.eta_seconds is None
+            assert 'дольше обычного' in poll.message_ru
+            now[0]+=30
+        with pytest.raises(ToolError,match='access_denied'):
+            await backend.startup_status(ref,SimpleNamespace(access_token='invalid-token'))
+        with queue.connect(write=False) as db:
+            assert before==[tuple(r) for r in db.execute('select * from control')]
+            # Searches renew useful time; status polling does not create runs/jobs.
+            assert len(before_runs)==db.execute('select count(*) from runs').fetchone()[0]
+            assert db.execute('select count(*) from jobs').fetchone()[0]==0
+        await asyncio.to_thread(telemetry._queue.join)
+        starts=[r for r in records if r.get('operation')=='startup_status']
+        ends=[r for r in records if r.get('terminal') and r.get('attempt_id') in
+            {x['attempt_id'] for x in starts}]
+        assert len(starts)==len(ends)==4
+        assert {r['status'] for r in ends}=={'pending','denied'}
+        assert all(r['backend_elapsed_ms']>=0 for r in ends)
+        assert ref not in json.dumps(records) and 'private synthetic' not in json.dumps(records)
+    finally:admission.close()
+
+
+def test_estimate_does_not_mix_providers_or_claim_unknown_ready(tmp_path):
+    queue=BgeQueue(tmp_path/'providers.sqlite',clock=lambda:10000.)
+    successful_history(queue)
+    successful_history(queue,provider='other/notebook',count=3)
+    demand=queue.request_startup();ref=demand['startup_ref']
+    assert queue.startup_estimate(ref)==(None,'unknown')
+    assert queue.launch_claim(demand['run_id'],provider_ref='owner/stable-slug')
+    assert queue.startup_estimate(ref)==(300,'estimated')
+    with queue.connect() as db:
+        db.execute("update runs set started=1 where id=?",(demand['run_id'],))
+    assert queue.startup_status(ref)['status']=='pending'
+    assert queue.startup_estimate(ref)==(None,'unknown')
+
+
+@pytest.mark.asyncio
+async def test_status_poll_has_no_demand_and_rechecks_after_estimate(auth,tmp_path,monkeypatch):
+    queue=BgeQueue(tmp_path/'poll-only.sqlite',clock=lambda:10000.)
+    successful_history(queue)
+    admission=queue.configure_shared_reads(auth.resolver)
+    backend=KaggleSourceBackend(worker_queue=queue,read_authority=auth.resolver,
+        source_gate=Gate(auth.resolver),destination_ref='synthetic-response')
+    ref=queue.request_startup()['startup_ref']
+    principal=SimpleNamespace(access_token=auth.tokens.access_token)
+    def forbidden():raise AssertionError('poll created demand')
+    monkeypatch.setattr(queue,'request_startup',forbidden)
+    original=queue.startup_estimate
+    recheck=auth.resolver.recheck
+    revoke=[False]
+    def estimate(ref):
+        result=original(ref);revoke[0]=True;return result
+    async def current(authority):
+        if revoke[0]:raise PermissionError('revoked while estimating')
+        return await recheck(authority)
+    monkeypatch.setattr(queue,'startup_estimate',estimate)
+    monkeypatch.setattr(auth.resolver,'recheck',current)
+    try:
+        with pytest.raises(ToolError,match='access_denied'):
+            await backend.startup_status(ref,principal)
+        with queue.connect(write=False) as db:
+            assert db.execute('select count(*) from runs').fetchone()[0]==9
+    finally:admission.close()

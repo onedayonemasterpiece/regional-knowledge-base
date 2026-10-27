@@ -528,7 +528,8 @@ class KaggleSourceBackend:
                         raise failure('unavailable','target_warming',startup_ref=demand['startup_ref']) from None
                     startup_status=StartupStatus(startup_ref=demand['startup_ref'],
                         status='pending',reason='target_warming',
-                        message_ru=PENDING_STARTUP_MESSAGE_RU)
+                        **await self._startup_wait(demand['startup_ref']))
+                    await self.read_authority.recheck(authority)
                     common=dict(status='pending',reason='target_warming',mode='lexical_degraded',
                         retrieval_mode='lexical_only',main_state='starting',startup=startup_status,
                         read_trace=ReadTrace(**attempt.correlation(),
@@ -649,9 +650,22 @@ class KaggleSourceBackend:
             if not retained:
                 terminal(status,reason)
 
+    async def _startup_wait(self, startup_ref):
+        eta,state=await asyncio.to_thread(self.worker_queue.startup_estimate,startup_ref)
+        if state=='estimated':
+            message=f' Примерное оставшееся ожидание: {eta//60} мин. Оценка по предыдущим успешным запускам.'
+        elif state=='overdue':
+            message=' Запуск длится дольше обычного; оставшееся время пока неизвестно.'
+        else:
+            message=' Надёжной оценки оставшегося времени пока нет.'
+        return dict(eta_seconds=eta,message_ru=PENDING_STARTUP_MESSAGE_RU+message)
+
     async def startup_status(self, startup_ref, principal):
         """MCP read-only continuation: freshly authorized, never auto-retries the query."""
+        attempt=self.read_telemetry.begin_attempt('startup_status')
+        status,reason='unavailable','not_ready'
         if type(startup_ref) is not str:
+            self.read_telemetry.finish_attempt(attempt,status='invalid_query',reason='invalid_input')
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         authority=None;health_binding=None
         try:
@@ -712,14 +726,23 @@ class KaggleSourceBackend:
                 if not still_current:
                     observed['health'].update(postgres=None,read_ready=False,reason='attachment_changed')
             if observed['status']=='pending':
-                observed['message_ru']=PENDING_STARTUP_MESSAGE_RU
-            return StartupStatus.model_validate(observed)
+                observed.update(await self._startup_wait(startup_ref))
+                await self.read_authority.recheck(authority)
+            output=StartupStatus.model_validate(observed)
+            status,reason=output.status,output.reason
+            return output
+        except asyncio.CancelledError:
+            status,reason='cancelled','caller_cancelled'
+            raise
         except (ValueError,TypeError):
+            status,reason='invalid_query','invalid_input'
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}') from None
         except PermissionError:
+            status,reason='denied','access_denied'
             raise ToolError('{"status":"denied","reason":"access_denied"}') from None
         finally:
             if authority is not None:self.read_authority.release(authority)
+            self.read_telemetry.finish_attempt(attempt,status='ok' if status=='ready' else status,reason=reason)
 
     async def search(self, query, principal, *, document_ids=None, main_job_id=None, aliases=None, top_k=3):
         if main_job_id or aliases:
