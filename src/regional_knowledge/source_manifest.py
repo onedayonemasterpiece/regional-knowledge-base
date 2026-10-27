@@ -12,7 +12,6 @@ import math
 from uuid import UUID, uuid5
 
 from .source_import import _hash, _json, _text, _uuid
-from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
 
 MANIFEST_CODEC = 'rkb.source-manifest.v1'
 MAX_MANIFEST_BYTES = 512 * 1024
@@ -146,12 +145,9 @@ def validate_source_manifest(manifest, *, source_id, original, semantic, passage
         for key in ('page_receipt_sha256','image_sha256','native_text_sha256','native_blocks_sha256'):
             _hash(page[key])
         render = page['preview_render']
-        _keys(render, 'policy width height scale max_edge jpeg_quality byte_limit preview_only' +
-            (' image_bytes' if isinstance(render,dict) and render.get('policy')=='rkb.model-page.v2' else ''))
-        if (render['preview_only'] is not True or (render['policy'],render['byte_limit']) not in
-                {('rkb.pdf-preview.v1',256*1024),('rkb.model-page.v2',MODEL_PAGE_BYTE_LIMIT)}):
+        _keys(render, 'policy width height scale max_edge jpeg_quality byte_limit preview_only')
+        if render['policy'] != 'rkb.pdf-preview.v1' or render['preview_only'] is not True or render['byte_limit'] != 256*1024:
             raise ValueError('exact bounded preview provenance required')
-        if render['policy']=='rkb.model-page.v2':_integer(render['image_bytes'],1,MODEL_PAGE_BYTE_LIMIT)
         for key in ('width','height','max_edge'):
             _integer(render[key], 1, 20000)
         _integer(render['jpeg_quality'], 1, 100)
