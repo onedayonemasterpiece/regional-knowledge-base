@@ -30,6 +30,33 @@ _LOG=logging.getLogger(__name__)
 # receipt compatibility data, not another executable parser or a new code gate.
 HISTORICAL_PDF_SCRIPT_SHA256='f614e3acbfc32f1bf3ca339a11a8edbf08cd3c3de3d72b0d5fcba2db8b09e159'
 
+# -I intentionally ignores PYTHONPATH and the parent's dynamic sys.path. Stage0
+# installs verified wheels into a private --target directory, so pass only the
+# already version-checked PyMuPDF distribution root, never request paths. Keep
+# the parser script/argv/main (including its resource limits) byte-for-byte.
+_ISOLATED_PARSER_BOOTSTRAP = '''
+import importlib.metadata, importlib.util, json, pathlib, runpy, sys
+try:
+    site, version, script = sys.argv[1:4]
+    root = pathlib.Path(site).resolve(strict=True)
+    if not root.is_dir() or str(root) != site:
+        raise RuntimeError('parser dependency root changed')
+    sys.path.insert(0, site)
+    distribution = importlib.metadata.distribution('PyMuPDF')
+    spec = importlib.util.find_spec('pymupdf')
+    if (distribution.version != version
+        or pathlib.Path(distribution.locate_file('')).resolve(strict=True) != root
+        or spec is None or spec.origin is None
+        or pathlib.Path(spec.origin).resolve(strict=True).parent.parent != root):
+        raise RuntimeError('parser dependency binding changed')
+    sys.argv = [script, *sys.argv[4:]]
+    runpy.run_path(script, run_name='__main__')
+except Exception as error:
+    print(json.dumps(dict(error='original_pdf_parser_unavailable', terminal=False,
+        error_type=type(error).__name__)))
+    raise SystemExit(1)
+'''
+
 
 @dataclass(frozen=True)
 class OriginalIntakeConfig:
@@ -65,6 +92,9 @@ class NativeOriginalIntake:
             raise OriginalIntakeError('original_private_workspace_required')
         actual={k:importlib.metadata.version(k) for k,_ in config.parser_packages}
         if actual!=dict(config.parser_packages):raise OriginalIntakeError('original_parser_dependency_mismatch')
+        pdf_name=next(k for k in actual if k.lower().replace('_','-')=='pymupdf')
+        self._pdf_dependency_root=str(Path(importlib.metadata.distribution(pdf_name).locate_file('')).resolve(strict=True))
+        self._pdf_dependency_version=actual[pdf_name]
         # Preserve existing accepted PDF and DjVu receipt identities without
         # running a second copy of the PDF parser.
         legacy_code=HISTORICAL_PDF_SCRIPT_SHA256
@@ -122,7 +152,8 @@ class NativeOriginalIntake:
     async def _parse(self,path,action,index=0,*,cursor=None,parser_sha256=None):
         cursor=cursor or dict(block=0,offset=0,text=0)
         script=self._parser_script(self.parser_sha256 if parser_sha256 is None else parser_sha256)
-        child=await asyncio.create_subprocess_exec(sys.executable,'-I',str(script),
+        child=await asyncio.create_subprocess_exec(sys.executable,'-I','-c',_ISOLATED_PARSER_BOOTSTRAP,
+            self._pdf_dependency_root,self._pdf_dependency_version,str(script),
             action,str(path),str(index),*(str(cursor[k]) for k in ('block','offset','text')),
             stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
             env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
@@ -141,6 +172,11 @@ class NativeOriginalIntake:
                     raise OriginalIntakeRejected(value['error'])
                 if value.get('error')=='original_djvu_decoder_required' and value.get('terminal') is False:
                     raise OriginalIntakeError('original_djvu_decoder_required')
+                error_type=value.get('error_type')
+                if error_type not in {'ImportError','ModuleNotFoundError','PackageNotFoundError','RuntimeError','ValueError','FileNotFoundError'}:
+                    error_type='unreported'
+                _LOG.warning('original_parser state=unavailable action=%s error_type=%s returncode=%s',
+                    action if action in ('inspect','page','text') else 'invalid',error_type,status)
                 raise OriginalIntakeError('original_parser_unavailable')
             return value
         finally:
