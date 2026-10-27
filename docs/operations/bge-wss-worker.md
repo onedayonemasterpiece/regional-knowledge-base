@@ -45,6 +45,14 @@ execution Stop/capacity and unknown publication outcomes remain controller
 integration work. Existing controller lifetime/launch behavior is not silently
 claimed to satisfy the target lifecycle contract.
 
+The historical `cooperative_worker_exit=true` field means only that worker
+main's outer `finally` was reached; retained summaries with that flag do not
+prove successful transport, completed resource cleanup, or provider COMPLETE.
+New summaries also record `transport_outcome=returned|raised|cancelled` and a
+bounded exception class in `error_type` for raised/cancelled outcomes. Exceptions
+and cancellation still propagate. Even `returned` leaves exact provider terminal
+status to the existing native observation; it is not provider termination proof.
+
 An attached, version-bound READY worker reaching the useful-idle deadline
 enters `draining` while its heartbeat and hard lifetime remain valid. The first
 maintenance, channel-status or STOP observation commits that same transition;

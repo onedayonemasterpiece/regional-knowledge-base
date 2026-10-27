@@ -9,6 +9,7 @@ os.environ['TOKENIZERS_PARALLELISM']='false'
 os.environ['OMP_NUM_THREADS']='4'
 os.environ['MKL_NUM_THREADS']='4'
 import json
+import asyncio
 import threading
 import time
 import urllib.error
@@ -91,14 +92,24 @@ def main(*, prepare_runtime=None, close_runtime=None, recovery_handler=None, sna
         pss=sum(int(line.split()[1]) for line in Path('/proc/self/smaps_rollup').read_text().splitlines() if line.startswith('Pss:'))
         cpu=os.times();return {'rss_kib':values['VmRSS'],'hwm_kib':values['VmHWM'],'pss_kib':pss,'cpu_seconds':cpu.user+cpu.system,'cpu_threads':4,'pid':os.getpid()}
     if config.get('transport')=='wss':
+        outcome='returned';error_type=None
         try:
             run_wss_worker(config,load_encoder,diagnostics,prepare_runtime=prepare_runtime,close_runtime=close_runtime,
                 **({'recovery_handler':recovery_handler} if recovery_handler is not None else {}),
                 **({'snapshot_channel':snapshot_channel} if snapshot_channel is not None else {}))
+        except BaseException as error:
+            outcome='cancelled' if isinstance(error,asyncio.CancelledError) else 'raised'
+            name=type(error).__name__
+            error_type=name if len(name)<=80 and name.isascii() and name.isidentifier() else 'BaseException'
+            raise
         finally:
             Path('/kaggle/working/bge-run-summary.json').write_text(json.dumps({
                 'run_id':config['run_id'],'space':SPACE,'transport':'wss',
                 'worker_wall_seconds':time.monotonic()-started,
+                'transport_outcome':outcome,
+                **({'error_type':error_type} if error_type is not None else {}),
+                # Historical flag means this outer finally was reached. It
+                # proves neither success nor completed native-resource cleanup.
                 'cooperative_worker_exit':True,'provider_termination_verified':False}))
         return
     def call(action,payload):

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/regional_knowledge/**'
+      - 'scripts/production/bge_kaggle_worker.py'
       - 'sql/kaggle/**'
       - 'tests/test_import_actual_launch_metadata_shkiper.py'
       - '.github/workflows/rkb-first-book-launch-envelope.yml'
