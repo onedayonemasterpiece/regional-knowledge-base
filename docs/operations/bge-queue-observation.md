@@ -14,6 +14,13 @@ Opening an already compatible queue probes the schema read-only instead of
 running migrations per search; the search constructs its queue off the event
 loop. Creation or an actual schema upgrade still uses the serialized write path.
 
+Queue upgrades add `bge_retention` on jobs `(state, kind, updated)` and
+`bge_assigned` on `(run_id, state)` to bound retention and assigned-job lookups.
+Opening an existing queue missing either index installs it before returning to
+the read-only schema fast path. Initial index construction takes the SQLite
+writer lock and requires additional disk space; retention, lease expiry,
+claim ownership and UNKNOWN handling remain unchanged.
+
 Local result waiters are notified only after completion commits, including
 between queue instances in the same process. A bounded 250 ms reconciliation
 path observes completions from other processes and recovers missed hints. A

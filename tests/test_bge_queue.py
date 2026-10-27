@@ -9,6 +9,45 @@ def run_details(queue):
         run=dict(db.execute("select * from runs where status='starting' order by started desc limit 1").fetchone())
     return run['id'],(queue.path.parent/'bge-worker-credentials'/run['id']).read_text()
 
+
+@pytest.mark.parametrize('missing',[
+    ('bge_retention',),('bge_assigned',),('bge_retention','bge_assigned'),
+])
+def test_existing_queue_upgrades_missing_maintenance_indexes_without_changing_jobs(tmp_path,missing):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    job=queue.enqueue('actor','retained-command',['accepted input'],kind='document')
+    with queue.connect() as db:
+        before=dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())
+        for name in missing:db.execute('DROP INDEX '+name)
+    reopened=BgeQueue(queue.path)
+    with reopened.connect(write=False) as db:
+        indexes={row['name'] for row in db.execute('PRAGMA index_list(jobs)')}
+        assert {'bge_retention','bge_assigned'}<=indexes
+        assert dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())==before
+    assert reopened._schema_current()
+
+
+@pytest.mark.parametrize('sql,arguments,index,bounds',[
+    ("DELETE FROM jobs WHERE kind='query' AND state='done' AND updated<?",
+        (1000.,),'bge_retention',('state=?','kind=?','updated<?')),
+    ("DELETE FROM jobs WHERE kind='document' AND state='done' AND updated<? "
+        "AND json_extract(identity,'$.audit') IS NOT NULL",
+        (1000.,),'bge_retention',('state=?','kind=?','updated<?')),
+    ("SELECT 1 FROM jobs WHERE run_id=? AND state='claimed' "
+        "AND kind IN ('source_command','recovery_phase') LIMIT 1",
+        ('retained-run',),'bge_assigned',('run_id=?','state=?')),
+])
+def test_maintenance_plans_bound_retention_time_and_assigned_run(tmp_path,sql,arguments,index,bounds):
+    queue=BgeQueue(tmp_path/'queue.sqlite')
+    with queue.connect() as db:
+        # Include the serving admission index, which previously won these
+        # lookups while leaving retention time/run identity as row filters.
+        db.execute('CREATE INDEX bge_admission_actor ON jobs(state,kind,actor,created,id)')
+    with queue.connect(write=False) as db:
+        plan=' '.join(row['detail'] for row in db.execute('EXPLAIN QUERY PLAN '+sql,arguments))
+    assert 'SEARCH jobs USING INDEX '+index in plan or 'SEARCH jobs USING COVERING INDEX '+index in plan
+    assert all(bound in plan for bound in bounds),plan
+
 def test_atomic_start_and_durable_replayed_job(tmp_path):
     queue=BgeQueue(tmp_path/'queue.sqlite')
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
