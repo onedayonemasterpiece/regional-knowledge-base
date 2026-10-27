@@ -3,6 +3,7 @@
 No SQL, provider, model or image-renderer effects. These tests exercise the
 public importer and real ordered journal rather than replacing the spool API.
 """
+import asyncio
 import base64
 import copy
 import json
@@ -154,6 +155,67 @@ def batch(s, result, *, first=0, count=4):
 async def call(s, result, command, **kwargs):
     return await s.importer.book_ingest(command=command,principal=s.principal,
         ingestion_id=result.ingestion_id,**kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('archive_failure',[False,True])
+async def test_mcp_normal_status_archives_once_with_current_owner(native_intake,monkeypatch,caplog,archive_failure):
+    from regional_knowledge.server import build_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    from starlette.requests import Request
+    s=native_intake;book=await start(s);calls=[];sidecars=[];status_calls=[]
+    async def authorize(context):
+        assert context.route=='owner' and context.principal.subject==s.principal.subject
+        return s.principal.subject,s.startup.binding
+    async def archive(context,ingestion_id):
+        calls.append(ingestion_id)
+        if archive_failure and len(calls)==1:raise TimeoutError('private archive provider detail')
+        sidecars.append('registered')
+    monkeypatch.setattr(s.originals,'_authorize',authorize)
+    monkeypatch.setattr(s.originals,'_row',lambda actor,ingestion:dict(failure_code=None,
+        telegram_locator_json=sidecars[0] if sidecars else None))
+    monkeypatch.setattr(s.originals,'_archive_verified_original',archive)
+    async def original_status(context,ingestion_id):
+        status_calls.append(ingestion_id)
+        return await OriginalIntakeController.status(s.originals,context,ingestion_id)
+    monkeypatch.setattr(s.originals,'status',original_status)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    server=build_server(target_startup=s.startup)
+    async def invoke():
+        request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
+            'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
+        context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='normal-status'))
+        try:
+            return await server.call_tool('book_ingest',dict(command='status',ingestion_id=book.ingestion_id),context)
+        finally:
+            retained=request.scope.pop(_SCOPE_KEY,None)
+            if retained:retained[1].release()
+    output=await invoke()
+    assert calls==[book.ingestion_id] and output.structured_content['source_archive_status']=='verified'
+    if archive_failure:
+        assert not sidecars and 'error_class=TimeoutError' in caplog.text
+        assert 'private archive provider detail' not in caplog.text
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    s.importer.native_intake._state(row,create=True)  # Existing-stage status branch also checks original progress.
+    assert (await invoke()).structured_content['source_archive_status']=='verified'
+    assert calls==[book.ingestion_id]*(2 if archive_failure else 1) and status_calls==[book.ingestion_id]*2
+    other=Principal(subject=s.t.auth.p.other.subject,client_id=s.principal.client_id,
+        issuer=s.principal.issuer,access_token=s.t.auth.tokens.access_token)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:other)
+    with pytest.raises(ToolError,match='access_denied'):await invoke()
+    assert calls==[book.ingestion_id]*(2 if archive_failure else 1)
+    assert not s.token_calls and operation_count(s)==0
+    # A verified() failure is not an archive failure and must remain pending.
+    context=SimpleNamespace(route='owner',principal=s.principal)
+    original_verified=s.originals.verified
+    async def failed_verification(*args):raise TimeoutError('private receipt verification detail')
+    monkeypatch.setattr(s.originals,'verified',failed_verification)
+    assert not (await s.originals.status(context,book.ingestion_id)).verified
+    monkeypatch.setattr(s.originals,'verified',original_verified)
+    sidecars.clear()
+    async def cancelled_archive(*args):raise asyncio.CancelledError()
+    monkeypatch.setattr(s.originals,'_archive_verified_original',cancelled_archive)
+    with pytest.raises(asyncio.CancelledError):await s.originals.status(context,book.ingestion_id)
 
 
 async def stage(s, result, payload):

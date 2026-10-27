@@ -12,6 +12,34 @@ Original identity preserves edition, source revision and source metadata; archiv
 
 Only GEO content migrates. Old books, chunks, vectors, stories, drafts, contributions and cases are not copied into the new corpus; their functions remain required for fresh data. An existing original can be read from its registered archive without copying old accepted transcription/review stamps. A source hash or parser version cannot regenerate a model's accepted choices.
 
+For newly accepted originals, `original_archive` uses the existing leased
+Kaggle Telethon client, records the message/document locator in the intake row
+and creates a receipt only after document presence is checked. This first PR
+does not yet replace S3-based restoration of lost native handles: Telegram
+restore and eight historical-source migration belong to dependent PR2.
+Historical immutable receipts are not rewritten.
+A retained `original_telegram_send_unknown` result is reconciled on the next
+normal status call through a fresh `original_verify` metadata observation.
+It searches the exact intake caption in the configured topic and never sends
+when no document is visible. Both original unknown receipts remain unchanged.
+After reviewed native/API rollout, normal owner `book_ingest(status)` continues
+the archive of an already verified original when its Telegram sidecar is absent,
+including books with accepted stage state. Each call progresses original status
+once. Current owner authorization and the owned intake row select the source;
+the normal flow calls the existing `original_acquire`
+restore phase (S3 GET into Kaggle) and the native `original_archive` phase
+(Telethon send from Kaggle) before writing a sidecar locator. It does not
+download original bytes to Dev. No repair command, script, forged Principal or
+standalone runtime access is required. Archive failures are logged and leave
+the existing verified original usable; the immutable old receipt is retained.
+Existing sidecars avoid S3 HEAD checks.
+Repeated status calls reuse the restored handle for the same immutable
+receipt. If an unresolved send also loses native bytes, the archive remains
+unresolved without a fresh restore/upload; the verified original stays usable. Existing
+sidecars are reused, so eight locators need not mean eight new documents.
+Uploads preserve the retained original filename (or an original.pdf/.djvu
+fallback) and the native-verified format's MIME, rather than the workspace .source name.
+
 ## Media success: presence, not custom byte verification
 
 The owner explicitly selected Telegram as a trusted media store. After an upload, verify that the returned registered locator resolves to an accessible expected photo/document in the intended archive. Retain that native reference and operation outcome. **Do not require another full download, a provider checksum or comparison of uploaded/downloaded SHA values before archive success.** Telegram photo processing may change bytes; this is not evidence of failure.

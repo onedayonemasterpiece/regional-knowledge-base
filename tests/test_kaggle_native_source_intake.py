@@ -107,6 +107,8 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             if self.revoked: raise PermissionError('revoked synthetic lease')
         async def selected(*args): return self.issued
         async def receipt(*args): return original()
+        # Original is already verified; pending/rejected cases concern stage receipts.
+        async def original_status(*args): return NS(verified=True)
         async def enqueue(context,key,**kwargs): self.enqueued.append(key)
         def save(row,**changes):
             self.saved.append(changes); row.update(changes); return row
@@ -118,7 +120,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         startup=NS(config=NS(writer_generation='writer'),source_dispatch=NS(enqueue=enqueue),reads_current=lambda:True,
             history=NS(source_tail_refs=tails))
         self.importer=NS(import_revisions=VERSIONS,queue=self.queue,spool=self.spool,startup=startup,
-            _check=check,_receipt=receipt,originals=NS(selected_image_receipts=selected),_save=save,_output=output,
+            _check=check,_receipt=receipt,originals=NS(selected_image_receipts=selected,status=original_status),_save=save,_output=output,
             _revisions=lambda binding:VERSIONS,_intake_coverage_current=lambda binding:True)
         # Stub only external contracts at this controller unit boundary. Native
         # payload validation and SQLite transitions below are actual code.

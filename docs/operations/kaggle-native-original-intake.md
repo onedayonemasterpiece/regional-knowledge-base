@@ -54,17 +54,17 @@ The fixed phases are:
    is absent from durable job identity/results and logs. It can be renewed while
    retaining the logical file/ingestion identity. Actual bytes determine format,
    hash, size and physical page count; metadata labels cannot supply these facts.
-2. `original_archive`: the retained native file is uploaded directly with an
-   exact conditional PUT ticket from the existing S3 client. Dev receives no
-   original bytes. A lost PUT acknowledgment is reconciled by native provider
-   HEAD before another effect is attempted. Only provider-proven 404/NoSuchKey
-   permits a PUT; timeout, authorization failure or size/version conflict leaves
-   UNKNOWN pending state and never authorizes another PUT.
-3. `original_verify`: a scoped conditional GET ticket binds the exact provider
-   version. Kaggle streams the object into fresh private scratch and verifies
-   its complete size/hash. Dev independently checks HEAD size/version before
-   retaining `VerifiedOriginalReceipt`. A HEAD or upload acknowledgment alone
-   cannot produce this receipt.
+2. `original_archive`: the Kaggle-native retained original is sent as a
+   document to private Telegram topic 2 by the same leased Telethon client.
+   Exact chat/topic/message/document metadata is read back (presence only)
+   and the locator saved with the receipt. UNKNOWN never triggers a blind second
+   send; the operation key and exact caption support reconciliation. Originals
+   are not sent through Dev or VibePublish.
+3. `original_verify` retains S3 derivative-image verification with a private
+   ticket; without a ticket it observes a Telegram original by exact intake
+   caption/presence after a lost send ACK, without downloading or sending.
+   Historical S3 original receipts remain readable without rewriting accepted
+   source identity; new original receipts refer to Telegram.
 4. `original_pages`: the retained original is rendered by the pinned isolated
    PDF parser. Each call returns one physical page's bounded metadata. Its real
    JPEG derivative follows the same archive/readback phases, after which Dev may
@@ -82,10 +82,12 @@ content-addressed stable archive key, native version, page count, parser pin,
 acquisition hash and native readback hash. Signed URLs are not receipt locators.
 
 When an unrendered page needs a lost ephemeral native handle, the controller
-restores only from that retained verified receipt. `original_acquire` receives a
-scoped conditional GET ticket for the same archived version; Kaggle verifies the
-entire size/hash and reparses with the exact same parser pin before retaining a
-new handle. Source/ingestion identity and original receipt are immutable. The
+restores only from that retained verified receipt. New Telegram originals use
+the saved message/document locator: the same leased downloader retrieves bytes
+directly into private Kaggle scratch and the existing source/parser checks apply.
+Old immutable S3 receipts still work with their original conditional GET path
+until the sidecar Telegram locator has been migrated; afterwards the same
+old receipt remains unchanged but restore prefers Telegram. Source/ingestion identity and original receipt are immutable. The
 restore sub-operation is persisted before dispatch and reused after cancellation
 or lost acknowledgment. It creates no original PUT, external attachment download
 or source import. Pending intake without a verified receipt cannot take this
