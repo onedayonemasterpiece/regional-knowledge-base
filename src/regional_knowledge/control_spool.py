@@ -757,6 +757,17 @@ class ControlSpool:
             if row['seal_bytes'] is not None and bytes(row['seal_bytes'])!=data:raise SpoolConflict('accepted seal identity differs')
             db.execute("UPDATE rkb_control_operations SET seal_state='ACCEPTED',seal_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
             db.execute('UPDATE rkb_control_spool_meta SET accepted_sequence=max(accepted_sequence,?) WHERE id=1',(row['sequence'],))
+        if row['seal_bytes'] is None:
+            self._observe_command(key,row['sequence'],'seal','acknowledged')
+
+    @staticmethod
+    def _observe_command(key,sequence,phase,status):
+        # Only after the existing transaction committed; never a domain receipt.
+        try:
+            from .product_telemetry import emit_import_event
+            emit_import_event(operation_key=key,event='command.phase',phase=phase,status=status,
+                command_sequence=sequence)
+        except Exception: pass
 
     async def seal(self,context,key,*,writer_generation,predecessor=_UNSET):
         self._active();_bounded(writer_generation,4096)
@@ -813,6 +824,9 @@ class ControlSpool:
                 raise SpoolConflict('exact committed outcome differs')
             db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?
                 WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),key))
+        if row['apply_bytes'] is None:
+            self._observe_command(key,row['sequence'],'dispatch',
+                'applied' if receipt.status=='applied' else 'rejected')
 
     async def record_apply(self,key,receipt):
         self._active();await self._write(self._record_apply,key,receipt)
@@ -848,6 +862,9 @@ class ControlSpool:
             if prior is not None and bytes(prior[0])!=data:raise SpoolConflict('compact terminal receipt differs')
             db.execute('INSERT OR IGNORE INTO rkb_control_receipts VALUES(?,?,?)',(key,row['command_sha256'],data))
             db.execute("UPDATE rkb_control_operations SET outcome_state='DURABLE',remote_receipt_bytes=?,updated=? WHERE operation_key=?",(data,self.clock(),key))
+        if row['remote_receipt_bytes'] is None:
+            self._observe_command(key,row['sequence'],'saved',
+                'saved' if row['apply_state']=='APPLIED' else 'rejected')
 
     def _settle_recovered_jobs(self,key,covered=None):
         """Only an exact locally recorded apply + remote durable outcome settles jobs.

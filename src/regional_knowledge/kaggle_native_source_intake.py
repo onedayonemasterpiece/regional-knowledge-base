@@ -30,11 +30,11 @@ def _failure(reason, *, status='unavailable'):
 
 
 def _timed_native_phase(phase):
-    """Outer tool-call duration, not provider ACK or persisted Saved."""
+    """Nested native handler duration, not full MCP or persisted Saved."""
     def decorate(method):
         @wraps(method)
         async def observed(self, access, row, *args, **kwargs):
-            from .product_telemetry import emit_product_event
+            from .product_telemetry import emit_import_event
             started = time.monotonic()
             status = 'error'
             try:
@@ -51,9 +51,8 @@ def _timed_native_phase(phase):
                 # A malformed observer input must not replace the domain
                 # result, cancellation or exception being returned.
                 try:
-                    ref = hashlib.sha256(str(row['ingestion_id']).encode()).hexdigest()
-                    emit_product_event({'event':'import.phase','phase':phase,'status':status,
-                        'operation_ref':ref,'duration_ms':(time.monotonic()-started)*1000})
+                    emit_import_event(ingestion_id=row['ingestion_id'],source_id=row['source_id'],event='import.phase',phase=phase,
+                        status=status,duration_ms=(time.monotonic()-started)*1000)
                 except Exception:
                     pass
         return observed
@@ -259,7 +258,29 @@ class NativeSourceIntake:
                     raise
             # If the process exits between the spool commit and this compact
             # mark, the stable key is reconciled before any new allocation.
-            await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
+            observed=await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
+            try:
+                from .product_telemetry import import_metadata, emit_import_event
+                import_metadata(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=key,
+                    batch_index=payload.get('batch_index'),command_sequence=entry.command.sequence,
+                    packet_bytes=len(entry.command.payload),attempt=observed['command_attempt'],
+                    batch_count=observed['batch_count'],published_batch_count=observed['published_batch_count'],
+                    enriched_batch_count=observed['enriched_batch_count'])
+                component=payload['component'] if kind=='batch' else kind
+                import_metadata(component=component)
+                if kind=='stage':
+                    model=payload['model_payload'];pages=model['pages']
+                    import_metadata(page_count=len(pages),physical_page_index=pages[0]['physical_page_index'],
+                        physical_page_indices=[p['physical_page_index'] for p in pages],
+                        region_count=sum(len(p['regions']) for p in pages),chunk_count=len(model['chunks']),
+                        story_candidate_count=len(model.get('story_candidates',[])),
+                        entity_candidate_count=len(model.get('entity_candidates',{}).get('entities',[])),
+                        poi_candidate_count=len(model.get('poi_facts',[])),
+                        unit_marker_count=sum(len(p.get('source_unit_boundaries',[])) for p in pages))
+                emit_import_event(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=key,event='import.phase',
+                    phase='admission',status='staged',command_sequence=entry.command.sequence,
+                    component=component,packet_bytes=len(entry.command.payload))
+            except Exception: pass  # Observation cannot change a committed stage.
             return entry
 
     @staticmethod
@@ -343,10 +364,17 @@ class NativeSourceIntake:
         _LOG.info('native_intake_progress ingestion_id=%s kind=%s remote_durable=%s next_ordinal=%s',
             row['ingestion_id'],kind,entry.outcome_state=='DURABLE',updated['next_ordinal'])
         # Applied != Saved: log only, do not modify actual remote receipt.
-        from .product_telemetry import emit_product_event
-        emit_product_event({'event':'import.phase','phase':{
-            'stage':'stage','batch':'stage','finish':'stage','catalog':'stage'}[kind], 'status':'applied',
-            'operation_ref':hashlib.sha256(entry.command.operation_key.encode()).hexdigest()})
+        try:
+            from .product_telemetry import emit_import_event, import_metadata
+            phase=doc['component'] if kind=='batch' else kind
+            import_metadata(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=entry.command.operation_key,
+                batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
+                enriched_batch_count=updated['enriched_batch_count'])
+            emit_import_event(ingestion_id=row['ingestion_id'],source_id=row['source_id'],operation_key=entry.command.operation_key,
+                event='import.phase',phase=phase,status='applied',command_sequence=entry.command.sequence,
+                batch_count=updated['batch_count'],published_batch_count=updated['published_batch_count'],
+                enriched_batch_count=updated['enriched_batch_count'])
+        except Exception: pass  # Incomplete diagnostics cannot alter a settled result.
         return updated
 
     async def _drive(self, access, row, state):

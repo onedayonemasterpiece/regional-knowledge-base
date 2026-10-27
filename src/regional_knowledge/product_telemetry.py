@@ -6,9 +6,14 @@ Only fixed metadata fields are accepted: no query, original, bearer, URL or CoT.
 from __future__ import annotations
 
 import asyncio
+import atexit
+from itertools import count
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 import errno
+import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -20,16 +25,16 @@ from uuid import uuid4
 
 DEFAULT_DISK_BYTES = 32 * 1024 * 1024
 DEFAULT_SEGMENT_BYTES = 256 * 1024
-_EVENTS = frozenset({"read.stage", "read.terminal", "fetch.terminal",
-                     "import.phase", "import.terminal", "resource.sample"})
+_EVENTS = frozenset({"read.stage", "read.terminal", "fetch.terminal", "command.phase",
+                     "import.phase", "import.terminal", "import.call", "resource.sample"})
 _PHASES = frozenset({"total", "auth", "admission", "dispatch", "transport", "adapter",
                      "acquire", "verify", "pages", "stage", "seal", "materialize",
                      "activation", "saved", "archive", "encode", "lexical", "dense", "hydrate",
-                     "fusion", "serialize", "search", "fetch", "resource"})
+                     "fusion", "serialize", "search", "fetch", "resource", "text", "semantic", "finish", "catalog"})
 _STATUSES = frozenset({"started", "ok", "returned", "degraded", "pending", "staged",
                        "applied", "saved", "acknowledged", "rejected", "failed",
                        "unavailable", "cancelled", "error", "dropped"})
-_IDENTIFIERS = frozenset({"trace_id", "attempt_id", "run_id", "request_ref", "operation_ref"})
+_IDENTIFIERS = frozenset({"trace_id", "attempt_id", "run_id", "request_ref", "operation_ref", "ingestion_ref", "source_ref"})
 _FIELDS = frozenset({"event", "phase", "status", "duration_ms", "level",
                      "timing_semantics", "connection_generation", "turn_generation"}) | _IDENTIFIERS
 # Resource-specific bounded numeric ABI shared with the existing heartbeat
@@ -56,6 +61,21 @@ _RESOURCE_INTEGER_FIELDS = frozenset({
     "pss_kib", "pg_master_rss_kib", "pg_master_hwm_kib", "pg_master_pss_kib"
 })
 _OPAQUE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
+_IMPORT_NUMBERS = frozenset({'physical_page_index','page_count','region_count','chunk_count',
+    'story_candidate_count','unit_marker_count','packet_bytes','image_bytes','batch_index',
+    'command_sequence','batch_count','published_batch_count','enriched_batch_count','attempt',
+    'call_started_unix_ms','event_time_unix_ms','image_width','image_height','entity_candidate_count',
+    'poi_candidate_count','physical_page_end'})
+_IMPORT_ENUMS = {
+    'tool': frozenset({'book_ingest','book_pages','fetch','search'}),
+    'command': frozenset({'start','stage','validate','finalize','status','reprocess','rechunk'}),
+    'next_action': frozenset({'continue_pages','continue_tail','validate','finalize','wait','resume_finalize','done','blocker'}),
+    'result_state': frozenset({'staged','processing','needs_review','ready','finalized','failed'}),
+    'component': frozenset({'stage','text','semantic','catalog','finish'}),
+    'result_status': frozenset({'invalid_query','denied','unavailable','pending','unknown','failed','rejected','error'}),
+    'error_class': frozenset({'validation','access','domain','transport','internal'}),
+}
+_import_call = ContextVar('rkb_import_call_telemetry',default=None)
 
 
 def _digest_label(value):
@@ -68,7 +88,9 @@ def _clean(record: Mapping[str, object], level: str):
     if not isinstance(record, Mapping) or len(record) > 64:
         raise ValueError("bounded telemetry record required")
     is_resource = record.get("event") == "resource.sample"
-    permitted = _FIELDS | (_RESOURCE_FIELDS | resource_extras if is_resource else frozenset())
+    is_import = record.get('event') in ('import.phase','import.terminal','import.call','command.phase','fetch.terminal')
+    permitted = (_FIELDS | (_RESOURCE_FIELDS | resource_extras if is_resource else frozenset())
+        | (_IMPORT_NUMBERS | _IMPORT_ENUMS.keys() | {'has_more','physical_page_indices'} if is_import else frozenset()))
     # Unknown fields are discarded, never serialized (e.g. query/token/url).
     # Do not throw away known numbers because a new optional resource key
     # appeared in another worker version.
@@ -88,10 +110,28 @@ def _clean(record: Mapping[str, object], level: str):
         if type(value) is not str or _OPAQUE.fullmatch(value) is None:
             ignored += 1
             continue
-        if key in ("request_ref", "operation_ref") and not _digest_label(value):
+        if key in ("request_ref", "operation_ref", "ingestion_ref", "source_ref") and not _digest_label(value):
             ignored += 1  # Do not write a raw request/operation value.
             continue
         result[key] = value
+    if is_import:
+        for key in _IMPORT_NUMBERS & record.keys():
+            value=record[key]
+            if type(value) is not int or not 0 <= value < 2**63:
+                ignored += 1
+            else: result[key]=value
+        for key, allowed in _IMPORT_ENUMS.items():
+            if key in record:
+                if type(record[key]) is str and record[key] in allowed: result[key]=record[key]
+                else: ignored += 1
+        if 'has_more' in record:
+            if type(record['has_more']) is bool: result['has_more']=record['has_more']
+            else: ignored += 1
+        if 'physical_page_indices' in record:
+            indices=record['physical_page_indices']
+            if type(indices) is list and 1<=len(indices)<=4 and all(type(v) is int and 0<=v<2500 for v in indices):
+                result['physical_page_indices']=indices
+            else: ignored += 1
     for key in ("connection_generation", "turn_generation"):
         value = record.get(key)
         if value is not None:
@@ -229,6 +269,7 @@ class ProductTelemetry:
         self.dropped = 0
         self.failed = 0
         self.emitted = 0
+        self._seq, self._process_ref = count(1), uuid4().hex
         self._disabled = False
         self._thread = threading.Thread(target=self._consume, daemon=True, name="rkb-product-telemetry")
         self._thread.start()
@@ -246,6 +287,9 @@ class ProductTelemetry:
                 # Disk full/ENOSPC/denied sink: fail closed for logging only,
                 # never repeatedly retry broken writes or block the consumer.
                 self._disabled = True
+                logging.getLogger(__name__).warning(
+                    'product_telemetry_sink state=disabled emitted=%s failed=%s dropped=%s',
+                    self.emitted,self.failed,self.dropped)
             finally:
                 self._queue.task_done()
 
@@ -258,6 +302,8 @@ class ProductTelemetry:
                 self.dropped += 1
                 return False
             cleaned = _clean(record, level)
+            cleaned["seq"], cleaned["process_ref"] = next(self._seq), self._process_ref
+            if cleaned["seq"] % 64 == 0: cleaned["counter_snapshot"] = self.counters()
             cleaned["loss_before"] = {"dropped": self.dropped, "failed": self.failed}
             cleaned["diagnostic_state"] = (
                 "inconclusive" if self.dropped or self.failed else "observed")
@@ -289,6 +335,9 @@ def get_product_telemetry() -> ProductTelemetry:
                     mode = "standard"
                 _instance = ProductTelemetry(mode=mode,
                     directory=os.getenv("RKB_PRODUCT_LOG_DIR") or "/tmp/rkb-product-telemetry")
+                atexit.register(lambda sink=_instance: logging.getLogger(__name__).warning(
+                    'product_telemetry_exit emitted=%s dropped=%s failed=%s sink_disabled=%s',
+                    sink.emitted,sink.dropped,sink.failed,sink._disabled))
     return _instance
 
 
@@ -301,25 +350,81 @@ def emit_product_event(record: dict[str, object], *, level: str = "standard") ->
         return False
 
 
-async def observe_async(operation: str, run: Callable[[], object]):
-    """Outer monotonic fetch/read timer, including auth and backend await.
-
-    A cancellation or error is re-raised unchanged. No result payload is read.
-    """
-    if operation not in ("fetch", "search"):
-        raise ValueError("fixed observed operation required")
-    started = time.monotonic()
-    status = "error"
-    trace = uuid4().hex
+def import_metadata(*, ingestion_id=None, source_id=None, operation_key=None, **fields):
+    """Request-local metadata only; never retain payloads or authority objects."""
     try:
-        result = await run()
-        status = "returned"
+        record = _import_call.get()
+        if record is None: return
+        if type(ingestion_id) is str:
+            record['ingestion_ref']=hashlib.sha256(ingestion_id.encode()).hexdigest()
+        if type(source_id) is str and len(source_id)==36:
+            record['source_ref']=hashlib.sha256(source_id.encode()).hexdigest()
+        if type(operation_key) is str:
+            record['operation_ref']=hashlib.sha256(operation_key.encode()).hexdigest()
+        record.update({k:v for k,v in fields.items()
+            if k in _IMPORT_NUMBERS and type(v) is int and 0 <= v < 2**63
+            or k in _IMPORT_ENUMS and type(v) is str and v in _IMPORT_ENUMS[k]
+            or k=='has_more' and type(v) is bool
+            or k=='physical_page_indices' and type(v) is list and 1<=len(v)<=4 and all(type(i) is int and 0<=i<2500 for i in v)})
+    except Exception: pass
+
+
+def emit_import_event(*, ingestion_id=None, source_id=None, operation_key=None, **fields):
+    """Use the same hashed identities at intake, apply and remote durability."""
+    try:
+        record={k:v for k,v in (_import_call.get() or {}).items()
+            if k in ('trace_id','ingestion_ref','source_ref','tool','command')}
+        record.update(fields)
+        record['event_time_unix_ms']=int(time.time()*1000)
+        if type(ingestion_id) is str:
+            record['ingestion_ref']=hashlib.sha256(ingestion_id.encode()).hexdigest()
+        if type(source_id) is str and len(source_id)==36:
+            record['source_ref']=hashlib.sha256(source_id.encode()).hexdigest()
+        if type(operation_key) is str:
+            record['operation_ref']=hashlib.sha256(operation_key.encode()).hexdigest()
+        return emit_product_event(record)
+    except Exception:
+        return False
+
+
+async def observe_async(operation: str, run: Callable[[], object], *, arguments=None):
+    """SDK dispatch through output binding, not HTTP delivery or model time."""
+    if operation not in ('fetch','search','book_ingest','book_pages'):
+        raise ValueError('fixed observed operation required')
+    if os.getenv('RKB_PRODUCT_LOG_MODE') == 'off': return await run()
+    event=('fetch.terminal' if operation=='fetch' and not (isinstance(arguments,dict) and arguments.get('source_id'))
+        else 'read.terminal' if operation=='search' else 'import.call')
+    record={'event':event,'phase':'total','status':'error',
+            'tool':operation,'trace_id':uuid4().hex,'call_started_unix_ms':int(time.time()*1000)}
+    token=_import_call.set(record)
+    started=time.monotonic()
+    try:
+        if isinstance(arguments,dict):
+            import_metadata(ingestion_id=arguments.get('ingestion_id'),source_id=arguments.get('source_id'),
+                command=arguments.get('command'),physical_page_index=arguments.get('page_start'),
+                physical_page_end=arguments.get('page_end'))
+        result=await run()
+        record['status']='returned'
+        if getattr(result,'is_error',False) or getattr(result,'isError',False): record['status']='error'
         return result
     except asyncio.CancelledError:
-        status = "cancelled"
+        record['status']='cancelled'
+        raise
+    except Exception as error:
+        # Read only fixed classifications from the already-normalized envelope.
+        # Exception text/input, validation details and arbitrary reasons stay out.
+        try:
+            from mcp.server.mcpserver.exceptions import ToolError
+            if isinstance(error,ToolError):
+                text=str(error)
+                if len(text)<=1024 and '{' in text:
+                    value=json.loads(text[text.index('{'):text.rindex('}')+1])
+                    import_metadata(result_status=value.get('status'),error_class=value.get('error_class'))
+        except Exception: pass
         raise
     finally:
-        emit_product_event({"event": "fetch.terminal" if operation == "fetch" else "read.terminal",
-                            "phase": "total", "status": status,
-                            "trace_id": trace,
-                            "duration_ms": (time.monotonic() - started) * 1000})
+        record['duration_ms']=(time.monotonic()-started)*1000
+        record['event_time_unix_ms']=int(time.time()*1000)
+        try: emit_product_event(record)
+        except Exception: pass
+        finally: _import_call.reset(token)

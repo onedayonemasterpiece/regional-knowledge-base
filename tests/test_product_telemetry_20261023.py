@@ -79,17 +79,19 @@ async def test_blocked_sink_and_full_queue_never_hold_result():
     await asyncio.wait_for(asyncio.to_thread(telemetry_sink._queue.join), 1)
 
 
-def test_enospc_and_sink_exceptions_stop_retrying_without_deleting_events():
+def test_enospc_and_sink_exceptions_stop_retrying_without_deleting_events(caplog):
     calls = []
 
     def enospc(record):
         calls.append(record)
-        raise OSError(errno.ENOSPC, "full")
+        raise OSError(errno.ENOSPC, "PRIVATE_SINK_DETAIL")
 
     sink = telemetry.ProductTelemetry(sink=enospc)
     assert sink.try_emit(event())
     sink._queue.join()
     assert sink.failed == 1 and sink.counters()["sink_disabled"] is True
+    assert 'product_telemetry_sink state=disabled' in caplog.text
+    assert 'PRIVATE_SINK_DETAIL' not in caplog.text
     assert not sink.try_emit(event(trace_id="b"*32))
     assert sink.dropped == 1 and len(calls) == 1
     assert sink.counters()["emitted"] == 1
@@ -244,3 +246,88 @@ def test_held_product_telemetry_does_not_construct_a_sink(monkeypatch):
         raise AssertionError('HOLD must not start a logger thread or create files')
     monkeypatch.setattr(telemetry,'get_product_telemetry',forbidden)
     assert not telemetry.emit_product_event({'event':'import.phase','phase':'stage','status':'applied'})
+
+
+@pytest.mark.asyncio
+async def test_import_call_links_components_without_serializing_payload(monkeypatch):
+    import hashlib
+    records=[];sink=telemetry.ProductTelemetry(sink=records.append)
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE','standard')
+    monkeypatch.setattr(telemetry,'_instance',sink)
+    ingestion='00000000-0000-4000-8000-000000000001'
+    key='synthetic-immutable-operation'
+    original={'private_source':'DO_NOT_LOG_BOOK_OR_URL'}
+    async def run():
+        telemetry.import_metadata(operation_key=key,page_count=1,image_bytes=150000,
+            next_action='wait',result_state='processing',source_text=original['private_source'])
+        telemetry.emit_import_event(ingestion_id=ingestion,operation_key=key,
+            event='import.phase',phase='text',status='applied',command_sequence=7)
+        return original
+    result=await telemetry.observe_async('book_ingest',run,
+        arguments={'command':'stage','ingestion_id':ingestion,'pages':[original]})
+    assert result is original and telemetry._import_call.get() is None
+    telemetry.emit_import_event(operation_key=key,event='command.phase',phase='saved',status='saved',command_sequence=7)
+    sink._queue.join()
+    applied,total,saved=records
+    assert applied['trace_id']==total['trace_id'] and 'trace_id' not in saved
+    assert applied['ingestion_ref']==total['ingestion_ref']==hashlib.sha256(ingestion.encode()).hexdigest()
+    assert len({r['operation_ref'] for r in records})==1
+    assert total['next_action']=='wait' and total['result_state']=='processing'
+    assert total['image_bytes']==150000 and total['page_count']==1
+    assert total['call_started_unix_ms']<=total['event_time_unix_ms']
+    assert 'duration_ms' not in saved and total['duration_ms']>=0
+    wire=json.dumps(records)
+    assert all(secret not in wire for secret in (ingestion,key,original['private_source'],'source_text'))
+
+
+@pytest.mark.asyncio
+async def test_import_scope_failure_cancellation_and_broken_observer_are_disposable(monkeypatch):
+    def broken(*args,**kwargs):raise RuntimeError('private sink exception')
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE','standard')
+    monkeypatch.setattr(telemetry,'emit_product_event',broken)
+    original=object()
+    async def success():return original
+    assert await telemetry.observe_async('book_pages',success) is original
+    error=RuntimeError('private domain exception')
+    async def failure():raise error
+    with pytest.raises(RuntimeError) as caught:
+        await telemetry.observe_async('book_ingest',failure)
+    assert caught.value is error
+    async def cancelled():raise asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await telemetry.observe_async('book_pages',cancelled)
+    assert telemetry._import_call.get() is None
+
+
+def test_import_metadata_whitelist_rejects_arbitrary_values():
+    clean=telemetry._clean(dict(event(event='import.terminal'),next_action='PRIVATE_INPUT',
+        ingestion_ref='RAW_INGESTION_ID',page_count=True,packet_bytes=-1,
+        image_bytes=123,component='semantic',query='PRIVATE_QUERY'),'standard')
+    assert clean['image_bytes']==123 and clean['component']=='semantic'
+    assert 'PRIVATE' not in json.dumps(clean) and 'RAW_INGESTION' not in json.dumps(clean)
+    assert 'page_count' not in clean and 'packet_bytes' not in clean
+
+
+@pytest.mark.asyncio
+async def test_concurrent_import_calls_keep_their_own_trace_and_ingestion(monkeypatch):
+    records=[];sink=telemetry.ProductTelemetry(sink=records.append)
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE','standard')
+    monkeypatch.setattr(telemetry,'_instance',sink)
+    ready=asyncio.Event();entered=0
+    async def call(number):
+        async def run():
+            nonlocal entered
+            entered+=1
+            if entered==2:ready.set()
+            await ready.wait()
+            telemetry.emit_import_event(event='import.phase',phase='pages',status='returned')
+            return number
+        return await telemetry.observe_async('book_pages',run,arguments={'ingestion_id':str(number)})
+    assert await asyncio.gather(call(1),call(2))==[1,2]
+    sink._queue.join()
+    groups={r['trace_id'] for r in records}
+    assert len(groups)==2
+    for trace in groups:
+        group=[r for r in records if r['trace_id']==trace]
+        assert len(group)==2 and len({r['ingestion_ref'] for r in group})==1
+    assert len({r['ingestion_ref'] for r in records})==2
