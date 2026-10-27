@@ -296,7 +296,10 @@ class OriginalIntakeController:
             receipt=await self.verified(context,ingestion_id)
             if receipt is not None:
                 if row['telegram_locator_json'] is None:
-                    await self._archive_verified_original(context,ingestion_id)
+                    try:await self._archive_verified_original(context,ingestion_id)
+                    except Exception as exc:
+                        _LOG.warning('original_archive state=pending run_id=%s ingestion_id=%s error_class=%s',
+                            binding.run_id,ingestion_id,type(exc).__name__)
                 return OriginalIntakeStatus(ingestion_id,'verified',receipt)
             record=json.loads(row['acquisition_json']) if row['acquisition_json'] else None
             if record is None:

@@ -129,7 +129,8 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
         controller._head=head
         n.transfer.objects[legacy.key]=PDF
         client.sent=None;client.visible=False;client.send_error=False;client.post_send_presence_error=True
-        assert not (await controller.status(e.auth.p.admin,INGEST)).verified
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy
+        assert controller._row(e.auth.p.owner.subject,INGEST)['telegram_locator_json'] is None
         with e.q.connect(write=False) as db:
             restored=json.loads(db.execute('SELECT acquisition_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()[0])
         assert restored['restored_from_receipt_sha256']==legacy.receipt_sha256
@@ -138,7 +139,8 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
         migration_unknown=canonical(n.handler._results[migration_key])
         # Lost native bytes cannot turn an unresolved send into another upload.
         retained=n.handler._records.pop(restored['handle'])
-        assert not (await controller.status(e.auth.p.admin,INGEST)).verified
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy
+        assert controller._row(e.auth.p.owner.subject,INGEST)['telegram_locator_json'] is None
         n.handler._records[restored['handle']]=retained
         client.visible=True
         assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy

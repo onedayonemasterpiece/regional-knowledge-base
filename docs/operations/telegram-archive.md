@@ -30,11 +30,12 @@ the normal flow calls the existing `original_acquire`
 restore phase (S3 GET into Kaggle) and the native `original_archive` phase
 (Telethon send from Kaggle) before writing a sidecar locator. It does not
 download original bytes to Dev. No repair command, script, forged Principal or
-standalone runtime access is required. Provider unavailability remains pending;
-the immutable old receipt is retained. Existing sidecars avoid S3 HEAD checks.
+standalone runtime access is required. Archive failures are logged and leave
+the existing verified original usable; the immutable old receipt is retained.
+Existing sidecars avoid S3 HEAD checks.
 Repeated status calls reuse the restored handle for the same immutable
-receipt. If an unresolved send also loses native bytes, status remains
-unresolved instead of creating a fresh restore/upload attempt. Existing
+receipt. If an unresolved send also loses native bytes, the archive remains
+unresolved without a fresh restore/upload; the verified original stays usable. Existing
 sidecars are reused, so eight locators need not mean eight new documents.
 Uploads preserve the retained original filename (or an original.pdf/.djvu
 fallback) and the native-verified format's MIME, rather than the workspace .source name.
