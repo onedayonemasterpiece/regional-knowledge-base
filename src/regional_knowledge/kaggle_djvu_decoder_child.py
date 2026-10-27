@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import resource
+import runpy
 import sys
 
 
@@ -26,13 +27,13 @@ def main(argv: list[str]) -> None:
     if (not os.path.isabs(loader) or Path(loader).name!='ld-linux-x86-64.so.2'
             or not os.path.isabs(executable) or Path(executable).name!='ddjvu'
             or not os.path.isabs(original) or not 0<=index<2500
-            or edge not in (1600,1280) or not 1<=len(libdirs)<=6
+            or not 1<=edge<=runpy.run_path(str(Path(__file__).with_name('kaggle_original_parser.py')))['MODEL_PAGE_MAX_EDGE'] or not 1<=len(libdirs)<=6
             or any(not os.path.isabs(p) or '..' in Path(p).parts for p in libdirs)):
         raise SystemExit(2)
     # Soft and hard ceilings survive execve: the native decoder cannot bypass
     # the trusted parent simply by allocating or forking. Never allow core dumps
     # or writing temporary output files beyond the selected pipe.
-    resource.setrlimit(resource.RLIMIT_CPU,(16,16))
+    resource.setrlimit(resource.RLIMIT_CPU,(30,30))
     resource.setrlimit(resource.RLIMIT_AS,(2*1024**3,2*1024**3))
     resource.setrlimit(resource.RLIMIT_FSIZE,(16*1024**2,16*1024**2))
     resource.setrlimit(resource.RLIMIT_NOFILE,(64,64))

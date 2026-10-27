@@ -23,6 +23,7 @@ from .contracts import (BookIngestOutput, KnowledgeExtractionStatus, Principal,
     StageChunkInput, StagePageInput, StagePoiFactInput, StoryExtractionStatus)
 from .kaggle_apply import Revisions
 from .kaggle_import_contracts import PublicImportRights, SourceResearchInput, TargetSourceImportInput
+from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
 from .kaggle_import_output import OwnerImportOutputGate
 from .kaggle_import_tokenizer import HfImportTokenCounter
 from .kaggle_public_backend import current_binding, TargetUnavailable
@@ -913,7 +914,7 @@ class KaggleSourceImporter:
             if await self._receipt(access, row) is None:
                 raise failure('verified_original_pending')
             batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1)
-            if len(batch.pages) != 1 or sum(len(page.data) for page in batch.pages) > 256 * 1024:
+            if len(batch.pages) != 1 or sum(len(page.data) for page in batch.pages) > MODEL_PAGE_BYTE_LIMIT:
                 raise failure('bounded_original_page_output_required')
             for page in batch.pages:
                 if (not 0 <= page.physical_page_index < MAX_PAGES

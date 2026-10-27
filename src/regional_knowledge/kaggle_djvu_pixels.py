@@ -17,16 +17,17 @@ import sys
 import time
 
 from .kaggle_djvu_inspect import DjvuInventory
+from .kaggle_original_parser import MODEL_PAGE_MAX_EDGE,MODEL_PAGE_EDGES,MODEL_PAGE_QUALITIES,MODEL_PAGE_BYTE_LIMIT
 from .kaggle_native_bundle import VerifiedNativeBundle
 from .kaggle_native_env import verified_native_environment
 from .native_snapshot_transfer import _blocking
 
 PRIVATE_ROOT = Path('/kaggle/temp')
 MAX_ORIGINAL_BYTES = 128 * 1024 * 1024
-MAX_RENDER_EDGE = 1600
-MAX_RENDER_PIXELS = 2_560_000
-MAX_PPM_BYTES = 8 * 1024 * 1024 + 1024
-MAX_JPEG_BYTES = 256 * 1024
+MAX_RENDER_EDGE = MODEL_PAGE_MAX_EDGE
+MAX_RENDER_PIXELS = MAX_RENDER_EDGE**2
+MAX_PPM_BYTES = MAX_RENDER_PIXELS * 3 + 1024
+MAX_JPEG_BYTES = MODEL_PAGE_BYTE_LIMIT
 
 
 class DjvuPixelsUnavailable(ValueError):
@@ -131,7 +132,7 @@ async def _decode_single(binary: str, loader: str, library_path: str,
                     stderr=asyncio.subprocess.DEVNULL,env=environment)
         fragments=[]
         used=0
-        async with asyncio.timeout(25):
+        async with asyncio.timeout(45):
             while part:=await proc.stdout.read(65536):
                 used+=len(part)
                 if used>MAX_PPM_BYTES:
@@ -171,7 +172,7 @@ def _jpeg(rgb: bytes, width: int, height: int):
     # Pillow, OCR/model or additional media uploader is required.
     import pymupdf
     image=pymupdf.Pixmap(pymupdf.csRGB,width,height,rgb,False)
-    for quality in (82,70,55):
+    for quality in MODEL_PAGE_QUALITIES:
         blob=image.tobytes('jpeg',jpg_quality=quality)
         if 1<=len(blob)<=MAX_JPEG_BYTES:
             return blob,quality
@@ -209,7 +210,7 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
     print(json.dumps(dict(event='djvu_preview_boundary',stage='decoder_verified',page_index=index,
         elapsed_ms=round((time.monotonic()-began)*1000,3))),flush=True)
     output=None
-    for edge in (1600,1280):
+    for edge in dict.fromkeys(min(max(inventory.pages[index].width,inventory.pages[index].height),cap) for cap in MODEL_PAGE_EDGES):
         raw=await _decode_single(binary,loader,library_path,env,path,index,edge)
         width,height,rgb=_read_ppm(raw,edge=edge)
         try:
@@ -229,9 +230,9 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
         raise DjvuPixelsUnavailable('djvu_source_or_decoder_changed')
     jpeg,quality,edge,width,height=output
     page=inventory.pages[index]
-    render=dict(policy='rkb.djvu-preview.v1',width=width,height=height,
+    render=dict(policy='rkb.model-page.v2',width=width,height=height,
         scale=min(width/page.width,height/page.height),
-        max_edge=edge,jpeg_quality=quality,byte_limit=MAX_JPEG_BYTES,
+        max_edge=edge,jpeg_quality=quality,byte_limit=MAX_JPEG_BYTES,image_bytes=len(jpeg),
         preview_only=True)
     return dict(format='djvu',page_count=inventory.page_count,physical_page_index=index,
         width=page.width,height=page.height,

@@ -9,6 +9,7 @@ import time
 from uuid import UUID,uuid5
 
 from .backend import RenderedPage,RenderedPageBatch
+from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
 from .contracts import ChatFile
 from .telegram_original import TelegramOriginalLocator
 from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
@@ -145,7 +146,7 @@ class OriginalIntakeController:
         key='originals/v1/'+digest(self.spool.journal.stream.encode())+'/'+record['spec']['source_id']+'/'+sha256
         if page is not None:
             args['page_index']=page['physical_page_index'];sha256,size=page['image_sha256'],page['image_size']
-            if type(size) is not int or not 1<=size<=256*1024:raise OriginalIntakeRejected('original_render_byte_bound')
+            if type(size) is not int or not 1<=size<=MODEL_PAGE_BYTE_LIMIT:raise OriginalIntakeRejected('original_render_byte_bound')
             key+='/pages/'+str(args['page_index'])+'/'+sha256
         # HEAD resolves a lost PUT ACK before issuing another conditional PUT.
         version=await self._head(key,size)
@@ -330,7 +331,7 @@ class OriginalIntakeController:
             result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
             body=result['Body']
             try:
-                if result.get('ContentLength')!=page['image_size'] or page['image_size']>256*1024:
+                if result.get('ContentLength')!=page['image_size'] or page['image_size']>MODEL_PAGE_BYTE_LIMIT:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 data=body.read(page['image_size']+1)
                 if len(data)!=page['image_size']:

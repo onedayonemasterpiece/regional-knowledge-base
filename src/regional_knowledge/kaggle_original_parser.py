@@ -12,6 +12,11 @@ import sys
 def _json(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
 def _hash(value):return hashlib.sha256(value).hexdigest()
 
+MODEL_PAGE_MAX_EDGE=3200
+MODEL_PAGE_EDGES=(MODEL_PAGE_MAX_EDGE,2400,1600)
+MODEL_PAGE_QUALITIES=(85,80,70,55)
+MODEL_PAGE_BYTE_LIMIT=8*1024*1024
+
 
 def parse(path,action,index=0,*,cursor=None):
     # Inspect the actual file signature, not extension or caller-provided MIME.
@@ -79,15 +84,16 @@ def parse(path,action,index=0,*,cursor=None):
                 requires_visual_review=True,encoding_notice='cid_font_without_unicode_map' if missing else None,
                 block_count=len(blocks),blocks_truncated=position<len(blocks)),native_blocks=segments)
         if action=='page':
-            pixmap=None;last_edge=None
-            for edge,quality in ((1600,82),(1600,70),(1600,55),(1280,70),(1280,55)):
-                scale=min(2.,edge/max(width,height))
-                if last_edge!=edge:pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False);last_edge=edge
-                image=pixmap.tobytes('jpeg',jpg_quality=quality)
-                if len(image)<=256*1024:break
+            for edge in MODEL_PAGE_EDGES:
+                scale=edge/max(width,height)
+                pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+                for quality in MODEL_PAGE_QUALITIES:
+                    image=pixmap.tobytes('jpeg',jpg_quality=quality)
+                    if 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:break
+                if 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:break
             else:raise ValueError('original_render_byte_bound')
-            render=dict(policy='rkb.pdf-preview.v1',width=pixmap.width,height=pixmap.height,scale=scale,
-                max_edge=edge,jpeg_quality=quality,byte_limit=256*1024,preview_only=True)
+            render=dict(policy='rkb.model-page.v2',width=pixmap.width,height=pixmap.height,scale=scale,
+                max_edge=edge,jpeg_quality=quality,byte_limit=MODEL_PAGE_BYTE_LIMIT,image_bytes=len(image),preview_only=True)
             value['preview_render']=render;value['native_text_info']['preview_render']=render
             value.update(image_b64=base64.b64encode(image).decode(),image_sha256=_hash(image))
         return value
