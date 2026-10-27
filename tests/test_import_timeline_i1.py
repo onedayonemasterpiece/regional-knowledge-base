@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 
 from regional_knowledge import product_telemetry as telemetry
-from test_source_stage import INGESTION, batch
+from regional_knowledge.source_stage import ZERO_HASH, canonical, digest, validate_stage_payload
+from test_source_stage import INGESTION, SOURCE, batch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'import_timeline.py'
@@ -20,6 +21,7 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
                                        disk_limit_bytes=32 * 1024 * 1024)
     base = 1_800_000_000_000
     all_emitted = []
+    previous = ZERO_HASH
 
     def emit(event, phase, status, at, **fields):
         record = {'event': event, 'phase': phase, 'status': status,
@@ -33,7 +35,9 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
     # Each stage is the EXISTING validated synthetic native packet shape,
     # with one model-reviewed physical page and a separate batch index.
     for number in (0, 1):
-        source = batch(index=number, start=number, count=1)
+        source = batch(index=number, previous=previous, start=number, count=1)
+        assert validate_stage_payload(canonical(source), source_id=SOURCE) == source
+        previous = digest(canonical(source))
         payload = source['model_payload']
         page = payload['pages'][0]['physical_page_index']
         assert page == number and payload['chunks']
