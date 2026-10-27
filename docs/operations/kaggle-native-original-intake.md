@@ -106,8 +106,11 @@ The former 1600/1280 px and 256 KiB ceiling was a 2026-10-20 pilot transport
 limit, not a product requirement. Actual width, height, scale, quality, JPEG
 bytes and byte limit appear in `preview_render` and `native_text_info`;
 `preview_only` still means a model-reading derivative, not archival source proof.
-Already issued page receipts are immutable; changed rerenders fail closed rather
-than silently replacing their original bytes. Original physical page dimensions
+Already issued page receipts are immutable. After native/runtime replacement,
+controller resolves the previous JPEG by its original/issued SHA256 under the
+same content-addressed page archive and bound HEAD/conditional GET; its byte
+hash, preview geometry and page proof must match the earlier issuance. A newly
+unissued page uses the new policy. Missing or changed archive bytes fail closed. Original physical page dimensions
 remain separate. Original PDF bytes and complete native text are not reduced by this
 preview policy. The parser child
 has fixed code, a 30-second CPU budget, 60-second wall budget, 2-GiB address-space

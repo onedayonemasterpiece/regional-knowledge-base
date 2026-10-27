@@ -164,10 +164,24 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
         # Drop only ephemeral native capabilities. The verified object and exact
         # logical source receipt remain durable; recovery must GET, never PUT.
         n.handler._records.clear();controller._page_proofs.clear();controller._page_chunks.clear()
+        # Simulate a new runtime's upgraded encoder after the original JPEG
+        # and issuance receipt were already durably archived.
+        previous_parser=n.handler.parser
+        async def upgraded_parser(path,action,index=0,*,cursor=None):
+            result=await previous_parser(path,action,index,cursor=cursor)
+            if action=='page':
+                import base64
+                changed=b'new-high-resolution-render-different-from-issued-image'
+                result.update(image_b64=base64.b64encode(changed).decode(),image_sha256=digest(changed),
+                    preview_render=dict(policy='rkb.model-page.v2',width=1600,height=3200,scale=2,
+                        jpeg_quality=85,byte_limit=8*1024*1024,image_bytes=len(changed),preview_only=True))
+            return result
+        n.handler.parser=upgraded_parser
         upload_count=len(uploads);download_count=n.download.calls
         await controller._restore_handle(e.auth.p.admin,e.auth.p.owner.subject,binding,status.receipt,json.loads(old_handle))
         recovered=await controller.pages(e.auth.p.admin,INGEST)
         assert recovered.pages[0].data==IMAGE
+        assert recovered.pages[0].native_text_info['source_image_receipt_sha256']==image_ref
         assert len(uploads)==upload_count and n.download.calls==download_count
         assert (await controller.verified(e.auth.p.admin,INGEST)).receipt_sha256==first_original
         assert (await controller.native_pages(e.auth.p.admin,INGEST)).sha256==first_proof

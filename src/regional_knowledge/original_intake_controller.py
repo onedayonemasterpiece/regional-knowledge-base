@@ -121,11 +121,12 @@ class OriginalIntakeController:
             except Exception as exc:
                 if _missing(exc):return None
                 raise OriginalIntakeError('original_storage_head_unknown') from None
-            etag=result.get('ETag')
-            if result.get('ContentLength')!=size or type(etag) is not str or not 1<=len(etag)<=512:
+            etag=result.get('ETag');length=result.get('ContentLength')
+            if (type(length) is not int or (length!=size if size is not None else not 1<=length<=MODEL_PAGE_BYTE_LIMIT)
+                    or type(etag) is not str or not 1<=len(etag)<=512):
                 raise OriginalIntakeError('original_storage_receipt_unverified')
             if version is not None and etag!=version:raise OriginalIntakeError('original_storage_version_changed')
-            return etag
+            return (etag,length) if size is None else etag
         return await _blocking(read)
 
     async def _ticket(self,binding,operation,method,key,size,sha256,version=None):
@@ -325,7 +326,22 @@ class OriginalIntakeController:
             if str(exc)!='original_retained_bytes_unavailable':raise
             record=await restore(record)
             page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']))
-        native=await self._archive(binding,record,page=page)
+        with self.queue.connect(write=False) as db:
+            old=db.execute('SELECT receipt_json FROM rkb_original_image_issuance WHERE ingestion_id=? AND physical_page_index=?',
+                (record['spec']['ingestion_id'],index)).fetchone()
+        prior=json.loads(old['receipt_json']) if old else None
+        if prior is None:native=await self._archive(binding,record,page=page)
+        else:
+            # Re-rendered metadata is not permission to replace an issued image.
+            if any(prior.get(k)!=page.get(k) for k in ('page_id','original_sha256','parser_sha256','width','height')):
+                raise OriginalIntakeError('original_issued_image_changed')
+            key='originals/v1/'+digest(self.spool.journal.stream.encode())+'/'+record['spec']['source_id']+'/'+record['sha256']+'/pages/'+str(index)+'/'+prior['image_sha256']
+            observed=await self._head(key,None)
+            if observed is None:raise OriginalIntakeError('original_render_storage_invalid')
+            version,length=observed;native=dict(key=key,native_version=version)
+            page.update(image_size=length,image_sha256=prior['image_sha256'],preview_render=prior['preview_render'])
+            page['native_text_info']['preview_render']=prior['preview_render']
+            page['page_receipt_sha256']=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))
         started=time.monotonic()
         def derivative():
             result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
@@ -334,7 +350,7 @@ class OriginalIntakeController:
                 if result.get('ContentLength')!=page['image_size'] or page['image_size']>MODEL_PAGE_BYTE_LIMIT:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 data=body.read(page['image_size']+1)
-                if len(data)!=page['image_size']:
+                if len(data)!=page['image_size'] or digest(data)!=page['image_sha256']:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 return data
             finally:body.close()
