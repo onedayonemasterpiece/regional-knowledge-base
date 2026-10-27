@@ -11,7 +11,7 @@ from uuid import UUID, uuid5
 
 
 class SourceUnitBoundaryError(ValueError):
-    """Conflicting accepted unit boundaries: never infer a repair."""
+    """Invalid accepted page projection or resolver request."""
 
 
 def resolve_source_units(
@@ -41,6 +41,7 @@ def resolve_source_units(
     regions = []
     seen_pages = set()
     events = []
+    invalid = set()
     for page in sorted(pages, key=lambda p: p["physical_page_index"]):
         number = page["physical_page_index"]
         page_id = page["page_id"]
@@ -77,11 +78,13 @@ def resolve_source_units(
                     or not 0 <= offset <= item["source_length"]
                     or action not in ("start", "end")
                     or (action == "start" and offset == item["source_length"])):
-                raise SourceUnitBoundaryError("unit anchor outside original source region")
+                invalid.add(marker["article_id"])
+                continue
             position = (number, item["reading_order"], offset)
             within_page = (item["reading_order"], offset, 0 if action == "end" else 1)
             if within_page < prior:
-                raise SourceUnitBoundaryError("model unit anchors out of reading order")
+                invalid.add(marker["article_id"])
+                continue
             prior = within_page
             events.append((position, dict(item, offset=offset), marker))
 
@@ -93,17 +96,20 @@ def resolve_source_units(
     # The stable start ordinal is unchanged: source reading order, then ID
     # for different unit kinds beginning at one exact coordinate.
     started, opened, open_by_kind, ended, next_boundary_ends = {}, {}, {}, {}, set()
+    last_start = None
     for position, anchor, marker in events:
         ident = marker["article_id"]  # Reuse the existing StageChunkInput.article_id.
         if marker["action"] == "start":
+            last_start = ident
             if ident in started:
-                raise SourceUnitBoundaryError("duplicate source article identity")
+                invalid.add(ident)
+                continue
             # At most one open unit per kind: a confirmed next same-kind start
             # closes the prior one. Nested units of another kind stay open.
             previous = open_by_kind.get(marker["kind"])
             if previous is not None:
                 if position <= opened[previous]:
-                    raise SourceUnitBoundaryError("overlapping same-kind starts")
+                    invalid.update((previous, ident))
                 ended[previous] = (position, anchor)
                 next_boundary_ends.add(previous)
                 del opened[previous]
@@ -111,8 +117,15 @@ def resolve_source_units(
             opened[ident] = position
             open_by_kind[marker["kind"]] = ident
         else:
-            if ident not in opened or position <= opened[ident]:
-                raise SourceUnitBoundaryError("unmatched or reversed source unit end")
+            if ident not in opened:
+                if ident in ended and last_start == ident and position > ended[ident][0]:
+                    ended[ident] = (position, anchor)
+                else:
+                    invalid.add(ident)
+                continue
+            if position <= opened[ident]:
+                invalid.add(ident)
+                continue
             ended[ident] = (position, anchor)
             del opened[ident]
             del open_by_kind[started[ident][2]["kind"]]
@@ -138,7 +151,7 @@ def resolve_source_units(
             close_reason = "verified_eof"
         stop_pos, stop = finish if finish is not None else (None, None)
         pages_complete = False
-        if stop_pos is not None:
+        if stop_pos is not None and ident not in invalid:
             missing = bisect_left(missing_pages, start_pos[0])
             pages_complete = (missing == len(missing_pages) or missing_pages[missing] > stop_pos[0])
 
