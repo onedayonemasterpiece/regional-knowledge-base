@@ -83,15 +83,13 @@ def parse(path,action,index=0,*,cursor=None):
                 block_count=len(blocks),blocks_truncated=position<len(blocks)),native_blocks=segments)
         if action=='page':
             for edge in MODEL_PAGE_EDGES:
-                scale=edge/max(width,height)
-                pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
+                scale=edge/max(width,height);pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
                 for quality in MODEL_PAGE_QUALITIES:
                     image=pixmap.tobytes('jpeg',jpg_quality=quality)
                     if 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:break
                 if 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:break
             else:raise ValueError('original_render_byte_bound')
-            render=dict(policy='rkb.model-page.v2',width=pixmap.width,height=pixmap.height,scale=scale,
-                max_edge=edge,jpeg_quality=quality,byte_limit=MODEL_PAGE_BYTE_LIMIT,image_bytes=len(image),preview_only=True)
+            render=dict(policy='rkb.model-page.v2',width=pixmap.width,height=pixmap.height,scale=scale,max_edge=edge,jpeg_quality=quality,byte_limit=MODEL_PAGE_BYTE_LIMIT,image_bytes=len(image),preview_only=True)
             value['preview_render']=render;value['native_text_info']['preview_render']=render
             value.update(image_b64=base64.b64encode(image).decode(),image_sha256=_hash(image))
         return value
