@@ -160,7 +160,7 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     importer = object.__new__(KaggleSourceImporter)
     @asynccontextmanager
     async def access(principal):
-        yield SimpleNamespace(authority=SimpleNamespace(person_id="fixture"), context="fixture")
+        yield SimpleNamespace(authority=SimpleNamespace(person_id="fixture"), context="fixture", binding=object())
     importer._access = access
     importer._row = lambda person_id, ingestion_id: dict(ingestion_id=INGEST, source_id=SOURCE)
     async def verified(access_value, row):
