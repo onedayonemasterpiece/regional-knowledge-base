@@ -238,17 +238,36 @@ def test_closed_unit_pagination_is_bounded_and_reuses_stable_source_ordinals():
     assert all(u["source_span_count"]==1 for u in first+second)
 
 
-def test_conflicting_cross_page_duplicate_ids_and_reversed_closures_fail_closed():
+def test_conflicting_cross_page_duplicate_ids_isolate_affected_unit():
     start=reviewed(0,[("a","body","Start.")],
         [event("x","start","a",0,kind="article",title="X")])
     duplicate=reviewed(1,[("a","body","Again.")],
         [event("x","start","a",0,kind="article",title="X")])
     orphan=reviewed(1,[("a","body","End.")],
         [event("unknown","end","a",2)])
-    for other in (duplicate,orphan):
-        with pytest.raises(SourceUnitBoundaryError):
-            resolve_source_units([projection(start),projection(other)],
-                source_id=SOURCE,page_count=2,read_complete=True)
+    for other,expected in ((duplicate,'unit_not_ready'),(orphan,'complete')):
+        units=resolve_source_units([projection(start),projection(other)],
+            source_id=SOURCE,page_count=2,read_complete=True)
+        assert len(units)==1 and units[0]['state']==expected
+
+
+def test_goetz_later_end_continues_until_last_end_and_other_conflict_is_isolated():
+    pages=[reviewed(0,[("a","body","Goetz begins.")],[
+        event("goetz","start","a",0,kind="article",title="Goetz"),
+        event("goetz","end","a",13)]),
+        reviewed(1,[("tail","body","Continuation."),("bad","body","Bad."),("good","body","Good.")],[
+            event("goetz","end","tail",13),
+            event("bad","start","bad",0,kind="article",title="Bad"),event("bad","end","bad",4),
+            event("good","start","good",0,kind="article",title="Good"),event("good","end","good",5)]),
+        reviewed(2,[("tail","body","Conflicting end.")],[event("bad","end","tail",16)])]
+    before=[p.model_dump(mode="json") for p in pages]
+    goetz,bad,good=resolve_source_units(list(map(projection,pages)),source_id=SOURCE,page_count=3,read_complete=False)
+    assert [u['ordinal'] for u in (goetz,bad,good)]==[1,2,3]
+    assert goetz['state']=='complete' and goetz['end_anchor']['page_id']==str(pages[1].page_id)
+    assert spans_text(goetz,pages)=='Goetz begins.Continuation.'
+    assert bad['state']=='unit_not_ready' and bad['end_anchor'] is None and bad['source_spans']==[]
+    assert good['state']=='complete' and spans_text(good,pages)=='Good.'
+    assert [p.model_dump(mode="json") for p in pages]==before
 
 
 
