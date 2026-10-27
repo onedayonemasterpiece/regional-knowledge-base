@@ -480,6 +480,11 @@ class KaggleSourceBackend:
             began=time.monotonic()
             try:return await awaitable
             finally:controller_stages[name]=(time.monotonic()-began)*1000
+        async def authority_measured(prefix,awaitable):
+            from .read_telemetry import authority_timing
+            token=authority_timing.set((controller_stages,prefix))
+            try:return await awaitable
+            finally:authority_timing.reset(token)
         def terminal(final_status,final_reason):
             values=dict(controller_stages)
             if received_at is not None:
@@ -501,11 +506,13 @@ class KaggleSourceBackend:
                 except (ValueError, TypeError, AttributeError):
                     raise PublicQueryInvalid from None
                 if trusted is None:
-                    authority = await measured('auth_ms',self.read_authority.resolve_oauth(principal.access_token,destination=destination))
+                    authority = await measured('auth_ms',authority_measured('auth',
+                        self.read_authority.resolve_oauth(principal.access_token,destination=destination)))
                 else:
                     if type(authority) is not VerifiedReadAuthority or authority.destination!=destination:
                         raise PermissionError('adapter destination differs')
-                    await measured('auth_ms',self.read_authority.require(authority,'public_search'))
+                    await measured('auth_ms',authority_measured('auth',
+                        self.read_authority.require(authority,'public_search')))
                     await measured('request_activity_ms',
                         asyncio.to_thread(self.worker_queue.record_request_activity))
                 try:
@@ -528,8 +535,9 @@ class KaggleSourceBackend:
                         raise failure('unavailable','target_warming',startup_ref=demand['startup_ref']) from None
                     startup_status=StartupStatus(startup_ref=demand['startup_ref'],
                         status='pending',reason='target_warming',
-                        **await self._startup_wait(demand['startup_ref']))
-                    await self.read_authority.recheck(authority)
+                        **await measured('startup_eta_ms',self._startup_wait(demand['startup_ref'])))
+                    await measured('startup_final_auth_ms',authority_measured('startup_auth',
+                        self.read_authority.recheck(authority)))
                     common=dict(status='pending',reason='target_warming',mode='lexical_degraded',
                         retrieval_mode='lexical_only',main_state='starting',startup=startup_status,
                         read_trace=ReadTrace(**attempt.correlation(),

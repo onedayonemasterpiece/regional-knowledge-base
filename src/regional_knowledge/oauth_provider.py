@@ -695,7 +695,8 @@ class RegionalOAuthProvider(PersonalOAuthMixin, ServiceOAuthMixin):
                                    self.clock(), client_id=row['client_id'], issuer=self.issuer):
                         return None
             return row
-        record = await asyncio.to_thread(self.store.read,verified)
+        from .read_telemetry import authority_thread
+        record = await authority_thread('token',self.store.read,verified)
         if not record:
             return None
         return AccessToken(

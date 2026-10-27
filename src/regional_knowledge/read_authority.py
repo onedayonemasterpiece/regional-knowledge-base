@@ -181,7 +181,8 @@ class ReadAuthority:
             raise ReadAuthorityError('canonical person required') from None
         principal = Principal(subject=actor, client_id=token.client_id, issuer=self.issuer, access_token='')
         route = 'owner' if actor == self.participants.owner else 'personal'
-        current = await asyncio.to_thread(self._state, principal, route, family_ref=family_ref)
+        from .read_telemetry import authority_thread
+        current = await authority_thread('state',self._state, principal, route, family_ref=family_ref)
         return self._retain(person_id=actor, route=route, current=current, destination=destination,
                             expires_at=float(token.expires_at), client_id=token.client_id, family_ref=family_ref)
 
@@ -219,7 +220,8 @@ class ReadAuthority:
                 raise ReadAuthorityError('read context expired or unknown')
             principal = Principal(subject=authority.person_id, client_id=authority.client_id,
                                   issuer=authority.issuer, access_token='')
-            current = await asyncio.to_thread(self._state, principal, authority.route,
+            from .read_telemetry import authority_thread
+            current = await authority_thread('state',self._state, principal, authority.route,
                 authority.link_id, authority.link_revision, authority.oauth_family_ref)
             with self._contexts_lock:
                 retained = self._contexts.get(authority.context_ref) is authority

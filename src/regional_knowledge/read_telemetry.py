@@ -14,12 +14,55 @@ from uuid import uuid4
 from .query_telemetry import ReadAttempt, ReadRuntime
 from hashlib import sha256
 
+# Request-local fixed metadata, copied by asyncio.to_thread. No credentials.
+authority_timing: ContextVar[tuple | None] = ContextVar('rkb_authority_timing',default=None)
+_AUTH_THREAD_FIELDS=frozenset(f'{prefix}_{part}_ms'
+    for prefix in ('auth_token','auth_state','startup_auth_state')
+    for part in ('executor_wait','callback','resume'))
+
 current_trace_id: ContextVar[str | None] = ContextVar("rkb_read_trace", default=None)
 _CONTROLLER_STAGES=frozenset({'auth_ms','binding_ms','startup_demand_ms','dispatch_gate_ms','admission_ms',
-    'dispatch_to_result_ms','finish_gate_ms','result_to_terminal_ms'})
+    'dispatch_to_result_ms','finish_gate_ms','result_to_terminal_ms',
+    'startup_eta_ms','startup_final_auth_ms'}) | _AUTH_THREAD_FIELDS
 _STAGES = frozenset({"database_seconds", "queue_seconds", "encoder_seconds",
                      "hydration_seconds", "search_seconds", "total_seconds",
                      "bge_queue_seconds", "bge_encoder_seconds", "fusion_metadata_seconds"})
+
+
+async def authority_thread(phase, function, /, *args, **kwargs):
+    """Time an existing auth hop; queue/callback/resume are disjoint wall time.
+
+    Cancellation may leave the worker running. Only timestamps observed before
+    return/cancellation are copied into the request's existing stage metadata;
+    late worker completion never mutates a terminal record. Missing is unknown.
+    """
+    context=authority_timing.get()
+    if context is None or phase not in ('token','state'):
+        return await asyncio.to_thread(function,*args,**kwargs)
+    stages,prefix=context
+    name=prefix+'_'+phase
+    if name not in ('auth_token','auth_state','startup_auth_state'):
+        return await asyncio.to_thread(function,*args,**kwargs)
+    submitted=time.monotonic()
+    timestamps=[None,None]
+    def run():
+        timestamps[0]=time.monotonic()
+        try:return function(*args,**kwargs)
+        finally:timestamps[1]=time.monotonic()
+    try:
+        return await asyncio.to_thread(run)
+    finally:
+        try:
+            resumed=time.monotonic()
+            started,finished=timestamps
+            if started is not None and started <= resumed:
+                stages[name+'_executor_wait_ms']=(started-submitted)*1000
+            if (started is not None and finished is not None
+                    and started <= finished <= resumed):
+                stages[name+'_callback_ms']=(finished-started)*1000
+                stages[name+'_resume_ms']=(resumed-finished)*1000
+        except Exception:
+            pass  # Disposable diagnostics cannot replace auth/cancellation.
 
 
 class ReadTelemetry:
