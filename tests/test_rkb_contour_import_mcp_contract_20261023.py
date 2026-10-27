@@ -5,6 +5,7 @@ not a per-book legal questionnaire. Private Case and original grants remain
 separate from the import capability.
 """
 from dataclasses import replace
+from pathlib import Path
 from pydantic import ValidationError
 
 import pytest
@@ -107,7 +108,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
         "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
         "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
-        "6. For next_action=wait, call status; when told to retry stage, resend the identical stage, not a new operation.\n"
+        "6. After stage returns wait, read the next page with book_pages and prepare its packet; call status once right before the next stage. If stage answers prior_write_pending or retry, resend the identical stage after status, not a new operation.\n"
     )
     assert native.instructions.startswith(checklist)
     assert "ONE direct answer" in native.instructions
@@ -433,3 +434,50 @@ async def test_stage_file_transport_and_native_canonical_envelope_have_distinct_
     with pytest.raises(ValueError, match="bounded exact source stage bytes required"):
         validate_stage_payload(b"x" * (MAX_BATCH_BYTES + 1),
                                source_id="00000000-0000-0000-0000-000000000000")
+
+def test_h3_three_dictionary_articles_close_on_next_start_without_manual_ends():
+    """The same source spans/end anchors result with or without redundant ends."""
+    from regional_knowledge.source_units import resolve_source_units
+
+    source_id = "31111111-2222-4333-8444-555555555555"
+    page_id = "41111111-2222-4333-8444-555555555555"
+    text = "Ähre: erste Notiz. Börse: zweite Notiz. Zwinger: dritte Notiz."
+    offsets = (0, text.index("Börse:"), text.index("Zwinger:"))
+    starts = [
+        dict(article_id=key, action="start", region_key="dictionary",
+             offset=offset, kind="article", title=title)
+        for key, offset, title in zip(("a", "b", "c"), offsets, ("Ähre", "Börse", "Zwinger"))
+    ]
+    explicit = [
+        starts[0], dict(article_id="a", action="end", region_key="dictionary",
+                        offset=offsets[1]), starts[1],
+        dict(article_id="b", action="end", region_key="dictionary",
+             offset=offsets[2]), starts[2],
+    ]
+
+    def units(markers):
+        page = dict(page_id=page_id, physical_page_index=0,
+                    regions=[dict(region_key="dictionary", reading_order=0,
+                                  kind="body", source_text=text)],
+                    source_unit_boundaries=markers)
+        return resolve_source_units([page], source_id=source_id,
+                                    page_count=2, read_complete=False)
+
+    implicit, with_ends = units(starts), units(explicit)
+    assert [item["state"] for item in implicit] == [
+        "complete", "complete", "unit_not_ready"]
+    for index, ending in enumerate(offsets[1:]):
+        assert implicit[index]["source_spans"] == with_ends[index]["source_spans"]
+        assert implicit[index]["end_anchor"] == with_ends[index]["end_anchor"]
+        assert implicit[index]["end_anchor"]["offset"] == ending
+        assert [(s["start"], s["end"]) for s in implicit[index]["source_spans"]] == [
+            (offsets[index], ending)]
+    assert implicit[2]["state"] == with_ends[2]["state"] == "unit_not_ready"
+    assert implicit[2]["end_anchor"] is None and implicit[2]["source_spans"] == []
+
+    server_source = (Path(__file__).resolve().parents[1] /
+                     "src/regional_knowledge/server.py").read_text(encoding="utf-8")
+    book_ingest_description = server_source.split("    async def book_ingest(", 1)[0]
+    assert "Use end markers at real next boundaries" not in book_ingest_description
+    assert "A start closes the previous open unit of the same kind" in book_ingest_description
+    assert "read the next page with book_pages" in server_source
