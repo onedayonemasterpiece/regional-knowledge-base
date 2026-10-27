@@ -323,3 +323,187 @@ async def test_large_original_page_releases_chunks_and_keeps_proof():
     assert batch.next_cursor=='1'
     assert controller._page_chunks=={}
     assert 0 in controller._page_proofs[INGEST]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',[
+    'native_error','missing_result','old_success','synthetic_expiry',
+    'missing_terminal','terminal_identity','terminal_provider','terminal_version','terminal_nonce',
+    'conflict','pending_spec','pending_receipt','stale_binding','cas',
+    'empty_identity','object_identity','missing_identity','missing_args','missing_spec','missing_receipt',
+])
+async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,monkeypatch,caplog,case):
+    """Actual queue/native restore and successor dispatch; all bytes are synthetic."""
+    from types import MappingProxyType
+    from regional_knowledge import kaggle_provider_terminal as terminal
+    from regional_knowledge.kaggle_readiness import SearchRuntimeExpectation
+    e,n=owner,native
+    state=SimpleNamespace(run=e.run,token=e.token,generation=e.generation,
+        binding=current_binding(e.q),current=True)
+    current=lambda b:state.current and b==state.binding
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
+        current_binding=lambda:state.binding,allowed_origins=frozenset({'https://archive.invalid'}))
+    def bridge():
+        with e.q.connect(write=False) as db:
+            run=db.execute('SELECT * FROM runs WHERE id=?',(state.run,)).fetchone()
+        value=RecoveryPhaseDispatch(e.q,database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1'),
+            identity=(state.run,run['launch_nonce'],state.binding.runtime_incarnation),binding_current=current)
+        n.handler.identity=value.identity;n.handler.database=value.database
+        n.handler.current=lambda b:current(state.binding) and b==(state.run,state.binding.runtime_incarnation,state.generation)
+        n.handler.attached(state.generation)
+        return value
+    state.bridge=bridge()
+    async def upload(ticket,path,*,operation_key):
+        e.c.objects[ticket.key]=(path.read_bytes(),'native-etag');return 'native-etag'
+    async def download(ticket,path,*,operation_key):
+        path.write_bytes(e.c.objects[ticket.key][0]);return path
+    n.transfer.upload,n.transfer.download=upload,download
+    e.c.generate_presigned_url=lambda *a,**k:'https://archive.invalid/synthetic-ticket'
+    def head(**kw):
+        if kw['Key'] not in e.c.objects:raise BotoFailure('NoSuchKey',404)
+        data,version=e.c.objects[kw['Key']]
+        return dict(ContentLength=len(data),ETag=version)
+    e.c.head_object=head
+    stop=asyncio.Event()
+    async def peer():
+        while not stop.is_set():
+            work=await e.a.next_channel_work(state.run,state.token,state.generation)
+            if work is None:await asyncio.sleep(.001);continue
+            e.a.mark_work_sent(work)
+            f=dict(type='DISPATCH',protocol_version=2,connection_generation=state.generation,
+                **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+            receipt=await n.handler(f)
+            await state.bridge.receive(dict(type='RECOVERY_PHASE_RESULT',job_id=f['id'],claim=f['claim'],receipt=receipt,
+                **{k:f[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')}),
+                run_id=state.run,token=state.token,generation=state.generation)
+            r=work.resource
+            await e.a.resource_released(state.run,state.token,state.generation,runtime_incarnation=r.runtime_incarnation,
+                resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    task=asyncio.create_task(peer())
+    try:
+        status=await controller.begin(e.auth.p.admin,operation_id='restore-fixture',source_id=SOURCE,ingestion_id=INGEST,
+            file=ChatFile(download_url='https://attachment.invalid/private',file_id='fixture',mime_type='application/pdf'),max_bytes=len(PDF))
+        assert status.verified
+        row=controller._row(e.auth.p.owner.subject,INGEST);original=dict(row)
+        old_record=json.loads(row['acquisition_json']);parser=n.handler.parser
+        async def unavailable(*a,**kw):raise OriginalIntakeError('original_parser_unavailable')
+        n.handler._records.clear()
+        if case=='old_success':
+            phase=controller._phase
+            async def lost_success(*a,**kw):
+                await phase(*a,**kw)
+                raise OriginalIntakeError('synthetic_lost_delivery')
+            monkeypatch.setattr(controller,'_phase',lost_success)
+        else:n.handler.parser=unavailable
+        with pytest.raises(OriginalIntakeError,match='synthetic_lost_delivery|original_native_receipt_unavailable'):
+            await controller._restore_handle(e.auth.p.admin,e.auth.p.owner.subject,state.binding,status.receipt,old_record)
+        pending=controller._row(e.auth.p.owner.subject,INGEST)['restore_json'];args=json.loads(pending)['args']
+        operation=digest(canonical(dict(phase='original_acquire',args=args)))
+        with e.q.connect(write=False) as db:
+            old_job=dict(db.execute('SELECT * FROM jobs WHERE actor=? AND idempotency=?',
+                ('maintenance:'+state.run,'recovery:'+operation)).fetchone())
+        value=json.loads(old_job['result'])['value']
+        if case=='old_success':
+            assert value['restored_from_receipt_sha256']==status.receipt.receipt_sha256
+            monkeypatch.setattr(controller,'_phase',phase)
+        else:assert value=={'error':'original_parser_unavailable'}
+        stop.set();await task
+        await state.bridge.aclose();await e.w.retire('writer-1')
+        with e.q.connect(write=False) as db:old_run=dict(db.execute('SELECT * FROM runs WHERE id=?',(state.run,)).fetchone())
+        e.q.clock=lambda:1001.
+        proof=terminal._NativeTerminalProof(MappingProxyType({k:old_run[k] for k in terminal._SNAPSHOT}),
+            1001.,1001.,'COMPLETE',_seal=terminal._OBSERVED)
+        assert e.q.retire_provider_reservation(proof)
+        e.q.clock=lambda:4000.
+        e.q.maintenance();state.run=e.q.request_startup()['run_id']
+        assert state.run!=e.run
+        nonce=e.q.prepare_channel(state.run)
+        expected=SearchRuntimeExpectation({key:'a'*64 for key in ('code','model','launch_config','executed_source','dependency','schema')},'synthetic-db',0)
+        e.q.expect_search_runtime(state.run,expected)
+        state.token=e.q.launch_claim(state.run);e.q.launch_record(state.run,'owner/stable-slug',provider_version=89)
+        state.generation=e.q.attach_channel(state.run,state.token,nonce,'successor-incarnation')['connection_generation']
+        observed=dict(hashes=dict(expected.hashes),database_generation='synthetic-db',schema_version=expected.schema_version,
+            applied_seq=0,projection_seq=0,visibility_epoch=0,text_search_ready=True,dense_search_ready=True,
+            archive_read_ready=None,proof_ready=None)
+        assert e.q.accept_search_runtime(state.run,state.token,state.generation,observed).ok
+        e.q.heartbeat(state.run,state.token,ready=True,connection_generation=state.generation)
+        await e.a.resource_state(state.run,state.token,state.generation,runtime_incarnation='successor-incarnation',state='idle')
+        state.binding=current_binding(e.q)
+        # A successor is a fresh native process, with no old operation cache.
+        old_native=n.handler;workspace=old_native.root.with_name('successor');workspace.mkdir(mode=0o700)
+        await old_native.aclose()
+        n.handler=type(old_native)(config=old_native.config,database=old_native.database,identity=old_native.identity,
+            workspace=workspace,current=lambda _:False,downloader=n.download,parser=parser,transfer=n.transfer)
+        state.bridge=bridge()
+        with e.q.connect() as db:
+            if case=='missing_terminal':db.execute('DELETE FROM bge_provider_terminal_receipts WHERE run_id=?',(e.run,))
+            elif case.startswith('terminal_'):
+                changed=proof.receipt()
+                key={'terminal_identity':'runtime_incarnation','terminal_provider':'provider_ref',
+                    'terminal_version':'provider_version','terminal_nonce':'launch_nonce'}[case]
+                changed['identity'][key]=90 if key=='provider_version' else 'different-identity'
+                db.execute('UPDATE bge_provider_terminal_receipts SET receipt_json=? WHERE run_id=?',(canonical(changed).decode(),e.run))
+            elif case=='conflict':db.execute('UPDATE runs SET attachment_conflict=1 WHERE id=?',(e.run,))
+            elif case=='synthetic_expiry':
+                db.execute('UPDATE jobs SET result=? WHERE id=?',
+                    (canonical({'value':{'error':'run_expired'}}).decode(),old_job['id']))
+            elif case=='missing_result':db.execute('DELETE FROM jobs WHERE id=?',(old_job['id'],))
+            elif case in ('pending_spec','pending_receipt','empty_identity','object_identity',
+                    'missing_identity','missing_args','missing_spec','missing_receipt'):
+                changed=json.loads(pending)
+                if case=='pending_spec':changed['args']['spec']['file_id']='different-original'
+                elif case=='pending_receipt':changed['args']['restore_receipt']['native_version']='different-version'
+                elif case=='empty_identity':changed['identity']=[]
+                elif case=='object_identity':changed['identity']={}
+                elif case=='missing_identity':del changed['identity']
+                elif case=='missing_args':del changed['args']
+                elif case=='missing_spec':del changed['args']['spec']
+                else:del changed['args']['restore_receipt']
+                pending=canonical(changed).decode()
+                db.execute('UPDATE rkb_original_intakes SET restore_json=? WHERE ingestion_id=?',(pending,INGEST))
+        with e.q.connect(write=False) as db:
+            retained=db.execute('SELECT * FROM jobs WHERE id=?',(old_job['id'],)).fetchone()
+            retained=None if retained is None else dict(retained)
+        if case=='stale_binding':state.current=False
+        if case=='cas':
+            head=controller._head
+            async def changed_pending(*a,**kw):
+                result=await head(*a,**kw)
+                with e.q.connect() as db:
+                    other=json.loads(pending);other['args']['restore_nonce']='f'*48
+                    db.execute('UPDATE rkb_original_intakes SET restore_json=? WHERE ingestion_id=?',(canonical(other).decode(),INGEST))
+                return result
+            monkeypatch.setattr(controller,'_head',changed_pending)
+        stop.clear();task=asyncio.create_task(peer())
+        if case not in ('native_error','missing_result','old_success','synthetic_expiry'):
+            with pytest.raises(OriginalIntakeError,match='original_restore_unknown_requires_reconciliation'):
+                await controller._restore_handle(e.auth.p.admin,e.auth.p.owner.subject,state.binding,status.receipt,old_record)
+            with e.q.connect(write=False) as db:
+                assert db.execute('SELECT count(*) FROM jobs WHERE actor=?',('maintenance:'+state.run,)).fetchone()[0]==0
+            latest=controller._row(e.auth.p.owner.subject,INGEST)
+            assert latest['acquisition_json']==original['acquisition_json'] and latest['receipt_json']==original['receipt_json']
+            assert json.loads(latest['restore_json']).get('identity')==json.loads(pending).get('identity')
+            if case!='cas':assert latest['restore_json']==pending
+        else:
+            restored=await controller._restore_handle(e.auth.p.admin,e.auth.p.owner.subject,state.binding,status.receipt,old_record)
+            assert restored['handle']!=old_record['handle']
+            assert (await controller.pages(e.auth.p.admin,INGEST)).pages[0].data==IMAGE
+            latest=controller._row(e.auth.p.owner.subject,INGEST)
+            assert latest['restore_json'] is None and latest['receipt_json']==original['receipt_json']
+            with e.q.connect(write=False) as db:
+                old=db.execute('SELECT * FROM jobs WHERE id=?',(old_job['id'],)).fetchone()
+                assert (None if old is None else dict(old))==retained
+                successor=dict(db.execute('SELECT * FROM jobs WHERE actor=? AND idempotency=?',
+                    ('maintenance:'+state.run,'recovery:'+operation)).fetchone())
+            before,after=json.loads(old_job['identity']),json.loads(successor['identity'])
+            for key in ('arguments','operation_key','request_sha256'):assert before[key]==after[key]
+            assert json.loads(successor['result'])['value']['restored_from_receipt_sha256']==status.receipt.receipt_sha256
+            assert n.download.calls==1  # successor GETs the verified object, never a new attachment.
+        events=[record.getMessage() for record in caplog.records
+            if record.name=='regional_knowledge.original_intake_controller.restore']
+        assert events==([] if case not in ('native_error','missing_result','old_success','synthetic_expiry') else [
+            f'original_restore state=terminal_rebound old_run_id={e.run} run_id={state.run} reason=verified_original_restore'])
+    finally:
+        stop.set();await task;await state.bridge.aclose();spool.close();await n.handler.aclose()

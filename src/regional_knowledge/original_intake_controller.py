@@ -19,6 +19,8 @@ from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOr
 from .recovery_s3 import _blocking,_missing
 
 _LOG=logging.getLogger(__name__)
+_RESTORE_LOG=logging.getLogger(__name__+'.restore')
+_RESTORE_LOG.setLevel(logging.INFO)
 
 
 class OriginalIntakeController:
@@ -392,6 +394,22 @@ class OriginalIntakeController:
                 return
         raise OriginalIntakeError('original_page_continuation_bound')
 
+    @staticmethod
+    def _restore_terminal(db,identity):
+        """Persisted native proof, never a lease expiry or STOP acknowledgement."""
+        from .kaggle_provider_terminal import CONTRACT
+        try:
+            prior,incarnation=identity
+            run=db.execute('SELECT r.*,t.receipt_json FROM runs r JOIN bge_provider_terminal_receipts t '
+                "ON t.run_id=r.id WHERE r.id=? AND r.launch_state='terminal'",(prior,)).fetchone()
+            if run is None:return False
+            proof=json.loads(run['receipt_json']);sealed=proof['identity']
+            return (proof['contract']==CONTRACT and proof['status'] in ('COMPLETE','ERROR','CANCEL_ACKNOWLEDGED')
+                and sealed['id']==prior and sealed['runtime_incarnation']==incarnation==run['runtime_incarnation']
+                and all(sealed[k]==run[k] for k in ('provider_ref','provider_version','launch_nonce'))
+                and not run['attachment_conflict'] and not run['channel_active'])
+        except (TypeError,ValueError,KeyError):return False
+
     async def _restore_handle(self,context,actor,binding,receipt,old_record,*,recheck=None):
         async with self._lock:
             row=self._row(actor,receipt.ingestion_id)
@@ -405,13 +423,33 @@ class OriginalIntakeController:
             # Reconnect may bind a fresh socket generation while the same
             # retained native transfer/result still owns its original claim.
             identity=[binding.run_id,binding.runtime_incarnation]
+            if pending is not None and (type(pending) is not dict
+                    or type(pending.get('identity')) not in (list,tuple) or len(pending['identity'])!=2
+                    or any(type(v) is not str or not v for v in pending['identity']) or type(pending.get('args')) is not dict):
+                raise OriginalIntakeError('original_restore_unknown_requires_reconciliation')
             if pending is None:
                 pending=dict(identity=identity,args=dict(spec=json.loads(row['spec_json']),restore_receipt=receipt.wire(),
                     restore_nonce=secrets.token_hex(24)))
                 with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET restore_json=? WHERE ingestion_id=?',
                     (canonical(pending).decode(),receipt.ingestion_id))
             elif pending['identity']!=identity:
-                raise OriginalIntakeError('original_restore_unknown_requires_reconciliation')
+                prior_run=pending['identity'][0]
+                with self.queue.connect() as db:
+                    if (prior_run==binding.run_id or not self.binding_current(binding)
+                            or not self._restore_terminal(db,pending['identity'])
+                            or canonical(pending['args'].get('spec'))!=canonical(json.loads(row['spec_json']))
+                            or canonical(pending['args'].get('restore_receipt'))!=canonical(receipt.wire())):
+                        raise OriginalIntakeError('original_restore_unknown_requires_reconciliation')
+                    # Restore is a pinned GET/hash/parse into a local handle. Once the old
+                    # execution is terminal, its lost/success/error job outcome is immaterial.
+                    rebound=dict(pending,identity=identity)
+                    changed=db.execute('UPDATE rkb_original_intakes SET restore_json=? '
+                        'WHERE ingestion_id=? AND actor=? AND restore_json=? AND acquisition_json=? AND receipt_json=?',
+                        (canonical(rebound).decode(),receipt.ingestion_id,actor,row['restore_json'],
+                            row['acquisition_json'],row['receipt_json'])).rowcount
+                    if changed!=1:raise OriginalIntakeError('original_restore_unknown_requires_reconciliation')
+                    pending=rebound
+                _RESTORE_LOG.info('original_restore state=terminal_rebound old_run_id=%s run_id=%s reason=verified_original_restore',prior_run,binding.run_id)
             args=pending['args'];operation=digest(canonical(dict(phase='original_acquire',args=args)))
             ticket=await self._ticket(binding,operation,'GET',receipt.key,receipt.size,receipt.sha256,receipt.native_version)
             restored=await self._phase(binding,'original_acquire',args,{'ticket':ticket})
