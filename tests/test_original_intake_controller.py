@@ -332,7 +332,7 @@ async def test_large_original_page_releases_chunks_and_keeps_proof():
     'conflict','pending_spec','pending_receipt','stale_binding','cas',
     'empty_identity','object_identity','missing_identity','missing_args','missing_spec','missing_receipt',
 ])
-async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,monkeypatch,case):
+async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,monkeypatch,caplog,case):
     """Actual queue/native restore and successor dispatch; all bytes are synthetic."""
     from types import MappingProxyType
     from regional_knowledge import kaggle_provider_terminal as terminal
@@ -501,5 +501,9 @@ async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,
             for key in ('arguments','operation_key','request_sha256'):assert before[key]==after[key]
             assert json.loads(successor['result'])['value']['restored_from_receipt_sha256']==status.receipt.receipt_sha256
             assert n.download.calls==1  # successor GETs the verified object, never a new attachment.
+        events=[record.getMessage() for record in caplog.records
+            if record.name=='regional_knowledge.original_intake_controller.restore']
+        assert events==([] if case not in ('native_error','missing_result','old_success','synthetic_expiry') else [
+            f'original_restore state=terminal_rebound old_run_id={e.run} run_id={state.run} reason=verified_original_restore'])
     finally:
         stop.set();await task;await state.bridge.aclose();spool.close();await n.handler.aclose()

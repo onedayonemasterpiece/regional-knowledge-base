@@ -19,6 +19,8 @@ from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOr
 from .recovery_s3 import _blocking,_missing
 
 _LOG=logging.getLogger(__name__)
+_RESTORE_LOG=logging.getLogger(__name__+'.restore')
+_RESTORE_LOG.setLevel(logging.INFO)
 
 
 class OriginalIntakeController:
@@ -447,7 +449,7 @@ class OriginalIntakeController:
                             row['acquisition_json'],row['receipt_json'])).rowcount
                     if changed!=1:raise OriginalIntakeError('original_restore_unknown_requires_reconciliation')
                     pending=rebound
-                _LOG.info('original_restore state=terminal_rebound old_run_id=%s run_id=%s reason=verified_original_restore',prior_run,binding.run_id)
+                _RESTORE_LOG.info('original_restore state=terminal_rebound old_run_id=%s run_id=%s reason=verified_original_restore',prior_run,binding.run_id)
             args=pending['args'];operation=digest(canonical(dict(phase='original_acquire',args=args)))
             ticket=await self._ticket(binding,operation,'GET',receipt.key,receipt.size,receipt.sha256,receipt.native_version)
             restored=await self._phase(binding,'original_acquire',args,{'ticket':ticket})
