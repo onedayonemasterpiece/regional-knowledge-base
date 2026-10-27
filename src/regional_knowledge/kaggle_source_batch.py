@@ -25,8 +25,6 @@ async def materialize_packet(worker, command, *, acquire, database):
     from .kaggle_source_materializer import NativeSourceCompiler, materializer_fingerprint, failure
     d = validate_command(command); source = command.ids['source_id']; idx = d['batch_index']
     part=d['component']
-    if d['materializer_sha256'] != materializer_fingerprint():
-        raise PermissionError('accepted_native_materializer_unavailable')
     worker._current(); started = time.monotonic()
     async with acquire() as connection:
         async with connection.transaction():
@@ -45,6 +43,11 @@ async def materialize_packet(worker, command, *, acquire, database):
                     view=await load_current(connection,raw,source,text_only=part=='text')
                 except (ValueError,TypeError,KeyError):
                     raise failure('native_source_packet_context_invalid') from None
+    # An already applied historical command is an idempotent no-op. Do not
+    # recompute it under the new compiler; only new/unapplied commands require
+    # the exact current immutable materializer fingerprint.
+    if d['materializer_sha256'] != materializer_fingerprint():
+        raise PermissionError('accepted_native_materializer_unavailable')
     worker._current()
     if prepared is None:
         compiler = NativeSourceCompiler(count=worker.count,current=worker.current)

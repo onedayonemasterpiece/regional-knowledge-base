@@ -285,6 +285,13 @@ class SourceReadGate:
                            for page in record['pages'])
                 for record in result.records):
             raise SourceGateDenied('accepted chunk/source/page scope differs')
+        if catalog and q.operation=='source_units' and any(
+                record.get('source_id')!=q.source_id
+                or type(record.get('ordinal')) is not int
+                or q.after_ordinal is not None and record['ordinal']<=q.after_ordinal
+                or record.get('state') not in ('complete','unit_not_ready')
+                for record in result.records):
+            raise SourceGateDenied('accepted source unit scope differs')
         if fact and (not self.facts_supported() or len(result.records)>q.limit or
                 any(record.get('kind')!=('observations' if q.action=='observation_compare' else q.action) for record in result.records) or
                 q.source_id is not None and any(source!=q.source_id for source in sources)):
