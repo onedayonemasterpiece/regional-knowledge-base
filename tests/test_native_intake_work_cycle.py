@@ -1,5 +1,8 @@
 """Owned APPLIED candidate work may continue; activation/durability stay fenced."""
 from types import SimpleNamespace as NS
+from contextlib import closing
+import json
+import sqlite3
 import pytest
 import pytest_asyncio
 
@@ -63,6 +66,67 @@ async def test_exact_applied_inactive_prefix_can_allocate_next_owned_candidate(a
     assert entry.command.sequence==2 and entry.command.payload==canonical(doc)
     assert (await e.spool.get(e.command.operation_key)).outcome_state=='NOT_SENT'
     assert entry.outcome_state=='NOT_SENT'
+
+
+@pytest.mark.asyncio
+async def test_stage_busy_before_spool_write_is_not_accepted_and_same_stage_can_retry(applied_candidate,monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+    e=applied_candidate;write=e.spool._write;blocked=[]
+    async def locked_write(call,*args):
+        if call==e.spool._stage and not blocked:
+            blocked.append(True)
+            with closing(sqlite3.connect(e.q.path)) as holder:
+                holder.execute('BEGIN IMMEDIATE')
+                return await write(call,*args)
+        return await write(call,*args)
+    monkeypatch.setattr(e.spool,'_write',locked_write)
+    doc=batch(index=1,previous=digest(e.command.payload),start=1,count=1)
+    args=dict(kind='stage',key='busy-stage',route=STAGE_ROUTE,payload=doc,
+        builder=lambda **kw:resolved_native_stage_command(route=STAGE_ROUTE,**kw))
+    with pytest.raises(ToolError) as caught:
+        await e.helper._stage_exact(e.access,e.row,**args)
+    assert json.loads(str(caught.value))==dict(status='unavailable',reason='source_stage_not_accepted_retry_same_stage')
+    with e.q.connect(write=False) as db:
+        assert db.execute("SELECT 1 FROM rkb_control_operations WHERE operation_key='busy-stage'").fetchone() is None
+    assert e.helper._state(e.row)['pending_operation_key'] is None
+    # A failed write invalidates only the cached history proof; refresh it
+    # through the existing verifier before retrying the exact unchanged stage.
+    e.startup.coverage=await e.native.v.extend(e.native.b)
+    entry=await e.helper._stage_exact(e.access,e.row,**args)
+    assert entry.command.payload==canonical(doc)
+    assert e.helper._state(e.row)['pending_operation_key']=='busy-stage'
+
+
+@pytest.mark.asyncio
+async def test_stage_busy_after_spool_commit_is_not_reported_as_not_accepted(applied_candidate,monkeypatch):
+    e=applied_candidate
+    error=sqlite3.OperationalError('synthetic pending update contention')
+    error.sqlite_errorcode=sqlite3.SQLITE_BUSY
+    def fail(*args,**kwargs):raise error
+    monkeypatch.setattr(e.helper,'_update',fail)
+    doc=batch(index=1,previous=digest(e.command.payload),start=1,count=1)
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        await e.helper._stage_exact(e.access,e.row,kind='stage',key='committed-stage',route=STAGE_ROUTE,
+            payload=doc,builder=lambda **kw:resolved_native_stage_command(route=STAGE_ROUTE,**kw))
+    assert caught.value is error
+    assert (await e.spool.get('committed-stage')).command.payload==canonical(doc)
+    assert e.helper._state(e.row)['pending_operation_key'] is None
+
+
+@pytest.mark.parametrize('kind,code',[('stage',sqlite3.SQLITE_IOERR),('stage',sqlite3.SQLITE_ERROR),
+    ('stage',sqlite3.SQLITE_LOCKED),('stage',sqlite3.SQLITE_BUSY_SNAPSHOT),('stage',None),('batch',sqlite3.SQLITE_BUSY)])
+@pytest.mark.asyncio
+async def test_stage_busy_classification_does_not_expand_to_other_failures(applied_candidate,monkeypatch,kind,code):
+    e=applied_candidate;error=sqlite3.OperationalError('synthetic unclassified failure')
+    if code is not None:error.sqlite_errorcode=code
+    async def fail(*args):raise error
+    monkeypatch.setattr(e.spool,'_write',fail)
+    doc=batch(index=1,previous=digest(e.command.payload),start=1,count=1)
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        await e.helper._stage_exact(e.access,e.row,kind=kind,key='unclassified-stage',route=STAGE_ROUTE,
+            payload=doc,builder=lambda **kw:resolved_native_stage_command(route=STAGE_ROUTE,**kw))
+    assert caught.value is error
+    assert e.helper._state(e.row)['pending_operation_key'] is None
 
 
 @pytest.mark.parametrize('field,value',[

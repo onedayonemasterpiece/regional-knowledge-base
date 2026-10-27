@@ -252,7 +252,11 @@ class NativeSourceIntake:
                         facts.scope_sequence,facts.covered_sequence,facts.pending,continuation,facts.unknown,
                         self.spool.facts_current(facts))
                     raise _failure('source_history_unavailable')
-                entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
+                try:entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
+                except sqlite3.OperationalError as error:
+                    if kind=='stage' and getattr(error,'sqlite_errorcode',None)==sqlite3.SQLITE_BUSY:
+                        raise _failure('source_stage_not_accepted_retry_same_stage') from None
+                    raise
             # If the process exits between the spool commit and this compact
             # mark, the stable key is reconciled before any new allocation.
             await asyncio.to_thread(self._update,row,pending_operation_key=key,pending_kind=kind)
