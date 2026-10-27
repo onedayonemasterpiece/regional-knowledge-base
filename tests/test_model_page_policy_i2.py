@@ -118,6 +118,17 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     assert n._records[handle]["pages"][0]["path"].read_bytes() == pdf_image
 
     controller = object.__new__(OriginalIntakeController)
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("""CREATE TABLE rkb_original_image_issuance (
+        ingestion_id TEXT NOT NULL, physical_page_index INTEGER NOT NULL,
+        receipt_json TEXT NOT NULL, PRIMARY KEY(ingestion_id, physical_page_index))""")
+    @contextmanager
+    def connect(write=True):
+        yield db
+        if write:
+            db.commit()
+    controller.queue = SimpleNamespace(connect=connect)
     controller.spool = SimpleNamespace(journal=SimpleNamespace(stream="fixture"))
     async def head(key, size, version=None):
         assert size == len(pdf_image)
@@ -143,17 +154,6 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
         SOURCE, INGEST, str(uuid5(UUID(INGEST), 'original:source-original:'+INGEST)), 1, original_sha, path.stat().st_size,
         "originals/i2/fixture", "etag", "pdf", 2, n.parser_sha256,
         "a" * 64, "b" * 64)
-    db = sqlite3.connect(":memory:")
-    db.row_factory = sqlite3.Row
-    db.execute("""CREATE TABLE rkb_original_image_issuance (
-        ingestion_id TEXT NOT NULL, physical_page_index INTEGER NOT NULL,
-        receipt_json TEXT NOT NULL, PRIMARY KEY(ingestion_id, physical_page_index))""")
-    @contextmanager
-    def connect(write=True):
-        yield db
-        if write:
-            db.commit()
-    controller.queue = SimpleNamespace(connect=connect)
     issued = controller._record_issued_image(receipt, first)
     assert controller._record_issued_image(receipt, second) == issued
     with pytest.raises(OriginalIntakeError, match="original_issued_image_changed"):
