@@ -13,8 +13,7 @@ def _json(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ens
 def _hash(value):return hashlib.sha256(value).hexdigest()
 
 MODEL_PAGE_MAX_EDGE=3200;MODEL_PAGE_EDGES=(MODEL_PAGE_MAX_EDGE,2400,1600)
-MODEL_PAGE_QUALITIES=(85,80,70,55)
-MODEL_PAGE_BYTE_LIMIT=8*1024*1024
+MODEL_PAGE_QUALITIES=(85,80,70,55);MODEL_PAGE_BYTE_LIMIT=8*1024*1024
 
 
 def parse(path,action,index=0,*,cursor=None):
