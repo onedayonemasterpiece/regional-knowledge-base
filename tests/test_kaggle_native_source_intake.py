@@ -75,7 +75,7 @@ class Spool:
     async def _write(self,call,*args): return call(*args)
     def _stage(self,c,*args):
         self.sequence=c.sequence
-        entry=NS(command=c,command_sha256=digest(c.payload),accepted=None,seal_state='NOT_SENT',outcome_state='NOT_SENT',apply_receipt=None)
+        entry=NS(command=c,command_sha256=digest(c.payload),accepted=None,seal_state='NOT_SENT',apply_state='NOT_SENT',outcome_state='NOT_SENT',apply_receipt=None)
         self.entries[c.operation_key]=entry; return entry
     async def seal(self,context,key,**kwargs):
         self.seals.append((key,kwargs)); entry=self.entries[key]
@@ -167,6 +167,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         elif entry.command.route=='source.catalog.v1':
             value.update(catalog_revision=1,accepted=True,payload_sha256=digest(entry.command.payload))
         else: value=dict(source_id=SOURCE,accepted=True,knowledge_sha256=knowledge)
+        entry.apply_state='APPLIED' if status=='applied' else 'REJECTED_PRECONDITION'
         raw=canonical(value); entry.apply_receipt=NS(status=status,outcome=canonical(dict(
             result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw))))
         entry.outcome_state='DURABLE'

@@ -263,7 +263,8 @@ async def test_journal_budget_counts_unsaved_tail_and_retains_import_progress(na
     from regional_knowledge.control_spool import SpoolFull
     s = native_intake
     book = await start(s)
-    assert (await stage(s, book, batch(s, book, count=4))).next_action == 'wait'
+    accepted = await stage(s, book, batch(s, book, count=4))
+    assert (accepted.state, accepted.next_action, accepted.next_cursor) == ('processing', 'continue_pages', '4')
     for component in range(3):
         entry = await finish(s, book)
         if component < 2:
@@ -296,7 +297,8 @@ async def test_journal_budget_counts_unsaved_tail_and_retains_import_progress(na
     assert (await s.spool.get(old_key)).command.operation_key == old_key
     status = await call(s, book, 'status')
     assert status.next_action == 'continue_pages' and status.next_cursor == '4'
-    assert (await stage(s, book, batch(s, book, first=4, count=4))).next_action == 'wait'
+    accepted = await stage(s, book, batch(s, book, first=4, count=4))
+    assert (accepted.state, accepted.next_action, accepted.next_cursor) == ('processing', 'continue_pages', '8')
     assert operation_count(s) == 4
     with s.t.queue.connect(write=False) as db:
         after = db.execute('SELECT operation_key,command_bytes,outcome_bytes,outcome_state,reserved_bytes '
@@ -311,13 +313,14 @@ async def test_status_after_pause_returns_next_unaccepted_physical_page(native_i
     book=await start(s)
     payload=batch(s,book,first=0,count=4)
     if authored_cursor is None:
-        assert (await stage(s,book,payload)).next_action=='wait'
+        accepted=await stage(s,book,payload)
     else:
         from regional_knowledge.kaggle_import_contracts import TargetSourceImportInput
         research=TargetSourceImportInput.model_validate({'research':dict(state='pending',
             continuation=dict(tool='book_pages',arguments=dict(
                 ingestion_id=book.ingestion_id,cursor=authored_cursor,batch_size=1)))})
-        assert (await call(s,book,'stage',payload=payload,source_import=research)).next_action=='wait'
+        accepted=await call(s,book,'stage',payload=payload,source_import=research)
+    assert (accepted.state,accepted.next_action,accepted.next_cursor)==('processing','continue_pages','4')
     for component in ('stage','text','semantic'):
         await finish(s,book)
         status=await call(s,book,'status')
@@ -336,7 +339,8 @@ async def test_status_after_pause_returns_next_unaccepted_physical_page(native_i
 async def test_applied_page_status_needs_no_second_original_head(native_intake, monkeypatch):
     s=native_intake
     book=await start(s)
-    assert (await stage(s,book,batch(s,book,first=0,count=4))).next_action=='wait'
+    accepted=await stage(s,book,batch(s,book,first=0,count=4))
+    assert (accepted.state,accepted.next_action,accepted.next_cursor)==('processing','continue_pages','4')
     for _ in range(3):
         await finish(s,book)
         await call(s,book,'status')
