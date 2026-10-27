@@ -140,6 +140,24 @@ class Participants:
             fail("request_fence_denied")
         return actor
 
+    def require_packet_continuation(self, proof):
+        """Current owner import rights for a verified, narrowly accepted packet.
+
+        The spool checks parent/child scope; this is not a person-ID grant and
+        does not construct an owner Principal or authorize another intake.
+        """
+        from .kaggle_native_source_intake import _AcceptedPacketProof
+        if (type(proof) is not _AcceptedPacketProof or proof.owner.spool.participants is not self
+                or getattr(proof.owner.queue._source_commands,'packet_owner',None) is not proof.owner
+                or proof.person_id!=self.owner):fail('capability_denied')
+        with self.corpus.connect() as db:
+            db.execute('BEGIN')
+            user=self.sources._corpus_row(db,'rkb_users',proof.person_id)
+            profile=db.execute('SELECT disabled FROM rkb_participant_profiles WHERE person_id=?',(proof.person_id,)).fetchone()
+            if not user or user.get('status')!='active' or profile and profile['disabled']:
+                fail('capability_denied')
+        return proof.person_id
+
     def require(self, context, capability, *, connection=None):
         """Recheck inside the caller's transaction, including delayed delivery."""
         if capability not in CAPABILITIES:

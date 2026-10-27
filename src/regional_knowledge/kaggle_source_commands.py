@@ -321,6 +321,7 @@ class AcceptedSourceDispatch:
         self.spool,self.queue,self.binding_current,self.clock=spool,spool.queue,binding_current,clock
         self._retry={}
         self._publications={}
+        self.packet_owner=None
         self.queue._source_commands=self
 
     def maintenance_blocks_dispatch(self):
@@ -364,7 +365,17 @@ class AcceptedSourceDispatch:
 
     async def authorize_job(self,context,job):
         entry,_=await self._entry(job,verify=False)
+        if self.packet_owner is not None and entry.command.route in ('source.stage.v1','source.batch.v1'):
+            try:return await self.packet_owner.authorize_packet_job(entry.command)
+            except PermissionError:
+                if context is None:raise
+                # Existing explicit actor contexts still own other/rejected
+                # accepted jobs; packet proof never becomes their authority.
         return await self.spool.authorize_command(context,entry.command)
+
+    def _packet_settled(self,entry):
+        if self.packet_owner is not None and entry.command.route in ('source.stage.v1','source.batch.v1'):
+            self.packet_owner.kick_packet(json.loads(entry.command.payload)['ingestion_id'])
 
     async def _entry(self,job,*,verify=True):
         identity=json.loads(job['identity'])
@@ -460,6 +471,7 @@ class AcceptedSourceDispatch:
                 self.queue.shared_reads.durable_result_settled(job['id'],job['claim'],result)
                 _LOG.info('source_outcome_checkpoint_pending command_sha256=%s sequence=%s remote_outcome_durable=false',
                     entry.command_sha256,entry.command.sequence)
+                self._packet_settled(entry)
                 return dict(job_id=job['id'],claim=job['claim'],status=result)
             failures=self._retry.get(job['id'],(0,0))[1]+1
             self._retry[job['id']]=(now+min(30,2**min(failures,5)),failures)
@@ -475,9 +487,11 @@ class AcceptedSourceDispatch:
             return None  # New attachment reconciles the durable remote receipt.
         self.queue.shared_reads.durable_result_settled(job['id'],job['claim'],result)
         _LOG.info('source_outcome_remote_durable command_sha256=%s sequence=%s status=%s',entry.command_sha256,entry.command.sequence,result)
+        self._packet_settled(entry)
         return dict(job_id=job['id'],claim=job['claim'],status=result)
 
     async def aclose(self):
+        if self.packet_owner is not None:await self.packet_owner.close_packets()
         cancelled=False
         for _,task in tuple(self._publications.values()):
             while not task.done():

@@ -14,6 +14,7 @@ import logging
 import sqlite3
 import time
 import hashlib
+from dataclasses import dataclass
 from functools import wraps
 from uuid import UUID, uuid5
 
@@ -22,6 +23,26 @@ from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH,
 
 
 _LOG=logging.getLogger(__name__)
+_PACKET_WORK="phase='staging' AND packet_mode=1 AND (pending_kind IN ('stage','batch') OR enriched_batch_count<batch_count)"
+
+
+@dataclass(frozen=True)
+class _AcceptedPacketProof:
+    """Internal accepted-parent scope; never an HTTP access or owner Principal."""
+    owner: object
+    binding: object
+    ingestion_id: str
+    source_id: str
+    person_id: str
+    batch_index: int
+    parent_key: str
+    parent_sha256: str
+
+    @property
+    def context(self):return self
+
+    async def authorize(self,command=None):
+        return await self.owner._authorize_packet(self,command)
 
 
 def _failure(reason, *, status='unavailable'):
@@ -67,7 +88,10 @@ class NativeSourceIntake:
             raise TypeError('explicit native schema14 importer required')
         self.importer = importer
         self.queue, self.spool, self.startup = importer.queue, importer.spool, importer.startup
+        self._packet_wakes=set();self._packet_task=None;self._packet_cursor='';self._packet_closed=False
         self._initialize()
+        if getattr(self.startup,'source_dispatch',None) is not None:
+            self.startup.source_dispatch.packet_owner=self
 
     def _initialize(self):
         with self.queue.connect() as db:
@@ -99,8 +123,112 @@ class NativeSourceIntake:
                     "rejected_reason='legacy_import_reimport_required',pending_operation_key=NULL,pending_kind=NULL "
                     "WHERE packet_mode=0 AND rejected_reason IS NOT 'legacy_import_reimport_required' RETURNING ingestion_id"):
                 db.execute("UPDATE rkb_source_intake_control SET phase='failed' WHERE ingestion_id=?", legacy)
+            db.execute('CREATE INDEX IF NOT EXISTS rkb_native_packet_work ON rkb_native_source_intake_state(ingestion_id) WHERE '+_PACKET_WORK)
+
+    async def _packet_proof(self,ingestion_id):
+        with self.queue.connect(write=False) as db:
+            state=db.execute('SELECT * FROM rkb_native_source_intake_state WHERE ingestion_id=? AND '+_PACKET_WORK,(ingestion_id,)).fetchone()
+        if state is None:raise PermissionError('accepted packet no longer pending')
+        state=dict(state);index=state['batch_count']-(state['pending_kind']!='stage')
+        key=f"source-stage:{ingestion_id}:{index}:{state['command_attempt']}"
+        parent=await self.spool.get(key)
+        proof=_AcceptedPacketProof(self,self.startup.binding,ingestion_id,state['source_id'],state['person_id'],index,key,parent.command_sha256)
+        await proof.authorize()
+        return proof
+
+    async def _authorize_packet(self,proof,command=None):
+        if (type(proof) is not _AcceptedPacketProof or proof.owner is not self or self._packet_closed
+                or not self.importer._binding_current(proof.binding)):
+            raise PermissionError('accepted packet binding changed')
+        parent=await self.spool.get(proof.parent_key);c=parent.command;doc=json.loads(c.payload)
+        if (parent.accepted is None or parent.seal_state!='ACCEPTED' or parent.command_sha256!=proof.parent_sha256
+                or c.route!=STAGE_ROUTE or c.person_id!=proof.person_id or c.ids!={'source_id':proof.source_id}
+                or doc.get('ingestion_id')!=proof.ingestion_id or doc.get('batch_index')!=proof.batch_index
+                or parent.database_generation!=proof.binding.database_generation
+                or await self.spool.journal.verify_accepted(parent.accepted,c)!=proof.parent_sha256):
+            raise PermissionError('accepted packet parent differs')
+        from .participants import ParticipantError
+        try:actor=await asyncio.to_thread(self.spool.participants.require_packet_continuation,proof)
+        except ParticipantError:raise PermissionError('current packet import rights unavailable') from None
+        state=await asyncio.to_thread(self._state,dict(ingestion_id=proof.ingestion_id,source_id=proof.source_id,person_id=actor))
+        if (state is None or state['phase']!='staging' or not state['packet_mode']
+                or state['pending_kind'] not in (None,'stage','batch')
+                or proof.parent_key!=self._operation({'ingestion_id':proof.ingestion_id},'stage',f"{proof.batch_index}:{state['command_attempt']}")
+                or (state['pending_kind']=='stage' and (state['pending_operation_key']!=proof.parent_key or state['batch_count']!=proof.batch_index))
+                or (state['pending_kind']!='stage' and (state['batch_count']!=proof.batch_index+1
+                    or state['last_batch_sha256']!=digest(c.payload) or state['enriched_batch_count']>=state['batch_count']))):
+            raise PermissionError('accepted packet state differs')
+        if command is not None:
+            if command.encode()==c.encode() and state['pending_kind']=='stage':return actor
+            from .source_batch import CODEC,ROUTE,resolved_command
+            from .kaggle_source_materializer import materializer_fingerprint
+            value=json.loads(command.payload);component=value.get('component')
+            expected=dict(codec=CODEC,ingestion_id=proof.ingestion_id,batch_index=proof.batch_index,
+                batch_count=proof.batch_index+1,last_batch_sha256=digest(c.payload),
+                materializer_sha256=materializer_fingerprint(),component=component)
+            if (parent.apply_state!='APPLIED' or parent.apply_receipt is None or parent.apply_receipt.status!='applied'
+                    or command.route!=ROUTE or component not in ('text','semantic') or value!=expected
+                    or command.person_id!=actor or command.ids!=c.ids or command.request_id!=c.request_id
+                    or command.operation_key!=self._operation({'ingestion_id':proof.ingestion_id},'batch',f'{proof.batch_index}:{component}')
+                    or state['batch_count']!=proof.batch_index+1 or state['last_batch_sha256']!=digest(c.payload)
+                    or component=='semantic' and state['published_batch_count']!=state['batch_count']):
+                raise PermissionError('accepted packet derivative differs')
+            exact=resolved_command(sequence=command.sequence,operation_key=command.operation_key,request_id=c.request_id,
+                person_id=actor,logical_time=command.logical_time,revisions=self.importer._revisions(proof.binding),
+                source_id=proof.source_id,payload=expected)
+            if exact.encode()!=command.encode():raise PermissionError('packet command contract differs')
+        return actor
+
+    async def authorize_packet_job(self,command):
+        if command.route not in (STAGE_ROUTE,'source.batch.v1'):raise PermissionError('not a packet command')
+        proof=await self._packet_proof(json.loads(command.payload)['ingestion_id'])
+        return await proof.authorize(command)
+
+    def kick_packet(self,ingestion_id):
+        if self._packet_closed:return
+        if len(self._packet_wakes)<16:self._packet_wakes.add(ingestion_id)
+        if self._packet_task is None or self._packet_task.done():
+            self._packet_task=asyncio.create_task(self._continue_packets())
+
+    async def recover_packets(self):
+        # Keyset over compact progress rows; no payload/history enumeration.
+        with self.queue.connect(write=False) as db:
+            rows=db.execute('SELECT ingestion_id FROM rkb_native_source_intake_state WHERE '+_PACKET_WORK+
+                ' AND ingestion_id>? ORDER BY ingestion_id LIMIT 16',(self._packet_cursor,)).fetchall()
+        self._packet_cursor=rows[-1][0] if rows else ''
+        for row in rows:self.kick_packet(row[0])
+
+    async def _continue_packets(self):
+        while self._packet_wakes:
+            ingestion=self._packet_wakes.pop()
+            try:
+                async with self.importer._lock:
+                    proof=await self._packet_proof(ingestion)
+                    row=await asyncio.to_thread(self.importer._row,proof.person_id,ingestion)
+                    state=await asyncio.to_thread(self._state,row)
+                    if state['pending_operation_key']:
+                        pending=await self.spool.get(state['pending_operation_key'])
+                        if 'SENT_UNKNOWN' in (pending.seal_state,pending.apply_state):continue
+                        await proof.authorize(pending.command)
+                    state=await self._drive(proof,row,state)
+                    await self._packet_progress(proof,row,state)
+            except asyncio.CancelledError:raise
+            except Exception as error:
+                _LOG.info('native_packet_continuation state=paused ingestion_id=%s reason=%s',ingestion,type(error).__name__)
+
+    async def close_packets(self):
+        self._packet_closed=True
+        self._packet_wakes.clear()
+        if self._packet_task is not None:
+            self._packet_task.cancel()
+            try:await self._packet_task
+            except asyncio.CancelledError:pass
 
     async def _check(self, access, row=None):
+        if type(access) is _AcceptedPacketProof:
+            actor=await access.authorize()
+            if row is not None and row['person_id']!=actor:raise PermissionError('packet actor differs')
+            return
         await self.importer._check(access.authority, access.context, access.binding)
         if row is not None and row['person_id']!=access.authority.person_id:
             raise _failure('owned_ingestion_required',status='denied')
@@ -208,9 +336,12 @@ class NativeSourceIntake:
                     (('APPLIED','applied'),('REJECTED_PRECONDITION','rejected_precondition')))
 
     async def _stage_exact(self, access, row, *, kind, key, route, payload, builder):
+        if type(access) is _AcceptedPacketProof and (kind!='batch' or route!='source.batch.v1'):
+            raise PermissionError('packet continuation cannot stage new input')
         async with self.spool._lock:
             entry=await self._entry(key)
             if entry is not None:
+                if type(access) is _AcceptedPacketProof:await access.authorize(entry.command)
                 if (entry.command.route!=route or entry.command.payload!=canonical(payload)
                         or entry.command.ids!={'source_id':row['source_id']}
                         or entry.command.person_id!=row['person_id']):
@@ -236,6 +367,9 @@ class NativeSourceIntake:
                     person_id=row['person_id'],logical_time=datetime.now(timezone.utc).isoformat(),
                     revisions=self.importer._revisions(access.binding),source_id=row['source_id'],payload=payload)
                 frozen,data,handler=self.spool._validate(command,access.binding.database_generation)
+                if type(access) is _AcceptedPacketProof:
+                    if kind!='batch':raise PermissionError('packet continuation cannot stage new input')
+                    await access.authorize(frozen)
                 await self._check(access)
                 facts=await self.spool.read_facts([row['source_id']])
                 await self._check(access)
