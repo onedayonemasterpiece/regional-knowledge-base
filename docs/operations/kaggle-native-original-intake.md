@@ -1,5 +1,17 @@
 # Native original intake
 
+An accepted visual stage authorizes deterministic publication of that exact
+packet's text and semantic components. Their existing source-command settlement
+wakes the next component without another client status call. An internal proof
+binds the accepted stage hash, person, source, ingestion, batch and current
+runtime; each new component rechecks canonical owner/import rights and existing
+history/UNKNOWN/writer fences. It grants no new stage, next page or finish, and
+neither retains an HTTP access lease nor constructs an owner Principal. Restart
+recovery visits at most 16 indexed compact progress rows per maintenance tick;
+duplicates reuse existing operation keys. UNKNOWN remains pending without
+automatic redelivery. APPLIED components still require verified Dataset
+persistence before being reported Saved.
+
 This opt-in target extension uses the existing recovery-phase jobs, authenticated
 WSS, document resource admission and durable result acknowledgments. It changes
 neither the running notebook nor existing launch configuration automatically.

@@ -376,6 +376,12 @@ class ControlSpool:
         admits a canonical person to the personal editorial intake path.
         """
         self._require_intake()
+        from .kaggle_native_source_intake import _AcceptedPacketProof
+        if type(context) is _AcceptedPacketProof:
+            bridge=getattr(self.queue,'_source_commands',None)
+            if context.owner.spool is not self or getattr(bridge,'packet_owner',None) is not context.owner:
+                raise SpoolDenied('packet spool owner differs')
+            return await context.authorize(command)
         if command.route.startswith('disagreement.'):
             from .disagreement_native import validate_case_command,required_capabilities
             if command.schema_revision=='rkb-v4-sql001-014-v1':

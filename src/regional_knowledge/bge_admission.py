@@ -252,6 +252,8 @@ class SharedReadAdmission:
         if bridge is None:raise PermissionError('retained accepted command bridge required')
         bridge.spool.registry.resolve(command)
         actor=await bridge.spool.authorize_command(context,command)
+        from .kaggle_native_source_intake import _AcceptedPacketProof
+        if type(context) is _AcceptedPacketProof:return actor
         if len(set(self._documents)|set(self._commands)|{actor})>256:
             raise AdmissionUnavailable('canonical durable actor capacity exhausted')
         self._commands[actor]=context
@@ -441,7 +443,7 @@ class SharedReadAdmission:
                     if (self.queue._source_commands is None
                             or self.queue._source_commands.maintenance_blocks_dispatch()):continue
                     context=self._commands.get(doc['actor'])
-                    if context is not None and self.queue._source_commands is not None:
+                    if self.queue._source_commands is not None:
                         try:actor=await self.queue._source_commands.authorize_job(context,doc)
                         except (PermissionError,ValueError,LookupError):actor=None
                         if actor==doc['actor']:eligible.append(doc)

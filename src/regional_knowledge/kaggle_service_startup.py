@@ -527,6 +527,9 @@ class TargetServiceStartup:
                 self.schema_migrations.kick(self.binding)
                 return self.reads_current()
             if dataset:await self._settle_restored_source_jobs(coverage)
+            importer=getattr(self,'importer',None)
+            if importer is not None and importer.native_intake is not None:
+                await importer.native_intake.recover_packets()
             if self.dataset_checkpoints is not None:
                 # Kaggle Dataset can take minutes to become ready. Capture
                 # continues through the existing background owner, never
