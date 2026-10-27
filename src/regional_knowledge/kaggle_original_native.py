@@ -100,10 +100,7 @@ class NativeOriginalIntake:
         # running a second copy of the PDF parser.
         legacy_code=HISTORICAL_PDF_SCRIPT_SHA256
         self.legacy_parser_sha256=digest(canonical(dict(packages=actual,code=legacy_code)))
-        self.previous_parser_sha256=digest(canonical(dict(packages=actual,
-            code='20532723f1fc88d895e639f5f82427b6e600e5ffea9a6bf8790d81a2f6c2ca0c',
-            djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),
-            legacy_pdf_parser_sha256=legacy_code)))
+        self.previous_parser_sha256=digest(canonical(dict(packages=actual,code='20532723f1fc88d895e639f5f82427b6e600e5ffea9a6bf8790d81a2f6c2ca0c',djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),legacy_pdf_parser_sha256=legacy_code)))
         self.parser_sha256=digest(canonical(dict(packages=actual,
             code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
             djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),
