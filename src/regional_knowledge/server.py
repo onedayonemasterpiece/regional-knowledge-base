@@ -1322,7 +1322,7 @@ def build_server(
         "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
         "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
         "5. Stop when sufficient or after at most 6 sequential RKB calls. At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
-        "6. Give one 1-4 sentence answer in the user's language, cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request.\n"
+        "6. Give one 1-4 sentence answer in the user's language, cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request; do not add details absent from read passages (e.g. modern place names), and if the user requests them, explicitly label them as outside the cited sources.\n"
     )
 
     @mcp.tool(
