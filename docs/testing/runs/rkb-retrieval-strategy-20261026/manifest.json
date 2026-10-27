@@ -1,0 +1,126 @@
+{
+  "batch_id": "RKB-CASCADE-PILOT-20261026-A",
+  "date_utc": "2026-10-26",
+  "status": "EXECUTED_EXPLORATORY_PILOT_NOT_PRODUCT_ACCEPTANCE",
+  "source_code_sha": "8df57bf6720b3c03c5f4f4b0cd8651cb03f2a917",
+  "query_bank_frozen_at_utc": "2026-10-26T11:09:25.616146+00:00",
+  "plan_frozen_at_utc": "2026-10-26T11:09:59.753Z",
+  "core_raw_frozen_at_utc": "2026-10-26T11:16:27.568Z",
+  "all_live_raw_frozen_at_utc": "2026-10-26T11:23:41.999Z",
+  "public_question_bank_sha256": "d67b678233e681021239c0bf28c83a97fec0d74778be9c3c5e2dc1661d308f01",
+  "question_bank_hash_scope": "Sanitized used-fields projection; original frozen private file retained unchanged in audit.",
+  "core_families": [
+    "F01",
+    "F02",
+    "F03",
+    "F04",
+    "F05",
+    "F06",
+    "F07",
+    "F08"
+  ],
+  "auxiliary_families": [
+    "F09",
+    "F10"
+  ],
+  "german_diagnostics": {
+    "families": 2,
+    "calls": 8,
+    "independent_original_gold": false
+  },
+  "boolean_diagnostic_search_calls": 4,
+  "post_core_source_filter_calls": 2,
+  "arms": {
+    "A0": "One original Russian query, public default K=3.",
+    "A1": "One string: exact RU original + space + exact DE equivalent.",
+    "A2": "Two separate calls: exact RU original, exact DE equivalent; union and RRF60, deduplicate native IDs.",
+    "A3": "Two Russian calls: exact RU original, exact ru_control_1; union and RRF60.",
+    "A4": "Adaptive first: exact RU original; read returned evidence before static arms; stop if all requested facets explicitly supported, else one new focused query for missing evidence, no guessed answer inserted."
+  },
+  "order": "A4 before other arms within each family to prevent cross-arm leakage; static arms cyclically rotated by family. Order is a latency confound.",
+  "public_search_k": 3,
+  "core_search_calls": 58,
+  "all_calls": 156,
+  "all_search_calls": 80,
+  "all_fetch_calls": 60,
+  "completed_calls": 153,
+  "error_calls": 3,
+  "limits": {
+    "search": 80,
+    "fetch": 60,
+    "search_per_family": 8,
+    "sequential": true
+  },
+  "core_candidate_occurrences": 174,
+  "unique_core_passages": 49,
+  "core_returned_source_count": 4,
+  "core_family_evidence_judgments": 53,
+  "intended_core_sources": [
+    "Gause"
+  ],
+  "sources": {
+    "Gause": {
+      "title": "Кёнигсберг в Пруссии. История одного европейского города",
+      "author": "Фритц Гаузе",
+      "language": "ru",
+      "edition_year": 1994
+    },
+    "Gubin": {
+      "title": "Деревянный или дровяной?",
+      "author": "А. Б. Губин",
+      "language": "ru",
+      "edition_year": 2014
+    },
+    "Markin": {
+      "title": "Немцы Калининграда: опыт взаимоотношения с местными властями (1945-1948 гг.)",
+      "author": "Д. Г. Маркин",
+      "language": "ru",
+      "edition_year": 2009
+    }
+  },
+  "originals": "SHA identity confirmed for actual Gause/Gubin/Markin evidence. Does not establish full import; no independent German original gold.",
+  "observed_state": "One consistent data/projection state in core; no source/revision binding conflicts. Native state and runtime receipts retained privately.",
+  "observed_search_mode": "bge_lexical",
+  "exact_model_checkpoint": null,
+  "total_indexed_corpus_size": null,
+  "reader_model_build": null,
+  "reader_runs": {
+    "Q480": 8,
+    "full_passage": 8,
+    "post_core_context": 2,
+    "actual_adaptive_answers": 8
+  },
+  "reader_method": "Fresh isolated readers for Q/F/C; own packets only. A4 answers recorded during original adaptive execution.",
+  "judge_count": 1,
+  "gold_isolation": "Original-based gold prepared by independent participant. Live operator did not read original gold; evidence judge saw unique packets without arm/rank labels.",
+  "context_chars": {
+    "Q480_total": 3649,
+    "full_total": 4782,
+    "C_selected_packets": [
+      1977,
+      1628
+    ]
+  },
+  "F05_sensitivity": "Strict frozen gold retained; separate task-essential sensitivity because river name was not necessary to asked method of connection.",
+  "fusion": "Offline RRF60, source/revision/state validated; not executed backend reranker or model answer.",
+  "background": "Concurrent operator sampler; no accepted-state change observed in core; isolated/cold-cache conditions not established.",
+  "restart": "Later planned restart began after final live cutoff; its calls and operator availability statistics excluded.",
+  "product_e2e": {
+    "Mira": "NOT_RUN",
+    "Slack_dot_Full_MCP": "NOT_RUN"
+  },
+  "runtime_mutations": false,
+  "direct_pg_access": false,
+  "population_claim": false,
+  "primary_result_contract": "Existing seven-key schema; 26 private actual-answer rows; Hit@5/10 and product E2E are null.",
+  "privacy": "Public allowlist aggregates only. Raw text, native IDs, original gold, reader packets and runtime receipts retained in separate private audit; full PDFs excluded.",
+  "limitations": [
+    "8 purposive early RU-source families from one book; not random or corpus-representative.",
+    "A4 always first, static arms cyclically rotated; latency order confound.",
+    "Single judge and single Q/F/C reader run per condition.",
+    "Core source eligibility limited to original-matched observed passages; whole-corpus coverage unknown.",
+    "Post-core context/source-filter diagnostics cannot improve frozen main-arm scores.",
+    "German diagnostics have no independent original gold.",
+    "No end-to-end client clocks, model stages, SQL plans, large-corpus recall or resource acceptance."
+  ]
+}

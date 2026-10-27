@@ -1,0 +1,120 @@
+{
+  "bank_id": "RKB-PMI-PDF10-20261026-PUBLIC-USED-FIELDS",
+  "original_bank_frozen_at_utc": "2026-10-26T11:09:25.616146+00:00",
+  "publication_scope": "Exact used F01-F10 questions; unused ru_control_2 and auxiliary ru_control_1 omitted. Sanitized projection, not a replacement for the original frozen private bank.",
+  "core_families": [
+    "F01",
+    "F02",
+    "F03",
+    "F04",
+    "F05",
+    "F06",
+    "F07",
+    "F08"
+  ],
+  "auxiliary_families": [
+    "F09",
+    "F10"
+  ],
+  "source_resolution": "Resolve actual document IDs before each new private run; book_find alone does not prove complete import.",
+  "sources": {
+    "Gause": {
+      "title": "Кёнигсберг в Пруссии. История одного европейского города",
+      "author": "Фритц Гаузе",
+      "language": "ru",
+      "edition_year": 1994
+    },
+    "Gubin": {
+      "title": "Деревянный или дровяной?",
+      "author": "А. Б. Губин",
+      "language": "ru",
+      "edition_year": 2014
+    },
+    "Markin": {
+      "title": "Немцы Калининграда: опыт взаимоотношения с местными властями (1945-1948 гг.)",
+      "author": "Д. Г. Маркин",
+      "language": "ru",
+      "edition_year": 2009
+    }
+  },
+  "families": [
+    {
+      "family_id": "F01",
+      "source_key": "Gause",
+      "family_type": "person_and_date",
+      "ru_original": "Кто, по Гаузе, одобрил любекский план свободного города в устье Прегеля письмом из Торна и какой датой было помечено это письмо?",
+      "de_equivalent": "Wer billigte laut Gause den Lübecker Plan einer freien Stadt an der Pregelmündung in einem Brief aus Thorn, und welches Datum trug dieser Brief?",
+      "ru_control_1": "Гаузе: кто отправил из Торна одобрение любекского проекта свободного города в устье Прегеля и когда было датировано письмо?"
+    },
+    {
+      "family_id": "F02",
+      "source_key": "Gause",
+      "family_type": "transaction_and_geography",
+      "ru_original": "Что, по Гаузе, получил самландский епископ за передачу Ордену своих кёнигсбергских владений в 1263 году и где был построен обещанный ему замок?",
+      "de_equivalent": "Was erhielt der samländische Bischof laut Gause 1263 für die Abtretung seiner Königsberger Besitzungen an den Orden, und wo wurde die ihm zugesagte Burg errichtet?",
+      "ru_control_1": "Гаузе: каковы были условия обмена владений самландского епископа в Кёнигсберге в 1263 году и место постройки обещанного ему замка?"
+    },
+    {
+      "family_id": "F03",
+      "source_key": "Gause",
+      "family_type": "entity_shape_location",
+      "ru_original": "Какую башню внешних укреплений кёнигсбергской крепости Гаузе называет единственной сохранившейся до новейшего времени, какова её форма и в каком углу она стояла?",
+      "de_equivalent": "Welchen Turm der äußeren Befestigung der Königsberger Burg nennt Gause als den einzigen bis in die neueste Zeit erhaltenen, welche Form hatte er, und an welcher Ecke stand er?",
+      "ru_control_1": "Гаузе: название, форма и положение единственной башни внешней крепостной стены Кёнигсберга, сохранившейся до новейшего времени?"
+    },
+    {
+      "family_id": "F04",
+      "source_key": "Gause",
+      "family_type": "ownership_conjunction",
+      "ru_original": "Кому, по Гаузе, принадлежал мост Кремербрюке и кому принадлежали расположенные на нём лавки?",
+      "de_equivalent": "Wem gehörte laut Gause die Krämerbrücke, und wem gehörten die auf ihr gelegenen Läden?",
+      "ru_control_1": "Гаузе: кто был собственником Кремербрюке и кто владел торговыми лавками на этом мосту?"
+    },
+    {
+      "family_id": "F05",
+      "source_key": "Gause",
+      "family_type": "land_and_connection",
+      "ru_original": "Какую часть острова Кнайпхоф Орден уступил епископу для нового собора по соглашению 1322 года и каким способом было разрешено связать новые владения со старыми, согласно Гаузе?",
+      "de_equivalent": "Welchen Teil der Insel Kneiphof trat der Orden laut Gause 1322 für den neuen Dom an den Bischof ab, und wie durften die neuen Besitzungen mit den alten verbunden werden?",
+      "ru_control_1": "Гаузе: какая территория Кнайпхофа была передана епископу под собор в 1322 году и какую связь со старыми владениями ему разрешили устроить?"
+    },
+    {
+      "family_id": "F06",
+      "source_key": "Gause",
+      "family_type": "person_event_cross_page",
+      "ru_original": "Кто, по Гаузе, потребовал, чтобы новый Кёнигсбергский собор не стал церковью-крепостью, и в каком году были оговорены ограничения его строительства?",
+      "de_equivalent": "Wer verlangte laut Gause, dass der neue Königsberger Dom keine Wehrkirche werden sollte, und in welchem Jahr wurden die Baubeschränkungen vereinbart?",
+      "ru_control_1": "Гаузе: кто ограничил строительство нового собора в Кёнигсберге, запретив делать из него крепость, и когда это было закреплено договором?"
+    },
+    {
+      "family_id": "F07",
+      "source_key": "Gause",
+      "family_type": "paired_geography_function",
+      "ru_original": "Какие два канала, по Гаузе, Орден прорыл из Самландии для питания водой двух прудов и как назывались эти пруды?",
+      "de_equivalent": "Welche beiden Kanäle ließ der Orden laut Gause aus dem Samland zur Wasserversorgung zweier Teiche graben, und wie hießen diese Teiche?",
+      "ru_control_1": "Гаузе: назовите два канала из Самландии и два кёнигсбергских пруда, для снабжения которых водой их построил Орден."
+    },
+    {
+      "family_id": "F08",
+      "source_key": "Gause",
+      "family_type": "explicit_refutation_and_function",
+      "ru_original": "Согласно Гаузе, предназначалась ли церковь святого Николая в Штайндамме для мореплавателей; кому и для каких обрядов она служила?",
+      "de_equivalent": "War die Nikolaikirche in Steindamm laut Gause für Seefahrer bestimmt; wem diente sie und für welche kirchlichen Handlungen?",
+      "ru_control_1": "Гаузе: была ли церковь святого Николая в Штайндамме морской церковью, или у неё было иное назначение; для кого и для каких обрядов?"
+    },
+    {
+      "family_id": "F09",
+      "source_key": "Gubin",
+      "family_type": "identification_conjunction",
+      "ru_original": "Какой мост, по статье Губина «Деревянный или дровяной?», соединял восточную часть Альтштадта с Соборной площадью Кнайпхофа и утратил значение после постройки Шмиде-брюкке; в какие годы он существовал?",
+      "de_equivalent": "Welche Brücke verband laut Gubins Aufsatz den östlichen Teil der Altstadt mit dem Domplatz auf Kneiphof und verlor nach dem Bau der Schmiedebrücke ihre Bedeutung; in welchen Jahren bestand sie?"
+    },
+    {
+      "family_id": "F10",
+      "source_key": "Markin",
+      "family_type": "two_counts_and_scope",
+      "ru_original": "Сколько террористических и сколько диверсионных актов в Калининградской области за 1945–1946 годы приводит Маркин в статье о взаимоотношениях немцев с местными властями?",
+      "de_equivalent": "Wie viele Terrorakte und wie viele Sabotageakte nennt Markin für das Kaliningrader Gebiet in den Jahren 1945–1946 in seinem Aufsatz über die Beziehungen der Deutschen zu den örtlichen Behörden?"
+    }
+  ]
+}
