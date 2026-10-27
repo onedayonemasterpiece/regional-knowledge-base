@@ -30,16 +30,35 @@ class Iterator:
 class Client:
     def __init__(self,data=PDF):
         self.fetches=0;self.downloads=0;self.data=data;self.iterator=None
+        self.sent=None;self.send_calls=0;self.send_error=False
         loc=locator(data)
         self.message=SimpleNamespace(id=loc.message_id,chat_id=loc.chat_id,
             reply_to=SimpleNamespace(reply_to_top_id=loc.topic_id),
             document=SimpleNamespace(id=loc.document_id,size=loc.size))
         self.chunks=[data]
     async def get_messages(self,chat_id,*,ids):
-        assert chat_id==locator().chat_id and ids==locator().message_id
-        self.fetches+=1;return self.message
+        assert chat_id==locator().chat_id
+        self.fetches+=1
+        if self.sent is not None and ids==self.sent.id:return self.sent
+        return self.message
+    async def iter_messages(self,chat_id,*,search,limit):
+        assert chat_id==locator().chat_id and limit==10
+        if self.sent is not None and self.sent.message==search:yield self.sent
+
+    async def send_file(self,chat_id,path,*,caption,reply_to,force_document):
+        from pathlib import Path
+        assert chat_id==locator().chat_id and reply_to==2 and force_document
+        assert Path(path).read_bytes()==self.data
+        self.send_calls+=1
+        self.sent=SimpleNamespace(id=11,chat_id=chat_id,message=caption,
+            reply_to=SimpleNamespace(reply_to_top_id=2),
+            document=SimpleNamespace(id=987654321,size=len(self.data)))
+        if self.send_error:raise TimeoutError('lost send acknowledgment')
+        return self.sent
+
     def iter_download(self,document,*,request_size,chunk_size):
-        assert document is self.message.document and request_size==chunk_size==65536
+        assert document in (self.message.document, getattr(self.sent,'document',None))
+        assert request_size==chunk_size==65536
         self.downloads+=1;self.iterator=Iterator(self.chunks);return self.iterator
 
 
@@ -141,3 +160,33 @@ async def test_mcp_keeps_attachment_fileparams_and_refuses_legacy_telegram(monke
     assert 'telegram_original' in schema['properties']
     with pytest.raises(Exception,match='telegram_original_requires_target_start_without_attachment'):
         await tool.fn(command='start',telegram_original=TelegramOriginalInput(**locator().wire()))
+
+
+@pytest.mark.asyncio
+async def test_native_archive_original_presence_and_unknown_never_resends(native):
+    """Distinguishes S3-only main: Kaggle sends a real document through one fake Telethon client."""
+    from test_kaggle_original_intake import acquire,INGEST
+    n=native;client=Client()
+    n.handler.telegram_downloader=downloader(client)
+    _,record=await acquire(n)
+    args=dict(handle=record['handle'],original_sha256=record['sha256'])
+    send=frame('original_archive',args,key='telegram-new-source')
+    result=(await n.handler(send))['value']
+    from regional_knowledge.telegram_original import TelegramOriginalLocator
+    saved=TelegramOriginalLocator.from_wire(result['telegram_locator'])
+    assert (saved.chat_id,saved.topic_id,saved.message_id,saved.document_id)==(
+        locator().chat_id,2,11,987654321)
+    assert result['key'].startswith('telegram/') and client.send_calls==1
+    assert (await n.handler(send))['value']==result and client.send_calls==1
+    assert await downloader(client).presence(saved,current=lambda:True)
+    assert (await downloader(client).archive(n.handler._records[record['handle']]['path'],
+        sha256=record['sha256'],size=record['size'],ingestion_id=INGEST,
+        current=lambda:True))==saved
+    assert client.send_calls==1
+    # Provider can have committed and lost its send ACK. The same native
+    # operation is UNKNOWN and must not issue an automatic second send.
+    client.sent=None;client.send_error=True
+    unknown=frame('original_archive',args,key='telegram-unknown-operation')
+    first=(await n.handler(unknown))['value']
+    assert first['error']=='original_telegram_send_unknown'
+    assert (await n.handler(unknown))['value']==first and client.send_calls==2

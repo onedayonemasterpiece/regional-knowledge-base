@@ -22,6 +22,29 @@ from test_control_spool import handler
 from test_kaggle_original_intake import native,PDF,IMAGE,SOURCE,INGEST
 from test_recovery_s3 import BotoFailure
 
+def legacy_s3_original_fixture(controller):
+    """Historical original S3 receipt fixture; active intake uses Telegram instead."""
+    archive=controller._archive
+    async def old_archive(binding,record,*,page=None):
+        if page is not None:
+            return await archive(binding,record,page=page)
+        args=dict(handle=record['handle'],original_sha256=record['sha256'])
+        key='originals/v1/'+digest(controller.spool.journal.stream.encode())+'/'+record['spec']['source_id']+'/'+record['sha256']
+        version=await controller._head(key,record['size'])
+        if version is None:
+            operation=digest(canonical(dict(phase='original_archive',args=args)))
+            ticket=await controller._ticket(binding,operation,'PUT',key,record['size'],record['sha256'])
+            native=await controller._phase(binding,'original_archive',args,{'ticket':ticket},operation_key=operation)
+            version=await controller._head(key,record['size'],native['native_version'])
+        operation=digest(canonical(dict(phase='original_verify',args=args)))
+        ticket=await controller._ticket(binding,operation,'GET',key,record['size'],record['sha256'],version)
+        receipt=await controller._phase(binding,'original_verify',args,{'ticket':ticket})
+        from test_telegram_original import locator
+        receipt['telegram_locator']=locator(PDF).wire()  # existing synthetic topic-2 copy
+        return receipt
+    controller._archive=old_archive
+
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('continued',[False,True])
@@ -86,6 +109,7 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
     controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
         object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
         current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+    legacy_s3_original_fixture(controller)
     stop=asyncio.Event();phases=[]
     async def peer():
         while not stop.is_set():
@@ -160,6 +184,9 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
             assert proof.pages[0]['native_text']==full and len(proof.pages[0]['native_blocks'])==2
             assert proof.pages[0]['native_text_info']['complete'] and not proof.pages[0]['native_text_info']['truncated']
         first_proof=proof.sha256;first_original=status.receipt.receipt_sha256
+        # Before the historical sidecar migration, legacy restores remain S3-based.
+        with e.q.connect() as db:
+            db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=NULL WHERE ingestion_id=?',(INGEST,))
         old_handle=controller._row(e.auth.p.owner.subject,INGEST)['acquisition_json']
         # Drop only ephemeral native capabilities. The verified object and exact
         # logical source receipt remain durable; recovery must GET, never PUT.
@@ -255,6 +282,7 @@ async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native,
     controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
         object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
         current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+    legacy_s3_original_fixture(controller)
     stop=asyncio.Event()
     async def peer():
         while not stop.is_set():
@@ -313,7 +341,8 @@ async def test_unknown_or_conflicting_head_never_authorizes_a_put(response):
     async def forbidden(*a,**k):puts.append(True);pytest.fail('unknown HEAD was treated as absent')
     controller._ticket=forbidden
     record=dict(handle='retained',sha256=digest(PDF),size=len(PDF),spec={'source_id':SOURCE})
-    with pytest.raises(OriginalIntakeError):await controller._archive(object(),record)
+    page=dict(physical_page_index=0,image_sha256=digest(IMAGE),image_size=len(IMAGE))
+    with pytest.raises(OriginalIntakeError):await controller._archive(object(),record,page=page)
     assert not puts
 
 
@@ -400,6 +429,7 @@ async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,
     controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
         object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
         current_binding=lambda:state.binding,allowed_origins=frozenset({'https://archive.invalid'}))
+    legacy_s3_original_fixture(controller)
     def bridge():
         with e.q.connect(write=False) as db:
             run=db.execute('SELECT * FROM runs WHERE id=?',(state.run,)).fetchone()
@@ -441,6 +471,8 @@ async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,
         status=await controller.begin(e.auth.p.admin,operation_id='restore-fixture',source_id=SOURCE,ingestion_id=INGEST,
             file=ChatFile(download_url='https://attachment.invalid/private',file_id='fixture',mime_type='application/pdf'),max_bytes=len(PDF))
         assert status.verified
+        with e.q.connect() as db:
+            db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=NULL WHERE ingestion_id=?',(INGEST,))
         row=controller._row(e.auth.p.owner.subject,INGEST);original=dict(row)
         old_record=json.loads(row['acquisition_json']);parser=n.handler.parser
         async def unavailable(*a,**kw):raise OriginalIntakeError('original_parser_unavailable')
