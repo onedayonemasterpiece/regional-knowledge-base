@@ -218,8 +218,16 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     assert 256*1024<page1['image_size']<=MODEL_PAGE_BYTE_LIMIT
     old_receipt=replace(receipt,sha256=old_sha,size=length,format='djvu',
         page_count=2,parser_sha256=old_pin)
-    # Index 1 has never been issued in this ingestion; real controller records it.
+    # This DjVu and the later two-page PDF are distinct synthetic originals;
+    # isolate their issuance DBs even though legacy fixture IDs coincide.
+    pdf_db=db
+    db=sqlite3.connect(':memory:')
+    db.row_factory=sqlite3.Row
+    db.execute('''CREATE TABLE rkb_original_image_issuance (
+        ingestion_id TEXT NOT NULL, physical_page_index INTEGER NOT NULL,
+        receipt_json TEXT NOT NULL, PRIMARY KEY(ingestion_id,physical_page_index))''')
     assert controller._record_issued_image(old_receipt,page1)['image_sha256']==page1['image_sha256']
+    db.close();db=pdf_db
     async def prior_verified(context,ingestion_id):
         assert ingestion_id==INGEST
         return old_receipt
