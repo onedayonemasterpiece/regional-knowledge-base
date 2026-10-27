@@ -661,8 +661,6 @@ class NativeSourceMaterializer:
             doc=dict(validate_native_source_command(command),materializer_sha256=materializer_fingerprint())
         else:doc=validate_materialize_command(command)
         self._current()
-        if doc['materializer_sha256']!=materializer_fingerprint():
-            raise PermissionError('accepted_native_materializer_unavailable')
         source_id=command.ids['source_id']
         exact=(source_id,doc['ingestion_id'],doc['batch_count'],doc['last_batch_sha256'],doc['materializer_sha256'])
         # The SQL018 function owns both short and fragmented input cardinality.
@@ -677,9 +675,11 @@ class NativeSourceMaterializer:
                 row=await (await connection.execute('SELECT command_sha256 FROM rkb_v4.applied_ops WHERE operation_key=%s',
                     (command.operation_key,))).fetchone()
                 if row is not None:
-                    # apply_accepted alone verifies duplicates/conflicts. Never
-                    # repeat a model call just to reconstruct an old receipt.
+                    # Historical accepted bytes replay as an exact no-op, not
+                    # through any newer stage/model interpretation.
                     return
+                if doc['materializer_sha256']!=materializer_fingerprint():
+                    raise PermissionError('accepted_native_materializer_unavailable')
                 candidate=await (await connection.execute(candidate_query,exact)).fetchone()
                 if candidate is None:
                     batches=[]
