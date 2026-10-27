@@ -244,11 +244,11 @@ class KaggleSourceImporter:
         if (type(receipt) is not VerifiedOriginalReceipt or VerifiedOriginalReceipt.from_wire(receipt.wire()) != receipt
                 or receipt.source_id != row['source_id'] or receipt.ingestion_id != row['ingestion_id']
                 or receipt.request_id != str(uuid5(UUID(row['ingestion_id']), 'original:source-original:'+row['ingestion_id']))
-                # Actor-verified, archived PDF receipts may retain a
-                # historical parser hash. Native restore/page dispatch
-                # independently permits only the exact old PDF executable;
-                # unknown DjVu parser hashes are never accepted.
-                or (receipt.parser_sha256 != self.parser_sha256 and receipt.format != 'pdf')
+                # Only exact prior Stage0 PyMuPDF 1.28.2 DjVu identities remain accepted;
+                # the native restore guard independently binds the same parser pin.
+                or (receipt.parser_sha256 != self.parser_sha256 and receipt.format != 'pdf' and
+                    receipt.parser_sha256 not in ('6387b3e5c4a5037370fa6ebe5412280b2fe15990bbdde72e7ba16b4c9042ccfa',
+                        'adca0115e43da61713a048f8a816c1b40a885925320b916b68f3daaec0aa961b'))
                 or receipt.format not in ('pdf','djvu') or receipt.size > MAX_BYTES or receipt.page_count > MAX_PAGES):
             raise failure('verified_small_original_required')
         return receipt
