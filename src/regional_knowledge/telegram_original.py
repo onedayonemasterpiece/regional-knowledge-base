@@ -134,7 +134,6 @@ class NativeTelegramOriginalDownloader:
             raise OriginalIntakeError('original_telegram_locator_invalid')
         if type(max_bytes) is not int or not locator.size <= max_bytes <= 512*1024*1024:
             raise OriginalIntakeError('original_telegram_byte_bound')
-        self._check(locator, current)
         path = Path(directory) / 'telegram-original.source'
         iterator = None
         acquired = False
