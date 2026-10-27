@@ -18,7 +18,7 @@ from regional_knowledge.kaggle_original_parser import (
     MODEL_PAGE_BYTE_LIMIT, MODEL_PAGE_QUALITIES, parse,
 )
 from regional_knowledge.original_intake import (
-    OriginalIntakeError, VerifiedOriginalReceipt, digest,
+    OriginalIntakeError, VerifiedOriginalReceipt, canonical, digest,
 )
 from regional_knowledge.original_intake_controller import OriginalIntakeController
 from test_kaggle_original_intake import INGEST, REQUEST, SOURCE, frame, native
