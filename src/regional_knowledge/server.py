@@ -1391,9 +1391,12 @@ def build_server(
                 raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
             if selected != 'kaggle_source':
                 raise ToolError('{"status":"unavailable","reason":"native_chunks_unavailable"}')
-            return FetchChunksOutput.model_validate(await backend.fetch_chunks(
+            result=FetchChunksOutput.model_validate(await backend.fetch_chunks(
                 _principal(),source_id=source_id,page_start=page_start,page_end=page_end,
                 after_ordinal=after_ordinal,limit=limit))
+            from .product_telemetry import import_metadata
+            import_metadata(source_id=source_id,chunk_count=len(result.chunks),has_more=result.has_more)
+            return result
         if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         return await backend.fetch(id, _principal())
