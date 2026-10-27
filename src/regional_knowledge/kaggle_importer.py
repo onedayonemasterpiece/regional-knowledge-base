@@ -924,7 +924,9 @@ class KaggleSourceImporter:
                     raise failure('native_original_page_binding_mismatch')
             from .server import _book_page_tool_result
             from .product_telemetry import import_metadata
-            import_metadata(ingestion_id=ingestion_id,page_count=len(batch.pages),
+            preview=batch.pages[0].native_text_info.get('preview_render') or {}
+            import_metadata(ingestion_id=ingestion_id,source_id=row['source_id'],page_count=len(batch.pages),
                 physical_page_index=batch.pages[0].physical_page_index,
-                image_bytes=sum(len(page.data) for page in batch.pages))
+                image_bytes=sum(len(page.data) for page in batch.pages),
+                image_width=preview.get('width'),image_height=preview.get('height'))
             return await self._reply(access, batch, render=lambda value: _book_page_tool_result(ingestion_id, value))
