@@ -9,7 +9,7 @@ import pytest
 
 from regional_knowledge.source_stage import canonical,digest
 from regional_knowledge.source_units import resolve_source_units
-from test_source_activation_pg import accepted,stage_command
+from test_source_activation_pg import image_pg_sql18, accepted,stage_command
 from test_source_batch_pg import native,packet
 from test_native_source_materializer import exact_batch
 from test_source_stage import SOURCE, original
