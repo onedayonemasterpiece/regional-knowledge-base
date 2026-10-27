@@ -24,6 +24,12 @@ the read-only schema fast path. Initial index construction takes the SQLite
 writer lock and requires additional disk space; retention, lease expiry,
 claim ownership and UNKNOWN handling remain unchanged.
 
+Controller maintenance retries native `SQLITE_BUSY` (code 5) on its existing
+five-second loop after the queue transaction rolls back. The failed tick skips
+all launch processing and retains unknown submissions for reconciliation.
+Other SQLite failures still propagate; this retry does not remove lock
+contention or establish its cause. Failure logs include `retry_next_tick`.
+
 Local result waiters are notified only after completion commits, including
 between queue instances in the same process. A bounded 250 ms reconciliation
 path observes completions from other processes and recovers missed hints. A
