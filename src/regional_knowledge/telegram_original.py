@@ -157,9 +157,8 @@ class NativeTelegramOriginalDownloader:
                 self._check(locator, current)
                 if size != locator.size or sha.hexdigest() != locator.sha256:
                     raise OriginalIntakeError('original_telegram_bytes_changed')
-                with path.open('rb') as stream:
-                    if stream.read(5) != b'%PDF-':
-                        raise OriginalIntakeError('original_telegram_pdf_required')
+                # The existing native parser identifies PDF versus DjVu after
+                # download; a Telegram locator does not assert a MIME type.
                 acquired = True
                 return DownloadedFile(path, sha.hexdigest(), size)
         except (OriginalIntakeError, asyncio.CancelledError):

@@ -76,10 +76,12 @@ content-addressed stable archive key, native version, page count, parser pin,
 acquisition hash and native readback hash. Signed URLs are not receipt locators.
 
 When an unrendered page needs a lost ephemeral native handle, the controller
-restores only from that retained verified receipt. `original_acquire` receives a
-scoped conditional GET ticket for the same archived version; Kaggle verifies the
-entire size/hash and reparses with the exact same parser pin before retaining a
-new handle. Source/ingestion identity and original receipt are immutable. The
+restores only from that retained verified receipt. New Telegram originals use
+the saved message/document locator: the same leased downloader retrieves bytes
+directly into private Kaggle scratch and the existing source/parser checks apply.
+Old immutable S3 receipts still work with their original conditional GET path
+until the sidecar Telegram locator has been migrated; afterwards the same
+old receipt remains unchanged but restore prefers Telegram. Source/ingestion identity and original receipt are immutable. The
 restore sub-operation is persisted before dispatch and reused after cancellation
 or lost acknowledgment. It creates no original PUT, external attachment download
 or source import. Pending intake without a verified receipt cannot take this

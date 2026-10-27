@@ -282,10 +282,12 @@ class NativeOriginalIntake:
     async def _execute(self,frame):
         phase,args,private=frame['phase'],frame['arguments'],frame.get('original_transfer')
         if phase=='original_acquire':
-            restore=type(args) is dict and set(args)=={'spec','restore_receipt','restore_nonce'}
+            restore=type(args) is dict and {'spec','restore_receipt','restore_nonce'}<=set(args)
             telegram=type(args) is dict and set(args)=={'spec','telegram_locator'}
-            if (type(args) is not dict or set(args) not in ({'spec'},{'spec','telegram_locator'},{'spec','restore_receipt','restore_nonce'})
-                    or (private is not None if telegram else
+            tg_restore=restore and 'telegram_locator' in args
+            if (type(args) is not dict or set(args) not in ({'spec'},{'spec','telegram_locator'},
+                    {'spec','restore_receipt','restore_nonce'},{'spec','restore_receipt','restore_nonce','telegram_locator'})
+                    or (private is not None if telegram or tg_restore else
                         type(private) is not dict or set(private)!=({'ticket'} if restore else {'download_url'}))):
                 raise OriginalIntakeError('original_acquire_contract')
             spec=OriginalIntakeSpec.from_wire(args['spec'])
@@ -306,21 +308,36 @@ class NativeOriginalIntake:
                 prior=None
                 if restore:
                     prior=VerifiedOriginalReceipt.from_wire(args['restore_receipt'])
-                    ticket=SnapshotTicket.from_wire(private['ticket'])
                     if ((prior.source_id,prior.ingestion_id,prior.request_id,prior.revision)!=(
                             spec.source_id,spec.ingestion_id,spec.request_id,spec.revision)
                             or prior.parser_sha256 not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256)
                             or (prior.parser_sha256==self.legacy_parser_sha256 and prior.format!='pdf')
                             or prior.size>spec.max_bytes
-                            or type(args['restore_nonce']) is not str or len(args['restore_nonce'])!=48
-                            or (ticket.key,ticket.size,ticket.sha256)!=(prior.key,prior.size,prior.sha256)
-                            or {k.lower():v for k,v in ticket.headers}.get('if-match')!=prior.native_version):
+                            or type(args['restore_nonce']) is not str or len(args['restore_nonce'])!=48):
                         raise OriginalIntakeError('original_restore_receipt_mismatch')
-                    restored=await self.transfer.download(ticket,folder/'restored.source',operation_key=frame['operation_key'])
-                    from .file_ingress import sha256_file,DownloadedFile
-                    actual_hash,actual_size=await _blocking(sha256_file,restored)
-                    if (actual_hash,actual_size)!=(prior.sha256,prior.size):raise OriginalIntakeError('original_restore_bytes_mismatch')
-                    downloaded=DownloadedFile(restored,actual_hash,actual_size)
+                    if tg_restore:
+                        from .telegram_original import TelegramOriginalLocator
+                        locator=TelegramOriginalLocator.from_wire(args['telegram_locator'])
+                        if ((locator.sha256,locator.size)!=(prior.sha256,prior.size)
+                                or prior.key.startswith('telegram/') and prior.key!=
+                                'telegram/'+digest(canonical(locator.wire()))):
+                            raise OriginalIntakeError('original_restore_receipt_mismatch')
+                        if self.telegram_downloader is None:
+                            raise OriginalIntakeError('original_telegram_binding_required')
+                        downloaded=await self.telegram_downloader.download(locator,folder,
+                            max_bytes=spec.max_bytes,current=lambda: not self.closed
+                            and self.generation==frame['connection_generation']
+                            and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
+                    else:
+                        ticket=SnapshotTicket.from_wire(private['ticket'])
+                        if ((ticket.key,ticket.size,ticket.sha256)!=(prior.key,prior.size,prior.sha256)
+                                or {k.lower():v for k,v in ticket.headers}.get('if-match')!=prior.native_version):
+                            raise OriginalIntakeError('original_restore_receipt_mismatch')
+                        restored=await self.transfer.download(ticket,folder/'restored.source',operation_key=frame['operation_key'])
+                        from .file_ingress import sha256_file,DownloadedFile
+                        actual_hash,actual_size=await _blocking(sha256_file,restored)
+                        if (actual_hash,actual_size)!=(prior.sha256,prior.size):raise OriginalIntakeError('original_restore_bytes_mismatch')
+                        downloaded=DownloadedFile(restored,actual_hash,actual_size)
                 elif telegram:
                     downloaded=await self.telegram_downloader.download(locator,folder,max_bytes=spec.max_bytes,
                         current=lambda:not self.closed and self.generation==frame['connection_generation']

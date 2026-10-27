@@ -17,7 +17,14 @@ Kaggle Telethon client, records the message/document locator in the intake row
 and creates a receipt only after document presence is checked. This first PR
 does not yet replace S3-based restoration of lost native handles: Telegram
 restore and eight historical-source migration belong to dependent PR2.
-Historical immutable receipts are not rewritten.
+Historical immutable receipts are not rewritten. Once both PRs are deployed,
+`scripts/migrate_telegram_originals.py:migrate(originals,owner_context)`
+runs *inside the existing authenticated owner runtime* and enumerates
+historical S3-only original rows; it calls the existing `original_acquire`
+restore phase (S3 GET into Kaggle) and the native `original_archive` phase
+(Telethon send from Kaggle) before writing a sidecar locator. It does not
+download original bytes to Dev. Run only after reviewed native rollout;
+this change does not invoke it.
 
 ## Media success: presence, not custom byte verification
 
