@@ -12,6 +12,7 @@ import shlex
 import re
 import time
 from regional_knowledge.bge_queue import BgeQueue
+from regional_knowledge.bge_error_facts import failure_facts
 
 def provider_error_facts(error):
     """Bounded provider diagnostics without URLs, messages or request bodies."""
@@ -302,7 +303,12 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
     dataset_probe_at=None;dataset_probe=None
     while True:
         reconcile_provider_history(api,queue,current_only=True)
-        runs=queue.maintenance()
+        try:
+            runs=queue.maintenance()
+        except Exception as error:
+            logging.error(json.dumps({'event':'bge_controller_maintenance_failed',
+                'error_type':type(error).__name__, **failure_facts(error)}))
+            raise
         owners=queue.provider_owned_run_ids()
         for run in runs:
             if run['id'] not in owners:continue
