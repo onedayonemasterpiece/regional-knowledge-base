@@ -120,7 +120,7 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
         return "etag"
     controller._head = head
     archived = await controller._archive(
-        SimpleNamespace(), dict(handle=handle, sha256=original_sha,
+        SimpleNamespace(), dict(handle=handle, sha256=original_sha, size=path.stat().st_size,
                                 spec={"source_id": SOURCE}), page=first)
     assert archived["native_version"] == "etag"
     controller.store = SimpleNamespace(bucket="fixture", client=SimpleNamespace(
@@ -130,7 +130,7 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     controller._phase = phase
     binding = SimpleNamespace(run_id="fixture")
     _, returned_page, returned_data = await controller._page_data(
-        binding, dict(handle=handle, sha256=original_sha,
+        binding, dict(handle=handle, sha256=original_sha, size=path.stat().st_size,
                       spec={"source_id": SOURCE}), 0,
         dict(block=0, offset=0, text=0), restore=lambda prior: None)
     assert returned_page == first and returned_data == pdf_image
