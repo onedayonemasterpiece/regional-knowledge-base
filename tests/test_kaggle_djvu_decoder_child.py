@@ -20,7 +20,7 @@ def test_decoder_launch_has_preexec_cpu_address_file_fd_limits_and_one_selected_
                 "/kaggle/temp/verified/sha256.source","2","1280",
                 "/pinned/native/usr/lib/x86_64-linux-gnu"])
     assert len(limited)==5
-    assert limited[0]==(child.resource.RLIMIT_CPU,(30,30))
+    assert limited[0]==(child.resource.RLIMIT_CPU,(16,16))
     assert limited[1]==(child.resource.RLIMIT_AS,(2*1024**3,2*1024**3))
     assert limited[2]==(child.resource.RLIMIT_FSIZE,(16*1024**2,16*1024**2))
     assert limited[3]==(child.resource.RLIMIT_NOFILE,(64,64))
