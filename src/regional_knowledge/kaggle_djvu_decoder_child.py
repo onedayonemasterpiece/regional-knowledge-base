@@ -33,7 +33,7 @@ def main(argv: list[str]) -> None:
     # Soft and hard ceilings survive execve: the native decoder cannot bypass
     # the trusted parent simply by allocating or forking. Never allow core dumps
     # or writing temporary output files beyond the selected pipe.
-    resource.setrlimit(resource.RLIMIT_CPU,(30,30))
+    resource.setrlimit(resource.RLIMIT_CPU,(16,16))
     resource.setrlimit(resource.RLIMIT_AS,(2*1024**3,2*1024**3))
     resource.setrlimit(resource.RLIMIT_FSIZE,(16*1024**2,16*1024**2))
     resource.setrlimit(resource.RLIMIT_NOFILE,(64,64))
