@@ -124,6 +124,7 @@ def report(events, ingestion_ref=None):
         value['text_lag_ms'] = interval(value['_times'].get('stage'), value['_times'].get('text'))
         value['semantic_lag_ms'] = interval(value['_times'].get('text'), value['_times'].get('semantic'))
         value['status_observed'], value['fetch_observed'] = None, None
+    uncorrelated_status = 0
     for e in calls:
         if e.get('tool') == 'fetch':
             pg, end = integer(e,'physical_page_index'), integer(e,'physical_page_end')
@@ -133,12 +134,9 @@ def report(events, ingestion_ref=None):
                         rows[index]['fetch_observed']=(rows[index]['fetch_observed'] or 0)+1
             continue
         if e.get('tool') != 'book_ingest' or e.get('command') != 'status': continue
-        linked, at = operation_pages.get(e.get('operation_ref')), start(e)
-        if linked is None and at is not None:
-            eligible = [(v['_issued'], p) for p, v in rows.items()
-                        if v['_issued'] is not None and v['_issued'] <= at]
-            linked = max(eligible)[1] if eligible else None
-        if linked is not None: rows[linked]['status_observed'] = (rows[linked]['status_observed'] or 0) + 1
+        linked = operation_pages.get(e.get('operation_ref'))
+        if linked is None: uncorrelated_status += 1
+        else: rows[linked]['status_observed'] = (rows[linked]['status_observed'] or 0) + 1
     for first, selected in multipage.items():
         for page in selected:
             if page == first: continue
@@ -167,6 +165,7 @@ def report(events, ingestion_ref=None):
                              'p90': round(samples[(9*len(samples)+9)//10-1], 1)}
     summary = {'ingestion_ref': ingestion_ref, 'pages_observed': len(rows),
                'unmapped_in_multipage_stage': unmapped, 'orphan_apply_events': orphan,
+               'uncorrelated_status': uncorrelated_status,
                'loss_before': losses, 'seq_gaps': gaps, 'no_seq_visibility': not bool(seqs), 'packet_counts_are_shared': bool(multipage),
                'inter_call_share_pct': round(100*idle/(idle+active), 1) if idle+active else None,
                'pages_per_hour_observed': round(3_600_000*len(rows)/elapsed, 1) if elapsed and elapsed>0 else None,
