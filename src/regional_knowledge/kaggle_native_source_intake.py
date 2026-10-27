@@ -123,7 +123,7 @@ class NativeSourceIntake:
                     "rejected_reason='legacy_import_reimport_required',pending_operation_key=NULL,pending_kind=NULL "
                     "WHERE packet_mode=0 AND rejected_reason IS NOT 'legacy_import_reimport_required' RETURNING ingestion_id"):
                 db.execute("UPDATE rkb_source_intake_control SET phase='failed' WHERE ingestion_id=?", legacy)
-            db.execute('CREATE INDEX IF NOT EXISTS rkb_native_packet_work ON rkb_native_source_intake_state(ingestion_id) WHERE '+_PACKET_WORK)
+            db.execute('DROP INDEX IF EXISTS rkb_native_packet_work')
 
     async def _packet_proof(self,ingestion_id):
         with self.queue.connect(write=False) as db:
@@ -186,7 +186,7 @@ class NativeSourceIntake:
 
     def kick_packet(self,ingestion_id):
         if self._packet_closed:return
-        if len(self._packet_wakes)<16:self._packet_wakes.add(ingestion_id)
+        self._packet_wakes.add(ingestion_id)
         if self._packet_task is None or self._packet_task.done():
             self._packet_task=asyncio.create_task(self._continue_packets())
 

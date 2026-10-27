@@ -12,7 +12,7 @@ binds the accepted stage hash, person, source, ingestion, batch and current
 runtime; each new component rechecks canonical owner/import rights and existing
 history/UNKNOWN/writer fences. It grants no new stage, next page or finish, and
 neither retains an HTTP access lease nor constructs an owner Principal. Restart
-recovery visits at most 16 indexed compact progress rows per maintenance tick;
+recovery visits at most 16 compact progress rows per maintenance tick;
 duplicates reuse existing operation keys. UNKNOWN remains pending without
 automatic redelivery. APPLIED components still require verified Dataset
 persistence before being reported Saved.

@@ -1402,7 +1402,23 @@ def build_server(
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         return await backend.fetch(id, _principal())
 
-    @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+    from .illustration_ui import (
+        ILLUSTRATION_UI_URI, ILLUSTRATION_UI_MIME,
+        ILLUSTRATION_UI_META, ILLUSTRATION_UI_HTML,
+    )
+
+    @mcp.resource(
+        ILLUSTRATION_UI_URI, name="illustration-viewer",
+        title="Иллюстрация из книги", mime_type=ILLUSTRATION_UI_MIME,
+        meta=ILLUSTRATION_UI_META,
+    )
+    def illustration_viewer() -> str:
+        return ILLUSTRATION_UI_HTML
+
+    @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False), meta={
+        "ui": {"resourceUri": ILLUSTRATION_UI_URI},
+        "openai/outputTemplate": ILLUSTRATION_UI_URI,
+    })
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:
         if selected == 'kaggle_source':
             # EXISTING tool name, but the installed target may only disclose
