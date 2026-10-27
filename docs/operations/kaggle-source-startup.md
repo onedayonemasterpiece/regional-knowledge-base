@@ -364,3 +364,23 @@ Ready and unavailable semantics are unchanged. Status polling creates no demand
 and renews no activity; fresh OAuth and final ACL checks still apply. Warm searches
 do not read startup history. Startup polls emit bounded sanitized read attempt
 start/terminal diagnostics with elapsed time, without locators or private input.
+
+## Cold pending deadline diagnostics
+
+The existing read-attempt terminal event includes `startup_eta_ms` and
+`startup_final_auth_ms` for the initial pending-search path, including interrupted
+phases. Initial OAuth token/state hops and pending final-state recheck report
+`auth_token_*`, `auth_state_*` and `startup_auth_state_*` timings. Their suffixes
+are `executor_wait_ms` (submission until worker starts), `callback_ms` (complete
+worker callback wall time), and `resume_ms` (worker finish until awaiting task
+resumes). Token callback time includes file/decrypt/policy/SQL; state callback
+means the complete participant-state check. These are not SQL-query or CPU times.
+
+Cancellation can precede worker start or completion. Unobserved intervals are
+absent, never fabricated as zero; late workers cannot update terminal metadata.
+The fixed numeric fields use the existing bounded lossy sink and contain no
+bearer, query, person, startup reference or exception text. Component timings
+partition their hop but overlap the existing `auth_ms`/final-phase totals, so do
+not add those totals together. A slow `auth_ms` alone does not establish whether
+SQLite, the executor queue or event-loop resumption caused the delay. No timeout,
+ETA, admission, authorization or retry behavior is changed by these diagnostics.
