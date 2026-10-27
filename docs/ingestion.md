@@ -40,7 +40,7 @@ Stage использует local region_key/illustration_key и стабильн
 
 Inline stage или один UTF-8 JSON file — два транспорта одной schema, не два workflow. Существующий file envelope: ≤1MiB, ≤8 страниц, ≤100 chunks, ≤12 episode candidates; не смешивать file с inline/metadata и не принимать PDF в stage. Если findings/body не помещаются, продолжить bounded batch, а не обрезать/терять их. Проверить job rights до download; сохранить package SHA. Validation errors возвращают ≤8 paths/types без private values; unknown field names маскируются. Новый facts/body contract versioned, клиентские имена не выдаются за уже реализованные.
 
-После известного отклонения packet существующий `book_ingest(status)` может дополнить `warnings` тегами `accepted_input_needs_review:region_id=<UUID>:page_index=<index>:reading_order=<order>`: не более 32 regions и отдельный `accepted_input_needs_review:truncated` при усечении. Это явные `needs_review=true` из exact принятого stage, связанного с rejected packet по ingestion/source/batch/hash, а не восстановленная причина native rejection. Текст, названия и region keys не возвращаются; без проверяемой связи остаётся generic status. UNKNOWN/pending, review gate, retry и сохранённые receipts этим не изменяются.
+Неразборчивые места отмечать `[?]`, сохраняя весь читаемый текст дословно и `needs_review=false`; не угадывать слово и не останавливать страницу ради одного неразборчивого фрагмента.
 
 ## Логические границы статей и глав для будущего PDF-экспорта
 
