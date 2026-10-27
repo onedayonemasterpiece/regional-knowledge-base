@@ -82,11 +82,11 @@ def parse(path,action,index=0,*,cursor=None):
                 requires_visual_review=True,encoding_notice='cid_font_without_unicode_map' if missing else None,
                 block_count=len(blocks),blocks_truncated=position<len(blocks)),native_blocks=segments)
         if action=='page':
-            for edge in MODEL_PAGE_EDGES:
-                scale=edge/max(width,height);pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False)
-                for quality in MODEL_PAGE_QUALITIES:
-                    image=pixmap.tobytes('jpeg',jpg_quality=quality)
-                    if 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:break
+            pixmap=None;last_edge=None
+            for edge,quality in ((edge,q) for edge in MODEL_PAGE_EDGES for q in MODEL_PAGE_QUALITIES):
+                scale=edge/max(width,height)
+                if last_edge!=edge:pixmap=page.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False);last_edge=edge
+                image=pixmap.tobytes('jpeg',jpg_quality=quality)
                 if 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:break
             else:raise ValueError('original_render_byte_bound')
             render=dict(policy='rkb.model-page.v2',width=pixmap.width,height=pixmap.height,scale=scale,max_edge=edge,jpeg_quality=quality,byte_limit=MODEL_PAGE_BYTE_LIMIT,image_bytes=len(image),preview_only=True)
