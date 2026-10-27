@@ -837,7 +837,7 @@ class KaggleSourceImporter:
 
     async def book_ingest(self, *, command, principal, file=None, ingestion_id=None,
                           cursor=None, payload=None, document_id=None, source_import=None, stage_file_sha256=None):
-        if command not in ('start', 'stage', 'validate', 'finalize', 'status'):
+        if command not in ('start', 'stage', 'validate', 'finalize', 'status', 'archive'):
             raise failure('target_import_command_unavailable')
         if cursor is not None:
             raise failure('ingest_stage_cursor_unavailable', status='invalid_query')
@@ -858,7 +858,12 @@ class KaggleSourceImporter:
                         if file is not None:
                             raise failure('file_only_supported_for_original_start_or_stage_json', status='invalid_query')
                         row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id, document_id)
-                        if command == 'stage':
+                        if command == 'archive':
+                            if self.native_intake is None:raise failure('target_import_command_unavailable')
+                            await self.originals.migrate_s3_original_to_telegram(access.context,row['ingestion_id'])
+                            output=await self.native_intake.status(access,row)
+                            output=output.model_copy(update={'message':'Telegram original archive verified. '+output.message})
+                        elif command == 'stage':
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
                             output = await self._validate(access, row)

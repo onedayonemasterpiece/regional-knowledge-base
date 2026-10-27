@@ -22,6 +22,135 @@ from test_control_spool import handler
 from test_kaggle_original_intake import native,PDF,IMAGE,SOURCE,INGEST
 from test_recovery_s3 import BotoFailure
 
+
+@pytest.mark.asyncio
+async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_verify(owner,native):
+    from dataclasses import replace
+    from test_telegram_original import Client,downloader
+    class Peer(Client):
+        visible=False
+        lookups=0
+        preflight_error=False
+        post_send_presence_error=False
+        async def iter_messages(self,chat_id,*,search,limit):
+            self.lookups+=1
+            if self.preflight_error:
+                self.preflight_error=False
+                raise TimeoutError('synthetic preflight metadata failure')
+            yield SimpleNamespace(id=99,chat_id=chat_id,message=search,
+                reply_to=SimpleNamespace(reply_to_top_id=3),document=self.message.document)
+            if self.visible:
+                async for message in super().iter_messages(chat_id,search=search,limit=limit):yield message
+        async def get_messages(self,chat_id,*,ids):
+            assert ids!=99,'wrong-topic caption candidate must be skipped before presence'
+            if self.post_send_presence_error:
+                self.post_send_presence_error=False
+                raise TimeoutError('synthetic presence failure after committed send')
+            return await super().get_messages(chat_id,ids=ids)
+    e,n=owner,native;client=Peer();client.send_error=True
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    current=lambda b:b==binding and e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
+    with e.q.connect(write=False) as db:run=db.execute('SELECT * FROM runs WHERE id=?',(e.run,)).fetchone()
+    bridge=RecoveryPhaseDispatch(e.q,database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1'),
+        identity=(e.run,run['launch_nonce'],binding.runtime_incarnation),binding_current=current)
+    n.handler.identity=bridge.identity;n.handler.database=bridge.database
+    n.handler.current=lambda b:b==(binding.run_id,binding.runtime_incarnation,binding.connection_generation)
+    n.handler.attached(e.generation)
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
+        current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+    stop=asyncio.Event();phases=[]
+    async def peer():
+        while not stop.is_set():
+            work=await e.a.next_channel_work(e.run,e.token,e.generation)
+            if work is None:await asyncio.sleep(.001);continue
+            e.a.mark_work_sent(work)
+            f=dict(type='DISPATCH',protocol_version=2,connection_generation=e.generation,
+                **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+            phases.append((f['phase'],f['operation_key']))
+            receipt=await n.handler(f)
+            await bridge.receive(dict(type='RECOVERY_PHASE_RESULT',job_id=f['id'],claim=f['claim'],receipt=receipt,
+                **{k:f[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')}),
+                run_id=e.run,token=e.token,generation=e.generation)
+            r=work.resource
+            await e.a.resource_released(e.run,e.token,e.generation,runtime_incarnation=r.runtime_incarnation,
+                resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    task=asyncio.create_task(peer())
+    try:
+        status=await controller.begin(e.auth.p.admin,operation_id='lost-ack',source_id=SOURCE,ingestion_id=INGEST,
+            file=ChatFile(download_url='https://attachment.invalid/private',file_id='fixture',mime_type='application/pdf'),max_bytes=len(PDF))
+        assert not status.verified and status.reason=='original_telegram_binding_required' and client.send_calls==0
+        n.handler.telegram_downloader=downloader(client);client.preflight_error=True
+        assert not (await controller.status(e.auth.p.admin,INGEST)).verified and client.send_calls==0
+        assert not (await controller.status(e.auth.p.admin,INGEST)).verified and client.send_calls==1
+        archive_key=next(key for phase,key in reversed(phases) if phase=='original_archive')
+        assert archive_key.endswith(':retry:2')  # Effective receipt, not the root prebinding failure.
+        with e.q.connect(write=False) as db:
+            old=db.execute('SELECT result FROM jobs WHERE idempotency=?',('recovery:'+archive_key,)).fetchone()[0]
+        native_old=canonical(n.handler._results[archive_key])
+        assert json.loads(old)['value']=={'error':'original_telegram_send_unknown'}
+        # The first fresh observation saw no document and did not send again.
+        client.visible=True
+        status=await controller.status(e.auth.p.admin,INGEST)
+        assert status.verified and client.send_calls==1 and client.downloads==0 and client.lookups==4
+        assert [p for p,_ in phases]==['original_acquire']+['original_archive']*3+['original_verify']*2
+        assert len({key for _,key in phases})==6
+        with e.q.connect(write=False) as db:
+            assert db.execute('SELECT result FROM jobs WHERE idempotency=?',('recovery:'+archive_key,)).fetchone()[0]==old
+        assert canonical(n.handler._results[archive_key])==native_old
+        # Preserve an immutable legacy receipt; its optional migration locator
+        # changes transport selection, never the historical receipt bytes.
+        legacy=replace(status.receipt,key='originals/legacy/source',native_version='legacy-etag')
+        immutable=canonical(legacy.wire()).decode()
+        with e.q.connect() as db:
+            sidecar=db.execute('SELECT telegram_locator_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()[0]
+            db.execute('UPDATE rkb_original_intakes SET receipt_json=?,telegram_locator_json=NULL WHERE ingestion_id=?',(immutable,INGEST))
+        heads=[]
+        async def head(*args):heads.append(args);return 'legacy-etag'
+        controller._head=head
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy and len(heads)==1
+        with e.q.connect() as db:db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=? WHERE ingestion_id=?',(sidecar,INGEST))
+        async def forbidden(*args):pytest.fail('migrated legacy receipt still depends on S3 HEAD')
+        controller._head=forbidden
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==legacy
+        with e.q.connect(write=False) as db:
+            assert db.execute('SELECT receipt_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()[0]==immutable
+        assert (await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)).wire()==json.loads(sidecar)
+        assert client.send_calls==1  # Already migrated originals are reused.
+        # A separate legacy migration loses its upload ACK. The second archive
+        # action must retain its restored handle and observe, never restore/send again.
+        with e.q.connect() as db:
+            db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=NULL WHERE ingestion_id=?',(INGEST,))
+        controller._head=head
+        e.c.generate_presigned_url=lambda *a,**k:'https://archive.invalid/synthetic-ticket'
+        n.transfer.objects[legacy.key]=PDF
+        client.sent=None;client.visible=False;client.send_error=False;client.post_send_presence_error=True
+        with pytest.raises(OriginalIntakeError,match='original_telegram_send_unknown'):
+            await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)
+        with e.q.connect(write=False) as db:
+            restored=json.loads(db.execute('SELECT acquisition_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()[0])
+        assert restored['restored_from_receipt_sha256']==legacy.receipt_sha256
+        after_send=len(phases)
+        migration_key=next(key for phase,key in reversed(phases) if phase=='original_archive')
+        migration_unknown=canonical(n.handler._results[migration_key])
+        # Lost native bytes cannot turn an unresolved send into another upload.
+        retained=n.handler._records.pop(restored['handle'])
+        with pytest.raises(OriginalIntakeError,match='original_telegram_send_unknown'):
+            await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)
+        n.handler._records[restored['handle']]=retained
+        client.visible=True
+        await controller.migrate_s3_original_to_telegram(e.auth.p.admin,INGEST)
+        assert [p for p,_ in phases[after_send:]]==['original_verify','original_verify']
+        assert client.send_calls==2 and client.downloads==0  # One send in each independent fixture scenario.
+        assert n.transfer.calls==['download']
+        assert canonical(n.handler._results[migration_key])==migration_unknown
+        with e.q.connect(write=False) as db:
+            final=db.execute('SELECT acquisition_json,receipt_json FROM rkb_original_intakes WHERE ingestion_id=?',(INGEST,)).fetchone()
+        assert json.loads(final['acquisition_json'])['handle']==restored['handle'] and final['receipt_json']==immutable
+    finally:
+        stop.set();await task;await bridge.aclose();spool.close();await n.handler.aclose()
+
 def legacy_s3_original_fixture(controller):
     """Historical original S3 receipt fixture; active intake uses Telegram instead."""
     archive=controller._archive
@@ -316,13 +445,13 @@ async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native,
         assert phases==['original_pages','original_archive']+(['original_archive'] if retried else [])
         assert len(page_uploads)==len(set(page_uploads))==1+int(retried)
         assert len([key for key in heads if '/pages/' in key])==2+int(retried)
-        assert [key for key in heads if '/pages/' not in key]==[status.receipt.key]*(1+int(upload_outcome!='success'))
+        assert [key for key in heads if '/pages/' not in key]==[]  # Migrated original sidecar; only derivative HEADs remain.
         assert native_reads==[status.receipt.key]
         heads.clear();phases.clear()
         repeated=await controller.pages(e.auth.p.admin,INGEST)
         assert repeated==page and not phases
         assert len([key for key in heads if '/pages/' in key])==1
-        assert [key for key in heads if '/pages/' not in key]==[status.receipt.key]
+        assert [key for key in heads if '/pages/' not in key]==[]
         assert native_reads==[status.receipt.key]
     finally:
         stop.set();await task;await bridge.aclose();spool.close();await n.handler.aclose()

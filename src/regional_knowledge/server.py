@@ -1491,7 +1491,7 @@ def build_server(
             limit=max(1, min(int(limit), 8)),
         )
 
-    IngestCommand = (Literal['start', 'stage', 'validate', 'finalize', 'status']
+    IngestCommand = (Literal['start', 'stage', 'validate', 'finalize', 'status', 'archive']
         if selected == 'kaggle_source' else
         Literal['start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status'])
 

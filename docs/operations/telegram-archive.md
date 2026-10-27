@@ -17,14 +17,27 @@ Kaggle Telethon client, records the message/document locator in the intake row
 and creates a receipt only after document presence is checked. This first PR
 does not yet replace S3-based restoration of lost native handles: Telegram
 restore and eight historical-source migration belong to dependent PR2.
-Historical immutable receipts are not rewritten. Once both PRs are deployed,
-`scripts/migrate_telegram_originals.py:migrate(originals,owner_context)`
-runs *inside the existing authenticated owner runtime* and enumerates
-historical S3-only original rows; it calls the existing `original_acquire`
+Historical immutable receipts are not rewritten.
+A retained `original_telegram_send_unknown` result is reconciled on the next
+normal status call through a fresh `original_verify` metadata observation.
+It searches the exact intake caption in the configured topic and never sends
+when no document is visible. Both original unknown receipts remain unchanged.
+Legacy S3 receipts remain verified before migration; a matching Telegram
+sidecar removes their S3 HEAD dependency without rewriting the receipt.
+
+After reviewed native/API rollout, the owner invokes the existing MCP tool
+`book_ingest(command='archive', ingestion_id='<existing ingestion UUID>')`
+once for each historical original. Current owner authorization and the owned
+intake row select the source; the action calls the existing `original_acquire`
 restore phase (S3 GET into Kaggle) and the native `original_archive` phase
 (Telethon send from Kaggle) before writing a sidecar locator. It does not
-download original bytes to Dev. Run only after reviewed native rollout;
-this change does not invoke it.
+download original bytes to Dev. The action returns the current ingestion status
+with archive verification reported, without restaging accepted pages. No forged
+Principal, standalone runtime access or arbitrary-code WSS operation is needed.
+Repeated archive actions reuse the restored handle for the same immutable
+receipt. If an unresolved send also loses native bytes, the action remains
+unresolved instead of creating a fresh restore/upload attempt. Existing
+sidecars are reused, so eight locators need not mean eight new documents.
 
 ## Media success: presence, not custom byte verification
 

@@ -156,6 +156,38 @@ async def call(s, result, command, **kwargs):
         ingestion_id=result.ingestion_id,**kwargs)
 
 
+@pytest.mark.asyncio
+async def test_mcp_archive_action_uses_current_owner_and_existing_migration(native_intake,monkeypatch):
+    from regional_knowledge.server import build_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    from starlette.requests import Request
+    s=native_intake;book=await start(s);calls=[]
+    async def migrate(context,ingestion_id):
+        assert context.route=='owner' and context.principal.subject==s.principal.subject
+        calls.append(ingestion_id)
+    monkeypatch.setattr(s.originals,'migrate_s3_original_to_telegram',migrate)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    server=build_server(target_startup=s.startup)
+    async def invoke():
+        request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
+            'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
+        context=SimpleNamespace(request_context=SimpleNamespace(request=request,request_id='archive-action'))
+        try:
+            return await server.call_tool('book_ingest',dict(command='archive',ingestion_id=book.ingestion_id),context)
+        finally:
+            retained=request.scope.pop(_SCOPE_KEY,None)
+            if retained:retained[1].release()
+    output=await invoke()
+    assert calls==[book.ingestion_id] and output.structured_content['source_archive_status']=='verified'
+    assert output.structured_content['message'].startswith('Telegram original archive verified.')
+    other=Principal(subject=s.t.auth.p.other.subject,client_id=s.principal.client_id,
+        issuer=s.principal.issuer,access_token=s.t.auth.tokens.access_token)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:other)
+    with pytest.raises(ToolError,match='access_denied'):await invoke()
+    assert calls==[book.ingestion_id]
+    assert not s.token_calls and operation_count(s)==0
+
+
 async def stage(s, result, payload):
     return await call(s,result,'stage',payload=payload,
         source_import=options(research=True,ingestion_id=result.ingestion_id,state='pending'))

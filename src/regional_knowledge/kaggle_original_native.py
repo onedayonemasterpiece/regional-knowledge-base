@@ -220,8 +220,10 @@ class NativeOriginalIntake:
     def _receipt(self,frame,value):
         key=frame['operation_key']
         result=dict(phase=frame['phase'],request_sha256=frame['request_sha256'],value=value)
-        if value.get('error')=='original_telegram_binding_required':
+        if (value.get('error')=='original_telegram_binding_required'
+                or frame['phase']=='original_archive' and value.get('error')=='original_telegram_presence_unknown'):
             self._prebinding_retry.add(key)  # No native effect occurred.
+            if frame['phase']=='original_archive':value['retryable']=True
         else:self._results[key]=result
         return result
 
@@ -377,17 +379,22 @@ class NativeOriginalIntake:
             finally:
                 if not acquired:await _blocking(shutil.rmtree,folder)
         record=self._record(args)
-        if phase=='original_archive' and private is None and set(args)=={'handle','original_sha256'}:
+        if phase in ('original_archive','original_verify') and private is None and set(args)=={'handle','original_sha256'}:
             if self.telegram_downloader is None:
                 raise OriginalIntakeError('original_telegram_binding_required')
             from .telegram_original import TelegramOriginalLocator
             old=record.get('telegram_locator')
-            locator=await self.telegram_downloader.archive(record['path'],
+            options=dict(
                 sha256=record['sha256'],size=record['size'],
                 ingestion_id=record['spec']['ingestion_id'],
                 current=lambda:not self.closed and self.generation==frame['connection_generation']
-                    and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])),
-                previous=TelegramOriginalLocator.from_wire(old) if old is not None else None)
+                    and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
+            if phase=='original_verify':
+                locator=await self.telegram_downloader.find_archive(**options)
+                if locator is None:raise OriginalIntakeError('original_telegram_send_unknown')
+            else:
+                locator=await self.telegram_downloader.archive(record['path'],**options,
+                    previous=TelegramOriginalLocator.from_wire(old) if old is not None else None)
             value=dict(key='telegram/'+digest(canonical(locator.wire())),
                 native_version='message:'+str(locator.message_id),telegram_locator=locator.wire(),
                 acquisition_sha256=record['acquisition_sha256'],

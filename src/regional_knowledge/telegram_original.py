@@ -95,38 +95,57 @@ class NativeTelegramOriginalDownloader:
             raise OriginalIntakeError('original_telegram_document_changed')
         return message
 
-    async def archive(self, path, *, sha256, size, ingestion_id, current, previous=None):
-        """One document per immutable intake, using only the retained leased client."""
+    async def find_archive(self, *, sha256, size, ingestion_id, current):
+        """One bounded metadata observation; absence never authorizes a send."""
         if not callable(current) or type(ingestion_id) is not str:
             raise OriginalIntakeError('original_telegram_binding_required')
         if self._current() is not True or current() is not True:
             raise OriginalIntakeError('original_telegram_lease_changed')
-        if previous is not None:
-            await self.presence(previous, current=current)
-            return previous
         caption = 'RKB-original ' + ingestion_id
         try:
             # Exact caption reconciliation precedes provider send after lost ACK.
             async for candidate in self._client.iter_messages(self._chat_id, search=caption, limit=10):
                 if getattr(candidate, 'message', None) != caption:
                     continue
+                reply = getattr(candidate, 'reply_to', None)
+                if (getattr(reply, 'reply_to_top_id', None) or getattr(reply, 'reply_to_msg_id', None)) != self._topic_id:
+                    continue
                 doc = getattr(candidate, 'document', None)
                 locator = TelegramOriginalLocator(self._chat_id, self._topic_id,
                     candidate.id, getattr(doc, 'id', 0), sha256, size)
                 await self.presence(locator, current=current)
                 return locator
-            if self._current() is not True or current() is not True:
-                raise OriginalIntakeError('original_telegram_lease_changed')
-            sent = await self._client.send_file(self._chat_id, str(path), caption=caption,
-                reply_to=self._topic_id, force_document=True)
         except OriginalIntakeError:
             raise
         except Exception:
+            raise OriginalIntakeError('original_telegram_presence_unknown') from None
+        if self._current() is not True or current() is not True:
+            raise OriginalIntakeError('original_telegram_lease_changed')
+        return None
+
+    async def archive(self, path, *, sha256, size, ingestion_id, current, previous=None):
+        """One document per immutable intake, using only the retained leased client."""
+        if previous is not None:
+            await self.presence(previous, current=current)
+            return previous
+        found = await self.find_archive(sha256=sha256, size=size, ingestion_id=ingestion_id, current=current)
+        if found is not None:
+            return found
+        try:
+            if self._current() is not True or current() is not True:
+                raise OriginalIntakeError('original_telegram_lease_changed')
+            sent = await self._client.send_file(self._chat_id, str(path), caption='RKB-original ' + ingestion_id,
+                reply_to=self._topic_id, force_document=True)
+            doc = getattr(sent, 'document', None)
+            locator = TelegramOriginalLocator(self._chat_id, self._topic_id,
+                getattr(sent, 'id', 0), getattr(doc, 'id', 0), sha256, size)
+            await self.presence(locator, current=current)
+        except OriginalIntakeError as exc:
+            if str(exc)=='original_telegram_presence_unknown':
+                raise OriginalIntakeError('original_telegram_send_unknown') from None
+            raise
+        except Exception:
             raise OriginalIntakeError('original_telegram_send_unknown') from None
-        doc = getattr(sent, 'document', None)
-        locator = TelegramOriginalLocator(self._chat_id, self._topic_id,
-            getattr(sent, 'id', 0), getattr(doc, 'id', 0), sha256, size)
-        await self.presence(locator, current=current)
         return locator
 
     async def download(self, locator, directory, *, max_bytes, current):

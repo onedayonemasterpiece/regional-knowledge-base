@@ -55,8 +55,9 @@ The fixed phases are:
    and the locator saved with the receipt. UNKNOWN never triggers a blind second
    send; the operation key and exact caption support reconciliation. Originals
    are not sent through Dev or VibePublish.
-3. `original_verify` remains the existing S3 derivative-image verification
-   operation; it is not a second download/hash proof for Telegram originals.
+3. `original_verify` retains S3 derivative-image verification with a private
+   ticket; without a ticket it observes a Telegram original by exact intake
+   caption/presence after a lost send ACK, without downloading or sending.
    Historical S3 original receipts remain readable without rewriting accepted
    source identity; new original receipts refer to Telegram.
 4. `original_pages`: the retained original is rendered by the pinned isolated
