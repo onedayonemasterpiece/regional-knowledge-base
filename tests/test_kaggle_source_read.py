@@ -15,19 +15,29 @@ def request(**changes):
             visibility_epoch=0,context_ref='trusted-context'),min_data_seq=9,deadline_ms=2000),**changes))
 
 
-def row():
-    return UUID(SOURCE),1,7,dict(title='Exact title',authors=['A; B','C, D'],publication_year=1910)
+def row(source_format='pdf'):
+    return UUID(SOURCE),1,7,dict(title='Exact title',authors=['A; B','C, D'],publication_year=1910),source_format
 
 
 @pytest.mark.asyncio
-async def test_fixed_catalogue_native_path_no_encoding_no_original_receipt_and_exact_wire():
-    native=Native([row()]);result=await execute_source_read(request(),acquire=native.acquire)
+@pytest.mark.parametrize('source_format',['pdf','djvu',None])
+async def test_fixed_catalogue_native_path_no_encoding_no_original_receipt_and_exact_wire(source_format):
+    native=Native([row(source_format)]);result=await execute_source_read(request(),acquire=native.acquire)
     assert result.status=='ok' and result.records[0]['authors']==['A; B','C, D']
+    assert result.records[0]['source_format']==source_format
+    assert 'original_receipt' not in result.model_dump_json()
     assert result.evidence[0].dependencies.source_revisions[0].eligibility_revision==7
     assert decode_envelope(encode_envelope(request()))==request()
     assert decode_envelope(encode_envelope(result))==result
     assert any('find_source_catalog_v1' in sql for sql,_ in native.calls)
-    assert not any('embedding' in sql or 'original_receipt' in sql for sql,_ in native.calls)
+    assert not any('embedding' in sql for sql,_ in native.calls)
+    assert not any('source_stage_sessions' in sql for sql,_ in native.calls)
+
+
+@pytest.mark.asyncio
+async def test_catalogue_refuses_unknown_original_format():
+    result=await execute_source_read(request(),acquire=Native([row('invalid')]).acquire)
+    assert result.status=='unavailable' and not result.records
 
 
 @pytest.mark.parametrize('changes',[dict(query=' '),dict(query='x'*1001),dict(limit=9),dict(limit=True)])
