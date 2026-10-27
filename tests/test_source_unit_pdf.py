@@ -209,3 +209,13 @@ def test_half_open_next_region_zero_offset_uses_accepted_endpoint_without_render
     values['unit']['source_spans'][-1]['end']-=1
     with pytest.raises(SourceUnitPdfError,match='exact_source_end_required'):
         render_source_unit_pdf(**values)
+
+
+def test_partial_supplied_interior_region_and_broken_region_edges_are_rejected():
+    for which,edge in ((0,'end'),(1,'start'),(1,'end'),(2,'start')):
+        values=inputs([('body','First exact region.'),('body','Middle exact region.'),
+                       ('body','Last exact region.')])
+        span=values['unit']['source_spans'][which]
+        span[edge]+=1 if edge=='start' else -1
+        with pytest.raises(SourceUnitPdfError,match='contiguous_source_range_required'):
+            render_source_unit_pdf(**values)

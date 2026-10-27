@@ -58,7 +58,7 @@ def _blocks(unit, regions, accepted_revision):
         lookup[region.region_id] = region
     blocks = []
     prior = None
-    for span in unit['source_spans']:
+    for index,span in enumerate(unit['source_spans']):
         region = lookup.get(span.get('region_id'))
         start, end = span.get('start'), span.get('end')
         page = span.get('physical_page_index')
@@ -67,6 +67,9 @@ def _blocks(unit, regions, accepted_revision):
                 or type(start) is not int or type(end) is not int
                 or not 0 <= start < end <= len(region.source_text)):
             raise SourceUnitPdfError('exact_source_span_required')
+        if ((index > 0 and start != 0)
+                or (index < len(unit['source_spans'])-1 and end != len(region.source_text))):
+            raise SourceUnitPdfError('contiguous_source_range_required')
         position = (page, region.reading_order, start)
         if prior is not None and (position < prior[0] or
                 position[:2] == prior[0][:2] and start < prior[1]):
