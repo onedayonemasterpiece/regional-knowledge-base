@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from regional_knowledge.kaggle_original_parser import parse
+from regional_knowledge.kaggle_original_parser import parse,MODEL_PAGE_BYTE_LIMIT,MODEL_PAGE_EDGES,MODEL_PAGE_QUALITIES
 from regional_knowledge.original_intake import assemble_native_page,canonical,digest,OriginalIntakeError
 
 
@@ -56,7 +56,7 @@ def test_actual_full_text_and_all_blocks_continue_without_rerender_or_silent_cli
         expected=document[0].get_text('text',sort=False)
         expected_blocks=[str(b[4]) for b in document[0].get_text('blocks',sort=False) if len(b)>=7 and int(b[6])==0 and str(b[4]).strip()]
     first=parse(path,'page',0);image=base64.b64decode(first.pop('image_b64'))
-    assert len(image)<=256*1024
+    assert len(image)<=MODEL_PAGE_BYTE_LIMIT
     assert first['preview_render']['width']>0 and first['native_text_info']['preview_render']==first['preview_render']
     chunks=[];part=first
     while True:
@@ -108,6 +108,6 @@ def test_actual_dense_image_preview_has_finite_policy_and_never_exceeds_output_b
         assert str(exc)=='original_render_byte_bound'
     else:
         image=base64.b64decode(result['image_b64']);render=result['preview_render'];decoded=fitz.Pixmap(image)
-        assert len(image)<=256*1024 and result['width']==900 and result['height']==900
+        assert len(image)<=MODEL_PAGE_BYTE_LIMIT and result['width']==900 and result['height']==900
         assert render['width']==decoded.width and render['height']==decoded.height
-        assert (render['max_edge'],render['jpeg_quality']) in {(1600,82),(1600,70),(1600,55),(1280,70),(1280,55)}
+        assert render['max_edge'] in MODEL_PAGE_EDGES and render['jpeg_quality'] in MODEL_PAGE_QUALITIES
