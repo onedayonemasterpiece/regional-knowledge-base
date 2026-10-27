@@ -78,7 +78,7 @@ async def test_registered_book_calls_have_private_payload_free_terminal_span(reg
     sink._queue.join()
     assert not result.is_error and len(backend.calls)==1
     assert len(records)==1 and records[0]['tool']==tool and records[0]['status']=='returned'
-    assert records[0]['event']=='import.terminal' and records[0]['duration_ms']>=0
+    assert records[0]['event']=='import.call' and records[0]['duration_ms']>=0
     assert _INGESTION not in json.dumps(records) and 'PRIVATE_TOKEN' not in json.dumps(records)
     backend.error=TimeoutError(_SECRET)
     assert (await error_envelope(server,tool))['status']=='unknown'
