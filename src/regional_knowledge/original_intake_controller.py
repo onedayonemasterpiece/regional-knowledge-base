@@ -101,8 +101,8 @@ class OriginalIntakeController:
         if private is None:raise OriginalIntakeError('original_ephemeral_ticket_requires_retry')
         return private
 
-    async def _phase(self,binding,phase,args,private=None):
-        key=digest(canonical(dict(phase=phase,args=args)))
+    async def _phase(self,binding,phase,args,private=None,*,operation_key=None):
+        key=operation_key or digest(canonical(dict(phase=phase,args=args)))
         if private is not None:self._private[key]=private
         value=await self._bridge(binding).request(binding,phase,args,operation_key=key)
         self._private.pop(key,None)
@@ -153,8 +153,21 @@ class OriginalIntakeController:
         version=await self._head(key,size)
         if version is None:
             operation=digest(canonical(dict(phase='original_archive',args=args)))
+            # Only a settled transfer failure plus a missing object permits a
+            # fresh conditional PUT. Pending/unknown work retains its key.
+            root=operation
+            with self.queue.connect(write=False) as db:
+                for attempt in range(8):
+                    operation=root if attempt==0 else root+':upload-retry:'+str(attempt)
+                    row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
+                        ('maintenance:'+binding.run_id,'recovery:'+operation)).fetchone()
+                    if row is None or row['state']!='done':break
+                    value=json.loads(row['result'])['value']
+                    if (value.get('error'),value.get('error_class'))!=('original_intake_unavailable','SnapshotTransferError'):break
+                else:raise OriginalIntakeError('original_archive_retry_bound')
+            if attempt:_LOG.info('original_archive state=retry run_id=%s attempt=%s operation_sha256=%s',binding.run_id,attempt,digest(operation.encode()))
             ticket=await self._ticket(binding,operation,'PUT',key,size,sha256)
-            receipt=await self._phase(binding,'original_archive',args,{'ticket':ticket})
+            receipt=await self._phase(binding,'original_archive',args,{'ticket':ticket},operation_key=operation)
             if (receipt.get('key'),receipt.get('size'),receipt.get('sha256'))!=(key,size,sha256):
                 raise OriginalIntakeError('original_archive_receipt_changed')
             version=await self._head(key,size,receipt.get('native_version'))

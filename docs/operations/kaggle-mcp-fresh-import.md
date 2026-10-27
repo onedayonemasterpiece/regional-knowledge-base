@@ -67,6 +67,14 @@ counter. No BGE weights or model inference run on Dev.
 
 ## Model workflow and durable boundaries
 
+Archive retries first HEAD the exact content-addressed object. A verified stored
+object resolves a lost PUT acknowledgment without another upload. Only a missing
+object and a completed `SnapshotTransferError` permit a fresh conditional PUT
+with a new, matching operation-bound ticket (at most eight recorded attempts).
+Pending work retains its operation key; unknown, denied or conflicting HEAD
+results do not authorize another PUT. Accepted source pages are never restaged
+to repair this transport step.
+
 1. Call the ordinary `book_ingest(start)` with the attached PDF, normal metadata
    and `source_import.public_rights`. The existing public rights policy must
    allow the explicitly supplied status/evidence/policy version. The server

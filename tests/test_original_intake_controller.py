@@ -219,7 +219,8 @@ async def test_existing_queue_receipts_url_privacy_and_native_original_readback(
 
 
 @pytest.mark.asyncio
-async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native):
+@pytest.mark.parametrize('upload_outcome',['success','lost_ack','missing_after_failure'])
+async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native,upload_outcome):
     e,n=owner,native
     spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
     binding=current_binding(e.q)
@@ -230,8 +231,15 @@ async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native)
     n.handler.identity=bridge.identity;n.handler.database=bridge.database
     n.handler.current=lambda b:b==(binding.run_id,binding.runtime_incarnation,binding.connection_generation)
     n.handler.attached(e.generation)
-    heads=[];native_reads=[];phases=[]
+    heads=[];native_reads=[];phases=[];page_uploads=[]
     async def upload(ticket,path,*,operation_key):
+        assert ticket.operation_ref==digest(operation_key.encode())
+        if '/pages/' in ticket.key:
+            page_uploads.append(operation_key)
+            if len(page_uploads)==1 and upload_outcome!='success':
+                from regional_knowledge.native_snapshot_transfer import SnapshotTransferError
+                if upload_outcome=='lost_ack':e.c.objects[ticket.key]=(path.read_bytes(),'native-etag')
+                raise SnapshotTransferError('snapshot_transfer_upload_unknown')
         e.c.objects[ticket.key]=(path.read_bytes(),'native-etag')
         return 'native-etag'
     async def download(ticket,path,*,operation_key):
@@ -269,11 +277,18 @@ async def test_new_page_uses_two_durable_phases_and_two_page_heads(owner,native)
         assert status.verified and phases==['original_acquire','original_archive','original_verify']
         assert native_reads==[status.receipt.key]
         heads.clear();phases.clear()
+        if upload_outcome!='success':
+            with pytest.raises(OriginalIntakeError,match='original_native_receipt_unavailable'):
+                await controller.pages(e.auth.p.admin,INGEST)
+            with e.q.connect(write=False) as db:
+                assert db.execute('SELECT count(*) FROM rkb_original_image_issuance').fetchone()[0]==0
         page=await controller.pages(e.auth.p.admin,INGEST)
         assert page.pages[0].data==IMAGE
-        assert phases==['original_pages','original_archive']
-        assert len([key for key in heads if '/pages/' in key])==2
-        assert [key for key in heads if '/pages/' not in key]==[status.receipt.key]
+        retried=upload_outcome=='missing_after_failure'
+        assert phases==['original_pages','original_archive']+(['original_archive'] if retried else [])
+        assert len(page_uploads)==len(set(page_uploads))==1+int(retried)
+        assert len([key for key in heads if '/pages/' in key])==2+int(retried)
+        assert [key for key in heads if '/pages/' not in key]==[status.receipt.key]*(1+int(upload_outcome!='success'))
         assert native_reads==[status.receipt.key]
         heads.clear();phases.clear()
         repeated=await controller.pages(e.auth.p.admin,INGEST)
@@ -300,6 +315,32 @@ async def test_unknown_or_conflicting_head_never_authorizes_a_put(response):
     record=dict(handle='retained',sha256=digest(PDF),size=len(PDF),spec={'source_id':SOURCE})
     with pytest.raises(OriginalIntakeError):await controller._archive(object(),record)
     assert not puts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state',['pending','claimed','done'])
+async def test_archive_preserves_unsettled_or_nontransfer_operation_key(owner,state):
+    e=owner;binding=SimpleNamespace(run_id=e.run)
+    record=dict(handle='retained',sha256=digest(PDF),size=len(PDF),spec={'source_id':SOURCE})
+    page=dict(physical_page_index=0,image_sha256=digest(IMAGE),image_size=len(IMAGE))
+    args=dict(handle=record['handle'],original_sha256=record['sha256'],page_index=0)
+    key=digest(canonical(dict(phase='original_archive',args=args)))
+    result=json.dumps({'value':{'error':'original_intake_unavailable','error_class':'ValueError'}}) if state=='done' else None
+    with e.q.connect() as db:
+        db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,result) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            ('prior-archive','maintenance:'+e.run,'recovery:'+key,'recovery_phase','[]','{}',state,0,0,result))
+    controller=object.__new__(OriginalIntakeController)
+    controller.queue=e.q;controller.spool=SimpleNamespace(journal=SimpleNamespace(stream='fixture'))
+    heads=[]
+    async def head(*args):
+        heads.append(args);return None if len(heads)==1 else 'etag'
+    async def ticket(actual_binding,operation,*args):
+        assert operation==key;return {'operation':operation}
+    async def phase(actual_binding,name,actual_args,private,*,operation_key):
+        assert operation_key==key and private['ticket']['operation']==key
+        return dict(key=heads[0][0],size=len(IMAGE),sha256=digest(IMAGE),native_version='etag')
+    controller._head=head;controller._ticket=ticket;controller._phase=phase
+    assert (await controller._archive(binding,record,page=page))['native_version']=='etag'
 
 
 @pytest.mark.asyncio
