@@ -60,6 +60,8 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
         figure=dict(source_id=SOURCE,illustration_id=ILLUSTRATION,page_id=PAGE,
             ingestion_id='internal-import-identity',
             source_region_id=REGION,physical_page_index=0,caption_text='Accepted caption',
+            _citation_catalog=dict(title='Тевтонский орден',authors=['А. Бахтин'],
+                                   publication_year=2020),
             bbox=dict(left=100,top=200,right=300,bottom=500),display_rotation_degrees=90)
         if noisy:figure.update(bbox=dict(left=0,top=0,right=1000,bottom=1000),display_rotation_degrees=0)
         result=SourceReadResult(request_id=dispatched.query.request_id,
@@ -80,8 +82,17 @@ async def test_direct_preview_mcp_crops_only_figure_and_rechecks_source(service,
     projected=[r for r in product if r.get('event')=='read.terminal']
     assert len(projected)==1 and projected[0]['status']==terminal[0]['status']
     result=data['result'];assert result['isError'] is False
-    assert json.loads(result['content'][0]['text'])['metadata']['physical_page_index']==0
+    public=json.loads(result['content'][0]['text'])
+    assert public['metadata']['physical_page_index']==0
+    assert '_citation_catalog' not in public['metadata']
     assert result['content'][1]['mimeType']=='image/jpeg'
+    assert result['content'][2]['type']=='text'
+    assert result['content'][2]['text']==(
+        'Книга: Тевтонский орден\n'
+        'Автор: А. Бахтин\n'
+        'Год: 2020\n'
+        'Страница файла (не печатная нумерация): 1\n'
+        'Подпись под рисунком: Accepted caption')
     with Image.open(BytesIO(base64.b64decode(result['content'][1]['data']))) as crop:
         assert crop.size==((900,900) if noisy else (300,200))
         if not noisy:
