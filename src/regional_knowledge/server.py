@@ -338,6 +338,12 @@ class KnowledgeMCPServer(MCPServer):
     """Advertise the public PKCE clients supported by our embedded provider."""
 
     async def call_tool(self, name, arguments, context=None):
+        if name in ('book_ingest','book_pages','fetch'):
+            from .product_telemetry import observe_async
+            return await observe_async(name,lambda:self._call_tool_guarded(name,arguments,context),arguments=arguments)
+        return await self._call_tool_guarded(name,arguments,context)
+
+    async def _call_tool_guarded(self, name, arguments, context=None):
         activity=getattr(self,'_bge_request_activity',None)
         if activity is not None:
             try:
@@ -1380,18 +1386,17 @@ def build_server(
     ) -> FetchOutput | FetchChunksOutput:
         # Both read modes resolve the same principal and use the same final
         # authorized output-issuance boundary. No legacy cross-backend fallback.
-        from .product_telemetry import observe_async
         if source_id is not None:
             if id is not None or page_start is None or page_end is None:
                 raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
             if selected != 'kaggle_source':
                 raise ToolError('{"status":"unavailable","reason":"native_chunks_unavailable"}')
-            return FetchChunksOutput.model_validate(await observe_async("fetch", lambda: backend.fetch_chunks(
+            return FetchChunksOutput.model_validate(await backend.fetch_chunks(
                 _principal(),source_id=source_id,page_start=page_start,page_end=page_end,
-                after_ordinal=after_ordinal,limit=limit)))
+                after_ordinal=after_ordinal,limit=limit))
         if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
-        return await observe_async("fetch", lambda: backend.fetch(id, _principal()))
+        return await backend.fetch(id, _principal())
 
     @mcp.tool(title='Read an authorized illustration', description='Return the canonical source crop and labelled caption/model-observation metadata. Model observation is not printed evidence. No OCR or inference.', annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def illustration_fetch(id: str) -> list[TextContent | ImageContent]:

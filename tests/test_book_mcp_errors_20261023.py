@@ -66,6 +66,27 @@ def arguments(tool):
         "ingestion_id": _INGESTION, "batch_size": 2}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tool',['book_ingest','book_pages'])
+async def test_registered_book_calls_have_private_payload_free_terminal_span(registered_books,monkeypatch,tool):
+    import regional_knowledge.product_telemetry as telemetry
+    records=[];sink=telemetry.ProductTelemetry(sink=records.append)
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE','standard')
+    monkeypatch.setattr(telemetry,'_instance',sink)
+    server,backend=registered_books
+    result=await server.call_tool(tool,arguments(tool))
+    sink._queue.join()
+    assert not result.is_error and len(backend.calls)==1
+    assert len(records)==1 and records[0]['tool']==tool and records[0]['status']=='returned'
+    assert records[0]['event']=='import.terminal' and records[0]['duration_ms']>=0
+    assert _INGESTION not in json.dumps(records) and 'PRIVATE_TOKEN' not in json.dumps(records)
+    backend.error=TimeoutError(_SECRET)
+    assert (await error_envelope(server,tool))['status']=='unknown'
+    sink._queue.join()
+    assert records[-1]['status']=='error' and records[-1]['result_status']=='unknown'
+    assert records[-1]['error_class']=='transport' and _SECRET not in json.dumps(records)
+
+
 async def error_envelope(server, tool, args=None):
     """Exercise the registered callable and inspect MCP's actual error surface."""
     try:

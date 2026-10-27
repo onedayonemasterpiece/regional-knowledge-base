@@ -70,6 +70,30 @@ async def accept(e,cmd=None,predecessor=None):
     return await e.spool.seal(e.p.admin,cmd.operation_key,predecessor=predecessor,writer_generation='writer-1')
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status',['applied','rejected_precondition'])
+async def test_telemetry_observes_accept_apply_and_remote_save_once(env,monkeypatch,status):
+    from regional_knowledge import product_telemetry as telemetry
+    records=[];sink=telemetry.ProductTelemetry(sink=records.append)
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE','standard')
+    monkeypatch.setattr(telemetry,'_instance',sink)
+    e=env
+    await accept(e)
+    exact=receipt(e.cmd,status=status)
+    await e.spool.record_apply(e.cmd.operation_key,exact)
+    sink._queue.join()
+    assert [r['phase'] for r in records]==['seal','dispatch']
+    await e.spool.publish_outcome(e.cmd.operation_key,writer_generation='writer-1')
+    await e.spool.record_apply(e.cmd.operation_key,exact)
+    await e.spool.publish_outcome(e.cmd.operation_key,writer_generation='writer-1')
+    sink._queue.join()
+    assert [r['phase'] for r in records]==['seal','dispatch','saved']
+    assert records[-1]['status']==('saved' if status=='applied' else 'rejected')
+    assert len({r['operation_ref'] for r in records})==1
+    assert all(r['command_sequence']==1 for r in records)
+    assert (await e.spool.get(e.cmd.operation_key)).outcome_state=='DURABLE'
+
+
 def test_static_dependency_frozen_and_legacy_fingerprint_unchanged():
     legacy=handler(None)
     expected={'key':legacy.key,'check':(legacy.check.name,legacy.check.definition_sha256),

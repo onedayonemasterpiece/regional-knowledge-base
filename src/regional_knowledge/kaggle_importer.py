@@ -884,6 +884,8 @@ class KaggleSourceImporter:
                             or set(stage_file_sha256) - set('0123456789abcdef')):
                         raise failure('invalid_stage_file_digest', status='invalid_query')
                     output = output.model_copy(update={'message': output.message+'; stage_file_sha256='+stage_file_sha256})
+                from .product_telemetry import import_metadata
+                import_metadata(ingestion_id=output.ingestion_id,result_state=output.state,next_action=output.next_action)
                 return await self._reply(access, output)
         except ToolError:
             raise
@@ -921,4 +923,8 @@ class KaggleSourceImporter:
                         or page.mime_type != 'image/jpeg'):
                     raise failure('native_original_page_binding_mismatch')
             from .server import _book_page_tool_result
+            from .product_telemetry import import_metadata
+            import_metadata(ingestion_id=ingestion_id,page_count=len(batch.pages),
+                physical_page_index=batch.pages[0].physical_page_index,
+                image_bytes=sum(len(page.data) for page in batch.pages))
             return await self._reply(access, batch, render=lambda value: _book_page_tool_result(ingestion_id, value))
