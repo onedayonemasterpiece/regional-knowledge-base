@@ -121,7 +121,7 @@ async def test_single_selected_page_produces_bounded_preview_and_exact_source_in
         assert result["preview_render"]["preview_only"]
         assert result["preview_render"]["width"]==2
         assert result["preview_render"]["height"]==2
-        assert result["preview_render"]["max_edge"]==2
+        assert result["preview_render"]["max_edge"]==max(inv.pages[result["physical_page_index"]].width,inv.pages[result["physical_page_index"]].height)
         assert result["image_sha256"]==sha256(__import__("base64").b64decode(result["image_b64"])).hexdigest()
 
 
