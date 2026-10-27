@@ -14,6 +14,7 @@ from test_source_batch_pg import native,packet
 from test_native_source_materializer import exact_batch
 from test_source_stage import SOURCE, original
 from test_kaggle_apply import PG
+from test_kaggle_pg_driver import database
 
 
 async def unit_pages(db):
