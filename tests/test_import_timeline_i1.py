@@ -17,6 +17,7 @@ spec.loader.exec_module(timeline)
 
 def test_two_native_fixture_pages_have_independent_receipts_and_private_values_vanish(tmp_path):
     ingestion_ref = hashlib.sha256(INGESTION.encode()).hexdigest()
+    source_ref = hashlib.sha256(SOURCE.encode()).hexdigest()
     spool = telemetry.SegmentedLogSink(tmp_path, segment_bytes=1024,
                                        disk_limit_bytes=32 * 1024 * 1024)
     base = 1_800_000_000_000
@@ -25,7 +26,8 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
 
     def emit(event, phase, status, at, **fields):
         record = {'event': event, 'phase': phase, 'status': status,
-                  'ingestion_ref': ingestion_ref, 'event_time_unix_ms': at,
+                  'ingestion_ref': ingestion_ref, 'source_ref': source_ref,
+                  'event_time_unix_ms': at,
                   'source_text': 'PRIVATE_SYNTHETIC_TEXT_MUST_NOT_LEAK', **fields}
         clean = telemetry._clean(record, 'standard')
         clean['loss_before'] = {'dropped': 0, 'failed': 0}
@@ -44,7 +46,7 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
         t = base + number * 1000
         stage, text, semantic = [hashlib.sha256(f'{kind}-{number}'.encode()).hexdigest()
                                  for kind in ('stage', 'text', 'semantic')]
-        emit('import.terminal', 'total', 'returned', t + 100, tool='book_pages',
+        emit('import.call', 'total', 'returned', t + 100, tool='book_pages',
              trace_id=f'pages{number}', physical_page_index=page,
              page_count=1, image_bytes=200_000, call_started_unix_ms=t,
              duration_ms=100)
@@ -54,15 +56,15 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
         emit('import.phase', 'admission', 'staged', t + 220,
              trace_id=f'stage{number}', component='text', operation_ref=text,
              command_sequence=number*3+2)
-        emit('import.terminal', 'total', 'returned', t + 250,
+        emit('import.call', 'total', 'returned', t + 250,
              trace_id=f'stage{number}', tool='book_ingest', command='stage',
-             physical_page_index=page, page_count=1, batch_index=number,
+             physical_page_index=page,physical_page_indices=[page],page_count=1,batch_index=number,
              operation_ref=text,  # Nested batch overwrote outer request metadata.
              region_count=len(payload['pages'][0]['regions']),
              chunk_count=len(payload['chunks']), story_candidate_count=0,
              unit_marker_count=0, next_action='wait', result_state='processing',
              call_started_unix_ms=t + 150, duration_ms=100)
-        emit('import.terminal', 'total', 'returned', t + 280,
+        emit('import.call', 'total', 'returned', t + 280,
              trace_id=f'status{number}', tool='book_ingest', command='status',
              call_started_unix_ms=t + 260, duration_ms=20)
         emit('command.phase', 'seal', 'acknowledged', t + 290, operation_ref=stage)
@@ -76,12 +78,14 @@ def test_two_native_fixture_pages_have_independent_receipts_and_private_values_v
              operation_ref=semantic, batch_count=number + 1)
         # An explicit per-page fetch is currently not guaranteed by the SDK.
         # Here it is present to exercise positive correlation without guessing.
-        emit('fetch.terminal', 'total', 'returned', t + 470,
+        emit('import.call', 'total', 'returned', t + 470,
              trace_id=f'fetch{number}', tool='fetch', physical_page_index=page,
+             ingestion_ref=None, physical_page_end=page,
              call_started_unix_ms=t + 440, duration_ms=30)
         for n, op in enumerate((stage, text, semantic)):
             emit('command.phase', 'saved', 'saved', t + 510 + n * 5,
-                 operation_ref=op, command_sequence=number*3+n+1)
+                 operation_ref=op, ingestion_ref=None,source_ref=None,
+                 command_sequence=number*3+n+1)
 
     spool.seal()
     raw = b''.join(path.read_bytes() for path in (tmp_path / 'sealed').glob('*.jsonl'))
