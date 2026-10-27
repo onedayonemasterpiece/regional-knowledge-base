@@ -197,5 +197,4 @@ def main():
     else: print(csv_text, end='')
     if a.markdown: a.markdown.write_text(markdown, encoding='utf-8')
     else: print(markdown, end='')
-
 if __name__ == '__main__': main()
