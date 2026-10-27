@@ -340,7 +340,7 @@ class OriginalIntakeController:
             if observed is None:raise OriginalIntakeError('original_render_storage_invalid')
             version,length=observed;native=dict(key=key,native_version=version)
             page.update(image_size=length,image_sha256=prior['image_sha256'],preview_render=prior['preview_render'])
-            page['native_text_info']['preview_render']=prior['preview_render']
+            if 'preview_render' in page['native_text_info']:page['native_text_info']['preview_render']=prior['preview_render']
             page['page_receipt_sha256']=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))
         started=time.monotonic()
         def derivative():
