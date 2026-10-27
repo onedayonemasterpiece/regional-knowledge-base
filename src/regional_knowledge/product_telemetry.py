@@ -90,7 +90,7 @@ def _clean(record: Mapping[str, object], level: str):
     is_resource = record.get("event") == "resource.sample"
     is_import = record.get('event') in ('import.phase','import.terminal','import.call','command.phase','fetch.terminal')
     permitted = (_FIELDS | (_RESOURCE_FIELDS | resource_extras if is_resource else frozenset())
-        | (_IMPORT_NUMBERS | _IMPORT_ENUMS.keys() if is_import else frozenset()))
+        | (_IMPORT_NUMBERS | _IMPORT_ENUMS.keys() | {'has_more','physical_page_indices'} if is_import else frozenset()))
     # Unknown fields are discarded, never serialized (e.g. query/token/url).
     # Do not throw away known numbers because a new optional resource key
     # appeared in another worker version.
