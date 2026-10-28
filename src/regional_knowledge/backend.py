@@ -71,7 +71,6 @@ class KnowledgeBackend(Protocol):
         principal: Principal,
         file: ChatFile | None,
         ingestion_id: str | None,
-        cursor: str | None,
         payload: dict[str, Any] | None,
         document_id: str | None = None,
     ) -> BookIngestOutput: ...
