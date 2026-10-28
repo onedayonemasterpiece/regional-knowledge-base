@@ -123,7 +123,6 @@ async def test_reprocess_metadata_new_revision_selects_explicit_restart(backend,
         principal=principal,
         file=None,
         ingestion_id=None,
-        cursor=None,
         payload=None,
         document_id=doc,
     )
@@ -132,7 +131,6 @@ async def test_reprocess_metadata_new_revision_selects_explicit_restart(backend,
         principal=principal,
         file=None,
         ingestion_id=None,
-        cursor=None,
         payload={"duplicate_policy": "new_revision"},
         document_id=doc,
     )
@@ -170,14 +168,14 @@ async def test_reprocess_can_recover_from_byte_identical_attachment(backend, mon
     monkeypatch.setattr(backend, "_reprocess_existing_source", reprocess)
     result = await backend.book_ingest(
         command="reprocess", principal=principal, file=identical_file,
-        ingestion_id=None, cursor=None, payload=None, document_id=doc,
+        ingestion_id=None, payload=None, document_id=doc,
     )
     assert result.document_id == doc
     assert seen == [(doc, False, identical_file, False)]
     with pytest.raises(ValueError, match="rechunk must not attach"):
         await backend.book_ingest(
             command="rechunk", principal=principal, file=identical_file,
-            ingestion_id=None, cursor=None, payload=None, document_id=doc,
+            ingestion_id=None, payload=None, document_id=doc,
         )
     assert len(seen) == 1  # rechunk failure did not start another revision
 

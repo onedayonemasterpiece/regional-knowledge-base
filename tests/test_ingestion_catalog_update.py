@@ -15,7 +15,7 @@ async def test_finalized_stage_catalog_alias_preserves_identity(source):
     job=str(uuid4())
     corpus.put('rkb_ingestion_jobs',[{**defaults('rkb_ingestion_jobs'),'id':job,'document_id':doc['id'],'owner_user_id':actor,'state':'finalized','staged_revision':1}])
     principal=Principal(subject=actor,client_id='test',issuer='test',access_token='synthetic')
-    kwargs=dict(command='stage',principal=principal,file=None,ingestion_id=job,cursor=None,document_id=doc['id'])
+    kwargs=dict(command='stage',principal=principal,file=None,ingestion_id=job,document_id=doc['id'])
     payload={'catalog_update':{**correction(),'publication_year':None}}
     before=corpus.rows('rkb_chunks')
     result=await backend.book_ingest(**kwargs,payload=payload)

@@ -245,11 +245,11 @@ async def test_status_by_document_resolves_latest_owned_checkpoint_without_full_
                                 ingestion_id=kwargs['ingestion_id'], document_id=doc['id'])
     monkeypatch.setattr(SupabaseRestBackend, 'book_ingest', base)
     out = await backend.book_ingest(command='status', principal=principal,
-        document_id=doc['id'], ingestion_id=None, payload=None, file=None, cursor=None)
+        document_id=doc['id'], ingestion_id=None, payload=None, file=None)
     assert out.ingestion_id == newer['id'] and called == [newer['id']]
     with pytest.raises((PermissionError, LookupError)):
         await backend.book_ingest(command='status', principal=principal.model_copy(update={'subject': str(uuid4())}),
-            document_id=doc['id'], ingestion_id=None, payload=None, file=None, cursor=None)
+            document_id=doc['id'], ingestion_id=None, payload=None, file=None)
     with corpus.connect() as db:
         plan = db.execute("""EXPLAIN QUERY PLAN SELECT row_key FROM corpus_rows
             WHERE table_name='rkb_ingestion_jobs' AND json_extract(payload,'$.document_id')=?

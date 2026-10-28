@@ -218,7 +218,6 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
         principal=principal(),
         file=None,
         ingestion_id=INGESTION_ID,
-        cursor="1",
         payload={
             "pages": [{
                 "page_id": page_id,
@@ -294,7 +293,7 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
     assert stage.state == "processing"
     assert stage.next_action == "validate"
     resumed = await backend.book_ingest(command="status", principal=principal(),
-        file=None, ingestion_id=INGESTION_ID, cursor=None, payload=None)
+        file=None, ingestion_id=INGESTION_ID, payload=None)
     assert resumed.next_action == "validate"
     assert ingestion["staged_graph_object_id"]
     assert posted["rkb_pages"] == []
@@ -304,7 +303,6 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
         principal=principal(),
         file=None,
         ingestion_id=INGESTION_ID,
-        cursor=None,
         payload=None,
     )
     assert validated.state == "ready"
@@ -315,7 +313,6 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
         principal=principal(),
         file=None,
         ingestion_id=INGESTION_ID,
-        cursor=None,
         payload=None,
     )
     assert finalizing.state == "processing"
@@ -329,7 +326,6 @@ async def test_stage_validate_finalize_materializes_only_after_ready(tmp_path):
         principal=principal(),
         file=None,
         ingestion_id=INGESTION_ID,
-        cursor=None,
         payload=None,
     )
     await client.aclose()

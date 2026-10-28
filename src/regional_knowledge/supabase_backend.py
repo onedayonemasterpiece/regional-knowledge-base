@@ -1383,7 +1383,6 @@ class SupabaseRestBackend(KnowledgeBackend):
         principal: Principal,
         file: ChatFile | None,
         ingestion_id: str | None,
-        cursor: str | None,
         payload: dict[str, Any] | None,
         document_id: str | None = None,
     ) -> BookIngestOutput:
@@ -1436,7 +1435,7 @@ class SupabaseRestBackend(KnowledgeBackend):
                     self,
                     principal=principal,
                     ingestion_id=ingestion_id,
-                    cursor=cursor,
+                    cursor=None,
                     payload=payload,
                 )
             return await validate_ingestion(

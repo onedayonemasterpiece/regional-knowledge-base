@@ -51,7 +51,7 @@ async def test_source_race_visual_crop_new_revision_and_changed_index(graph_db,t
     actor=lambda:Principal(subject=str(uuid4()),client_id='test',issuer='test',access_token='no-token')
     owner,other=actor(),actor()
     async def start(who,policy='reuse'):
-        return await b.book_ingest(command='start',principal=who,file=ChatFile(download_url='https://example.com/owned.pdf',file_id=str(uuid4())),ingestion_id=None,cursor=None,payload={'title':'Owned synthetic','duplicate_policy':policy})
+        return await b.book_ingest(command='start',principal=who,file=ChatFile(download_url='https://example.com/owned.pdf',file_id=str(uuid4())),ingestion_id=None,payload={'title':'Owned synthetic','duplicate_policy':policy})
     try:
         first,second=await asyncio.gather(start(owner),start(owner));assert first.document_id==second.document_id and first.ingestion_id==second.ingestion_id
         again=await start(owner);assert again.document_id==first.document_id
@@ -72,8 +72,8 @@ async def test_source_race_visual_crop_new_revision_and_changed_index(graph_db,t
                 page['illustrations']=[figure]
                 chunks.append({'chunk_key':f'figure{i}','title':f'Figure {i}','region_refs':[{'page_id':pid,'region_key':'caption' if i==1 else 'figure'}],'illustration_refs':[{'page_id':pid,'illustration_key':'figure'}]})
             pages.append(page)
-        await b.book_ingest(command='stage',principal=owner,file=None,ingestion_id=first.ingestion_id,cursor=None,payload={'pages':pages,'chunks':chunks})
-        ready=await b.book_ingest(command='validate',principal=owner,file=None,ingestion_id=first.ingestion_id,cursor=None,payload=None);assert ready.state=='ready',ready
+        await b.book_ingest(command='stage',principal=owner,file=None,ingestion_id=first.ingestion_id,payload={'pages':pages,'chunks':chunks})
+        ready=await b.book_ingest(command='validate',principal=owner,file=None,ingestion_id=first.ingestion_id,payload=None);assert ready.state=='ready',ready
         finalized=await finalize_ingestion(b,principal=owner,ingestion_id=first.ingestion_id);assert finalized.state=='finalized'
         async with b.data_client._connection(b._headers(owner)) as db:
             rows=await(await db.execute('select * from rkb_chunks where document_id=%s order by title',(doc,))).fetchall()

@@ -60,6 +60,7 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     find, ingest = tools["book_find"], tools["book_ingest"]
     assert find.input_schema["properties"]["limit"]["maximum"] == 8
     assert "reprocess" in ingest.input_schema["properties"]["command"]["enum"]
+    assert "cursor" not in ingest.input_schema["properties"]
     assert "document_id" in ingest.input_schema["properties"]
     assert "document_id" not in ingest.input_schema["required"]
     actions = ingest.output_schema["properties"]["next_action"]["anyOf"][0]["enum"]
