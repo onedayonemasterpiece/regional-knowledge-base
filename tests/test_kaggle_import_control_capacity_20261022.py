@@ -244,16 +244,27 @@ async def test_real_original_controller_terminal_rejection_durable_and_owner_can
     third = await begin('third-book-pending')
     assert third.state == 'processing' and third.ingestion_id != next_book.ingestion_id
     assert s.importer._row(s.principal.subject, next_book.ingestion_id)['phase'] == 'failed'
-    # A durable unfinished maintenance job is different: UNKNOWN must retain the slot.
-    with s.t.queue.connect() as db:
+    # A live attachment URL without a job still holds the slot before cold-run admission.
+    with s.t.queue.connect(write=False) as db:
         orig = db.execute('SELECT spec_json FROM rkb_original_intakes WHERE ingestion_id=?',
                           (third.ingestion_id,)).fetchone()
-        key = digest(canonical(dict(phase='original_acquire', args={'spec': json.loads(orig['spec_json'])})))
+    key = digest(canonical(dict(phase='original_acquire', args={'spec': json.loads(orig['spec_json'])})))
+    restarted._private[key] = {'download_url': 'https://files.example.test/pending'}
+    live = await restarted.status(s.t.auth.p.admin, third.ingestion_id)
+    assert (live.state, live.reason) == ('pending', 'original_acquisition_pending')
+    with pytest.raises(ToolError, match='another_native_ingestion_active'):
+        await begin('fourth-book-must-block')
+    assert s.importer._row(s.principal.subject, third.ingestion_id)['phase'] == 'acquiring'
+    restarted._private.clear()
+    # A durable unfinished maintenance job is different: UNKNOWN must retain the slot.
+    with s.t.queue.connect() as db:
         now = s.t.queue.clock()
         db.execute('''INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated)
                       VALUES(?,?,?,?,?,?,?,?,?)''',
                    (str(uuid4()), 'maintenance:'+s.startup.binding.run_id, 'recovery:'+key,
                     'recovery_phase', '[]', '{}', 'pending', now, now))
+    ongoing = await restarted.status(s.t.auth.p.admin, third.ingestion_id)
+    assert (ongoing.state, ongoing.reason) == ('pending', 'original_acquisition_pending')
     with pytest.raises(ToolError, match='another_native_ingestion_active'):
         await begin('fourth-book-must-block')
     assert observed.count('rejected-pdf') == 1
