@@ -304,6 +304,7 @@ async def test_content_rejection_uses_ordinary_apply_and_preserves_rejected_rece
     receipt, outcome = decode_receipt(await value.worker(value.frame))
     assert value.events == ['proof', 'prehook', 'acquire', 'apply', 'proof']
     assert len(value.calls) == 1 and receipt.status == outcome['status'] == 'rejected_precondition'
+    assert value.calls[0]['reject_reason'] == 'native_source_stage_requires_review'
     assert json.loads(base64.b64decode(outcome['result_b64'])) == {'accepted': False}
 
 
