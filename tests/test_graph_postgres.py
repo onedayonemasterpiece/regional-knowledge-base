@@ -115,14 +115,14 @@ async def test_chatgpt_staging_finalize_with_poi_outage_and_replay(graph_db,tmp_
             p=Path(directory)/'fixture.pdf';p.write_bytes(data);return DownloadedFile(path=p,sha256=hashlib.sha256(data).hexdigest(),size_bytes=len(data))
     b=PostgresBackend(graph_db,embedder=LexicalOnlyEmbedder(),object_store=Store());b.file_downloader=Downloader();actor=Principal(subject=str(uuid4()),client_id='test',issuer='test',access_token='not-token')
     try:
-        start=await b.book_ingest(command='start',principal=actor,file=ChatFile(download_url='https://example.com/graph-fixture.pdf',file_id=str(uuid4())),ingestion_id=None,cursor=None,payload={'title':'Synthetic graph pipeline control'})
+        start=await b.book_ingest(command='start',principal=actor,file=ChatFile(download_url='https://example.com/graph-fixture.pdf',file_id=str(uuid4())),ingestion_id=None,payload={'title':'Synthetic graph pipeline control'})
         doc=UUID(start.document_id);pid=uuid5(doc,'page:1:0');text='Ada and Ben attended a meeting.'
         page=StagePageInput(page_id=str(pid),physical_page_index=0,source_material='visual_reviewed',source_review_note='Synthetic PDF fixture checked',regions=[{'region_key':'body','kind':'body','bbox':{'left':0,'top':0,'right':1000,'bottom':1000},'reading_order':0,'source_text':text,'normalized_text':text}])
         chunk=StageChunkInput(chunk_key='body',title='Synthetic',region_refs=[{'page_id':str(pid),'region_key':'body'}]);compiled=compile_model_stage(StagedGraph(revision=1),document_id=str(doc),revision=1,pages=[page],chunks=[chunk])
         e={'chunk_id':str(compiled.chunks[0].chunk_id),'page_id':str(pid),'region_id':str(compiled.pages[0].regions[0].region_id),'exact_quote':text}
         bundle={'entities':[{'key':'ada','kind':'person','canonical_label':'Ada','exact_source_spelling':'Ada','evidence':e},{'key':'poi','kind':'poi_ref','canonical_label':'Unresolved place','exact_source_spelling':'meeting','poi_locator':{'names':['Unresolved place']},'evidence':e}],'relations':[]}
         payload={'pages':[page.model_dump(mode='json')],'chunks':[chunk.model_dump(mode='json')],'entity_candidates':bundle}
-        kwargs={'principal':actor,'file':None,'ingestion_id':start.ingestion_id,'cursor':None}
+        kwargs={'principal':actor,'file':None,'ingestion_id':start.ingestion_id}
         await b.book_ingest(command='stage',payload=payload,**kwargs);await b.book_ingest(command='stage',payload=payload,**kwargs)
         checked=await b.book_ingest(command='validate',payload=None,**kwargs);assert checked.state=='ready'
         # Processing is allowed ONLY for a validated async finalize, never an
