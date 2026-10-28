@@ -836,11 +836,9 @@ class KaggleSourceImporter:
             source_archive_status='verified')
 
     async def book_ingest(self, *, command, principal, file=None, ingestion_id=None,
-                          cursor=None, payload=None, document_id=None, source_import=None, stage_file_sha256=None):
+                          payload=None, document_id=None, source_import=None, stage_file_sha256=None):
         if command not in ('start', 'stage', 'validate', 'finalize', 'status'):
             raise failure('target_import_command_unavailable')
-        if cursor is not None:
-            raise failure('ingest_stage_cursor_unavailable', status='invalid_query')
         if source_import is not None and type(source_import) is not TargetSourceImportInput:
             raise failure('invalid_source_import_input', status='invalid_query')
         try:
