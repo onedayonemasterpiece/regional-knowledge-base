@@ -50,7 +50,7 @@ def setup_book(tmp_path):
 async def rechunk(b,principal,doc,**extra):
     return await b.book_ingest(
         command="rechunk",principal=principal,file=None,
-        document_id=doc,ingestion_id=None,cursor=None,payload=extra or None,
+        document_id=doc,ingestion_id=None,payload=extra or None,
     )
 
 
