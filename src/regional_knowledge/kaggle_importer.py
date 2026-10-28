@@ -285,10 +285,28 @@ class KaggleSourceImporter:
                 row = dict(prior)
             else:
                 rights = rights if rights is not None else OWNER_IMPORT_ATTESTATION
-                if self.native_intake is not None and db.execute(
-                        "SELECT 1 FROM rkb_source_intake_control WHERE person_id=? AND phase='acquiring' LIMIT 1",
-                        (actor,)).fetchone():
-                    raise failure('another_native_ingestion_active')
+                if self.native_intake is not None:
+                    acquiring = db.execute(
+                        "SELECT ingestion_id FROM rkb_source_intake_control WHERE person_id=? AND phase='acquiring'",
+                        (actor,)).fetchall()
+                    for blocked in acquiring:
+                        original = db.execute(
+                            "SELECT spec_json,telegram_locator_json,acquisition_json,receipt_json "
+                            "FROM rkb_original_intakes WHERE ingestion_id=?",
+                            (blocked['ingestion_id'],)).fetchone()
+                        if original is not None:
+                            if original['acquisition_json'] or original['receipt_json']:
+                                raise failure('another_native_ingestion_active')
+                            args = {'spec': json.loads(original['spec_json'])}
+                            if original['telegram_locator_json']:
+                                args['telegram_locator'] = json.loads(original['telegram_locator_json'])
+                            key = digest(canonical(dict(phase='original_acquire',args=args)))
+                            job = db.execute("SELECT state FROM jobs WHERE actor=? AND idempotency=?",
+                                ('maintenance:'+access.binding.run_id,'recovery:'+key)).fetchone()
+                            if job is not None and job['state'] != 'done':
+                                raise failure('another_native_ingestion_active')
+                        db.execute("UPDATE rkb_source_intake_control SET phase='failed',updated=? WHERE ingestion_id=?",
+                            (self.queue.clock(), blocked['ingestion_id']))
                 source_id, ingestion_id, request_id = (str(uuid4()) for _ in range(3))
                 now = self.queue.clock()
                 db.execute('''INSERT INTO rkb_source_intake_control(ingestion_id,source_id,person_id,file_id,
