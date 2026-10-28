@@ -272,6 +272,17 @@ class KaggleSourceImporter:
             if source_import is not None and source_import.public_rights is not None else None)
         if len(metadata_bytes) > 16384:
             raise failure('small_import_metadata_bound')
+        abandoned = set()
+        if self.native_intake is not None:
+            with self.queue.connect(write=False) as db:
+                acquiring = db.execute(
+                    "SELECT ingestion_id FROM rkb_source_intake_control "
+                    "WHERE person_id=? AND phase='acquiring' AND file_id<>?",
+                    (actor, file.file_id)).fetchall()
+            for blocked in acquiring:
+                status = await self.originals.status(access.context, blocked['ingestion_id'])
+                if status.state == 'pending' and status.reason == 'original_attachment_retry_same_file_required':
+                    abandoned.add(blocked['ingestion_id'])
         with self.queue.connect() as db:
             prior = db.execute("SELECT c.* FROM rkb_source_intake_control c WHERE person_id=? AND file_id=? AND phase<>'failed' "
                 + "ORDER BY updated DESC LIMIT 1", (actor, file.file_id)).fetchone()
@@ -285,10 +296,15 @@ class KaggleSourceImporter:
                 row = dict(prior)
             else:
                 rights = rights if rights is not None else OWNER_IMPORT_ATTESTATION
-                if self.native_intake is not None and db.execute(
-                        "SELECT 1 FROM rkb_source_intake_control WHERE person_id=? AND phase='acquiring' LIMIT 1",
-                        (actor,)).fetchone():
-                    raise failure('another_native_ingestion_active')
+                if self.native_intake is not None:
+                    acquiring = db.execute(
+                        "SELECT ingestion_id FROM rkb_source_intake_control WHERE person_id=? AND phase='acquiring'",
+                        (actor,)).fetchall()
+                    if any(blocked['ingestion_id'] not in abandoned for blocked in acquiring):
+                        raise failure('another_native_ingestion_active')
+                    for blocked in acquiring:
+                        db.execute("UPDATE rkb_source_intake_control SET phase='failed',updated=? WHERE ingestion_id=?",
+                            (self.queue.clock(), blocked['ingestion_id']))
                 source_id, ingestion_id, request_id = (str(uuid4()) for _ in range(3))
                 now = self.queue.clock()
                 db.execute('''INSERT INTO rkb_source_intake_control(ingestion_id,source_id,person_id,file_id,

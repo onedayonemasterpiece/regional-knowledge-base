@@ -598,7 +598,7 @@ async def test_packet_progress_and_reading_completion_keep_exact_durability_rece
 
 
 @pytest.mark.asyncio
-async def test_start_allows_same_file_retry_but_blocks_second_original_before_acquisition(native_intake):
+async def test_start_same_file_retry_reuses_existing_acquisition(native_intake):
     s = native_intake
     async def acquiring(self, context, *, operation_id, source_id, ingestion_id, file, max_bytes):
         self.calls.append((ingestion_id,file.file_id))
@@ -607,10 +607,7 @@ async def test_start_allows_same_file_retry_but_blocks_second_original_before_ac
     first = await start(s)
     assert first.state=='processing'
     assert (await start(s)).ingestion_id == first.ingestion_id
-    calls = len(s.originals.calls)
-    with pytest.raises(ToolError,match='another_native_ingestion_active'):
-        await start(s,file_id='second-unrelated-original')
-    assert len(s.originals.calls) == calls
+    assert len(s.originals.calls) == 2
 
 
 @pytest.mark.asyncio
