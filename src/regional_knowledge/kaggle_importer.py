@@ -272,6 +272,17 @@ class KaggleSourceImporter:
             if source_import is not None and source_import.public_rights is not None else None)
         if len(metadata_bytes) > 16384:
             raise failure('small_import_metadata_bound')
+        abandoned = set()
+        if self.native_intake is not None:
+            with self.queue.connect(write=False) as db:
+                acquiring = db.execute(
+                    "SELECT ingestion_id FROM rkb_source_intake_control "
+                    "WHERE person_id=? AND phase='acquiring' AND file_id<>?",
+                    (actor, file.file_id)).fetchall()
+            for blocked in acquiring:
+                status = await self.originals.status(access.context, blocked['ingestion_id'])
+                if status.state == 'pending' and status.reason == 'original_attachment_retry_same_file_required':
+                    abandoned.add(blocked['ingestion_id'])
         with self.queue.connect() as db:
             prior = db.execute("SELECT c.* FROM rkb_source_intake_control c WHERE person_id=? AND file_id=? AND phase<>'failed' "
                 + "ORDER BY updated DESC LIMIT 1", (actor, file.file_id)).fetchone()
@@ -289,22 +300,9 @@ class KaggleSourceImporter:
                     acquiring = db.execute(
                         "SELECT ingestion_id FROM rkb_source_intake_control WHERE person_id=? AND phase='acquiring'",
                         (actor,)).fetchall()
+                    if any(blocked['ingestion_id'] not in abandoned for blocked in acquiring):
+                        raise failure('another_native_ingestion_active')
                     for blocked in acquiring:
-                        original = db.execute(
-                            "SELECT spec_json,telegram_locator_json,acquisition_json,receipt_json "
-                            "FROM rkb_original_intakes WHERE ingestion_id=?",
-                            (blocked['ingestion_id'],)).fetchone()
-                        if original is not None:
-                            if original['acquisition_json'] or original['receipt_json']:
-                                raise failure('another_native_ingestion_active')
-                            args = {'spec': json.loads(original['spec_json'])}
-                            if original['telegram_locator_json']:
-                                args['telegram_locator'] = json.loads(original['telegram_locator_json'])
-                            key = digest(canonical(dict(phase='original_acquire',args=args)))
-                            job = db.execute("SELECT state FROM jobs WHERE actor=? AND idempotency=?",
-                                ('maintenance:'+access.binding.run_id,'recovery:'+key)).fetchone()
-                            if job is not None and job['state'] != 'done':
-                                raise failure('another_native_ingestion_active')
                         db.execute("UPDATE rkb_source_intake_control SET phase='failed',updated=? WHERE ingestion_id=?",
                             (self.queue.clock(), blocked['ingestion_id']))
                 source_id, ingestion_id, request_id = (str(uuid4()) for _ in range(3))
