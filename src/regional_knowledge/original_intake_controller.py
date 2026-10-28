@@ -311,7 +311,8 @@ class OriginalIntakeController:
                     job=db.execute('SELECT * FROM jobs WHERE actor=? AND idempotency=?',
                         ('maintenance:'+binding.run_id,'recovery:'+key)).fetchone()
                 if job is None or job['state']!='done':
-                    reason='original_acquisition_pending' if key in self._private else 'original_attachment_retry_same_file_required'
+                    reason=('original_attachment_retry_same_file_required' if job is None and key not in self._private
+                            else 'original_acquisition_pending')
                     return OriginalIntakeStatus(ingestion_id,'pending',reason=reason)
                 identity=json.loads(job['identity']);result=json.loads(job['result'])
                 if (result.get('value',{}).get('terminal') is True
