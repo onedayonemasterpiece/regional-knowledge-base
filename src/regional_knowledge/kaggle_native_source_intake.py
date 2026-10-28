@@ -549,13 +549,17 @@ class NativeSourceIntake:
         await self._check(access)
         return state
 
-    async def applied_page_cursor(self, access, row):
+    async def applied_page_cursor(self, access, row, *, rejected_batch=None):
+        # A rejected packet is retried from its own first page: its stage may
+        # be APPLIED while a later text/semantic phase of the packet rejected.
+        retry=rejected_batch is not None
         with self.queue.connect(write=False) as db:
             latest=db.execute("SELECT operation_key FROM rkb_control_operations WHERE source_id=? "
-                "AND operation_key LIKE ? AND apply_state='APPLIED' ORDER BY sequence DESC LIMIT 1",
-                (row['source_id'],f"source-stage:{row['ingestion_id']}:%")).fetchone()
+                "AND operation_key LIKE ? AND (? OR apply_state='APPLIED') ORDER BY sequence DESC LIMIT 1",
+                (row['source_id'],f"source-stage:{row['ingestion_id']}:{str(rejected_batch)+':' if retry else ''}%",retry)).fetchone()
         entry=await self._entry(latest[0]) if latest else None
-        return str(max(p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages'])+1) if entry else None
+        pages=[p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages']] if entry else []
+        return (str(min(pages)) if retry else str(max(pages)+1)) if pages else None
 
     def _output(self, row, state, *, rejected_next_cursor=None):
         phase=state['phase']
@@ -848,5 +852,5 @@ class NativeSourceIntake:
         tails=await self._tail_output(access,row,state)
         if tails is not None: return tails
         if state.get('rejected_batch_index') is not None:
-            return self._output(row,state,rejected_next_cursor=await self.applied_page_cursor(access,row) or '0')
+            return self._output(row,state,rejected_next_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index']))
         return self._output(row,state)

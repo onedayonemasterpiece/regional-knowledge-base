@@ -390,7 +390,8 @@ class KaggleSourceImporter:
             raise failure('native_research_continuation_unreachable')
         if 'batch_size' in args and (type(args['batch_size']) is not int or args['batch_size'] != 1):
             raise failure('native_research_continuation_unreachable')
-        if cursor is None and output.state=='staged': cursor=await self.native_intake.applied_page_cursor(access,current)
+        if output.next_cursor is not None: cursor=output.next_cursor  # a packet retry or tail page wins
+        elif cursor is None and output.state=='staged': cursor=await self.native_intake.applied_page_cursor(access,current)
         await self._check(access.authority, access.context, access.binding)
         return output.model_copy(update={
             'next_action': 'continue_pages', **({'next_cursor':cursor} if cursor is not None else {}),
