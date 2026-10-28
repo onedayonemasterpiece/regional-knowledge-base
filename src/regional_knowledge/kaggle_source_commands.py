@@ -254,6 +254,7 @@ class WorkerSourceExecutor:
                     reason=str(error)
                     if not 1<=len(reason)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in reason):
                         reason='invalid_model_input'
+                    reject_reason=reason
                     _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
                         command.route,command.sequence,reason)
                     break
