@@ -567,8 +567,10 @@ class NativeSourceIntake:
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
                 key=self._operation(row,'stage',f"{state['rejected_batch_index']}:{state['command_attempt']-1}")
-                with self.queue.connect(write=False) as db:
-                    packet=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+                try:
+                    with self.queue.connect(write=False) as db:
+                        packet=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+                except sqlite3.OperationalError: packet=None  # Old test queues may not contain the control ledger.
                 pages=json.loads(self.spool._entry(packet).command.payload)['model_payload']['pages'] if packet else []
                 cursor=str(min(p['physical_page_index'] for p in pages)) if pages else None
                 message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
