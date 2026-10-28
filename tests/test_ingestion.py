@@ -178,7 +178,6 @@ async def test_start_ingestion_streams_private_source_file_and_activates_staged_
         principal=principal(),
         file=attached_file(),
         ingestion_id=None,
-        cursor=None,
         payload={"title": "Восточная Пруссия", "authors": ["Автор"]},
     )
     await client.aclose()
@@ -262,7 +261,6 @@ async def test_failed_start_reuses_same_ingestion_and_existing_source_object():
         principal=principal(),
         file=attached_file(),
         ingestion_id=None,
-        cursor=None,
         payload=None,
     )
     await client.aclose()
