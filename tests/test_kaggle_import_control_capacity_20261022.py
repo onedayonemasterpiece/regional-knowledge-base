@@ -8,6 +8,7 @@ Dataset Saved or a model run. No control row or terminal identity is deleted.
 """
 import json
 from types import MethodType, SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
@@ -15,7 +16,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from regional_knowledge.kaggle_importer import MAX_CONTROL_BYTES, MAX_CONTROL_ROWS
 from regional_knowledge.contracts import ChatFile
 from regional_knowledge.kaggle_public_backend import current_binding
-from regional_knowledge.original_intake import OriginalIntakeError
+from regional_knowledge.original_intake import OriginalIntakeError, canonical, digest
 from regional_knowledge.original_intake_controller import OriginalIntakeController
 from test_kaggle_native_source_importer import native_intake, start
 from test_kaggle_source_importer import options
@@ -182,7 +183,7 @@ async def test_real_original_controller_terminal_rejection_durable_and_owner_can
             observed.append(file_id)
             if file_id == 'rejected-pdf':
                 return {'error': 'original_pdf_invalid', 'terminal': True}
-            if file_id == 'next-book-pending':
+            if file_id in ('next-book-pending', 'third-book-pending'):
                 return {'error': nonterminal_reason, 'terminal': False}
             pytest.fail('a second unresolved owner intake reached native acquisition')
 
@@ -237,13 +238,30 @@ async def test_real_original_controller_terminal_rejection_durable_and_owner_can
         command='status', principal=s.principal, ingestion_id=next_book.ingestion_id)
     assert unresolved.state == 'processing'
     assert s.importer._row(s.principal.subject, next_book.ingestion_id)['phase'] == 'acquiring'
+    # No acquisition job survived the API restart, so this owner slot is abandoned.
+    assert unresolved.warnings == ['original_attachment_retry_same_file_required']
+    assert not restarted._private
+    third = await begin('third-book-pending')
+    assert third.state == 'processing' and third.ingestion_id != next_book.ingestion_id
+    assert s.importer._row(s.principal.subject, next_book.ingestion_id)['phase'] == 'failed'
+    # A durable unfinished maintenance job is different: UNKNOWN must retain the slot.
+    with s.t.queue.connect() as db:
+        orig = db.execute('SELECT spec_json FROM rkb_original_intakes WHERE ingestion_id=?',
+                          (third.ingestion_id,)).fetchone()
+        key = digest(canonical(dict(phase='original_acquire', args={'spec': json.loads(orig['spec_json'])})))
+        now = s.t.queue.clock()
+        db.execute('''INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated)
+                      VALUES(?,?,?,?,?,?,?,?,?)''',
+                   (str(uuid4()), 'maintenance:'+s.startup.binding.run_id, 'recovery:'+key,
+                    'recovery_phase', '[]', '{}', 'pending', now, now))
     with pytest.raises(ToolError, match='another_native_ingestion_active'):
-        await begin('third-book-must-block')
+        await begin('fourth-book-must-block')
     assert observed.count('rejected-pdf') == 1
     assert observed.count('next-book-pending') == 1
-    assert 'third-book-must-block' not in observed
+    assert observed.count('third-book-pending') == 1
+    assert 'fourth-book-must-block' not in observed
     with s.t.queue.connect(write=False) as db:
         old = db.execute("SELECT phase,rights_json FROM rkb_source_intake_control WHERE ingestion_id=?",
                          (terminal.ingestion_id,)).fetchone()
         assert old['phase'] == 'failed' and old['rights_json'] == saved['rights_json']
-        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 2
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 3
