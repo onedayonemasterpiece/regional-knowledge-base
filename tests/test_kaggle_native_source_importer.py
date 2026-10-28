@@ -283,7 +283,7 @@ def operation_count(s):
         return db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]
 
 
-async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
+async def finish(s, result, *, publish=True, total_inputs=2, status='applied', reason=None):
     """Synthetic worker result; actual ControlSpool/RecoveryJournal durability."""
     entry = await pending(s,result)
     command = entry.command
@@ -305,6 +305,7 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied'):
     else:
         assert command.route == ACTIVATE_ROUTE
         output = dict(source_id=result.document_id,accepted=True,knowledge_sha256='e'*64)
+    if reason is not None: output['reason']=reason
     raw = canonical(output)
     outcome = canonical(dict(codec='rkb.applied-outcome.v1',operation_key=command.operation_key,
         command_sha256=entry.command_sha256,cursor=command.sequence,status=status,ids=dict(command.ids),
@@ -923,6 +924,18 @@ async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intak
     after=operation_count(s)
     assert (await stage(s,book,payload)).state=='staged'
     assert operation_count(s)==after  # Success/lost-ACK retries still deduplicate.
+
+
+@pytest.mark.asyncio
+async def test_rejected_packet_reports_short_reason_and_first_physical_page(native_intake):
+    s=native_intake;book=await start(s);payload=batch(s,book,first=59,count=2)
+    assert (await stage(s,book,payload)).state=='processing'
+    await finish(s,book,status='rejected_precondition',reason='native_source_invalid_span')
+    result=await call(s,book,'status')
+    assert (result.state,result.next_action,result.next_cursor)==('staged','continue_pages','59')
+    assert result.warnings==['native_source_invalid_span']
+    assert result.message.startswith('native_source_invalid_span:')
+    assert payload['pages'][0]['regions'][0]['source_text'] not in result.message
 
 
 @pytest.mark.asyncio
