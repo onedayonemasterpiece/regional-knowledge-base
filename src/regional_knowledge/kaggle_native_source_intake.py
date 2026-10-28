@@ -11,6 +11,7 @@ import base64
 from datetime import datetime, timezone
 import json
 import logging
+import re
 import sqlite3
 import time
 import hashlib
@@ -442,8 +443,9 @@ class NativeSourceIntake:
                 kind=state['pending_kind'];reason='native_source_packet_requires_review'
                 raw=json.loads(entry.apply_receipt.outcome)
                 body=base64.b64decode(raw['result_b64'],validate=True)
-                if body and self._result(entry).get('reason')=='native_source_sql_rolled_back':
-                    reason='native_source_sql_rolled_back'
+                code=self._result(entry).get('reason') if body else None
+                if type(code) is str and re.fullmatch(r'[a-z0-9_]{1,64}',code):
+                    reason=code
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
                 changes=dict(phase='staging',pending_operation_key=None,pending_kind=None,
@@ -555,7 +557,7 @@ class NativeSourceIntake:
         entry=await self._entry(latest[0]) if latest else None
         return str(max(p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages'])+1) if entry else None
 
-    def _output(self, row, state):
+    def _output(self, row, state, *, rejected_next_cursor=None):
         phase=state['phase']
         if phase=='failed': return self.importer._output(row,'failed',state['rejected_reason'] or 'Native command rejected; no successful source activation','blocker')
         if state['pending_operation_key']:
@@ -570,7 +572,7 @@ class NativeSourceIntake:
                     'Correct and retry this packet under the same ingestion.\n'
                     'For unreadable spans use [?] with needs_review=false; never guess.')
                 return self.importer._output(row,'staged',message,
-                    'continue_pages',source_archive_status='verified',warnings=[reason])
+                    'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=rejected_next_cursor)
             return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
                 'continue_pages',source_archive_status='verified')
         if phase=='finalized':
@@ -844,4 +846,7 @@ class NativeSourceIntake:
         state=await self._drive(access,row,state)
         state=await self._packet_progress(access,row,state)
         tails=await self._tail_output(access,row,state)
-        return tails if tails is not None else self._output(row,state)
+        if tails is not None: return tails
+        if state.get('rejected_batch_index') is not None:
+            return self._output(row,state,rejected_next_cursor=await self.applied_page_cursor(access,row) or '0')
+        return self._output(row,state)

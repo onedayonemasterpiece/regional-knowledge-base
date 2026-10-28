@@ -143,6 +143,9 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         }
         self.mock=patch.dict(sys.modules,modules); self.mock.start(); self.addCleanup(self.mock.stop)
         self.helper=NativeSourceIntake(self.importer)
+        # This lightweight spool has no SQL applied-operation ledger; integration tests use the real helper.
+        async def applied_cursor(*args): return None
+        self.helper.applied_page_cursor=applied_cursor
         # Existing fixtures exercise historical, already-created seal intents.
         # New intake tests below explicitly select the new packet behavior.
         self.helper._state(self.row,create=True)
