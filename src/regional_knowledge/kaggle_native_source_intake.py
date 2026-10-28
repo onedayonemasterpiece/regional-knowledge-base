@@ -441,7 +441,9 @@ class NativeSourceIntake:
                 return await asyncio.to_thread(self._update,row,pending_operation_key=None,pending_kind=None)
             if state['pending_kind'] in ('stage','batch','finish'):
                 kind=state['pending_kind'];reason='native_source_packet_requires_review'
-                code=self._result(entry).get('reason')
+                raw=json.loads(entry.apply_receipt.outcome)
+                body=base64.b64decode(raw['result_b64'],validate=True)
+                code=self._result(entry).get('reason') if body else None
                 if type(code) is str and re.fullmatch(r'[a-z0-9_]{1,64}',code):
                     reason=code
                 # One invalid packet remains an explicit review result. It
@@ -555,7 +557,7 @@ class NativeSourceIntake:
         entry=await self._entry(latest[0]) if latest else None
         return str(max(p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages'])+1) if entry else None
 
-    def _output(self, row, state):
+    def _output(self, row, state, *, rejected_next_cursor=None):
         phase=state['phase']
         if phase=='failed': return self.importer._output(row,'failed',state['rejected_reason'] or 'Native command rejected; no successful source activation','blocker')
         if state['pending_operation_key']:
@@ -566,18 +568,11 @@ class NativeSourceIntake:
                     'wait',source_archive_status='verified')
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
-                key=self._operation(row,'stage',f"{state['rejected_batch_index']}:{state['command_attempt']-1}")
-                try:
-                    with self.queue.connect(write=False) as db:
-                        packet=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
-                except sqlite3.OperationalError: packet=None  # Old test queues may not contain the control ledger.
-                pages=json.loads(self.spool._entry(packet).command.payload)['model_payload']['pages'] if packet else []
-                cursor=str(min(p['physical_page_index'] for p in pages)) if pages else None
                 message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
                     'Correct and retry this packet under the same ingestion.\n'
                     'For unreadable spans use [?] with needs_review=false; never guess.')
                 return self.importer._output(row,'staged',message,
-                    'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=cursor)
+                    'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=rejected_next_cursor)
             return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
                 'continue_pages',source_archive_status='verified')
         if phase=='finalized':
@@ -851,4 +846,7 @@ class NativeSourceIntake:
         state=await self._drive(access,row,state)
         state=await self._packet_progress(access,row,state)
         tails=await self._tail_output(access,row,state)
-        return tails if tails is not None else self._output(row,state)
+        if tails is not None: return tails
+        if state.get('rejected_batch_index') is not None:
+            return self._output(row,state,rejected_next_cursor=await self.applied_page_cursor(access,row) or '0')
+        return self._output(row,state)
