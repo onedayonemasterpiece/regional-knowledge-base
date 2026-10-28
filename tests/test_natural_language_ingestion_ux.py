@@ -113,7 +113,6 @@ async def test_book_find_and_archived_reprocess_are_acl_safe_idempotent_and_same
                 principal=other,
                 file=None,
                 ingestion_id=None,
-                cursor=None,
                 payload=None,
                 document_id=str(doc),
             )
@@ -123,7 +122,6 @@ async def test_book_find_and_archived_reprocess_are_acl_safe_idempotent_and_same
             principal=owner,
             file=None,
             ingestion_id=None,
-            cursor=None,
             payload=None,
             document_id=str(doc),
         )
@@ -138,7 +136,6 @@ async def test_book_find_and_archived_reprocess_are_acl_safe_idempotent_and_same
             principal=owner,
             file=None,
             ingestion_id=None,
-            cursor=None,
             payload=None,
             document_id=str(doc),
         )
@@ -151,7 +148,6 @@ async def test_book_find_and_archived_reprocess_are_acl_safe_idempotent_and_same
             principal=owner,
             file=None,
             ingestion_id=first.ingestion_id,
-            cursor=None,
             payload=None,
         )
         assert status.next_action == "continue_pages"
@@ -178,7 +174,6 @@ async def test_book_find_and_archived_reprocess_are_acl_safe_idempotent_and_same
                 principal=owner,
                 file=None,
                 ingestion_id=None,
-                cursor=None,
                 payload=None,
                 document_id=str(doc),
             )
@@ -233,7 +228,7 @@ async def archived_book(graph_db, tmp_path, monkeypatch):
     monkeypatch.setattr('regional_knowledge.source_archive.download_source', download)
     async def reprocess():
         return await b.book_ingest(command='reprocess', principal=owner, file=None,
-            ingestion_id=None, cursor=None, payload=None, document_id=str(doc))
+            ingestion_id=None, payload=None, document_id=str(doc))
     return b, doc, owner, other, control, reprocess
 
 
@@ -296,7 +291,7 @@ async def test_reprocess_after_real_activation_can_start_following_revision(grap
                 'region_refs': [{'page_id': page_id, 'region_key': 'body'}]}]}
         async def call(command, payload=None):
             return await b.book_ingest(command=command, principal=owner, file=None,
-                ingestion_id=first.ingestion_id, cursor=None, payload=payload)
+                ingestion_id=first.ingestion_id, payload=payload)
         assert (await call('stage', payload)).next_action == 'validate'
         assert (await call('status')).next_action == 'validate'
         assert (await call('validate')).next_action == 'finalize'
@@ -411,7 +406,7 @@ async def test_rest_reprocess_preserves_original_identity_and_replay(tmp_path, m
         reads.append(document_id); Path(path).write_bytes(b'owned source')
     monkeypatch.setattr('regional_knowledge.source_archive.download_source', download)
     async def reprocess():
-        return await b.book_ingest(command='reprocess', principal=owner, file=None, ingestion_id=None, cursor=None, payload=None, document_id=doc['id'])
+        return await b.book_ingest(command='reprocess', principal=owner, file=None, ingestion_id=None, payload=None, document_id=doc['id'])
     try:
         first = await reprocess(); replay = await reprocess()
         assert first.ingestion_id == replay.ingestion_id and first.document_id == doc['id']
@@ -475,7 +470,7 @@ async def test_status_guides_interrupted_finalization_resume_or_wait(graph_db, t
             db.execute("update rkb_ingestion_jobs set state='processing',cursor='finalize' where id=%s", (UUID(start.ingestion_id),))
         async def status():
             return await b.book_ingest(command='status', principal=owner, file=None,
-                ingestion_id=start.ingestion_id, cursor=None, payload=None)
+                ingestion_id=start.ingestion_id, payload=None)
         assert (await status()).next_action == 'resume_finalize'
         pending = asyncio.get_running_loop().create_future()
         b._finalize_tasks[start.ingestion_id] = pending
