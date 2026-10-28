@@ -11,6 +11,7 @@ import base64
 from datetime import datetime, timezone
 import json
 import logging
+import re
 import sqlite3
 import time
 import hashlib
@@ -440,10 +441,9 @@ class NativeSourceIntake:
                 return await asyncio.to_thread(self._update,row,pending_operation_key=None,pending_kind=None)
             if state['pending_kind'] in ('stage','batch','finish'):
                 kind=state['pending_kind'];reason='native_source_packet_requires_review'
-                raw=json.loads(entry.apply_receipt.outcome)
-                body=base64.b64decode(raw['result_b64'],validate=True)
-                if body and self._result(entry).get('reason')=='native_source_sql_rolled_back':
-                    reason='native_source_sql_rolled_back'
+                code=self._result(entry).get('reason')
+                if type(code) is str and re.fullmatch(r'[a-z0-9_]{1,64}',code):
+                    reason=code
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
                 changes=dict(phase='staging',pending_operation_key=None,pending_kind=None,
@@ -566,11 +566,16 @@ class NativeSourceIntake:
                     'wait',source_archive_status='verified')
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
+                key=self._operation(row,'stage',f"{state['rejected_batch_index']}:{state['command_attempt']-1}")
+                with self.queue.connect(write=False) as db:
+                    packet=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
+                pages=json.loads(self.spool._entry(packet).command.payload)['model_payload']['pages'] if packet else []
+                cursor=str(min(p['physical_page_index'] for p in pages)) if pages else None
                 message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
                     'Correct and retry this packet under the same ingestion.\n'
                     'For unreadable spans use [?] with needs_review=false; never guess.')
                 return self.importer._output(row,'staged',message,
-                    'continue_pages',source_archive_status='verified',warnings=[reason])
+                    'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=cursor)
             return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
                 'continue_pages',source_archive_status='verified')
         if phase=='finalized':
