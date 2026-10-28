@@ -928,7 +928,12 @@ async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intak
 
 @pytest.mark.asyncio
 async def test_rejected_packet_reports_short_reason_and_first_physical_page(native_intake):
-    s=native_intake;book=await start(s);payload=batch(s,book,first=59,count=2)
+    s=native_intake;book=await start(s)
+    assert (await stage(s,book,batch(s,book,first=58,count=1))).state=='processing'
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    payload=batch(s,book,first=59,count=2)
     assert (await stage(s,book,payload)).state=='processing'
     await finish(s,book,status='rejected_precondition',reason='native_source_invalid_span')
     result=await call(s,book,'status')
