@@ -349,7 +349,17 @@ async def test_target_warming_original_request_delivers_sourced_answer_after_rea
     await reply._answer(request_id)
     assert _delivery_row(control, request_id)["state"] == "searching"
     assert _delivery_row(control, request_id)["delivery_attempt"] == 0
-    assert posts == []
+    assert _delivery_row(control, request_id)["delivery_id"] == "Ev-1:warming"
+    assert len(posts) == 1
+    assert posts[0]["text"] == (
+        "Запускаю базу, ответ будет примерно через 4 мин." if eta_seconds
+        else "Запускаю базу, отвечу после запуска.")
+    assert posts[0]["client_msg_id"] == "Ev-1:warming"
+    assert posts[0]["thread_ts"] == "1792000000.100"
+
+    # A second warming poll (including after task restart) does not post a duplicate.
+    await reply._answer(request_id)
+    assert len(posts) == 1 and _delivery_row(control, request_id)["delivery_attempt"] == 0
 
     class SourceGate:
         async def refresh(self, gated):
@@ -375,15 +385,16 @@ async def test_target_warming_original_request_delivers_sourced_answer_after_rea
     monkeypatch.setattr(receiver.backend, "search_adapter", ready)
     reply.notify(request_id)
     await asyncio.wait_for(reply._tasks[request_id], 6)
-    assert queries == ["Which event is supported by this source?"] * 2
-    assert len(posts) == 1 and "Confirmed synthetic source." in posts[0]["text"]
-    assert posts[0]["client_msg_id"] == "Ev-1"
-    assert posts[0]["thread_ts"] == "1792000000.100"
+    assert queries == ["Which event is supported by this source?"] * 3
+    assert len(posts) == 2 and "Confirmed synthetic source." in posts[1]["text"]
+    assert posts[1]["client_msg_id"] == "Ev-1"
+    assert posts[1]["thread_ts"] == "1792000000.100"
     assert _delivery_row(control, request_id)["state"] == "delivered"
     assert _delivery_row(control, request_id)["delivery_attempt"] == 1
+    assert _delivery_row(control, request_id)["delivery_id"] == "Ev-1"
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)
-    assert len(posts) == 1
+    assert len(posts) == 2
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("status", "reason"), [("ok", None), ("denied", "access_denied")])

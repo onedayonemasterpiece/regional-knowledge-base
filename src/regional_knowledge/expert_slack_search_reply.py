@@ -155,8 +155,8 @@ class ExpertSlackSearchReply:
         for row in rows:self.notify(row["id"])
 
     async def _answer_until_sent(self, request_id):
-        # Retry the same acknowledged request only before any POST permit.
-        # A possible provider effect remains sending/unknown and is not resent.
+        # Retry the same acknowledged search while warming; the notice has a distinct marker.
+        # A possible final provider effect remains sending/unknown and is not resent.
         delay=2
         while True:
             try:
@@ -207,6 +207,20 @@ class ExpertSlackSearchReply:
                 db.execute("UPDATE rkb_expert_requests SET state='searching',updated_at=? WHERE id=?",
                     (self.control.clock(),request_id))
             return dict(row,origin=json.dumps(origin))
+
+    def _claim_warming_post(self, request_id):
+        with self.control.corpus.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
+            if (row is None or row["state"]!="searching" or row["delivery_id"] is not None
+                    or not request_order.is_head(db,row)):
+                return None
+            origin=self._verified(db,row)
+            marker=row["event_id"]+":warming"
+            # One durable intent before Slack POST, including uncertain provider outcomes.
+            db.execute("UPDATE rkb_expert_requests SET delivery_id=?,updated_at=? WHERE id=?",
+                       (marker,self.control.clock(),request_id))
+            return dict(event_id=marker,channel=origin["channel_id"],thread=origin["thread_ts"])
 
     def _claim_post(self, request_id):
         with self.control.corpus.connect() as db:
@@ -281,7 +295,16 @@ class ExpertSlackSearchReply:
                 if (not calls and type(outcome) is EvidenceSearchOutput
                         and outcome.status=="pending" and outcome.reason=="target_warming"
                         and not outcome.evidence):
-                    # Keep the original request searching; the existing task retries after warmup.
+                    # A separate one-shot notice does not finish the original request.
+                    if row["delivery_id"] is None:
+                        eta=outcome.startup.eta_seconds if outcome.startup else None
+                        text=(f"Запускаю базу, ответ будет примерно через {max(1,(eta+59)//60)} мин."
+                              if eta is not None else "Запускаю базу, отвечу после запуска.")
+                        async def claim_warming():
+                            permit=await asyncio.to_thread(self._claim_warming_post,request_id)
+                            if permit is None:raise PermissionError("Slack warming notice already claimed")
+                            return dict(permit,text=text)
+                        await self.sender.post_once(claim=claim_warming)
                     return
                 else:
                     if len(calls)!=1:raise PermissionError("retained source gate required")
