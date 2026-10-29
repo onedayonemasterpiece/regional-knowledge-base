@@ -83,6 +83,31 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
 
 
 
+def test_native_accepted_page_correction_guidance_matches_existing_stage_contract():
+    import inspect
+    from pathlib import Path
+    import regional_knowledge.server as target
+
+    guide = target._ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS
+    for exact in (
+        "Ordinary continuation", "never blindly replay", "ANY previously accepted physical page",
+        "not only the latest page", "same ingestion", "still staging and no stage is pending",
+        "page_id", "physical_page_index", "controller-issued image receipt",
+        "unaffected region_keys", "source_text", "chunk_keys", "source_unit_boundaries",
+        "omitted readable source_text", "chunk references/span offsets",
+        "source_review_note (1-500 characters)", "identical pending stage", "After finalize",
+        "never overwrites accepted bytes",
+    ):
+        assert exact in guide, exact
+    builder = inspect.getsource(target.build_server)
+    assert builder.count("_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS") == 2
+    assert "Revising an accepted book is unsupported in this profile" not in builder
+    assert "never resend accepted pages" not in builder
+    stage_sql = (Path(__file__).resolve().parents[1] / "sql/kaggle/013_source_stage.sql").read_text()
+    assert "IF FOUND AND prior_page.image_receipt<>image_bytes THEN RETURN false;" in stage_sql
+    assert "idx=tail.batch_index+1 AND prev=tail.payload_sha256" in stage_sql
+
+
 @pytest.mark.asyncio
 async def test_adaptive_p1_policy_is_in_search_only_and_fetch_refers_to_it(monkeypatch):
     monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
