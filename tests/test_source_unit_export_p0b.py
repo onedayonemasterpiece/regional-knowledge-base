@@ -159,8 +159,10 @@ async def test_complete_all_span_model_order_mcp_pdf_and_incomplete_is_actionabl
         labels=[str(61+i) for i in range(len(order))]
         assert [bibliography.index(label) for label in labels]==sorted(bibliography.index(label) for label in labels)
         assert SERVICE_CAPTION.replace(" ","") in re.sub(r"\s+","",doc[0].get_text())
-        authored="".join(page.get_text().removesuffix(f"Страница PDF {i}\n")
-            for i,page in enumerate(doc,start=1) if i>1)
+        authored="".join(block[4] for page in list(doc)[1:]
+            for block in page.get_text('blocks')
+            if block[6]==0 and 49<=block[1]<page.rect.height-43)
+        authored=authored.removeprefix('Немецкая статья / Eintrag\n')
         expected="".join(r["source_text"] for p in pages for r in p["regions"])
         assert re.sub(r"\s+","",authored)==re.sub(r"\s+","",expected)
         assert "Abschnitt 17" in authored and "Abschnitt 0" in authored
