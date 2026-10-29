@@ -503,7 +503,7 @@ class KaggleSourceBackend:
         illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         deadline = (min(time.monotonic()+2,trusted['deadline'])
-            if trusted is not None else time.monotonic()+2)
+            if trusted is not None and exact else time.monotonic()+2)
         telemetry = self.read_telemetry
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation)
@@ -536,7 +536,7 @@ class KaggleSourceBackend:
                     backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'),
                 **extra),separators=(',',':')))
         try:
-            async with asyncio.timeout_at(None if illustration or not exact else min(deadline,attempt.started+2)) as timeout:
+            async with asyncio.timeout_at(None if illustration else min(deadline,attempt.started+2)) as timeout:
                 try:
                     filters = QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
                         kinds=kinds)

@@ -116,7 +116,7 @@ async def test_public_story_roundtrip_uses_same_admission_and_final_output_autho
 
 
 @pytest.mark.asyncio
-async def test_trusted_adapter_keeps_identity_deadline_authority_without_oauth_resolution(target,monkeypatch):
+async def test_trusted_adapter_keeps_identity_authority_and_timing_goal_without_oauth_resolution(target,monkeypatch):
     import time
     s=target
     authority=await s.auth.resolver.resolve_oauth(s.principal.access_token,destination=s.backend.destination)
@@ -130,7 +130,7 @@ async def test_trusted_adapter_keeps_identity_deadline_authority_without_oauth_r
     task=asyncio.create_task(read());dispatched=await work(s)
     assert dispatched.query.request_id!='adapter-turn-7'
     assert (dispatched.query.turn_generation,dispatched.query.min_data_seq)==(7,8)
-    assert 1<=dispatched.query.deadline_ms<=1700
+    assert dispatched.query.deadline_ms==2000  # Search timing goal, not caller authority expiry.
     from regional_knowledge.kaggle_protocol import QueryResult
     native=QueryResult(request_id=dispatched.query.request_id,connection_generation=s.generation,
         turn_generation=7,status='degraded',mode='hybrid',reason='bounded_retrieval',

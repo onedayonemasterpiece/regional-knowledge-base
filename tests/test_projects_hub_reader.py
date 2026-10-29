@@ -125,6 +125,7 @@ async def test_trusted_http_search_delivers_after_internal_timing_goal(service,r
         reader,app,body,headers=setup(s);path=PATH
     else:
         reader,app,body,headers,_,_=await _receiver(service);path=EXPERT_PATH
+    body['deadline_monotonic']=time.monotonic()-1  # Legacy indicator is not authority expiry.
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
                                  base_url='http://127.0.0.1') as client:
         task=asyncio.create_task(client.post(path,json=body,headers=headers))
