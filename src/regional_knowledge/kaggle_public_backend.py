@@ -834,6 +834,13 @@ class KaggleSourceBackend:
             operation='source_units',source_id=source_id,after_ordinal=after_ordinal,
             limit=limit))
 
+    async def source_units_adapter(self,source_id,*,authority,request_id,destination):
+        """Slack's verified actor uses the same existing source read/issuance."""
+        return await self._search(None,None,evidence=True,
+            catalog_request=dict(operation='source_units',source_id=source_id,limit=1),
+            trusted=dict(authority=authority,request_id=request_id,turn_generation=0,
+                min_data_seq=0,deadline=time.monotonic()+2,destination=destination))
+
     async def search_adapter(self,query,*,authority,request_id,turn_generation,min_data_seq,
                              deadline_monotonic,destination,source_ids=None,limit=3):
         """Trusted receiver seam; the retained authority lives through final issuance.
