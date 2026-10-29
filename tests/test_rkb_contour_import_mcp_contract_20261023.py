@@ -183,8 +183,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "Finalization alone activates" not in native.instructions
     # Cold search continuation is one native instruction, not a new method.
     for instruction in ("startup.message_ru", "startup.eta_seconds",
-                        "same startup_ref", "every 30 seconds",
-                        "after ready issue a NEW search"):
+                        "SAME startup_ref", "Do NOT end this turn",
+                        "EXACT same search"):
         assert instruction in native.instructions
     # Conditional Case discovery and existing write workflow must agree in
     # both native instructions and the displayed book_ingest description.

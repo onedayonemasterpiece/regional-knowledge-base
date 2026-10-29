@@ -673,7 +673,7 @@ def build_server(
             "On the first cover, title, title-verso and imprint pages, populate the existing book metadata from the actual printing: metadata.title, metadata.authors, metadata.publication_year and metadata.language; metadata.catalog.kind (book/journal_issue/article), editors, translators, publisher, date, edition, identifiers and topics (themes). Set metadata.catalog.cover_page to the observed zero-based physical page index together with metadata.catalog.cover_kind (cover, title_page or issue_cover). Do not invent unknown authors, editors, dates, identifiers, book type, topics or cover details; leave unsupported fields unset. "
             "When the evidence does not support such a body, omit basic_variant and explicitly mark narrative_outcome=needs_context or facts_only. Do not invent source text, geometry, identity or story body. "
             "On first stage supply source_import.research with state=pending and an exact owned book_pages continuation (tool=book_pages; arguments.ingestion_id, cursor, batch_size=1), or state=complete with empty continuation only when actually finished. Reuse the exact research state on retries. processing, wait, UNKNOWN and pending are not proof of apply, Saved, or search visibility; follow status/next_action rather than tight polling or minting another source. Completion of reading is not completion of research or editorial acceptance. Use only tools actually registered for the current client profile: ordinary search, knowledge_search and fetch for relevant source evidence. When disagreement_search is registered, search existing actor-authorized Case candidates by subject, place or source in the SAME page review; follow next_after_case when has_more, and use disagreement_get on a selected, authorized Case before disagreement_edit(add_evidence). If no suitable Case exists, use disagreement_edit(create) followed by add_evidence only when those tools and permissions are available. Bounded lexical candidates are not automatic contradiction matching or proof that no Case exists; a text match never grants Case/source access. Preserve the original operation_key after UNKNOWN and never call pending Saved. Keep all actor/source/Case permissions and exact receipts. Never infer a source is public merely from a related place or accepted text."
-            "If search or knowledge_search returns pending with startup_ref, pass startup.message_ru to the user immediately. If startup.eta_seconds is absent, give no numeric ETA. Check startup_status with the same startup_ref no more often than every 30 seconds while pending; after ready issue a NEW search. The prior pending read was not queued: do not mint a second launch or retry UNKNOWN effects. " + _answer_instructions
+            "If search or knowledge_search returns pending with startup_ref, relay startup.message_ru and any measured startup.eta_seconds to the user immediately (never invent an ETA). Do NOT end this turn or ask the user to repeat: keep calling startup_status with the SAME startup_ref while pending, then repeat the EXACT same search with its original arguments after ready and answer from the evidence. Each startup_status call waits for one bounded recheck; these startup checks do not count toward the six search/fetch calls. The original read was not queued: do not mint a second launch or retry UNKNOWN effects. " + _answer_instructions
         ),
         **kwargs,
     )
@@ -1302,9 +1302,12 @@ def build_server(
 
     if selected == 'kaggle_source':
         @mcp.tool(name='startup_status',title='Check Regional Knowledge startup',
-            description='Check a versioned cold-start reference. Does not restart or replay search. Once ready, call knowledge_search/search again with your current access rights.',
+            description='Wait up to about 40 seconds for an existing cold start and recheck its ref. If still pending, call startup_status again in THIS turn without asking the user to repeat. Once ready, repeat the exact original search; this status never replays it.',
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
         async def startup_status(startup_ref: str) -> StartupStatus:
+            status=await backend.startup_status(startup_ref,_principal())
+            if status.status!='pending':return status
+            await asyncio.sleep(40)
             return await backend.startup_status(startup_ref,_principal())
 
     if profile == "live":
@@ -1314,7 +1317,7 @@ def build_server(
             description=(
                 "Return a bounded evidence pack from accessible regional books and journals. "
                 "When Kaggle is cold, returns MCP pending and a versioned startup ref; "
-                "call startup_status, then issue a NEW search after ready."
+                "stay in this turn, keep calling startup_status while pending, then rerun this exact search after ready. Do not ask the user to repeat."
             ),
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         )
@@ -1340,7 +1343,7 @@ def build_server(
         "2. Read inline search text, provenance, incomplete and next_id. After EACH read check all parts, identity, negations and caveats; stop when evidence is sufficient.\n"
         "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
         "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
-        "5. Stop when sufficient or after at most 6 sequential RKB calls. At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
+        "5. Stop when sufficient or after at most 6 sequential search/fetch calls (startup_status checks for the same cold start do not count). At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
         "6. Answer in 1-4 sentences in the question's language; for German questions, answer in German then immediately translate into Russian; cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request; do not add details absent from read passages (e.g. modern place names), and if the user requests them, explicitly label them as outside the cited sources.\n"
     )
 
@@ -1350,7 +1353,7 @@ def build_server(
             "Search accessible regional books and journals. Results include citable IDs/URLs; "
             "source-backed hits include bounded text, provenance, incomplete and next_id. "
             "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
-            "If Kaggle is cold, check startup_status and retry as a NEW read after ready.\n" + _search_policy
+            "If Kaggle is cold, do not finish the turn on pending: keep calling startup_status with its startup_ref until ready, then rerun this exact search and answer. Do not ask the user to repeat.\n" + _search_policy
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
