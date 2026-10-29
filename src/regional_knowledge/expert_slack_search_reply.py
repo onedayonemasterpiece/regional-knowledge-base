@@ -313,7 +313,7 @@ class ExpertSlackSearchReply:
             # The Slack connector's presentation footer is not the question.
             query=re.sub(r"(?:^|\s+)\*Sent using\* <@[UW][A-Z0-9]+(?:\|[^>]+)?>\s*\Z",
                          "",query).strip()
-            pdf=re.fullmatch(r"(?i:pdf)\\s+([0-9a-f-]{36})\\s+([A-Za-z0-9][A-Za-z0-9._:-]{0,99})",query)
+            pdf=re.fullmatch(r"(?i:pdf)\s+([0-9a-f-]{36})\s+([A-Za-z0-9][A-Za-z0-9._:-]{0,99})",query)
             if pdf is not None:
                 with capture_read_output() as calls:
                     selection=await self.evidence.backend.source_units_adapter(pdf[1],
