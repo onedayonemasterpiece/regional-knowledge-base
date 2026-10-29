@@ -1118,8 +1118,8 @@ class BgeQueue:
     def retire_provider_reservation(self, proof):
         """Internal adapter result only; never an operator termination boolean.
 
-        Retires compute ownership, not domain effects. Accepted commands,
-        publication intents, claims, results and durable demand remain intact.
+        Retires compute ownership, not accepted domain effects. Cold terminal
+        starts use normal expiry; claim identities and known results remain evidence.
         A never-attached version needs no invented runtime incarnation.
         """
         from .kaggle_provider_terminal import validate_proof, _NativeTerminalProof, _OBSERVED
@@ -1152,6 +1152,16 @@ class BgeQueue:
                 db.execute("""update bge_shared_admission set run_id=null,incarnation=null
                     where id=1 and run_id=? and incarnation is ?""",
                     (run['id'],run['runtime_incarnation']))
+            if run['status']=='starting':
+                # The sealed terminal receipt proves this cold start cannot finish.
+                # Reuse failure accounting and expiry; accepted effects stay fenced.
+                db.execute("update runs set status='failed' where id=?",(run['id'],))
+                db.execute('''UPDATE control SET startup_failures=startup_failures+1,
+                    startup_state=CASE WHEN startup_ref IS NOT NULL THEN 'pending'
+                        ELSE startup_state END WHERE current_run=?''',(run['id'],))
+                self._expire(db,self.clock())
+                _LOG.info('bge_cold_terminal run_id=%s provider_version=%s status=%s',
+                          run['id'],run['provider_version'],proof.status)
             self._finalize_provider_terminal_pointers(db)
             return True
 
