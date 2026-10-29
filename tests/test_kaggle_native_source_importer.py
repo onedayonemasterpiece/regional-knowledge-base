@@ -981,12 +981,19 @@ async def test_next_stage_before_semantic_still_enriches_every_batch(native_inta
 
 
 @pytest.mark.asyncio
-async def test_rejected_page_refuses_advancement_but_corrected_page_can_continue(native_intake):
+@pytest.mark.parametrize('component',['text','stage'])
+async def test_rejected_page_refuses_advancement_but_corrected_page_can_continue(native_intake,component):
     s=native_intake
     book=await start(s)
+    if component=='stage':
+        await stage(s,book,batch(s,book,first=58,count=1))
+        for _ in range(3):
+            await finish(s,book)
+            await call(s,book,'status')
     await stage(s,book,batch(s,book,first=59,count=1))
-    await finish(s,book)
-    await call(s,book,'status')
+    if component=='text':
+        await finish(s,book)
+        await call(s,book,'status')
     reason='complete_native_input_exceeds_512_tokens'
     await finish(s,book,status='rejected_precondition',reason=reason)
     rejected=await call(s,book,'status')

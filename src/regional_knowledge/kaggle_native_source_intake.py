@@ -449,7 +449,8 @@ class NativeSourceIntake:
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
                 changes=dict(phase='staging',pending_operation_key=None,pending_kind=None,
-                    rejected_batch_index=max(0,state['batch_count']-1),rejected_reason=reason,
+                    rejected_batch_index=(json.loads(entry.command.payload)['batch_index'] if kind=='stage'
+                        else max(0,state['batch_count']-1)),rejected_reason=reason,
                     command_attempt=state['command_attempt']+1,read_completion_requested=0)
                 if kind=='batch':changes.update(published_batch_count=state['batch_count'],enriched_batch_count=state['batch_count'])
                 return await asyncio.to_thread(self._update,row,**changes)
