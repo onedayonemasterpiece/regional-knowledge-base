@@ -1336,7 +1336,7 @@ def build_server(
 
     _search_policy = (
         "Search/fetch checklist:\n"
-        "1. Identify subject, required parts, named book, period and ambiguity. First search in the user's language; for a named book use document_ids immediately, not a broad search.\n"
+        "1. Identify subject, required parts, named book, period and ambiguity. First search in the user's language; for a named book use document_ids immediately, and keep query about the subject, not the book's author or title unless they are the subject.\n"
         "2. Read inline search text, provenance, incomplete and next_id. After EACH read check all parts, identity, negations and caveats; stop when evidence is sufficient.\n"
         "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
         "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
