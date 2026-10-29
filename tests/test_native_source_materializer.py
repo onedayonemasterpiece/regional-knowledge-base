@@ -134,8 +134,13 @@ class NativeCompilerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_513_complete_input_rejected_without_truncation(self):
         raw=canonical(exact_batch(count=1,receipt=original(page_count=1)))
+        async def boundary(text):return 512
+        valid=await NativeSourceCompiler(count=boundary,current=lambda:True).compile([raw],source_id=SOURCE,
+            person_id=PERSON,last_batch_sha256=digest(raw))
+        self.assertEqual(valid['passages'][0]['input_tokens'],512)
         async def count(text):return 513
-        with self.assertRaisesRegex(SourceMaterializationRejected,'512_tokens'):
+        with self.assertRaisesRegex(SourceMaterializationRejected,
+                'complete_native_input_exceeds_512_tokens:chunk_key=page-0:tokens=513$'):
             await NativeSourceCompiler(count=count,current=lambda:True).compile([raw],source_id=SOURCE,
                 person_id=PERSON,last_batch_sha256=digest(raw))
 
