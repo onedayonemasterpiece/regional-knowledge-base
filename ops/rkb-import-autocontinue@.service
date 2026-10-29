@@ -1,0 +1,15 @@
+[Unit]
+Description=RKB-Import: continue the single reader window of ingestion %i
+After=network-online.target
+[Service]
+Type=simple
+# %i.env: ING=<ingestion_id>, BOOK=<title for the prompt>; %i.chat: the reader chat_url
+EnvironmentFile=%h/.local/state/rkb-import-autocontinue/%i.env
+Environment=LAUNCHER_AUTH_FILE=%h/.config/chatgpt-launcher/mcp-authorization.header
+ExecStart=/usr/bin/python3 %h/projects/regional-knowledge-base/scripts/import_autocontinue.py ${ING} ${BOOK}
+Restart=on-failure
+RestartSec=60
+UMask=0077
+NoNewPrivileges=true
+[Install]
+WantedBy=default.target
