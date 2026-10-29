@@ -322,6 +322,8 @@ class KaggleSourceImporter:
             return await self._original_pending(row,status)
         if row['phase'] == 'acquiring':
             row = await asyncio.to_thread(self._save, row, phase='staging')
+        if prior is not None and prior['phase']!='acquiring' and self.native_intake is not None:
+            return await self._native_status(access,row)
         if await self._entry(row) is not None or row['phase']=='embedding':
             return await self._finalize(access,row)
         if row['phase']=='validated':
@@ -351,6 +353,13 @@ class KaggleSourceImporter:
                 'blocker',source_archive_status='pending',warnings=[status.reason])
         return self._output(row,'processing','Original acquisition and verified durable readback pending',
             'wait',source_archive_status='pending')
+
+    async def _native_status(self, access, row):
+        output=await self.native_intake.status(access,row)
+        if (output.state=='finalized' or output.state=='staged'
+                and output.next_action=='continue_pages' and not output.warnings):
+            output=await self._native_research_status(access,row,output)
+        return output
 
     async def _native_research_status(self, access, row, output):
         """Expose the SAME accepted model's exact page continuation on status.
@@ -878,7 +887,7 @@ class KaggleSourceImporter:
                         elif command == 'validate':
                             output = await self._validate(access, row)
                         elif self.native_intake is not None and command=='status':
-                            output=await self.native_intake.status(access,row)
+                            output=await self._native_status(access,row)
                         elif command == 'finalize' or await self._entry(row) is not None or row['phase'] == 'embedding':
                             output = await self._finalize(access, row)
                         elif row['phase']=='validated':
@@ -892,9 +901,6 @@ class KaggleSourceImporter:
                                     'continue_pages',next_cursor='0',source_archive_status='verified')
                             else:
                                 output = await self._original_pending(row,status)
-                if (command == 'status' and getattr(self, 'native_intake', None) is not None
-                        and (output.state == 'finalized' or output.state == 'staged' and output.next_action == 'continue_pages' and not output.warnings)):
-                    output = await self._native_research_status(access, row, output)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64
                             or set(stage_file_sha256) - set('0123456789abcdef')):
