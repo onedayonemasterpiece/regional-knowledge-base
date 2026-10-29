@@ -372,3 +372,10 @@ async def test_registered_argument_validation_redacts_payload_before_dispatch(
     result=await server.call_tool('book_ingest',args)
     assert not result.is_error
     assert backend.calls==[('book_ingest','stage')]
+
+
+@pytest.mark.asyncio
+async def test_named_source_does_not_pollute_search_subject(registered_books):
+    server, _ = registered_books
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    assert "keep query about the subject, not the book's author or title unless they are the subject" in tools["search"].description
