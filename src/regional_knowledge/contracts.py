@@ -244,13 +244,15 @@ class StageSourceUnitBoundary(BaseModel):
     article_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
     action: Literal["start", "end"]
     region_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
-    offset: int = Field(ge=0, le=8000)
+    offset: int | None = Field(default=None, ge=0, le=8000)
     kind: Literal["chapter", "article", "section"] | None = None
     title: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def explicit_metadata(self) -> "StageSourceUnitBoundary":
         if self.action == "start":
+            if self.offset is None:
+                raise ValueError("a source unit start requires an offset")
             if self.kind is None or self.title is None or not self.title.strip():
                 raise ValueError("a source unit start needs its observed kind and title")
         elif self.kind is not None or self.title is not None:
@@ -328,6 +330,8 @@ class StagePageInput(BaseModel):
         observed = set()
         for boundary in self.source_unit_boundaries:
             region = by_key.get(boundary.region_key)
+            if boundary.action == "end" and boundary.offset is None and region is not None:
+                boundary.offset = len(region.source_text)
             if region is None or boundary.offset > len(region.source_text):
                 raise ValueError("unit anchor must name an exact reviewed region span")
             if boundary.action == "start" and boundary.offset == len(region.source_text):

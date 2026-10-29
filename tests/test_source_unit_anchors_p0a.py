@@ -142,6 +142,42 @@ def test_i03_two_articles_one_region_have_disjoint_half_open_spans_and_existing_
     assert passage.article_id==b["article_id"]
 
 
+
+def test_i03_end_without_offset_uses_original_unicode_length_and_canonicalizes():
+    import json
+    from regional_knowledge.stage_file import parse_stage_file
+    from regional_knowledge.source_stage import canonical
+
+    text = "Статья А🌍. Статья Б: конец."
+    pivot = text.index("Статья Б")
+    explicit = reviewed(0, [("both", "body", text)], [
+        event("article-a", "start", "both", 0, kind="article", title="А"),
+        event("article-a", "end", "both", pivot),
+        event("article-b", "start", "both", pivot, kind="article", title="Б"),
+        event("article-b", "end", "both", len(text)),
+    ])
+    implicit_raw = explicit.model_dump(mode="json", exclude_none=True)
+    del implicit_raw["source_unit_boundaries"][-1]["offset"]
+    implicit = StagePageInput.model_validate(implicit_raw)
+    assert [b.offset for b in implicit.source_unit_boundaries] == [0, pivot, pivot, len(text)]
+    assert len(text.encode("utf-8")) > len(text)
+    assert canonical(implicit.model_dump(mode="json", exclude_none=True)) == canonical(
+        explicit.model_dump(mode="json", exclude_none=True))
+    file_payload = dict(ingestion_id=SOURCE, source_revision=1, pages=[implicit_raw])
+    parsed_file = parse_stage_file(json.dumps(file_payload, ensure_ascii=False).encode(), SOURCE, 1)
+    assert parsed_file["pages"][0] == implicit.model_dump(mode="json", exclude_none=True)
+
+    missing_start = copy.deepcopy(implicit_raw)
+    del missing_start["source_unit_boundaries"][0]["offset"]
+    with pytest.raises(ValidationError):
+        StagePageInput.model_validate(missing_start)
+    unknown_region = copy.deepcopy(implicit_raw)
+    unknown_region["source_unit_boundaries"][-1]["region_key"] = "missing"
+    with pytest.raises(ValidationError):
+        StagePageInput.model_validate(unknown_region)
+    zero_end = reviewed(1, [("r", "body", "🙂")], [event("prior", "end", "r", 0)])
+    assert zero_end.source_unit_boundaries[0].offset == 0
+
 def test_i04_eof_only_after_actual_read_complete_and_all_physical_pages_published():
     pages=[
         reviewed(0,[("a","heading","Текст главы.")],
