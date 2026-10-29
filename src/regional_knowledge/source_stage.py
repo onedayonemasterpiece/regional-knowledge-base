@@ -18,6 +18,10 @@ STAGE_REVISIONS = ('rkb-v4-sql001-013-v1', 'rkb-v4-source-stage-v1', 'rkb-python
 BATCH_CODEC = 'rkb.source-stage-batch.v1'
 SEAL_CODEC = 'rkb.source-stage-seal.v1'
 ZERO_HASH = '0' * 64
+SOURCE_COVERAGE_REJECTION_PATTERN = (
+    r"native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key="
+    r"[0-9]{1,4}/[A-Za-z0-9][A-Za-z0-9._:-]{0,79}"
+    r"(?:;[0-9]{1,4}/[A-Za-z0-9][A-Za-z0-9._:-]{0,79}){0,39}:fix=add_chunk_region_refs")
 # Leaves room for ExactCommand's base64 payload and bounded identity metadata.
 MAX_BATCH_BYTES = 700 * 1024
 MAX_BATCH_PAGES = 8

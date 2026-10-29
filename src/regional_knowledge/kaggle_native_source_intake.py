@@ -20,7 +20,7 @@ from functools import wraps
 from uuid import UUID, uuid5
 
 from .bge_contract import TOKEN_REJECTION_PATTERN
-from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH,
+from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH, SOURCE_COVERAGE_REJECTION_PATTERN,
     canonical, digest, encode_issued_image, validate_stage_payload)
 
 
@@ -446,7 +446,8 @@ class NativeSourceIntake:
                 body=base64.b64decode(raw['result_b64'],validate=True)
                 code=self._result(entry).get('reason') if body else None
                 if type(code) is str and (re.fullmatch(r'[a-z0-9_]{1,64}',code)
-                        or re.fullmatch(TOKEN_REJECTION_PATTERN,code)):
+                        or re.fullmatch(TOKEN_REJECTION_PATTERN,code)
+                        or re.fullmatch(SOURCE_COVERAGE_REJECTION_PATTERN,code)):
                     reason=code
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
