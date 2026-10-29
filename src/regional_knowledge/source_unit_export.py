@@ -1,10 +1,10 @@
 """Accepted-source PDF assembly inside Kaggle; never use search passage previews."""
 from __future__ import annotations
 
-import asyncio
 from uuid import UUID, uuid5
 
 from .contracts import Region, StartMetadataInput
+from .native_snapshot_transfer import _blocking
 from .source_unit_pdf import SourceUnitPdfError, render_source_unit_pdf
 from .source_units import resolve_source_units
 
@@ -80,4 +80,5 @@ async def render_accepted_source_pdf(*, acquire, source_id, article_id):
                 if [p["physical_page_index"] for p in pages] != selected:
                     raise SourceUnitPdfError("unit_not_ready: accepted page order differs")
                 edition = material[0][1]
-    return await asyncio.to_thread(render_accepted_unit,unit=unit,pages=pages,edition=edition)
+    # Keep the read's resource until actual rendering exits, even after cancel.
+    return await _blocking(lambda: render_accepted_unit(unit=unit,pages=pages,edition=edition))

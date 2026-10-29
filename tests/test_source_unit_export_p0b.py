@@ -1,8 +1,10 @@
 """Distinguishing #504 P0: all accepted spans across pages, never a preview."""
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+import asyncio
 import base64
 import re
+import threading
 
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
@@ -18,6 +20,34 @@ from regional_knowledge.kaggle_source_read import SourceReadRequest, execute_sou
 from regional_knowledge.kaggle_public_backend import source_unit_pdf_result
 
 SOURCE = "31111111-2222-4333-8444-555555555555"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pdf_export_retains_work_until_renderer_finishes(monkeypatch):
+    from regional_knowledge import source_unit_export
+    entered, finish = threading.Event(), threading.Event()
+    def render(**kwargs):
+        entered.set()
+        assert finish.wait(2)
+        return b'%PDF-synthetic'
+    monkeypatch.setattr(source_unit_export, 'render_accepted_unit', render)
+    connection = Connection(fixture_pages(complete=True))
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    task = asyncio.create_task(render_accepted_source_pdf(
+        acquire=acquire, source_id=SOURCE, article_id='albinus-unit'))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(.01)
+        task.cancel()
+        await asyncio.sleep(.01)
+        assert not task.done(), 'cancellation must retain work until the actual renderer exits'
+    finally:
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 def fixture_pages(*, complete, order=(0,1)):
