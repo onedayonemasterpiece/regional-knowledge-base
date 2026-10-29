@@ -369,7 +369,7 @@ class KnowledgeMCPServer(MCPServer):
             allowed.update({'geo_lookup','graph_fetch','poi_context'})
         if getattr(self,'_target_catalog_available',False):
             allowed.add('book_find')
-        if getattr(self,'_target_source_profile',False):allowed.add('startup_status')
+        if getattr(self,'_target_source_profile',False):allowed.update({'startup_status','source_unit_export'})
         if getattr(self,'_target_media_available',False):allowed.add('illustration_fetch')
         if getattr(self,'_target_source_profile',False) and name not in allowed:
             raise ToolError('{"status":"unavailable","reason":"tool_not_supported_in_profile"}')
@@ -1490,6 +1490,17 @@ def build_server(
             _principal(),
             limit=max(1, min(int(limit), 8)),
         )
+
+    if selected == 'kaggle_source':
+        @mcp.tool(name='source_unit_export',title='Export a complete source article as PDF',
+            description=('Export one complete accepted source article/chapter to a real PDF with '
+                'unchanged original text and verified bibliography. First use book_find(view=units) '
+                'to select its source_id and article_id. Returns a standard MCP embedded PDF '
+                'resource (application/pdf) for any MCP client, not a Slack upload. '
+                'An incomplete article returns unit_not_ready; continue book_ingest first.'),
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+        async def source_unit_export(source_id: str, article_id: str) -> CallToolResult:
+            return await backend.source_unit_export(source_id,article_id,_principal())
 
     IngestCommand = (Literal['start', 'stage', 'validate', 'finalize', 'status']
         if selected == 'kaggle_source' else
