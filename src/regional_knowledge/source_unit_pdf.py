@@ -8,6 +8,7 @@ No transport, persistence, demand, model, or external-resource access lives here
 """
 from __future__ import annotations
 
+import base64
 import html
 import io
 import re
@@ -83,7 +84,7 @@ def _blocks(unit, regions, accepted_revision):
             raise SourceUnitPdfError('source_review_required')
         # No footnote callout/cell/list semantics are inferred from plain text.
         # These significant structures need their actual accepted structure.
-        if region.kind not in (RegionKind.BODY, RegionKind.HEADING):
+        if region.kind not in (RegionKind.BODY, RegionKind.HEADING, RegionKind.CAPTION, RegionKind.FIGURE):
             raise SourceUnitPdfError('unsupported_structure:' + region.kind.value)
         text = region.source_text[start:end]
         if not text.strip() or any(ord(c) < 32 and c not in '\n\t\r' for c in text):
@@ -143,7 +144,7 @@ def _bibliography(unit, edition, original_pages, annotation_ru):
 
 
 def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, original_pages,
-                           annotation_ru=None, translation_ru=None):
+                           annotation_ru=None, translation_ru=None, illustrations=()):
     """Render accepted author text first, followed only by optional caller text.
 
     Annotation and translation are caller-authored strings. This Kaggle helper
@@ -200,12 +201,62 @@ def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, origina
     if blocks[-1][0] == 'heading':
         raise SourceUnitPdfError('orphan_heading_without_body')
     prepared = [('source-title', unit['title'], *story(unit['title'], 'source-title'))]
+    # Sort by already accepted model reading-order, not physical scan or image
+    # discovery order. Figure regions can be empty and thus absent from spans.
+    ranking = {page:i for i,page in enumerate(dict.fromkeys(
+        [s['physical_page_index'] for s in unit['source_spans']] +
+        [unit['end_anchor']['physical_page_index']]))}
+    by_id = {region.region_id:region for region in regions}
+    caption_ids = {span['region_id'] for span in unit['source_spans']}
+    items = [(ranking[span['physical_page_index']],by_id[span['region_id']].reading_order,1,
+              kind,text,None)
+        for span,(kind,text) in zip(unit['source_spans'],blocks)]
+    for figure in illustrations:
+        if (type(figure) is not dict or type(figure.get('jpeg')) is not bytes
+                or figure['physical_page_index'] not in ranking
+                or type(figure.get('reading_order')) is not int
+                or type(figure.get('caption_text')) is not str
+                or type(figure.get('page_label')) is not str):
+            raise SourceUnitPdfError('accepted_illustration_required')
+        items.append((ranking[figure['physical_page_index']],figure['reading_order'],0,
+            'image',None,figure))
+    if any(kind=='figure' and not any(
+            item[3]=='image' and item[0]==ranking[span['physical_page_index']]
+            and item[1]==by_id[span['region_id']].reading_order
+            for item in items)
+            for span,(kind,_) in zip(unit['source_spans'],blocks)):
+        raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+
+    def pictured(figure):
+        from PIL import Image
+        with Image.open(io.BytesIO(figure['jpeg'])) as image:
+            if image.format != 'JPEG':
+                raise SourceUnitPdfError('accepted_illustration_pixels_required')
+            width,height=image.size
+        scale=min(1,(paper.width-2*_MARGIN)/width,310/height)
+        caption = ('' if any(ref in caption_ids for ref in figure['caption_region_ids'])
+                   else figure['caption_text'])
+        text = caption + 'Исходная страница: ' + figure['page_label']
+        markup = (f'<p><img src="data:image/jpeg;base64,{base64.b64encode(figure["jpeg"]).decode()}" '
+                  f'width="{width*scale:.2f}" height="{height*scale:.2f}"></p>'
+                  + (f'<p>{html.escape(caption)}</p>' if caption else '')
+                  + f'<p>Исходная страница: {html.escape(figure["page_label"])}</p>')
+        shape=pymupdf.Story(html=markup,user_css='body {font-family:serif;font-size:9pt;line-height:1.3;margin:0} p {margin:0}')
+        more,filled=shape.place(pymupdf.Rect(_MARGIN,_MARGIN,paper.width-_MARGIN,100000))
+        if more:raise SourceUnitPdfError('render_limit_exceeded')
+        leading=pymupdf.Rect(filled).height
+        shape.reset()
+        return ('image',text,shape,1,leading)
+
     first_body = True
-    for kind, text in blocks:
-        lead = unit['title'].split(',', 1)[0].split()[0] if unit.get('kind') == 'article' else None
-        highlight = lead if first_body and kind == 'body' else None
-        prepared.append((kind, text, *story(text, kind, highlight)))
-        if kind == 'body': first_body = False
+    for _,_,_,kind,text,figure in sorted(items,key=lambda item:item[:3]):
+        if kind=='image':
+            prepared.append(pictured(figure))
+        else:
+            lead = unit['title'].split(',', 1)[0].split()[0] if unit.get('kind')=='article' else None
+            highlight = lead if first_body and kind=='body' else None
+            prepared.append((kind,text,*story(text,kind,highlight)))
+            if kind=='body':first_body=False
     prepared.extend((kind, text, *story(text, kind)) for kind, text in translations)
 
     stream = io.BytesIO()
