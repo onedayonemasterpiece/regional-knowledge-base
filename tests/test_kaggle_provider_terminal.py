@@ -584,3 +584,38 @@ def test_changed_execution_identity_cannot_retire(env, field, value):
     with q.connect() as db:
         db.execute('update runs set '+field+'=? where id=?', (value, rid))
     assert not q.retire_provider_reservation(proof)
+
+
+@pytest.mark.parametrize('status,phase',[('starting','ERROR'),('ready','COMPLETE'),('draining','COMPLETE')])
+def test_sealed_cold_terminal_retires_prepare_and_counts_once_without_startup_wait(env,status,phase):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute('update runs set status=?,started=?,heartbeat=?,useful=? where id=?',
+            (status,now[0],now[0]-.001,now[0],rid))
+        if status!='starting':
+            db.execute("update control set startup_state='ready' where id=1")
+        db.execute("insert into jobs values('prepare','maintenance:'||?,'exact-prepare','recovery_phase','[]','{}','claimed',?,?,?,'original-claim',?,null,1)",
+            (rid,now[0],now[0],rid,now[0]+900))
+    api=API(row());api.phase=phase
+    proof=observe(api,row,now)
+    assert proof is not None and q.retire_provider_reservation(proof)
+    assert q.retire_provider_reservation(proof)  # Immutable receipt, not another failure.
+    with q.connect(write=False) as db:
+        job=db.execute("select * from jobs where id='prepare'").fetchone()
+        control=db.execute('select * from control').fetchone()
+        assert control['startup_failures']==(1 if status=='starting' else 0)
+        if status=='starting':
+            assert row()['status']=='expired' and job['state']=='done'
+            assert json.loads(job['result'])=={'value':{'error':'run_expired'}}
+        else:
+            assert row()['status']==status and job['state']=='claimed'
+            assert control['startup_state']=='ready'
+        assert job['claim']=='original-claim' and job['run_id']==rid and job['attempt']==1
+    if status=='starting':
+        q.maintenance()
+        successor=q.request_startup()['run_id']
+        assert successor!=rid and now[0]==1200.  # No900s lease or clock advancement.
+        assert q.retire_provider_reservation(proof)
+        with q.connect(write=False) as db:
+            assert db.execute('select startup_failures from control').fetchone()[0]==1
+            assert db.execute('select current_run from control').fetchone()[0]==successor
