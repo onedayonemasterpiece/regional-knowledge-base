@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import UUID
@@ -134,12 +135,12 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
         type(query).model_validate(query.model_dump())
     loop = asyncio.get_running_loop()
     started = loop.time()
-    deadline = started + min(query.deadline_ms, 2000) / 1000
+    deadline = math.inf if type(query) is Query else started + min(query.deadline_ms, 2000) / 1000
     observed = {}
     stages = {}
     mark = started
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
             _scope(query)  # Unsupported kinds/source IDs do not acquire SQL or inference.
             try:
                 count = await tokenizer.count(query.query)
@@ -203,7 +204,7 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                         from .kaggle_search import acceptance_search
                     searched = await (acceptance_search if acceptance else fused_search)(connection, query.query, encode=checked_encode,
                         **({} if acceptance else {'top_k':query.evidence_limit}), filters=query.filters,
-                        timeout_seconds=max(.000001, deadline - loop.time()),
+                        timeout_seconds=None if type(query) is Query else max(.000001, deadline - loop.time()),
                         snapshot_guard=guard, snapshot_finish=finish, stage_timings=stages)
                     stages["search_ms"] = (loop.time() - mark) * 1000
                     budget = 24000

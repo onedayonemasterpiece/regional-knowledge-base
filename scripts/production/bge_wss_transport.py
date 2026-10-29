@@ -271,9 +271,9 @@ class BgeWssTransport:
         async def consume():
             async def encode(text):
                 return await self._forward(text, resource)
-            deadline = asyncio.get_running_loop().time() + frame['deadline_ms'] / 1000
+            deadline = math.inf if frame.get('type')=='QUERY' else asyncio.get_running_loop().time() + frame['deadline_ms'] / 1000
             try:
-                async with asyncio.timeout_at(deadline):
+                async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
                     if frame.get('type')=='SQL_HEALTH':
                         def lease_current():
                             return (self.resource is resource and self.read_frame is frame

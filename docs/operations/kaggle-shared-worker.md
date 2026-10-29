@@ -229,12 +229,14 @@ come from `pg_database.datcollate/datctype`, rather than unavailable locale GUCs
 The timeout assertion requires the deadline/cancellation reason and an actual
 wait, so an unrelated early SQL error cannot satisfy it.
 
-Draft admission-budget proposal (not deployed): normal search may wait up to
-eight seconds for the existing single shared read slot, then receives at most
-two seconds of worker execution from actual dispatch. The existing cancellation
-timer is rearmed at dispatch; worker concurrency and resource-release ownership
-are unchanged. Authentication and cold-start estimates retain their two-second
-budget before READY admission. Exact reads retain their two-second total budget, and delegated
-calls retain their supplied absolute deadline. This changes waiting policy,
-not native execution speed. The protected total-latency requirement is unchanged;
-owner approval and matching protected wording remain necessary before adoption.
+Normal search latency targets are measurements, not rejection deadlines. A live
+normal Query waits in the existing single-slot fair admission queue and executes
+without an elapsed-time rejection, including native forward and SQL. Cancellation,
+withdrawal, binding changes and actual channel loss still terminate the consumer;
+actual compute cleanup retains its existing ownership. Exact reads, acceptance
+checks, SQL health and explicitly delegated caller deadlines retain their separate
+contracts. Output tickets retain their existing finite lifetime after completion.
+No additional worker, queue, retry, parallel forward or transport is introduced.
+Owner intent: https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1793281299333039;
+protected requirements change: `op_303a11fa1e9fc253df59ef33`. Source and synthetic
+validation do not establish deployment or live latency acceptance.

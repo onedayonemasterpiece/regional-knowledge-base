@@ -499,11 +499,11 @@ class KaggleSourceBackend:
 
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
-        # Draft: search waits at most 8s for admission, then has 2s to execute.
+        # Search latency is measured, not a reason to reject a live read.
         illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
-        deadline = (min(time.monotonic()+(2 if exact else 10),trusted['deadline'])
-            if trusted is not None else time.monotonic()+(2 if exact else 10))
+        deadline = (min(time.monotonic()+2,trusted['deadline'])
+            if trusted is not None else time.monotonic()+2)
         telemetry = self.read_telemetry
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation)
@@ -584,7 +584,7 @@ class KaggleSourceBackend:
                     return EvidenceSearchOutput(evidence=[],**common) if evidence else SearchOutput(results=[],**common)
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
-                if not exact:timeout.reschedule(deadline)
+                if not exact and trusted is None:deadline=math.inf;timeout.reschedule(None)
                 try:
                     identity = dict(request_id=attempt.request_id,
                         connection_generation=binding.connection_generation,
@@ -592,7 +592,7 @@ class KaggleSourceBackend:
                         min_data_seq=max(binding.min_data_seq,trusted['min_data_seq']) if trusted else binding.min_data_seq,
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                        deadline_ms=min(2000 if exact else 10000,max(1,int((deadline-time.monotonic())*1000))))
+                        deadline_ms=2000 if math.isinf(deadline) else min(2000,max(1,int((deadline-time.monotonic())*1000))))
                     request = (SourceGraphReadRequest(**graph_request,**identity) if graph_request is not None else
                         SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
@@ -605,16 +605,14 @@ class KaggleSourceBackend:
                 permit = await measured('dispatch_gate_ms',self.source_gate.dispatch(authority, request, binding))
                 admission_started=time.monotonic()
                 def dispatched(resource):
-                    nonlocal dispatched_at,deadline
+                    nonlocal dispatched_at
                     dispatched_at=time.monotonic()
-                    deadline=min(deadline,dispatched_at+2)
-                    if not illustration:timeout.reschedule(deadline)
                     controller_stages['admission_ms']=(dispatched_at-admission_started)*1000
                     telemetry.bind_dispatch(attempt,
                         runtime=ReadRuntime(resource.run_id, resource.runtime_incarnation),
                         connection_generation=resource.dispatch_generation,
                         turn_generation=request.turn_generation)
-                admission_deadline=min(deadline-(2 if request.deadline_ms>2000 else 0),time.monotonic()+8)
+                admission_deadline=None if math.isinf(deadline) else min(deadline,time.monotonic()+2)
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
                     dialog_ref=destination.key, deadline=admission_deadline, on_dispatch=dispatched)
                 result = await asyncio.shield(ticket.result)
@@ -701,7 +699,7 @@ class KaggleSourceBackend:
         except asyncio.CancelledError:
             if not asyncio.current_task().cancelling():
                 status = 'unavailable'
-                reason = 'deadline_exceeded' if time.monotonic() >= (deadline if dispatched_at is not None else admission_deadline)-.002 else 'context_gap'
+                reason = 'deadline_exceeded' if time.monotonic() >= deadline-.002 else 'context_gap'
                 raise failure(status,reason) from None
             status, reason = 'cancelled', 'caller_cancelled'
             raise

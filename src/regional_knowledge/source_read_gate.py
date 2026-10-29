@@ -218,7 +218,7 @@ class SourceReadGate:
         query = query.model_copy(update={'actor': actor, 'min_data_seq': max(query.min_data_seq, key[4])})
         permit = DispatchPermit(query)
         self._permits[permit] = _Read(authority, query, binding, key,
-            self.clock() + min(self.ttl_seconds, query.deadline_ms / 1000))
+            math.inf if type(query) is Query else self.clock() + min(self.ttl_seconds, query.deadline_ms / 1000))
         return permit
 
     async def _gate(self, read, result):
@@ -383,6 +383,7 @@ class SourceReadGate:
         if read is None:
             raise SourceGateDenied('dispatch permit expired or unknown')
         result = await self._gate(read, result)
+        read.deadline=min(read.deadline,self.clock()+self.ttl_seconds)
         ticket = OutputTicket()
         self._tickets[ticket] = read
         return GatedResult(result, ticket)

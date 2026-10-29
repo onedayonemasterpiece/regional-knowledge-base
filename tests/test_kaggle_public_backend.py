@@ -156,39 +156,48 @@ async def release(s, value):
 
 
 @pytest.mark.asyncio
-async def test_eight_searches_queue_before_their_execution_budget(target,env):
+async def test_search_waits_past_queue_and_native_timing_goals(target,env):
     from regional_knowledge.source_read_gate import SourceReadGate
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from test_kaggle_worker_query import ServingConnection,Lease,pinned,VECTOR
+    from test_bge_wss_worker import module,CONFIG
+    import time
     s=target
+    binding=current_binding(s.queue)
     s.backend.source_gate=SourceReadGate(s.auth.resolver,env.spool,
         binding_current=lambda b:b==current_binding(s.queue))
-    async def search(index):
+    class Connection(ServingConnection):
+        async def fetchone(self):return (5,5,0,True,True,binding.database_generation)
+        async def fetchall(self):return []
+    lease=Lease(Connection())
+    handler=KaggleWorkerQuery(acquire=lease.acquire,tokenizer=pinned())
+    native=module('bge_wss_transport').BgeWssTransport(dict(CONFIG,shared_reads=True),
+        lambda:None,lambda:{},query_handler=handler)
+    def forward(_):
+        time.sleep(2.1)  # Synthetic actual forward, not a provider/model.
+        return VECTOR
+    native.encoder=forward
+    native._connection_generation=s.generation
+    async def search():
         with capture_read_output() as calls:
-            output=await s.backend.search(f'synthetic question {index}',s.principal)
-        assert len(calls)==1
-        calls[0].complete(output.status,output.reason)
-        calls[0].release()
+            output=await s.backend.search('synthetic queued question',s.principal)
+        calls[0].complete(output.status,output.reason);calls[0].release()
         return output
-    tasks=[asyncio.create_task(search(i)) for i in range(8)]
-    budgets=[];dispatch_times=[];started=asyncio.get_running_loop().time()
-    while any(not task.done() for task in tasks):
-        value=await s.queue.next_channel_work(s.run,s.token,s.generation)
-        if value is None:
-            await asyncio.sleep(.001)
-            continue
-        s.admission.mark_work_sent(value)
-        budgets.append(value.query.deadline_ms)
-        dispatch_times.append(asyncio.get_running_loop().time()-started)
-        assert await s.queue.next_channel_work(s.run,s.token,s.generation) is None
-        await asyncio.sleep(.45)  # One actual slot: synthetic native/WSS cycle.
-        await s.admission.finish_read(s.run,s.token,s.generation,QueryResult(
-            request_id=value.query.request_id,connection_generation=s.generation,
-            turn_generation=value.query.turn_generation,status='ok',mode='hybrid',evidence=(),
-            observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=0,
-            observed_database_generation=current_binding(s.queue).database_generation))
-        await release(s,value)
-    outputs=await asyncio.gather(*tasks,return_exceptions=True)
-    assert [getattr(output,'status',None) for output in outputs]==['ok']*8,outputs
-    assert budgets==[2000]*8 and dispatch_times[-1]>3
+    task=asyncio.create_task(search())
+    await asyncio.sleep(8.1)
+    assert not task.done(), 'elapsed queue time must not reject a live read'
+    value=await work(s)
+    native._start_read(value.query.model_dump(mode='json'))
+    await native.read_task
+    native._maybe_release()
+    assert native.resource is None and native.last_released is not None
+    assert lease.entered==lease.exited==1,native.read_pending
+    assert await s.admission.finish_read(s.run,s.token,s.generation,
+        QueryResult.model_validate_json(json.dumps(native.read_pending)))
+    assert (await task).status=='ok'
+    assert any('statement_timeout' in sql and params==('0',)
+        for sql,params in lease.connection.statements)
+    await release(s,value)
     assert s.admission.status()['state']=='idle'
 
 
@@ -331,11 +340,13 @@ async def test_cancel_before_dispatch_never_claims_worker_execution(target):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('dispatch', [False, True])
-async def test_admission_deadline_is_typed_deadline_failure_and_compute_remains_owned(target, dispatch):
+async def test_real_channel_loss_is_typed_failure_and_compute_remains_owned(target, dispatch):
     s = target
     task = asyncio.create_task(s.backend.search('synthetic query', s.principal))
+    while not s.admission.status()['pending_reads']:await asyncio.sleep(.001)
     dispatched = await work(s) if dispatch else None
-    with pytest.raises(ToolError, match='deadline_exceeded') as error:
+    s.admission.channel_lost(s.generation)
+    with pytest.raises(ToolError, match='context_gap') as error:
         await task
     payload = json.loads(str(error.value))
     await asyncio.to_thread(s.telemetry._queue.join)
