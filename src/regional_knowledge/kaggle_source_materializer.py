@@ -305,14 +305,14 @@ class NativeSourceCompiler:
         if not self.current():
             raise PermissionError('native_source_materializer_generation_changed')
 
-    async def _counts(self,texts):
+    async def _counts(self,chunks):
         result=[]
-        for text in texts:
+        for chunk in chunks:
             self._current()
-            count=await self.count(text)
+            count=await self.count(chunk.text)
             self._current()
             if type(count) is not int or not 1<=count<=MAX_TOKENS:
-                raise failure('complete_native_input_exceeds_512_tokens')
+                raise failure(f'complete_native_input_exceeds_512_tokens:chunk_key={chunk.chunk_key}:tokens={count}')
             result.append(count)
         return result
 
@@ -493,7 +493,7 @@ class NativeSourceCompiler:
         language=(metadata.language or '').lower().replace('_','-').split('-',1)[0]
         language=language if re.fullmatch(r'[a-z][a-z0-9-]{1,23}',language) else 'simple'
         pages={str(p.page_id):p for p in graph.pages}
-        counts=await self._counts([chunk.text for chunk in graph.chunks])
+        counts=await self._counts(graph.chunks)
         # Historical accepted packets have no explicit unit schema marker and
         # must keep the original article-id rejection (no replay reinterpretation).
         # New model-authored page packets opt in with source_unit_version=1.

@@ -401,3 +401,21 @@ def test_static_registry_rejects_sql_identifier_injection_and_is_immutable():
         registry.handlers[("other",)] = None
     with pytest.raises(FrozenInstanceError):
         registry.handlers = {}
+
+
+@PG
+@pytest.mark.asyncio
+async def test_native_token_rejection_is_retained_without_applying_effect(env):
+    import base64
+    reason='complete_native_input_exceeds_512_tokens:chunk_key=Page-0.body:tokens=513'
+    cmd=item()
+    seal=await accepted(env,cmd)
+    receipt=await apply(env,cmd,seal,reject_reason=reason)
+    assert receipt.status=='rejected_precondition'
+    outcome=json.loads(receipt.outcome)
+    assert json.loads(base64.b64decode(outcome['result_b64']))=={'reason':reason}
+    assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
+    assert (await apply(env,cmd,seal,reject_reason=reason)).outcome==receipt.outcome
+    for unsafe in (reason+':private text',reason.replace('Page-0.body','bad/key')):
+        with pytest.raises(ValueError,match='fixed internal source rejection reason'):
+            await apply(env,cmd,seal,reject_reason=unsafe)

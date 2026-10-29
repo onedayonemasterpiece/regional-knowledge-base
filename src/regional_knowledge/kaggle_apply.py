@@ -20,6 +20,7 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
+from .bge_contract import TOKEN_REJECTION_PATTERN
 from .recovery_journal import AcceptedSeal, ExactCommand, RecoveryJournal, StaleWriter
 
 _LOG = logging.getLogger(__name__)
@@ -359,7 +360,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
     """
     _text(database_generation)
     _text(writer_generation)
-    if reject_reason not in (None,'native_source_sql_rolled_back'):
+    if reject_reason not in (None,'native_source_sql_rolled_back') and not (
+            type(reject_reason) is str and re.fullmatch(TOKEN_REJECTION_PATTERN,reject_reason)):
         raise ValueError('fixed internal source rejection reason required')
     if type(max_outcome_bytes) is not int or not 1 <= max_outcome_bytes <= 1048576:
         raise ValueError("outcome cap must be 1..1048576 bytes")

@@ -297,14 +297,16 @@ async def test_failed_exact_accepted_proof_is_not_skipped_before_prehook(route, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('route', [SEAL_ROUTE, MATERIALIZE_ROUTE])
-async def test_content_rejection_uses_ordinary_apply_and_preserves_rejected_receipt(route, monkeypatch):
+@pytest.mark.parametrize('reason', ['native_source_stage_requires_review',
+    'complete_native_input_exceeds_512_tokens:chunk_key=Page-0.body:tokens=513'])
+async def test_content_rejection_uses_ordinary_apply_and_preserves_rejected_receipt(route, monkeypatch, reason):
     value = await worker_fixture(route, monkeypatch,
-        materializer_error=SourceMaterializationRejected('native_source_stage_requires_review'),
+        materializer_error=SourceMaterializationRejected(reason),
         status='rejected_precondition')
     receipt, outcome = decode_receipt(await value.worker(value.frame))
     assert value.events == ['proof', 'prehook', 'acquire', 'apply', 'proof']
     assert len(value.calls) == 1 and receipt.status == outcome['status'] == 'rejected_precondition'
-    assert value.calls[0]['reject_reason'] == 'native_source_stage_requires_review'
+    assert value.calls[0]['reject_reason'] == reason
     assert json.loads(base64.b64decode(outcome['result_b64'])) == {'accepted': False}
 
 
