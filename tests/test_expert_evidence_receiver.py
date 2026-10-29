@@ -152,11 +152,9 @@ async def test_expired_execution_generation_before_final_http_issuance_suppresse
 
 
 @pytest.mark.asyncio
-async def test_handler_finishes_but_final_http_refresh_crosses_absolute_deadline(service):
+async def test_current_request_can_issue_after_legacy_search_deadline(service):
     s=service;receiver,app,payload,headers,link,req=await _receiver(s)
-    # The handler completes within its own timeout, but the ASGI final
-    # issuance can be delayed. The original absolute deadline must STILL
-    # fence the buffered HTTP body, independently of the source gate TTL.
+    # Internal search timing is not request/source/actor authority.
     payload['deadline_monotonic']=time.monotonic()+0.6
     original=s.target.gate.refresh
     async def late(gated):
@@ -171,8 +169,8 @@ async def test_handler_finishes_but_final_http_refresh_crosses_absolute_deadline
         response=await task
         value=response.json()
         assert value['codec']==CODEC and value['request_id']==req['request_id']
-        assert value['context_gap'] and value['evidence']==[]
-        assert value['mode'] is None and not s.target.auth.resolver._contexts
+        assert not value['context_gap'] and value['evidence'][0]['text']=='Evidence'
+        assert value['mode']=='hybrid' and not s.target.auth.resolver._contexts
         await release(s.target,dispatched)
 
 
