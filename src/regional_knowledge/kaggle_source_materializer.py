@@ -65,7 +65,7 @@ def _typed(model, raw):
 def materializer_fingerprint():
     root=Path(__file__).parent
     names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
-        'source_activation.py','stage_graph.py','source_packet_tails.py','entity_graph.py',
+        'source_activation.py','stage_graph.py','source_packet_tails.py','source_units.py','entity_graph.py',
         'source_manifest.py','bge_contract.py')
     return digest(canonical({name:digest((root/name).read_bytes()) for name in names}))
 
@@ -152,10 +152,11 @@ def merge_native_stage(graph: StagedGraph, payload: IngestStagePayload) -> Stage
     for item in payload.poi_media_links:
         poi_media_links[str(item.link_id)] = item
 
+    from .source_units import ordered_model_pages
     return NativeStagedGraph(
         revision=graph.revision,
         entity_candidates=graph.entity_candidates,
-        pages=sorted(pages.values(), key=lambda item: item.physical_page_index),
+        pages=ordered_model_pages(pages.values())[0],
         relations=list(relations.values()),
         illustrations=list(illustrations.values()),
         chunks=list(chunks.values()),

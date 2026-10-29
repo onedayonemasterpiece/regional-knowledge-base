@@ -275,6 +275,7 @@ class StagePageInput(BaseModel):
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: str = Field(min_length=36, max_length=36)
     physical_page_index: int = Field(ge=0)
+    previous_physical_page_index: int | None = Field(default=None, ge=0, le=2499)
     printed_page_number: str | None = Field(default=None, max_length=40)
     layout_kind: str | None = Field(default=None, max_length=80)
     regions: list[StageRegionInput] = Field(default_factory=list, max_length=500)
