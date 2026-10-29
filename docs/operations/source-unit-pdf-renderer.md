@@ -1,11 +1,46 @@
 # Source-unit PDF renderer seam
 
-`source_unit_pdf.render_source_unit_pdf` is a pure source helper intended for the
-existing Kaggle process, outside the ordinary search path. It adds no MCP tool,
-transport, queue, corpus store, service or inference. It is **not a deployed PDF
-export feature**. Citation resolution, accepted-source retrieval, authorization,
-asynchronous operation recovery and direct Kaggle-to-client delivery are not
-wired by this module.
+`source_unit_pdf.render_source_unit_pdf` is the existing pure A4 helper.
+Draft PR #607 wires its complete accepted unit via `source_unit_export` as an
+**MCP read tool**, equally available to ChatGPT, Grok, Claude, Slack agents and
+other clients. There is no automatic Slack upload or extra client-specific path.
+This code is **not deployed or live-accepted**.
+
+**MCP transport (2025-11-25):** on a warm read, `source_unit_export(source_id,
+article_id)` returns one `CallToolResult` with an `EmbeddedResource`:
+`type=resource`, `resource.blob` is base64 of the actual PDF,
+`resource.mimeType=application/pdf` and the descriptive URI identifies the
+source and unit. The text block identifies the article; it is not the file.
+The model sees real bytes only if its MCP client supports binary embedded
+resources. The MCP protocol permits the content type but cannot guarantee
+client UI/download integration. No ResourceLink-only result is passed off as a
+working attachment. Spec: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+
+**Bytes and authorization:** Kaggle's existing PG read gets the *complete*
+`source_unit_boundaries` projection and only accepted original regions from
+SQL045 (not search chunks or the 16-span public preview), then renders the PDF.
+The existing ephemeral `SOURCE_READ_RESULT` sends its base64 PDF through the
+authenticated Kaggle→Dev WSS. Dev only holds bytes transiently in the active
+read ticket and MCP HTTP JSON response; it does not write PDF bytes to a file,
+SQLite, the control spool, Dataset, S3, or Slack. The original read authority,
+source gate and final MCP issuance recheck still apply. This **transit without
+storage** is the owner-approved refinement of #504 §4: Kaggle does the work;
+Dev handles authenticated, short-lived MCP transport only.
+
+**Current bounded vertical slice:** the existing SOURCE_READ wire envelope
+remains 256 KiB and the shared read deadline 2 s. The complete PDF is returned
+only when it fits those limits. Oversize returns `pdf_transport_limit`; a
+not-yet-complete unit returns `unit_not_ready` with the instruction to finish
+`book_ingest`. Neither case returns partial PDF. Longer/heavier units require a
+separately reviewed larger-file transfer, not an untested limit increase or
+a second ad hoc store. No live throughput/SLA or universal client support is
+claimed from synthetic CI. Shkiper's one live acceptance test after merge:
+request the *same* finished Albinus unit (physical pages 61–64) via
+`source_unit_export` from ChatGPT and Grok, confirm each receives actual
+PDF bytes (`%PDF-`, intact title/author/RU+DE text and final page) and can
+offer/open the artifact, not merely quote a URI. If either client does not
+surface embedded PDF, record that exact support gap; do not silently fall back
+to a Slack-only path.
 
 The caller must supply the full completed internal source-unit projection, its
 accepted revision, exact ordered `source_spans`, existing `Region` objects with
