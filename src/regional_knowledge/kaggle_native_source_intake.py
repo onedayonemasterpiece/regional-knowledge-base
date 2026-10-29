@@ -648,7 +648,8 @@ class NativeSourceIntake:
             return self.importer._output(row,'needs_review',
                 'Resume the exact pending spans with the next reviewed page; select small complete semantic passages, without splitting sentences; do not finalize',
                 'continue_tail',source_archive_status='verified',tail_refs=refs,
-                next_cursor=await self.applied_page_cursor(access,row),warnings=['more_source_tails'] if value['has_more'] else [])
+                next_cursor=await self.applied_page_cursor(access,row) or str(refs[0].physical_page_index+1),
+                warnings=['more_source_tails'] if value['has_more'] else [])
         return None
 
     async def _recover_orphan(self, access, row, state, kind, key):
