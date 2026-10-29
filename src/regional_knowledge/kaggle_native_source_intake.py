@@ -595,9 +595,10 @@ class NativeSourceIntake:
                 tails=await self._tail_output(access,row,state)
                 if tails is not None:
                     return tails
-            pages=json.loads(entry.command.payload)['model_payload']['pages']
+            doc=json.loads(entry.command.payload)
+            pages=doc['model_payload']['pages']
             next_page=max(p['physical_page_index'] for p in pages)+1
-            cursor=json.loads(row.get('research_json') or '{}').get('continuation',{}).get('arguments',{}).get('cursor')
+            cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
             if isinstance(cursor,str) and cursor.isdecimal(): next_page=max(next_page,int(cursor))
             return self.importer._output(row,'processing' if pending else 'staged',
                 'Stage input accepted; continue reading without resending these pages. '
