@@ -221,7 +221,7 @@ async def test_catalog_second_correction_latest_projection_and_exact_replay_pg17
     assert len(search.evidence)==1
     hit=search.evidence[0]
     assert hit.source_provenance['catalog']['title']=='Omega title corrected'
-    title=_evidence_title(SimpleNamespace(id=hit.passage_id,
+    title=_evidence_title(SimpleNamespace(id=hit.passage_id,kind='source',
         metadata=SimpleNamespace(source_provenance=hit.source_provenance,locator=hit.locator)))
     assert title.startswith('Corrected author. Omega title corrected')
     assert 'Alpha title corrected' not in title
