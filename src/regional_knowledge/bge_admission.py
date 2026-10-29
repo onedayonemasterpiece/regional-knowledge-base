@@ -486,7 +486,7 @@ class SharedReadAdmission:
                 person_reads=[r for r in reads if r.authority.person_id==person]
                 person_docs=[d for d in eligible if d['actor']==person]
                 selected_doc=person_docs[0] if person_docs and not person_reads else None
-                read=min(person_reads,key=lambda r:(self._dialog_turn.get((person,r.dialog),0),r.deadline,r.ticket.request_id)) if selected_doc is None and person_reads else None
+                read=min(person_reads,key=lambda r:self._dialog_turn.get((person,r.dialog),0)) if selected_doc is None and person_reads else None
             if read is not None:
                 try:
                     await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')

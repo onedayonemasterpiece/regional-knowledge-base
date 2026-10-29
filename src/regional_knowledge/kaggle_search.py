@@ -147,8 +147,8 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         remaining = deadline - loop.time()
                         if remaining <= 0:
                             raise TimeoutError("search deadline exhausted")
-                        # Refresh before every SQL operation. The outer absolute
-                        # deadline also bounds this setting query and fetches.
+                        # Exact/acceptance reads retain their remaining budget.
+                        # Normal search uses zero to disable statement_timeout.
                         await cursor.execute("SELECT set_config('statement_timeout', %s, true)",
                                              (str(0 if math.isinf(remaining) else max(1, int(remaining * 1000))),))
                         try:

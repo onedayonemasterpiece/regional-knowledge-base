@@ -677,3 +677,32 @@ async def test_noncurrent_successor_cannot_clear_ram_before_owned_baseline(state
     with s.q.connect(write=False) as db:
         owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
     assert tuple(owner)==(successor,'successor')
+
+
+@pytest.mark.asyncio
+async def test_queued_reads_keep_same_dialog_arrival_order(state):
+    from regional_knowledge.kaggle_protocol import PassageReadResult
+    from test_kaggle_protocol import item
+    s=state
+    first_query=query(s.context,'ffffffff-ffff-ffff-ffff-ffffffffffff')
+    first=await s.a.begin_read(s.context,first_query,dialog_ref='same-dialog',deadline=None)
+    locator=PassageContinuation(database_generation='synthetic-pg',
+        source=SourceDependency(source_id='synthetic-source',content_revision=1,eligibility_revision=1),
+        passage_id='synthetic-passage',visibility_epoch=0,text_offset=0,bibliography_offset=0)
+    exact=PassageReadRequest(request_id='later-exact',connection_generation=s.generation,
+        turn_generation=0,locator=locator,actor=first_query.actor,min_data_seq=0,deadline_ms=2000)
+    second=await s.a.begin_read(s.context,exact,dialog_ref='same-dialog',deadline=time.monotonic()+1.9)
+    third=await s.a.begin_read(s.context,query(s.context,'00000000-0000-0000-0000-000000000000'),
+        dialog_ref='same-dialog',deadline=None)
+    for ticket in (first,second,third):
+        work=await s.q.next_channel_work(s.run,s.token,s.generation)
+        assert work.query.request_id==ticket.request_id
+        s.a.mark_work_sent(work)
+        result=(PassageReadResult(request_id=work.query.request_id,connection_generation=s.generation,
+            turn_generation=0,status='ok',observed_data_seq=7,observed_projection_seq=7,
+            observed_visibility_epoch=0,observed_database_generation='synthetic-pg',
+            evidence=(item(kind='source',id='synthetic-passage'),))
+            if type(work.query) is PassageReadRequest else answer(work))
+        assert await s.a.finish_read(s.run,s.token,s.generation,result)
+        assert (await ticket.result).status=='ok'
+        await release(s,work)

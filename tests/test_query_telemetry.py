@@ -266,7 +266,7 @@ async def test_sink_failure_is_reported_by_next_successfully_consumed_event():
 
 
 @pytest.mark.asyncio
-async def test_adapter_deadline_after_serialization_is_the_final_terminal(monkeypatch):
+async def test_slow_query_serialization_keeps_success_as_the_final_terminal(monkeypatch):
     import regional_knowledge.kaggle_worker_query as adapter
     loop = asyncio.get_running_loop()
     original_time, original_wire = loop.time, adapter._wire
@@ -284,10 +284,12 @@ async def test_adapter_deadline_after_serialization_is_the_final_terminal(monkey
         return VECTOR
     with bind_read_runtime(ReadRuntime('run-a', 'incarnation-a')):
         result = await handler(frame(), encode=encode)
-    assert result['status'] == 'unavailable' and result['reason'] == 'deadline_exceeded'
+    assert expired and loop.time()>original_time()+2.9
+    assert result['status'] == 'ok' and result['reason'] is None
     events = result.get('read_events', []) + [native.get_nowait() for _ in range(native.qsize())]
     assert len(events) == 2 and not events[0]['terminal']
     assert events[1]['terminal'] and events[1]['reason'] == result['reason']
+    assert events[1]['status']==result['status']
 
 
 @pytest.mark.asyncio

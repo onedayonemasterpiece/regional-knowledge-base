@@ -154,8 +154,8 @@ class KaggleWorkerQuery:
                 return _wire(failure('not_ready'))
             if not callable(encode):
                 return _wire(failure('not_ready'))
-        # The worker's remaining budget includes this adapter, not a new per-hop
-        # deadline. Round elapsed time up so parsing cannot extend the budget.
+        # Exact reads retain their caller budget, including adapter work.
+        # Normal search latency is measured without elapsed-time rejection.
         remaining = query.deadline_ms if type(query) is Query else query.deadline_ms - math.ceil((loop.time() - started) * 1000)
         if remaining <= 0:
             return _wire(failure('deadline_exceeded'))
