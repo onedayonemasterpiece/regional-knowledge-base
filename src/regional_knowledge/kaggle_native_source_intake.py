@@ -738,6 +738,12 @@ class NativeSourceIntake:
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
         selections=tuple((p['physical_page_index'],None) for p in payload['pages'])
+        if state.get('rejected_batch_index') is not None:
+            # An uncorrected rejected packet owns the reader: a later page
+            # would leave a silent hole in the book.
+            rejected_next_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
+            if rejected_next_cursor is not None:
+                return self._output(row,state,rejected_next_cursor=str(rejected_next_cursor))
         issued=await self.importer.originals.selected_image_receipts(access.context,row['ingestion_id'],selections)
         await self._check(access,row)
         # Fill the existing SQL/command integrity field from the controller's
