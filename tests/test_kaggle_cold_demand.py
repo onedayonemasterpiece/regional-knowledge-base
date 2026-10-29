@@ -310,14 +310,14 @@ async def test_initial_pending_and_poll_share_real_history_estimate(auth,tmp_pat
     try:
         first=await backend.search('private synthetic question',principal)
         ref=first.startup.startup_ref
-        assert first.status=='pending' and first.startup.eta_seconds==300
-        assert 'Примерное' in first.startup.message_ru and '5 мин.' in first.startup.message_ru
+        assert first.status=='pending' and first.startup.eta_seconds==240
+        assert 'Примерное' in first.startup.message_ru and '4 мин.' in first.startup.message_ru
         with queue.connect(write=False) as db:
             before=[tuple(r) for r in db.execute('select * from control')]
             before_runs=[tuple(r) for r in db.execute('select * from runs')]
         now[0]+=120
         poll=await backend.startup_status(ref,principal)
-        assert poll.status=='pending' and poll.eta_seconds==180
+        assert poll.status=='pending' and poll.eta_seconds==120
         repeated=await backend.search_evidence('another private query',principal)
         assert repeated.startup.startup_ref==ref
         assert repeated.startup.eta_seconds==poll.eta_seconds
