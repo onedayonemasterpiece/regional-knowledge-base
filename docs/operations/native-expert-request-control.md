@@ -229,9 +229,13 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   message. A duplicate event never acquires a second send permit.
 - The reply uses the already-composed ExpertEvidenceReceiver and its current
   canonical ReadAuthority/SourceReadGate under **the original human**, with
-  group-public output only. It quotes actual returned source title, citation,
-  page locator (unknown if absent) and excerpt. No LLM, owner impersonation,
-  unsupported web link or original-scan proof is introduced.
+  group-public output only. Without an actual external expert executor,
+  one bounded fallback message begins «Найдено в источниках:» and gives
+  one line per distinct book (known title/author/year/page and the first
+  source sentence, capped at 200 characters). It is **not** a model answer.
+  Verified zero hits and technical unavailability remain distinct. No raw
+  three-card quote list, UUID, internal LLM, owner impersonation or unsupported
+  proof link is introduced.
 - The existing event row makes exactly one transition searching→sending before
   chat.postMessage, after Slack auth.test and the current source-ticket check.
   A refusal before this claim leaves the original request searching with no
@@ -285,8 +289,8 @@ No new service, LLM, external Request URL, Dataset delivery stages or grants.
   is ACKed only after the existing event_id row is locally committed
   as received; unrelated/bot events ACK without recording a question.
 - From there PR383's existing ExpertSlackSearchReply owns the native
-  search, source withdrawal/ACL and group-public read gate, source/page/
-  quote formatting, one bot chat.postMessage in the original thread with
+  search, source withdrawal/ACL and group-public read gate, limited answer/source
+  formatting, one bot chat.postMessage in the original thread with
   client_msg_id=event_id and UNKNOWN-no-resend CAS. The socket envelope_id
   never substitutes for the original event_id. There is no agent executor.
 
@@ -302,3 +306,113 @@ The search adapter also excludes a trailing Slack connector attribution,
 `*Sent using* <@APP_USER>`, from the query before that length check. The original
 accepted event text remains unchanged; ordinary mentions and attribution text
 inside a question are retained.
+
+
+## S1, 29.10.2026 — Runbook подключения dot (NOT INSTALLED)
+
+**Target from owner, 25.10:** verified Slack question → original durable
+`rkb_expert_requests` / Dataset-covered intake → MCP Events webhook
+`rkb.expert.question.created` → restricted dot claims original question
+and reads guarded RKB evidence → correlated model result → original
+`TargetExpertDeliveryControl` one-shot native Slack message/receipt.
+Read-first search and event wake should run in parallel. An HTTP 2xx webhook
+ACK **does not** imply model execution or Slack delivery.
+
+**Current source code and critical missing seams:**
+
+| Boundary | Already implemented | Missing for dot |
+| --- | --- | --- |
+| Signed Slack intake and dedup | `expert_slack_ingress.py`, `expert_slack_socket_mode.py`, `expert_request_control.py:accept` | Socket ACK currently permits local-only `received`; durable remote intake must be covered before a model wake |
+| Original request/lease/order | `TargetExpertRequestControl.stage_received_dataset/confirm_dataset_coverage/claim/claim_context`; `request_order.py` | No MCP event publisher/subscription bound to a covered request |
+| Source read | `ExpertEvidenceReceiver` (original human, target SourceReadGate) | No dot-facing restricted MCP tool for the exact request; same-host HTTP handler checks client `127.0.0.1` |
+| Result | `/internal/rkb/expert-executor-claim`, `/internal/rkb/expert-executor-result` (Dataset result and send-intent) | Both handlers are **loopback service routes**; dot cannot invoke them through public MCP `knowledge_search` |
+| Native send | `TargetExpertDeliveryControl.claim_send_once/stage_dataset_native_receipt/confirm_dataset_native_receipt`; `SlackChatSender` | No installed binding from accepted model result to native bot sender; `send_intent_ready` is explicitly `provider_sent=false` |
+| Legacy fallback | `ExpertSlackSearchReply` with the original `searching→sending` CAS and UNKNOWN/no-resend | In configured short-path the bot immediately claims and sends; it does **not** wait for dot. No executor timeout arbitration exists |
+
+**MCP Events contract to implement before enabling:** MCP protocol
+`2026-07-28`; advertise `events` in `server/discover` and implement
+authenticated `events/list`, `events/subscribe`, `events/unsubscribe`
+on the **same RKB MCP endpoint**. Event name:
+`rkb.expert.question.created`; no free-text/user-private data in the
+payload. `data={request_id, event_id}` identifies the stored signed
+Slack request; `eventId` stays stable on callback retries. The
+`events/subscribe` request supplies a ChatGPT HTTPS callback URL and
+`whsec_` signing secret; persist scoped subscription, expiration and
+original authenticated *restricted executor* grant across restart, verify
+signed callback challenge, reject DNS/private-address rebinding, use
+Standard Webhooks headers and bounded retry on the **same event ID**.
+Recheck current grant before each delivery. Neither `subscriptions/listen`
+(core MCP streaming notifications) nor a `tools/list_changed`
+notification is the supported ChatGPT MCP Events **webhook**
+subscription. Avoid a second outbox: pending, replay and correlation
+must use the existing remotely accepted expert request; do not mark a
+local-only record as covered. There is **no** implemented MCP Events
+subscription in this PR/repository; the archived, unmerged PR #472 was
+closed for a 2,314-line obsolete integration and cannot be installed.
+
+**Dot claimant / result wire contracts (already existing, same-host only):**
+
+- `POST /internal/rkb/expert-executor-claim`: require verified loopback
+  `127.0.0.1`, `Authorization: Bearer <provisioned service token>`,
+  `X-RKB-Expert-Service: <service_id>`. Exact JSON
+  `{"codec":"rkb.expert-executor-claim.v1","request_id":"<stored UUID or null>","lease_seconds":120}`.
+  `leased` returns original `request_id`, positive `generation`,
+  ephemeral `execution_token`; `empty/deferred` is **not** a result.
+  `claim_context` rechecks original person/link/destination before a
+  trusted client reads `input_text`.
+- `POST /internal/rkb/expert-evidence` on the same loopback service
+  identity: exact
+  `{"codec":"rkb.expert-evidence.v1","request_id":"<UUID>","generation":1,"execution_token":"<lease token>","min_data_seq":0,"deadline_monotonic":<same-host current monotonic+≤2s>,"top_k":3}`.
+  No submitted actor, query, ACL or destination. The handler derives them
+  from the original request and final SourceReadGate; a remote dot cannot
+  manufacture the same-host `deadline_monotonic`.
+- `POST /internal/rkb/expert-executor-result`: same service headers,
+  `{"codec":"rkb.expert-executor-result.v1","request_id":"<same UUID>","generation":1,"execution_token":"<same token>","text":"<dot's answer>"}`.
+  A verified model answer uses 1–4 meaningful sentences in the question's
+  language, then `Источники:` with actual author/book/year/page where
+  available; for German, answer in German **followed immediately by a
+  Russian translation**. No borrowed UUID/URN, arbitrary citation or
+  invented value on irrelevant top-K. Repeat the **same** payload while
+  result/send intent is `result_pending/send_intent_pending`; only
+  `send_intent_ready` proves an original remote send intent, **not**
+  Slack delivery.
+- Original native sender must next execute
+  `claim_send_once(credentials, request_id, generation, token)`, which
+  atomically verifies the original generation, current scope and send
+  intent and returns the **only** provider permit. Send once using the
+  configured Kaliningrad Base `xoxb` principal to exactly the returned
+  channel/thread and `delivery_id` as `client_msg_id`, then build
+  `verified_native_slack_receipt` from the authenticated Slack echo or
+  exact provider readback. `stage_dataset_native_receipt` and
+  `confirm_dataset_native_receipt` must verify remote coverage before
+  advancing the dialog head. Lost provider ACK → `unknown`; reconcile
+  original thread by its marker and **never blind-resend**.
+
+**Shkiper / owner installation steps (still required, no source-only
+permission to perform them):** (1) verify the existing Kaliningrad Base
+Slack app/team/bot identity and original nonowner participant link and
+`public_search` grant; (2) owner-route `provision_executor` with
+`ExecutorCredentials(service_id, token)` and bind
+`ExpertExecutorContext` to real `TargetExpertDeliveryControl` with a
+current source gate (no permissive fake); (3) provision a distinct
+restricted RKB OAuth client for dot, never an owner bearer; RKB must
+expose the existing loopback claim/evidence/result control through
+authorized tools on its **same** MCP endpoint, preserving original
+request identity and delegated ACL (no separate service or gateway); (4) install
+the actual MCP Events webhook publisher/subscription, have dot subscribe
+and verify callback; (5) connect actual model result to the **existing**
+one-shot bot sender/receipt controls; (6) only then enable the model-first
+route and run owner/nonowner, incorrect-author, no-support, revoked grant,
+restart, webhook 2xx-without-claim, and lost-Slack-ACK E2E. No part of
+this runbook authorizes deployment or secret disclosure.
+
+**Timing:** Slack HTTP transport ACK is subject to the 2.5-second
+ingress timeout. Existing executor claim accepts a lease of 1–300
+seconds (120 default); internal evidence read has a ~2-second bound;
+internal result HTTP operation has a 2.5-second timeout; native Slack
+client has an 8-second HTTP timeout. PH's observed dot responses took
+43–82 seconds and are **not** an RKB latency guarantee. A separate
+model-first timeout/fallback must atomically arbitrate with the original
+`pending/leased/send_intent_ready/sending/unknown` states before
+sending; no hardcoded 7-second answer promise or unconditional fallback
+after an already leased or sent result.
