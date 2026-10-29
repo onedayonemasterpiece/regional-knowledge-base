@@ -1013,3 +1013,104 @@ async def test_rejected_page_refuses_advancement_but_corrected_page_can_continue
     assert state(s,book)['rejected_batch_index'] is None
     advanced=await stage(s,book,batch(s,book,first=60,count=1))
     assert advanced.next_action=='continue_pages' and advanced.next_cursor=='61'
+
+
+@pytest.mark.asyncio
+async def test_missing_region_diagnostic_crosses_native_receipt_to_status(native_intake,monkeypatch):
+    from contextlib import asynccontextmanager
+    import regional_knowledge.kaggle_apply as apply_module
+    from regional_knowledge.kaggle_source_commands import WorkerSourceExecutor,decode_receipt,seal_wire
+    from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler,SourceMaterializationRejected
+    from regional_knowledge.source_batch_context import load_current
+    from test_kaggle_pg_search import FixtureConnection
+    from test_source_batch_context import Connection as ContextConnection
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,first=58,count=1))
+    prior=await pending(s,book)
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    payload=batch(s,book,first=123,count=1)
+    page=payload['pages'][0];page['regions'][0]['reading_order']=2
+    private='SYNTHETIC PRIVATE CAPTION CONTENT'
+    for key,kind,order in [('r123_05','caption',0),('r123_18','heading',1)]:
+        region=copy.deepcopy(page['regions'][0])
+        region.update(region_key=key,kind=kind,reading_order=order,source_text=private)
+        page['regions'].append(region)
+    assert (await stage(s,book,payload)).state=='processing'
+    accepted_stage=await pending(s,book)
+    raw=accepted_stage.command.payload
+    view=await load_current(ContextConnection(),raw,book.document_id,text_only=True)
+    async def count(_):return 10  # Synthetic callback only, never a loaded tokenizer.
+    compiler=NativeSourceCompiler(count=count,current=lambda:True)
+    import regional_knowledge.kaggle_source_materializer as native_module
+    original_validation=native_module.validate_graph
+    def unrecognized_errors(*args,**kwargs):
+        validation=original_validation(*args,**kwargs)
+        validation.errors=[error+':'+private for error in validation.errors]+['unknown_private_reason '+private]
+        return validation
+    with monkeypatch.context() as patch:
+        patch.setattr(native_module,'validate_graph',unrecognized_errors)
+        with pytest.raises(SourceMaterializationRejected,match='^native_source_stage_requires_review$'):
+            await compiler.compile_current(raw,view,source_id=book.document_id,
+                person_id=accepted_stage.command.person_id,text_only=True)
+    await finish(s,book)
+    await call(s,book,'status')
+    entry=await pending(s,book);command=entry.command
+    assert command.route=='source.batch.v1'
+    class NativeConnection(FixtureConnection):
+        async def execute(self,statement,params=()):
+            await super().execute(statement,params)
+            return self
+        async def fetchone(self):return (entry.database_generation,'writer-1',command.sequence-1)
+    connection=NativeConnection()
+    @asynccontextmanager
+    async def acquire():yield connection
+    async def trusted_catalog(*args,**kwargs):pass  # Synthetic verified SQL function catalog only.
+    monkeypatch.setattr(apply_module,'_function_contract',trusted_catalog)
+    override=None
+    async def materialize(*args,**kwargs):
+        if override is not None:raise SourceMaterializationRejected(override)
+        await compiler.compile_current(raw,view,source_id=book.document_id,person_id=command.person_id,text_only=True)
+    worker=WorkerSourceExecutor(acquire=acquire,registry=s.spool.registry,
+        database=SimpleNamespace(database_generation=entry.database_generation,writer_generation='writer-1'),
+        run_id=s.t.run,launch_nonce=s.t.nonce,runtime_incarnation='incarnation-a',materializer=materialize)
+    frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.t.generation,id='synthetic-job',
+        claim='synthetic-claim',kind='source_command',run_id=s.t.run,launch_nonce=s.t.nonce,
+        runtime_incarnation='incarnation-a',database_generation=entry.database_generation,writer_generation='writer-1',
+        command_sha256=entry.command_sha256,handler_sha256=entry.handler_sha256,
+        command_b64=base64.b64encode(command.encode()).decode(),accepted=seal_wire(entry.accepted),
+        compute_claim='synthetic-compute',dispatch_generation=s.t.generation)
+    expected=('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
+        '123/r123_05;123/r123_18:fix=add_chunk_region_refs')
+    for unsafe in ('unknown_private_reason',expected+':'+private):
+        override=unsafe
+        with pytest.raises(ValueError,match='fixed internal source rejection reason'):
+            await apply_module.apply_accepted(connection,journal=s.spool.journal,seal=entry.accepted,
+                command=command,database_generation=entry.database_generation,writer_generation='writer-1',
+                registry=s.spool.registry,reject_reason=unsafe)
+    override=None
+    receipt,_=decode_receipt(await worker(frame))
+    body=json.loads(base64.b64decode(json.loads(receipt.outcome)['result_b64']))
+    assert body=={'reason':expected}
+    assert private not in receipt.outcome.decode()
+    await s.spool.record_apply(command.operation_key,receipt)
+    await s.spool.publish_outcome(command.operation_key,writer_generation='writer-1')
+    rejected=await call(s,book,'status')
+    assert rejected.next_cursor=='123' and rejected.warnings==[expected]
+    assert expected in rejected.message and private not in rejected.message
+    corrected=copy.deepcopy(payload)
+    corrected['chunks'][0]['region_refs'] += [dict(page_id=page['page_id'],region_key=key)
+        for key in ('r123_05','r123_18')]
+    assert (await stage(s,book,corrected)).state=='processing'
+    corrected_entry=await pending(s,book)
+    corrected_raw=corrected_entry.command.payload
+    corrected_view=await load_current(ContextConnection(),corrected_raw,book.document_id,text_only=True)
+    await compiler.compile_current(corrected_raw,corrected_view,source_id=book.document_id,
+        person_id=command.person_id,text_only=True)
+    assert (await s.spool.get(accepted_stage.command.operation_key)).command.payload==raw
+    assert (await s.spool.get(prior.command.operation_key)).command_bytes==prior.command_bytes
+    for _ in range(3):
+        await finish(s,book)
+        completed=await call(s,book,'status')
+    assert completed.next_cursor=='124' and state(s,book)['rejected_reason'] is None

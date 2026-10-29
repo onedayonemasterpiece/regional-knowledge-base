@@ -7,3 +7,12 @@ Whole-book candidate preparation and atomic `source.activate.v1` projection use 
 An unrelated chunk key cannot suppress an invalid selection. Missing evidence, changed entity identity, unknown model fields, incomplete coverage and oversized complete encoder inputs still reject. The original rejected seal receipt remains in history; the corrected head needs its own successful seal. This does not relax native SQL activation checks or Dataset durability.
 
 Focused verification: `tests/test_native_source_materializer.py` covers invalid footnote selection followed by an explicit correction, a boundary-whitespace graph quote correction, unresolved evidence, unrelated keys and identity changes. Native deterministic materialization rejections log only route, sequence and a bounded validation code.
+
+When native validation finds textual regions absent from chunk references, the
+existing rejection reason includes `missing_chunk_coverage:physical_page_index/region_key=`
+and up to the validator's existing 40 locations, followed by `fix=add_chunk_region_refs`.
+For example, `123/r123_05;123/r123_18` identifies the original region keys on physical
+page index 123. Add the omitted references to appropriate chunks and correct the same
+packet through the existing flow. The canonical receipt and `book_ingest.status`
+preserve this bounded diagnostic without source text. Other validation errors retain
+the existing generic reason; accepted earlier pages and retry cursors are unchanged.

@@ -487,7 +487,16 @@ class NativeSourceCompiler:
             require_figure_review=not text_only,passage_evidence=passage_evidence,
             coverage_page_indexes=coverage_page_indexes,
             allow_trailing_uncovered=trusted_packet is not None and research['state']=='pending')
-        if not validation.ready:raise failure('native_source_stage_requires_review')
+        if not validation.ready:
+            missing={ident for error in validation.errors
+                if re.fullmatch(r"uncovered textual regions: \['[0-9a-f-]{36}'(?:, '[0-9a-f-]{36}'){0,39}\]",error)
+                for ident in re.findall(r"'([0-9a-f-]{36})'",error)}
+            locations=[f'{page.physical_page_index}/{region.region_key}'
+                for page in graph.pages for region in page.regions if str(region.region_id) in missing]
+            if locations:
+                raise failure('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
+                    +';'.join(locations[:40])+':fix=add_chunk_region_refs')
+            raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')
         metadata=StartMetadataInput.model_validate(source['metadata'])
