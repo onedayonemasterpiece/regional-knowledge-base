@@ -46,6 +46,9 @@ async def pending_tail_refs(connection, source_id, ingestion_id):
         p.model_page->'regions',r.source_text_sha256,sp.covered_end
         FROM rkb_v4.source_regions r JOIN rkb_v4.source_stage_pages p
           ON p.source_id=r.source_id AND p.page_id=r.page_id
+        JOIN rkb_v4.source_stage_batches b ON b.source_id=p.source_id AND b.batch_index=p.batch_index
+        JOIN LATERAL jsonb_array_elements(convert_from(b.payload_bytes,'UTF8')::jsonb->'model_payload'->'pages')
+          WITH ORDINALITY position(page,ordinal) ON position.page->>'page_id'=p.page_id::text
         CROSS JOIN LATERAL(SELECT coalesce(max((span->>'end')::integer),0) covered_end
           FROM rkb_v4.source_passage_provenance z
           CROSS JOIN LATERAL jsonb_array_elements(z.data->'source_spans') span
@@ -60,7 +63,7 @@ async def pending_tail_refs(connection, source_id, ingestion_id):
               WHERE z.source_id=r.source_id AND z.data @> jsonb_build_object('page_ids',jsonb_build_array(r.page_id::text))
                 AND ((z.data->'source_spans'='[]'::jsonb AND z.data->'region_ids' @> jsonb_build_array(r.region_id::text))
                   OR z.data->'footnote_region_ids' @> jsonb_build_array(r.region_id::text)))
-        ORDER BY p.batch_index,p.physical_page_index,r.region_id LIMIT 5''',(source_id,))).fetchall()
+        ORDER BY p.batch_index,position.ordinal,r.region_id LIMIT 5''',(source_id,))).fetchall()
     refs=[]
     for ident,page_id,index,regions,sha,start in rows:
         region=next((r for r in regions if str(uuid5(UUID(str(page_id)),'region:'+r['region_key']))==str(ident)),None)
