@@ -128,7 +128,7 @@ async def test_complete_two_page_36_span_pdf_and_incomplete_is_actionable():
     @asynccontextmanager
     async def acquire_incomplete():
         yield incomplete
-    with pytest.raises(SourceUnitPdfError,match="unit_not_ready: continue book_ingest"):
+    with pytest.raises(SourceUnitPdfError,match="unit_not_ready: статья ещё не завершена"):
         await render_accepted_source_pdf(acquire=acquire_incomplete,source_id=SOURCE,
             article_id="albinus-unit")
     assert not any("read_source_unit_export_pages_v1" in q
