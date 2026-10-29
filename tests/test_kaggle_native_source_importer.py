@@ -932,6 +932,9 @@ async def test_rejected_packet_reports_short_reason_and_first_physical_page(nati
         await call(s,book,'status')
     payload=batch(s,book,first=59,count=2)
     assert (await stage(s,book,payload)).state=='processing'
+    # Live Albinus p60: the stage APPLIED, then the packet's text phase rejected.
+    await finish(s,book)
+    await call(s,book,'status')
     await finish(s,book,status='rejected_precondition',reason='native_source_invalid_span')
     result=await call(s,book,'status')
     assert (result.state,result.next_action,result.next_cursor)==('staged','continue_pages','59')
