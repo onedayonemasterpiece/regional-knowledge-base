@@ -232,11 +232,15 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   group-public output only. It quotes actual returned source title, citation,
   page locator (unknown if absent) and excerpt. No LLM, owner impersonation,
   unsupported web link or original-scan proof is introduced.
-- The existing event row makes exactly one transition searching→sending before
-  chat.postMessage, after Slack auth.test and the current source-ticket check.
-  A refusal before this claim leaves the original request searching with no
-  send attempt; its existing task retries with 2–60 second backoff and fresh
-  authorization/evidence. The bot token is checked against Slack auth.test for the
+- While Kaggle warms, the Slack reply posts one short ETA notice in the same
+  thread, derived from the existing measured startup ETA (no number if unknown).
+  It first records a one-shot `event_id:warming` send intent in the existing
+  `delivery_id` field while retaining `searching`; repeated warming or a lost
+  Slack ACK never resends the notice. When ready, the original request makes its
+  existing searching→sending transition for the final source-backed reply,
+  replacing that marker with the original event_id.
+  A refusal before the final claim leaves the original request searching; its
+  existing task retries with 2–60 second backoff and fresh authorization/evidence. The bot token is checked against Slack auth.test for the
   original workspace and bot user; client_msg_id is the exact Slack event_id,
   thread_ts is the originating signed thread. A verified matching native
   provider echo records delivered. Any uncertain send becomes UNKNOWN and
