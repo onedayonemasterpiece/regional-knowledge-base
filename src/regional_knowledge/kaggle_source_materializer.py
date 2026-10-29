@@ -152,10 +152,11 @@ def merge_native_stage(graph: StagedGraph, payload: IngestStagePayload) -> Stage
     for item in payload.poi_media_links:
         poi_media_links[str(item.link_id)] = item
 
+    from .source_units import ordered_model_pages
     return NativeStagedGraph(
         revision=graph.revision,
         entity_candidates=graph.entity_candidates,
-        pages=sorted(pages.values(), key=lambda item: item.physical_page_index),
+        pages=ordered_model_pages(pages.values())[0],
         relations=list(relations.values()),
         illustrations=list(illustrations.values()),
         chunks=list(chunks.values()),
