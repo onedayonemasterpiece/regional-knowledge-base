@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -16,8 +17,11 @@ from .kaggle_protocol import (
     EvidenceItem, EvidenceMetadata, ItemDependencies, PassageContinuation, Query,
     QueryResult, SourceDependency, PassageReadRequest, PassageReadResult, encode_envelope,
 )
-from .kaggle_search import SearchEvidence, fused_search, vector_literal
+from .kaggle_search import SearchEvidence, fused_search, vector_literal, STATEMENT_TIMEOUT_MESSAGE
 from .kaggle_acceptance_contracts import AcceptanceReadRequest, AcceptanceReadResult, BranchRanks
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class DenseUnavailable(RuntimeError):
@@ -248,6 +252,12 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
         return _unavailable(query, "not_ready", observed)
     except psycopg.errors.UndefinedTable:
         return _unavailable(query, "not_ready", observed)
+    except psycopg.errors.QueryCanceled as exc:
+        if type(query) is Query and exc.diag.message_primary == STATEMENT_TIMEOUT_MESSAGE:
+            _LOG.warning("native_query_sql_cancel request_id=%s sqlstate=%s reason=native_query_stalled",
+                         query.request_id, exc.sqlstate)
+            return _unavailable(query, "native_query_stalled", observed)
+        return _unavailable(query, "internal_error", observed)
     except psycopg.Error:
         return _unavailable(query, "internal_error", observed)
     finally:
@@ -355,7 +365,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
     except TimeoutError:
         return unavailable("deadline_exceeded")
     except psycopg.errors.QueryCanceled as exc:
-        if loop.time() + .001 >= deadline and exc.diag.message_primary == "canceling statement due to statement timeout":
+        if loop.time() + .001 >= deadline and exc.diag.message_primary == STATEMENT_TIMEOUT_MESSAGE:
             return unavailable("deadline_exceeded")
         return unavailable("internal_error")
     except psycopg.Error:

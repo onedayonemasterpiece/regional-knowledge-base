@@ -295,6 +295,7 @@ class QueryResult(ReadIdentity):
         "invalid_filters", "invalid_input", "token_limit_exceeded", "access_denied",
         "prior_write_pending", "context_gap", "evidence_withdrawn", "internal_error",
         "bounded_retrieval",
+        "native_query_stalled",
     ] | None = None
     prior_write_pending: bool = False
     context_gap: bool = False

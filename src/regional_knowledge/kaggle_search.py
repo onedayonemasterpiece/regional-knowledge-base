@@ -15,6 +15,8 @@ from psycopg.rows import tuple_row
 from .bge_contract import validate_vector
 from .kaggle_protocol import QueryFilters
 
+STATEMENT_TIMEOUT_MESSAGE = "canceling statement due to statement timeout"
+
 # Strong references only until encoder completion; no dispatch/retry/job semantics.
 _PENDING_ENCODERS: set[asyncio.Task] = set()
 
@@ -148,9 +150,9 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         if remaining <= 0:
                             raise TimeoutError("search deadline exhausted")
                         # Exact/acceptance reads retain their remaining budget.
-                        # Normal search uses zero to disable statement_timeout.
+                        # Normal search bounds only an executing SQL statement.
                         await cursor.execute("SELECT set_config('statement_timeout', %s, true)",
-                                             (str(0 if math.isinf(remaining) else max(1, int(remaining * 1000))),))
+                                             (str(60000 if math.isinf(remaining) else max(1, int(remaining * 1000))),))
                         try:
                             await cursor.execute(statement, params)
                         except QueryCanceled as exc:
@@ -158,12 +160,13 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                             # asyncio's absolute deadline. Capture the receipt
                             # time before rollback, which may itself take time.
                             if (loop.time() + .001 >= deadline
-                                    and exc.diag.message_primary ==
-                                    "canceling statement due to statement timeout"):
+                                    and exc.diag.message_primary == STATEMENT_TIMEOUT_MESSAGE):
                                 deadline_query_cancel = exc
                             raise
 
-                    # This is the first SQL after BEGIN; read-only must precede SELECT.
+                    if timeout_seconds is None:
+                        await cursor.execute("SET LOCAL statement_timeout='60000ms'")
+                    # Isolation/read-only must precede SELECT.
                     await cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                     if snapshot_guard is not None:
                         await snapshot_guard(cursor, execute)

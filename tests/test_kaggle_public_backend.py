@@ -195,7 +195,7 @@ async def test_search_waits_past_queue_and_native_timing_goals(target,env):
     assert await s.admission.finish_read(s.run,s.token,s.generation,
         QueryResult.model_validate_json(json.dumps(native.read_pending)))
     assert (await task).status=='ok'
-    assert any('statement_timeout' in sql and params==('0',)
+    assert any('statement_timeout' in sql and params==('60000',)
         for sql,params in lease.connection.statements)
     await release(s,value)
     assert s.admission.status()['state']=='idle'
