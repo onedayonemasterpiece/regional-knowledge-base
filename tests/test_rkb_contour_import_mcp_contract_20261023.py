@@ -78,6 +78,19 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
 
 
 @pytest.mark.asyncio
+async def test_native_chunk_ceiling_in_mcp_guidance_matches_runtime(native_intake):
+    from regional_knowledge.kaggle_source_materializer import MAX_TOKENS
+
+    server = build_server(target_startup=native_intake.startup)
+    ingest = next(tool for tool in await server.list_tools() if tool.name == "book_ingest")
+    for guidance in (server.instructions, ingest.description):
+        assert f"at most {MAX_TOKENS} pinned BGE-M3 tokenizer tokens" in guidance
+        assert "complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text)" in guidance
+        assert "chunk.title is metadata, not added separately" in guidance
+        assert "Split longer thoughts at complete sentences" in guidance
+
+
+@pytest.mark.asyncio
 async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_unchanged(native_intake, monkeypatch):
     native = build_server(target_startup=native_intake.startup)
     native_tools = {tool.name: tool for tool in await native.list_tools()}
@@ -134,7 +147,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     for expected in (
         "model-chosen boundaries at changes of thought",
         "about 256 BGE tokens", "roughly 800-1000 characters",
-        "a guideline rather than a hard limit", "existing exact token bound",
+        "as a rough estimate, not a ceiling", "within the exact token bound",
         "not a mandatory chunk boundary", "Preserve whole sentences",
         "split a long or visually unbroken paragraph at a complete sentence",
         "exact span_refs and source_text offsets",
@@ -170,8 +183,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "Finalization alone activates" not in native.instructions
     # Cold search continuation is one native instruction, not a new method.
     for instruction in ("startup.message_ru", "startup.eta_seconds",
-                        "same startup_ref", "every 30 seconds",
-                        "after ready issue a NEW search"):
+                        "SAME startup_ref", "Do NOT end this turn",
+                        "EXACT same search"):
         assert instruction in native.instructions
     # Conditional Case discovery and existing write workflow must agree in
     # both native instructions and the displayed book_ingest description.
