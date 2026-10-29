@@ -44,9 +44,25 @@ from test_kaggle_protocol import item
 def test_evidence_title_uses_existing_catalog_and_page(catalog, locator, expected):
     from regional_knowledge.kaggle_public_backend import _evidence_title
     metadata = SimpleNamespace(source_provenance={'catalog': catalog}, locator=locator)
-    assert _evidence_title(SimpleNamespace(id='passage-1', metadata=metadata)) == expected
+    assert _evidence_title(SimpleNamespace(id='passage-1',kind='source',metadata=metadata)) == expected
     metadata.source_provenance = {'catalog': {'title': 'x' * 3000}}
-    assert len(_evidence_title(SimpleNamespace(id='passage-1', metadata=metadata))) == 2048
+    assert len(_evidence_title(SimpleNamespace(id='passage-1',kind='source',metadata=metadata))) == 2048
+
+
+def test_story_search_render_keeps_saved_title_and_exact_variant_body():
+    import time
+    from regional_knowledge.kaggle_story_read import story_item
+    from test_kaggle_story_read import record
+    row=record()
+    result=QueryResult(request_id='story-title',connection_generation=1,turn_generation=1,
+        status='ok',mode='hybrid',observed_data_seq=5,observed_projection_seq=5,
+        evidence=(story_item(row),))
+    attempt=SimpleNamespace(started=time.monotonic(),correlation=lambda:dict(trace_id='1'*32))
+    output=KaggleSourceBackend._render(result,evidence=True,attempt=attempt)
+    assert output.evidence[0].title==row['title']
+    assert output.evidence[0].text==row['body']
+    assert output.evidence[0].metadata['exact_variant_ref']==(
+        f"variant:{row['default_variant_ref']['variant_id']}:r{row['default_variant_ref']['revision']}")
 
 
 class Gate:
