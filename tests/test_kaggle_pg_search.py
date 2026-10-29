@@ -328,7 +328,7 @@ async def test_fused_dense_only_evidence_and_single_batch_hydration():
                 return []
             if "dense_candidates" in self.statement:
                 return [(passage, .1)]
-            return [(passage, source, 2, "page 1", "harbour", "book")]
+            return [(passage, source, 2, "page 1", "harbour", "book", None, False)]
 
     async def encode(query):
         await asyncio.sleep(.01)

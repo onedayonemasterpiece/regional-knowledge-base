@@ -365,7 +365,9 @@ class KaggleSourceBackend:
                         if item.source_continuation and not item.continuation_complete else None,
                     'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions],
                     'kind':item.kind,'exact_variant_ref':item.exact_variant_ref,
-                    'variant_refs':list(item.dependencies.variant_refs)})
+                    'variant_refs':list(item.dependencies.variant_refs),
+                    'illustrations':list(item.illustrations),
+                    'illustrations_has_more':item.illustrations_has_more})
                 for item in result.evidence], **common)
         def inline_result(item):
             next_id = (passage_fetch_id(item.source_continuation)
@@ -376,7 +378,9 @@ class KaggleSourceBackend:
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
                     'source_provenance': item.metadata.source_provenance,
                     'text_form': item.text_form, 'continuation_complete': not incomplete,
-                    'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions]})
+                    'source_revisions': [source.model_dump() for source in item.dependencies.source_revisions],
+                    'illustrations':list(item.illustrations),
+                    'illustrations_has_more':item.illustrations_has_more})
         return SearchOutput(results=[inline_result(item) for item in result.evidence], **common)
 
     @staticmethod

@@ -12,7 +12,7 @@ async def test_linked_figure_descriptor_has_real_page_and_no_private_crop_bindin
     async def execute(sql, params):
         calls.append((sql, params))
     async def fetchall():
-        return [('figure-id', dict(page_id='page-id', source_region_id='region-id',
+        return [('passage-id', 'source-id', 'figure-id', dict(page_id='page-id', source_region_id='region-id',
             caption_text='Printed caption', bbox=dict(left=10, top=20, right=30, bottom=40),
             crop_binding={'private': 'original receipt'}, archive_locator='private'), 7,'exact_shared_region')]
     result = await read_passage_illustrations(SimpleNamespace(fetchall=fetchall), execute,
@@ -20,7 +20,7 @@ async def test_linked_figure_descriptor_has_real_page_and_no_private_crop_bindin
     assert result == ((dict(id='rkb:illustration:v1:source-id:figure-id',
         page_id='page-id', association_basis='exact_shared_region',physical_page_index=7),),False)
     sql, params = calls[0]
-    assert params == ('source-id', 'passage-id')
+    assert params == (['passage-id'], ['source-id'], 201)
     assert "p.data->'region_ids' @> jsonb_build_array(i.data->'source_region_id')" in sql
     assert 'NOT s.withdrawn' in sql
     assert 'availability' not in sql  # Discovery does not wait for mirroring.
@@ -34,9 +34,9 @@ async def test_verbose_figures_do_not_expand_text_metadata_and_report_more():
     from test_kaggle_query import SOURCE,PASSAGE,query
     from regional_knowledge.kaggle_protocol import SourceDependency
     async def execute(sql,params):
-        assert 'LIMIT 201' in sql
+        assert 'figure_rank<=%s' in sql
     async def fetchall():
-        return [(str(i),dict(page_id='page',caption_text='c'*2000,
+        return [(PASSAGE,SOURCE,str(i),dict(page_id='page',caption_text='c'*2000,
             visual_description='v'*2000),0,'exact_shared_region') for i in range(201)]
     descriptors,more=await read_passage_illustrations(SimpleNamespace(fetchall=fetchall),execute,
         source_id=SOURCE,passage_id=PASSAGE)
@@ -81,3 +81,43 @@ async def test_exact_figure_uses_current_corrected_catalog_without_leaking_crop(
     assert 'coalesce(corrected.metadata,catalog.metadata)' in sql
     assert 's.accepted AND NOT s.withdrawn' in sql
     assert params==(SOURCE,ILLUSTRATION)
+
+
+@pytest.mark.asyncio
+async def test_caption_search_hit_exposes_same_accepted_illustration_id_as_fetch():
+    from regional_knowledge.kaggle_passage_illustrations import read_passage_illustrations_batch
+    from regional_knowledge.kaggle_search import SearchEvidence
+    from regional_knowledge.kaggle_query import _item
+    from regional_knowledge.kaggle_protocol import QueryResult, PassageReadResult, SourceDependency
+    from regional_knowledge.kaggle_public_backend import KaggleSourceBackend
+    from regional_knowledge.query_telemetry import ReadAttempt
+    from test_kaggle_query import SOURCE, PASSAGE
+    from test_kaggle_exact_fetch import locator
+
+    calls = []
+    async def execute(sql, params):
+        calls.append((sql, params))
+    async def fetchall():
+        return [(PASSAGE, SOURCE, 'accepted-figure', {'page_id':'printed-page'}, 4,
+                 'accepted_chunk_link')]
+    cursor = SimpleNamespace(fetchall=fetchall)
+    found = await read_passage_illustrations_batch(cursor, execute,
+        passage_ids=(PASSAGE,), source_ids=(SOURCE,), limit=20)
+    fetched, _ = await read_passage_illustrations(cursor, execute,
+        source_id=SOURCE, passage_id=PASSAGE)
+
+    dep = SourceDependency(source_id=SOURCE, content_revision=1, eligibility_revision=7)
+    hit = SearchEvidence(PASSAGE, SOURCE, 1, 'printed page 4', 'Knight caption',
+        'Author, page 4', illustrations=found[PASSAGE][0])
+    item = _item(hit, dep, 3, database_generation='synthetic-db')
+    common = dict(request_id='illustrated-hit', connection_generation=4, turn_generation=9,
+        status='ok', evidence=(item,), observed_data_seq=5, observed_projection_seq=5,
+        observed_visibility_epoch=3, observed_database_generation='synthetic-db')
+    attempt = ReadAttempt('a' * 32)
+    search = KaggleSourceBackend._render(QueryResult(mode='hybrid', **common),
+        evidence=False, attempt=attempt).results[0]
+    fetch = KaggleSourceBackend._render_fetch(PassageReadResult(
+        illustrations=fetched, **common), locator=locator(), attempt=attempt)
+    assert search.metadata['illustrations'][0]['id'] == fetch.metadata['illustrations'][0]['id']
+    assert search.metadata['illustrations'][0]['association_basis'] == 'accepted_chunk_link'
+    assert len(calls) == 2 and all('source_batch_publications' in sql for sql, _ in calls)

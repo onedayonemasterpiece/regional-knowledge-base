@@ -34,6 +34,8 @@ class SearchEvidence:
     body: str
     bibliography: str
     source_provenance: dict | None = None
+    illustrations: tuple[dict, ...] = ()
+    illustrations_has_more: bool = False
 
 
 @dataclass(frozen=True)
@@ -233,8 +235,11 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                                      'rkb_v4.hydrate_scoped(%s::uuid[], %s::uuid[])')
                         await execute(f"""SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
                             jsonb_build_object('catalog',jsonb_build_object('title',picked.metadata->>'title',
-                                'authors',picked.metadata->'authors','publication_year',picked.metadata->'publication_year'))
+                                'authors',picked.metadata->'authors','publication_year',picked.metadata->'publication_year')),
+                            p.passage_id IS NOT NULL
                             FROM {hydration} WITH ORDINALITY h
+                            LEFT JOIN rkb_v4.source_passage_provenance p ON p.passage_id=h.passage_id
+                                AND p.source_id=h.source_id AND p.source_revision=h.revision
                             LEFT JOIN rkb_v4.source_catalog c
                               ON c.source_id=h.source_id AND c.source_revision=h.revision
                             LEFT JOIN LATERAL (
@@ -248,8 +253,17 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         raise ValueError('acceptance rank hydration incomplete')
                     if stage_timings is not None:
                         stage_timings["hydrate_ms"] = (loop.time() - began) * 1000
+                    links = {}
+                    linked_rows = [r for r in rows if not story and r[7]]
+                    if linked_rows:
+                        from .kaggle_passage_illustrations import read_passage_illustrations_batch
+                        links = await read_passage_illustrations_batch(cursor, execute,
+                            passage_ids=[str(r[0]) for r in linked_rows],
+                            source_ids=[str(r[1]) for r in linked_rows],
+                            limit=max(1, 200 // len(rows)))
                     result = SearchResult(tuple(StorySearchEvidence(r[1]) if story else
-                                              SearchEvidence(str(r[0]), str(r[1]), *r[2:])
+                                              SearchEvidence(str(r[0]), str(r[1]), *r[2:7],
+                                                  *links.get(str(r[0]), ((), False)))
                                               for r in rows if not story or r[1] is not None), limitation=(
                         "bounded_candidate_fusion_unverified" if source_ids is not None
                         else "bounded_ann_recall_unverified"), branch_ranks=ranks)
