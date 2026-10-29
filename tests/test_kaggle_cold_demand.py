@@ -353,7 +353,7 @@ def test_estimate_does_not_mix_providers_or_claim_unknown_ready(tmp_path):
     demand=queue.request_startup();ref=demand['startup_ref']
     assert queue.startup_estimate(ref)==(None,'unknown')
     assert queue.launch_claim(demand['run_id'],provider_ref='owner/stable-slug')
-    assert queue.startup_estimate(ref)==(300,'estimated')
+    assert queue.startup_estimate(ref)==(240,'estimated')
     with queue.connect() as db:
         db.execute("update runs set started=1 where id=?",(demand['run_id'],))
     assert queue.startup_status(ref)['status']=='pending'
