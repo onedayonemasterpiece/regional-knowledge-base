@@ -21,7 +21,6 @@ from . import request_order
 
 _LOG = logging.getLogger(__name__)
 _PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
-_TEMPORARILY_UNAVAILABLE = "Сейчас не могу проверить, повторите вопрос через пару минут"
 
 
 def _error_reply(reason):
