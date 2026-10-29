@@ -18,7 +18,7 @@ MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity by
 from .original_intake import PHASES as ORIGINAL_PHASES
 from .kaggle_snapshot_drill import DRILL_PHASES
 PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history',
-    'dataset_verify','snapshot_status','capture_upload','schema_bundle_stage','schema_migrate','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
+    'dataset_verify','snapshot_status','capture_upload','source_unit_pdf','schema_bundle_stage','schema_migrate','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 def _download_ticket_matches(blob,ticket,dataset_checkpoint=None):
@@ -121,6 +121,7 @@ async def build_recovery_worker(*,native_bundle,database,identity,tools,native_u
     factory.native_env=await asyncio.to_thread(verified_native_environment,native_bundle)
     await factory.tools.verify(factory._run)
     worker=WorkerRecoveryPhases(factory=factory,download=download,workspace=workspace)
+    worker.pdf_ticket_channel=ticket_channel
     if ticket_channel is not None and transfer is not None:
         from .kaggle_snapshot_io import SnapshotIo
         worker.snapshot_io=SnapshotIo(factory=factory,tickets=ticket_channel,transfer=transfer)
@@ -209,7 +210,7 @@ class WorkerRecoveryPhases:
             if prior is not None:
                 if prior['request_sha256']!=request:raise SnapshotError('recovery_phase_operation_changed')
                 return prior
-            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify','snapshot_status','capture_upload'):
+            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify','snapshot_status','capture_upload','source_unit_pdf'):
                 # Expected candidate/transfer/probe refusal is the outcome of
                 # THIS durable maintenance operation, not a fatal worker
                 # transport failure. BgeWssTransport._failure would otherwise
@@ -219,7 +220,7 @@ class WorkerRecoveryPhases:
                 try:
                     value=await self._execute(frame['phase'],frame['arguments'],key,binding,frame)
                 except Exception:
-                    reason=('snapshot_capture_rejected' if frame['phase']=='capture' else
+                    reason=('source_unit_pdf_failed' if frame['phase']=='source_unit_pdf' else 'snapshot_capture_rejected' if frame['phase']=='capture' else
                         'dataset_checkpoint_verify_rejected' if frame['phase']=='dataset_verify' else
                         'snapshot_io_rejected' if frame['phase'] in ('snapshot_status','capture_upload') else 'read_handler_maintenance_rejected')
                     value={'status':'rejected','reason':reason}
@@ -289,6 +290,26 @@ class WorkerRecoveryPhases:
     async def _execute(self,phase,args,key,binding,frame):
         from .kaggle_pg_snapshot_native import BlobRef
         if not isinstance(args,dict):raise SnapshotError('recovery_phase_arguments')
+        if phase=='source_unit_pdf':
+            from .source_unit_export import render_accepted_source_pdf
+            from .source_unit_pdf import SourceUnitPdfError
+            if set(args)!={'source_id','article_id'} or self.pdf_ticket_channel is None:
+                raise SnapshotError('source_unit_export_arguments')
+            try:
+                pdf=await render_accepted_source_pdf(acquire=self.factory.acquire,
+                    source_id=args['source_id'],article_id=args['article_id'])
+            except SourceUnitPdfError as exc:
+                return {'status':'unit_not_ready','reason':str(exc)}
+            ticket=await self.pdf_ticket_channel.upload_ticket(size=len(pdf),sha256=sha(pdf))
+            if not isinstance(ticket,dict) or set(ticket)!={'upload_url','file_id'}:
+                raise SnapshotError('source_unit_export_ticket_invalid')
+            import httpx
+            async with httpx.AsyncClient(timeout=60) as client:
+                response=await client.post(ticket['upload_url'],content=pdf,
+                    headers={'Content-Type':'application/pdf'})
+            if response.status_code!=200:
+                raise SnapshotError('source_unit_export_upload_failed')
+            return {'status':'uploaded','file_id':ticket['file_id']}
         if phase in ('snapshot_status','capture_upload'):
             if set(args)!={'handle'} or self.snapshot_io is None:
                 raise SnapshotError('snapshot_io_arguments')
