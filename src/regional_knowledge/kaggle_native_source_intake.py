@@ -596,11 +596,14 @@ class NativeSourceIntake:
                 if tails is not None:
                     return tails
             pages=json.loads(entry.command.payload)['model_payload']['pages']
+            next_page=max(p['physical_page_index'] for p in pages)+1
+            cursor=json.loads(row.get('research_json') or '{}').get('continuation',{}).get('arguments',{}).get('cursor')
+            if isinstance(cursor,str) and cursor.isdecimal(): next_page=max(next_page,int(cursor))
             return self.importer._output(row,'processing' if pending else 'staged',
                 'Stage input accepted; continue reading without resending these pages. '
                 'Retain unfinished passages and current tail context for the next reviewed page. '
                 'The server handles packet publication; acceptance is not Dataset Saved.',
-                'continue_pages',next_cursor=str(max(p['physical_page_index'] for p in pages)+1),source_archive_status='verified')
+                'continue_pages',next_cursor=str(next_page),source_archive_status='verified')
         return self._output(row,state)
 
     async def _tail_output(self, access, row, state):
