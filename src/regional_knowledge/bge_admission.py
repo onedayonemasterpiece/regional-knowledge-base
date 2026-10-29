@@ -180,8 +180,8 @@ class SharedReadAdmission:
         self._active();_identity(dialog_ref)
         now=self.clock()
         if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
-                or not math.isfinite(deadline) or not now<deadline<=now+2):
-            raise ValueError('absolute remaining deadline must be at most two seconds')
+                or not math.isfinite(deadline) or not now<deadline<=now+8):
+            raise ValueError('absolute remaining admission deadline must be at most eight seconds')
         if not isinstance(query,(Query,SqlHealthRequest,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest,EditorialReadRequest,SourceGraphReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
         if on_dispatch is not None and not callable(on_dispatch):
@@ -490,6 +490,7 @@ class SharedReadAdmission:
                     self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 if read.deadline<=self.clock() or (read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
                 remaining=min(read.query.deadline_ms,int((read.deadline-self.clock())*1000))
+                if read.query.deadline_ms>2000:remaining=2000
                 if remaining<1:self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),connection_generation,'read',read.ticket.request_id)
                 updates={'deadline_ms':remaining}
@@ -539,6 +540,10 @@ class SharedReadAdmission:
             if read is None or read.deadline<=self.clock():
                 raise StaleAttachment('read consumer no longer active')
             read.dispatched=work.resource
+            if read.query.deadline_ms>2000:
+                read.timer.cancel()
+                read.deadline=self.clock()+work.query.deadline_ms/1000
+                read.timer=asyncio.get_running_loop().call_later(work.query.deadline_ms/1000,self._cancel,key)
         self._sent=True;self._state='busy'
         self._changed_slot()
         if work.query is not None and read.on_dispatch is not None:

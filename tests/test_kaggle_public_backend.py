@@ -19,6 +19,7 @@ from test_read_authority import auth
 from test_participants import people
 from test_bge_runtime_readiness import expected, observation
 from test_kaggle_protocol import item
+from test_control_spool import env
 
 
 @pytest.mark.parametrize('catalog, locator, expected', [
@@ -152,6 +153,43 @@ async def release(s, value):
         runtime_incarnation=resource.runtime_incarnation, resource_kind=resource.resource_kind,
         resource_id=resource.resource_id, compute_claim=resource.compute_claim,
         dispatch_generation=resource.dispatch_generation)
+
+
+@pytest.mark.asyncio
+async def test_eight_searches_queue_before_their_execution_budget(target,env):
+    from regional_knowledge.source_read_gate import SourceReadGate
+    s=target
+    s.backend.source_gate=SourceReadGate(s.auth.resolver,env.spool,
+        binding_current=lambda b:b==current_binding(s.queue))
+    async def search(index):
+        with capture_read_output() as calls:
+            output=await s.backend.search(f'synthetic question {index}',s.principal)
+        assert len(calls)==1
+        calls[0].complete(output.status,output.reason)
+        calls[0].release()
+        return output
+    tasks=[asyncio.create_task(search(i)) for i in range(8)]
+    budgets=[];dispatch_times=[];started=asyncio.get_running_loop().time()
+    while any(not task.done() for task in tasks):
+        value=await s.queue.next_channel_work(s.run,s.token,s.generation)
+        if value is None:
+            await asyncio.sleep(.001)
+            continue
+        s.admission.mark_work_sent(value)
+        budgets.append(value.query.deadline_ms)
+        dispatch_times.append(asyncio.get_running_loop().time()-started)
+        assert await s.queue.next_channel_work(s.run,s.token,s.generation) is None
+        await asyncio.sleep(.45)  # One actual slot: synthetic native/WSS cycle.
+        await s.admission.finish_read(s.run,s.token,s.generation,QueryResult(
+            request_id=value.query.request_id,connection_generation=s.generation,
+            turn_generation=value.query.turn_generation,status='ok',mode='hybrid',evidence=(),
+            observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=0,
+            observed_database_generation=current_binding(s.queue).database_generation))
+        await release(s,value)
+    outputs=await asyncio.gather(*tasks,return_exceptions=True)
+    assert [getattr(output,'status',None) for output in outputs]==['ok']*8,outputs
+    assert budgets==[2000]*8 and dispatch_times[-1]>3
+    assert s.admission.status()['state']=='idle'
 
 
 @pytest.mark.asyncio

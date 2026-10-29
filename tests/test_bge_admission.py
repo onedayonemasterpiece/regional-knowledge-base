@@ -521,7 +521,7 @@ async def test_authority_projection_and_min_sequence_cannot_be_forged(state):
         await s.a.begin_read(replace(s.context),query(s.context,'forged'),dialog_ref='d',deadline=time.monotonic()+1)
     forged=query(s.context,'forged-person').model_copy(update={'actor':query(s.context,'x').actor.model_copy(update={'person_id':s.auth.p.owner.subject})})
     with pytest.raises(PermissionError):await s.a.begin_read(s.context,forged,dialog_ref='d',deadline=time.monotonic()+1)
-    for deadline in (float('nan'),time.monotonic()+3):
+    for deadline in (float('nan'),time.monotonic()+9):
         with pytest.raises(ValueError):await s.a.begin_read(s.context,query(s.context,'budget'),dialog_ref='d',deadline=deadline)
     ticket=await begin(s,'fenced-result',min_seq=8)
     work=await s.q.next_channel_work(s.run,s.token,1)

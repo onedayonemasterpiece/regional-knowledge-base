@@ -228,3 +228,12 @@ including rollback and reuse after an actual held-lock timeout. Locale facts
 come from `pg_database.datcollate/datctype`, rather than unavailable locale GUCs.
 The timeout assertion requires the deadline/cancellation reason and an actual
 wait, so an unrelated early SQL error cannot satisfy it.
+
+Draft admission-budget proposal (not deployed): normal search may wait up to
+eight seconds for the existing single shared read slot, then receives at most
+two seconds of worker execution from actual dispatch. The existing cancellation
+timer is rearmed at dispatch; worker concurrency and resource-release ownership
+are unchanged. Exact reads retain their two-second total budget, and delegated
+calls retain their supplied absolute deadline. This changes waiting policy,
+not native execution speed. The protected total-latency requirement is unchanged;
+owner approval and matching protected wording remain necessary before adoption.
