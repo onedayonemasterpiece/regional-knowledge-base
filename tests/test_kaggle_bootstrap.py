@@ -76,7 +76,8 @@ def resident(a):
     calls = []
     encoder = boot.ResidentEncoder(lambda _: [1.]+[0.]*1023, SyntheticTokenizer(a, calls), verify(a), a.model, 1)
     calls.clear()
-    return encoder, calls
+    encoder._counter.calls.clear()
+    return encoder, encoder._counter.calls
 
 
 def test_exact_declared_inventory_bytes_and_model_coverage(artifacts):
@@ -151,7 +152,38 @@ async def test_actual_loaded_handle_complete_count_offloop_and_effective_setting
 
 
 @pytest.mark.asyncio
-async def test_cancelled_native_token_count_drains_and_serializes_resident_tokenizer(artifacts):
+async def test_exact_count_does_not_wait_for_document_forward(artifacts):
+    encoder, _ = resident(artifacts)
+    entered, finish, second = threading.Event(), threading.Event(), threading.Event()
+    def encode(text):
+        if text == 'document':
+            entered.set()
+            assert finish.wait(2)
+        else:
+            second.set()
+        return [1.] + [0.] * 1023
+    encoder = replace(encoder, encode=encode)
+    forward = asyncio.create_task(asyncio.to_thread(encoder, 'document'))
+    following = count = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        following = asyncio.create_task(asyncio.to_thread(encoder, 'next document'))
+        count = asyncio.create_task(encoder.count('512'))
+        await asyncio.wait({count}, timeout=.25)
+        assert count.done(), 'exact token count must not wait for model inference'
+        assert count.result() == 512
+        assert not second.is_set(), 'actual model forwards remain serialized'
+    finally:
+        finish.set()
+        await forward
+        if count is not None:
+            await count
+        if following is not None:
+            await following
+
+
+@pytest.mark.asyncio
+async def test_cancelled_native_token_count_drains_and_serializes_counter(artifacts):
     encoder, _ = resident(artifacts)
     entered, finish, encoded = threading.Event(), threading.Event(), threading.Event()
     def count(*args, **kwargs):
@@ -159,7 +191,7 @@ async def test_cancelled_native_token_count_drains_and_serializes_resident_token
         assert finish.wait(2)
         return [1, 2, 3]
     encoder = replace(encoder, encode=lambda _: encoded.set())
-    encoder.tokenizer.encode = count
+    encoder._counter.encode = count
     task = asyncio.create_task(encoder.count('synthetic'))
     forward = None
     try:
@@ -169,9 +201,11 @@ async def test_cancelled_native_token_count_drains_and_serializes_resident_token
         task.cancel()
         await asyncio.sleep(.01)
         assert not task.done(), 'native token count must finish before handler cleanup'
-        forward = asyncio.create_task(asyncio.to_thread(encoder, 'next document'))
+        forward = asyncio.create_task(encoder.count('next count'))
         await asyncio.sleep(.01)
-        assert not encoded.is_set(), 'same tokenizer cannot count and encode concurrently'
+        assert not forward.done(), 'same counter cannot count concurrently'
+        await asyncio.to_thread(encoder, 'next document')
+        assert encoded.is_set(), 'independent counter does not block inference'
     finally:
         finish.set()
         with pytest.raises(asyncio.CancelledError):

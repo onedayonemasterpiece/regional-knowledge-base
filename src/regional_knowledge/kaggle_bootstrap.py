@@ -243,7 +243,7 @@ def _verify_tokenizer_reference(actual, reference):
 
 @dataclass(frozen=True)
 class ResidentEncoder:
-    """Callable existing encoder plus its actual locally loaded tokenizer handle."""
+    """Resident encoder and exact counter verified against its loaded tokenizer."""
     encode: object
     tokenizer: object
     artifacts: VerifiedArtifacts
@@ -251,6 +251,8 @@ class ResidentEncoder:
     model_load_count: int
     tokenizer_fingerprint: str = field(init=False)
     _tokenizer_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
+    _counter_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
+    _counter: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if type(self.artifacts) is not VerifiedArtifacts:
@@ -267,19 +269,19 @@ class ResidentEncoder:
             reference = _load_tokenizer_reference(self.artifacts, model_directory)
             fingerprint = _verify_tokenizer_reference(self.tokenizer, reference)
             object.__setattr__(self, 'tokenizer_fingerprint', fingerprint)
+            object.__setattr__(self, '_counter', reference)
         except Exception:
             raise BootstrapUnavailable('loaded_tokenizer_settings_mismatch') from None
 
     def __call__(self, text):
-        # Fast tokenizer calls can change backend padding/truncation settings.
-        # Count and actual inference use the same resident handle serially.
+        # Actual model forwards still serialize, including tokenizer mutation.
         with self._tokenizer_lock:
             return self.encode(text)
 
     async def count(self, text):
         def exact():
-            with self._tokenizer_lock:
-                ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=False, padding=False)
+            with self._counter_lock:
+                ids = self._counter.encode(text, add_special_tokens=True, truncation=False, padding=False)
                 if not isinstance(ids, list) or any(type(token) is not int for token in ids):
                     raise BootstrapUnavailable('tokenizer_count_invalid')
                 return len(ids)
