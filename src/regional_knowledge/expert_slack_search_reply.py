@@ -96,36 +96,6 @@ class SlackChatSender:
                 or current is not None and not current()):
             raise PermissionError("Slack bot identity or evidence changed")
 
-    async def reserve_pdf_upload(self, *, size, current=None):
-        """Dev issues only a Slack external-upload URL, never handles PDF bytes."""
-        async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
-            await self._authenticate(http,current)
-            response=await http.post("https://slack.com/api/files.getUploadURLExternal",
-                headers={"Authorization":"Bearer "+self.token},
-                data={"filename":"rkb-source-unit.pdf","length":str(size)})
-        data=response.json()
-        from urllib.parse import urlsplit
-        url=data.get("upload_url")
-        if (response.status_code!=200 or data.get("ok") is not True
-                or type(url) is not str or urlsplit(url).scheme!="https"
-                or type(data.get("file_id")) is not str or not data["file_id"].startswith("F")):
-            raise RuntimeError("Slack PDF upload ticket unavailable")
-        return {"upload_url":url,"file_id":data["file_id"]}
-
-    async def complete_pdf_upload(self, *, file_id, channel, thread, title, current=None):
-        """Only Slack file ID reaches Dev; completion posts to the existing thread."""
-        async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
-            await self._authenticate(http,current)
-            response=await http.post("https://slack.com/api/files.completeUploadExternal",
-                headers={"Authorization":"Bearer "+self.token},
-                json={"files":[{"id":file_id,"title":title}],"channel_id":channel,
-                    "thread_ts":thread})
-        data=response.json()
-        if (response.status_code!=200 or data.get("ok") is not True
-                or not any(item.get("id")==file_id for item in data.get("files",[]))):
-            raise RuntimeError("Slack PDF completion unverified")
-        return {"file_id":file_id,"channel":channel,"thread_ts":thread}
-
     async def find_post(self,origin,marker):
         async with asyncio.timeout(30), httpx.AsyncClient(transport=self.transport,timeout=8) as http:
             await self._authenticate(http)
@@ -134,7 +104,7 @@ class SlackChatSender:
                 response=await http.get("https://slack.com/api/conversations.replies",headers={"Authorization":"Bearer "+self.token},params={"channel":origin["channel_id"],"ts":origin["thread_ts"],"limit":100,"cursor":cursor,"include_all_metadata":True})
                 response.raise_for_status();data=response.json()
                 if data.get("ok") is not True or type(data.get("messages")) is not list:raise PermissionError("Slack thread reconciliation unavailable")
-                found=next((m for m in data.get("messages",[]) if (m.get("client_msg_id")==marker or m.get("metadata")=={"event_type":"rkb_slack_reply","event_payload":{"event_id":marker}} or any(f.get("id")==marker for f in m.get("files",[]))) and m.get("user")==self.bot_user_id and m.get("thread_ts")==origin["thread_ts"]),None)
+                found=next((m for m in data.get("messages",[]) if (m.get("client_msg_id")==marker or m.get("metadata")=={"event_type":"rkb_slack_reply","event_payload":{"event_id":marker}}) and m.get("user")==self.bot_user_id and m.get("thread_ts")==origin["thread_ts"]),None)
                 if found:return {"channel":origin["channel_id"],"ts":found["ts"],"event_id":marker}
                 cursor=data.get("response_metadata",{}).get("next_cursor","")
                 if not cursor and not data.get("has_more"):return None
@@ -151,7 +121,6 @@ class ExpertSlackSearchReply:
             raise ValueError("one signed ingress, human read and Slack bot authority required")
         self.ingress,self.evidence,self.sender=ingress,evidence,sender
         self.control=ingress.control
-        self.evidence.backend.worker_queue.pdf_slack_sender=sender
         self._tasks={}
 
     def notify(self, request_id):
@@ -227,7 +196,7 @@ class ExpertSlackSearchReply:
                     (self.control.clock(),request_id))
             return dict(row,origin=json.dumps(origin))
 
-    def _claim_post(self, request_id, delivery_id=None):
+    def _claim_post(self, request_id):
         with self.control.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
@@ -235,7 +204,7 @@ class ExpertSlackSearchReply:
                     or not request_order.is_head(db,row)):
                 return None
             origin=self._verified(db,row)
-            marker=delivery_id or row["event_id"]
+            marker=row["event_id"]
             db.execute("UPDATE rkb_expert_requests SET state='sending',delivery_id=?,"
                        "delivery_attempt=delivery_attempt+1,updated_at=? WHERE id=?",
                        (marker,self.control.clock(),request_id))
@@ -250,49 +219,6 @@ class ExpertSlackSearchReply:
                        (state,json.dumps(receipt) if receipt else None,self.control.clock(),request_id))
             if state in ("delivered","abandoned_no_resend"):request_order.advance(db,row["dialog_id"])
             return True
-
-    async def _pdf_reply(self, request_id, origin, issued, source_id, article_id, has_units):
-        """Signed Slack request, existing durable Kaggle operation and one file share."""
-        from .kaggle_public_backend import current_binding
-        from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
-        from .kaggle_pg_snapshot_native import sha, encode
-        current=lambda:self._row(request_id,("searching","sending")) is not None
-        issued.gate=_RequestFence(issued.gate,current)
-        issued.gated=await issued.gate.refresh(issued.gated)
-        if not issued.gate.issuance_current(issued.gated.ticket):
-            raise PermissionError("accepted source access revoked")
-        if has_units:
-            queue=self.evidence.backend.worker_queue
-            binding=await asyncio.to_thread(current_binding,queue)
-            bridge=getattr(queue,'_recovery_phases',None)
-            if type(bridge) is not RecoveryPhaseDispatch or not bridge.current(binding):
-                raise RuntimeError("existing Kaggle operation unavailable")
-            operation_key=sha(encode(["source_unit_pdf",request_id,source_id,article_id]))
-            value=await bridge.request(binding,'source_unit_pdf',
-                dict(source_id=source_id,article_id=article_id),operation_key=operation_key)
-        else:
-            value={"status":"unit_not_ready","reason":"unit_not_found: select an accepted article from book_find(view=units)"}
-        issued.gated=await issued.gate.refresh(issued.gated)
-        if not issued.gate.issuance_current(issued.gated.ticket):
-            raise PermissionError("source access revoked before Slack delivery")
-        file_id=value.get("file_id") if value.get("status")=="uploaded" else None
-        if not file_id:
-            text="PDF не создан. "+str(value.get("reason","source_unit_pdf_failed"))
-        permit=await asyncio.to_thread(self._claim_post,request_id,file_id)
-        if permit is None:
-            raise PermissionError("Slack request no longer claimable")
-        try:
-            receipt=(await self.sender.complete_pdf_upload(file_id=file_id,
-                channel=origin['channel_id'],thread=origin['thread_ts'],title=article_id,
-                current=lambda:issued.gate.issuance_current(issued.gated.ticket))
-                if file_id else await self.sender.post_once(
-                    event_id=permit['event_id'],channel=permit['channel'],
-                    thread=permit['thread'],text=text,
-                    current=lambda:issued.gate.issuance_current(issued.gated.ticket)))
-        except BaseException:
-            await asyncio.to_thread(self._finish,request_id,"sending","unknown")
-            raise
-        await asyncio.to_thread(self._finish,request_id,"sending","delivered",receipt)
 
     async def _answer(self, request_id):
         row=await asyncio.to_thread(self._row,request_id,("received","searching"),begin=True)
@@ -313,16 +239,6 @@ class ExpertSlackSearchReply:
             # The Slack connector's presentation footer is not the question.
             query=re.sub(r"(?:^|\s+)\*Sent using\* <@[UW][A-Z0-9]+(?:\|[^>]+)?>\s*\Z",
                          "",query).strip()
-            pdf=re.fullmatch(r"(?i:pdf)\s+([0-9a-f-]{36})\s+([A-Za-z0-9][A-Za-z0-9._:-]{0,99})",query)
-            if pdf is not None:
-                with capture_read_output() as calls:
-                    selection=await self.evidence.backend.source_units_adapter(pdf[1],
-                        authority=authority,request_id=request_id,destination=destination)
-                if len(calls)!=1 or selection.get('status')!='ok':
-                    raise PermissionError('current accepted source evidence required')
-                await self._pdf_reply(request_id,origin,calls[0],pdf[1],pdf[2],
-                    bool(selection.get('units')))
-                return
             ctx=ReadContext(request_id,0,0,time.monotonic()+10)
             issued=None
             try:
