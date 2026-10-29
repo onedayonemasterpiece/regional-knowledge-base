@@ -65,7 +65,7 @@ def _typed(model, raw):
 def materializer_fingerprint():
     root=Path(__file__).parent
     names=('kaggle_source_materializer.py','source_batch_selection.py','source_batch_context.py','kaggle_source_batch.py','source_graph_native.py','source_stage.py',
-        'source_activation.py','stage_graph.py','source_packet_tails.py','entity_graph.py',
+        'source_activation.py','stage_graph.py','source_packet_tails.py','source_units.py','entity_graph.py',
         'source_manifest.py','bge_contract.py')
     return digest(canonical({name:digest((root/name).read_bytes()) for name in names}))
 
