@@ -1307,6 +1307,17 @@ def build_server(
         async def startup_status(startup_ref: str) -> StartupStatus:
             return await backend.startup_status(startup_ref,_principal())
 
+    if selected == 'kaggle_source':
+        @mcp.tool(name='source_unit_export',title='Export a complete source article as PDF',
+            description=('Export one complete accepted source article/chapter to a real PDF with '
+                'unchanged original text and verified bibliography. Use book_find(view=units) when available '
+                'to select its source_id and article_id. Returns a standard MCP embedded PDF '
+                'resource (application/pdf) for any MCP client, not a Slack upload. '
+                'An incomplete article returns unit_not_ready; continue book_ingest first.'),
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+        async def source_unit_export(source_id: str, article_id: str) -> CallToolResult:
+            return await backend.source_unit_export(source_id,article_id,_principal())
+
     if profile == "live":
         @mcp.tool(
             name="knowledge_search",
@@ -1490,17 +1501,6 @@ def build_server(
             _principal(),
             limit=max(1, min(int(limit), 8)),
         )
-
-    if selected == 'kaggle_source':
-        @mcp.tool(name='source_unit_export',title='Export a complete source article as PDF',
-            description=('Export one complete accepted source article/chapter to a real PDF with '
-                'unchanged original text and verified bibliography. First use book_find(view=units) '
-                'to select its source_id and article_id. Returns a standard MCP embedded PDF '
-                'resource (application/pdf) for any MCP client, not a Slack upload. '
-                'An incomplete article returns unit_not_ready; continue book_ingest first.'),
-            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-        async def source_unit_export(source_id: str, article_id: str) -> CallToolResult:
-            return await backend.source_unit_export(source_id,article_id,_principal())
 
     IngestCommand = (Literal['start', 'stage', 'validate', 'finalize', 'status']
         if selected == 'kaggle_source' else
