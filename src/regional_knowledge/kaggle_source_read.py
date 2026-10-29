@@ -18,10 +18,11 @@ from .kaggle_query import ReadUnavailable, _frontier, _identity
 class SourceReadRequest(ReadIdentity):
     type: Literal['SOURCE_READ'] = 'SOURCE_READ'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units', 'source_unit_pdf'] = 'source_catalog'
     operation_version: Literal[1] = 1
     query: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
     source_id: Identifier | None = None
+    article_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$')] | None = None
     page_start: Annotated[int, Field(strict=True, ge=0, le=2499)] | None = None
     page_end: Annotated[int, Field(strict=True, ge=0, le=2499)] | None = None
     after_ordinal: Annotated[int, Field(strict=True, ge=0)] | None = None
@@ -40,9 +41,10 @@ class SourceReadRequest(ReadIdentity):
             if any(str(UUID(x))!=x for x in (self.source_id,self.query)):
                 raise ValueError('canonical illustration UUIDs required')
             return self
-        if self.operation == 'source_units':
+        if self.operation in ('source_units','source_unit_pdf'):
             if (self.query is not None or self.source_id is None
-                    or self.page_start is not None or self.page_end is not None):
+                    or self.page_start is not None or self.page_end is not None
+                    or (self.article_id is not None)!=(self.operation=='source_unit_pdf')):
                 raise ValueError('unit read needs one exact accepted source ID')
             try:
                 if str(UUID(self.source_id)) != self.source_id:
@@ -53,9 +55,9 @@ class SourceReadRequest(ReadIdentity):
         if self.operation == 'source_catalog':
             if (self.query is None or not self.query.strip() or len(self.query.encode()) > 4096
                     or any(value is not None for value in
-                           (self.source_id, self.page_start, self.page_end, self.after_ordinal))):
+                           (self.source_id, self.page_start, self.page_end, self.after_ordinal, self.article_id))):
                 raise ValueError('bounded nonempty catalogue query required')
-        elif (self.query is not None or self.source_id is None
+        elif (self.query is not None or self.article_id is not None or self.source_id is None
                 or self.page_start is None or self.page_end is None
                 or self.page_end < self.page_start or self.page_end - self.page_start > 3):
             raise ValueError('bounded accepted source page range required')
@@ -71,7 +73,7 @@ class SourceReadRequest(ReadIdentity):
 class SourceReadResult(ReadIdentity):
     type: Literal['SOURCE_READ_RESULT'] = 'SOURCE_READ_RESULT'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units', 'source_unit_pdf'] = 'source_catalog'
     status: Literal['ok','unavailable','invalid_query','denied','cancelled']
     records: tuple[dict,...] = Field(default=(), max_length=8)
     evidence: tuple[EvidenceItem,...] = Field(default=(), max_length=8)
@@ -80,7 +82,7 @@ class SourceReadResult(ReadIdentity):
     observed_projection_seq: Nonnegative | None
     observed_visibility_epoch: Nonnegative | None = None
     observed_database_generation: Identifier | None = None
-    reason: Literal['projection_lag','deadline_exceeded','not_ready','disconnected','caller_cancelled',
+    reason: Literal['projection_lag','deadline_exceeded','not_ready','unit_not_ready','pdf_transport_limit','disconnected','caller_cancelled',
         'turn_replaced','query_too_large','invalid_input','access_denied','prior_write_pending',
         'evidence_withdrawn','internal_error'] | None = None
     prior_write_pending: bool = False
@@ -217,6 +219,8 @@ async def execute_source_read(request, *, acquire):
                             records, evidence, next_ordinal = await _accepted_chunks(request,cursor,execute)
                         elif request.operation == 'source_units':
                             records, evidence, next_ordinal = await _source_units(request,cursor,execute)
+                        elif request.operation == 'source_unit_pdf':
+                            records, evidence, next_ordinal = (), (), None
                         else:
                             await execute('''SELECT c.source_id,c.source_revision,c.eligibility_revision,c.metadata,
                                 convert_from(decode(s.manifest->>'original_receipt_b64','base64'),'UTF8')::jsonb->>'format'
@@ -252,6 +256,21 @@ async def execute_source_read(request, *, acquire):
                             observed_projection_seq=observed['projection'],
                             observed_visibility_epoch=observed['visibility'],
                             observed_database_generation=observed['database'])
+                if request.operation == 'source_unit_pdf':
+                    import base64
+                    from .source_unit_export import render_accepted_source_pdf
+                    from .source_unit_pdf import SourceUnitPdfError
+                    from .kaggle_protocol import RESULT_MAX_BYTES
+                    try:
+                        pdf = await render_accepted_source_pdf(acquire=acquire,
+                            source_id=request.source_id,article_id=request.article_id)
+                    except SourceUnitPdfError:
+                        return failed('unit_not_ready')
+                    blob = base64.b64encode(pdf).decode('ascii')
+                    if len(blob) > RESULT_MAX_BYTES - 4096:
+                        return failed('pdf_transport_limit')
+                    result = result.model_copy(update={'records':(dict(
+                        source_id=request.source_id,article_id=request.article_id,blob=blob),)})
                 if loop.time() >= deadline:
                     raise TimeoutError
                 return result
