@@ -345,7 +345,11 @@ async def test_real_channel_loss_is_typed_failure_and_compute_remains_owned(targ
     task = asyncio.create_task(s.backend.search('synthetic query', s.principal))
     while not s.admission.status()['pending_reads']:await asyncio.sleep(.001)
     dispatched = await work(s) if dispatch else None
-    s.admission.channel_lost(s.generation)
+    s.admission.channel_lost('previous-owned-run',s.generation)
+    assert s.admission.status()['pending_reads']==1
+    await asyncio.sleep(0)
+    assert not task.done(), 'same generation on a different run must not cancel this read'
+    s.admission.channel_lost(s.run,s.generation)
     with pytest.raises(ToolError, match='context_gap') as error:
         await task
     payload = json.loads(str(error.value))

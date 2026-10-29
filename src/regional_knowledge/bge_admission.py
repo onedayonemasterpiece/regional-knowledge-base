@@ -215,7 +215,8 @@ class SharedReadAdmission:
         self._event.set()
         return ticket
 
-    def channel_lost(self, generation):
+    def channel_lost(self, run_id, generation):
+        if self._attachment is None or self._attachment[:2]!=(run_id,generation):return
         for key,read in tuple(self._reads.items()):
             if key[0]==generation:self._cancel(key)
 
