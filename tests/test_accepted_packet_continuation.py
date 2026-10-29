@@ -190,6 +190,21 @@ async def test_accepted_packet_finishes_without_http_and_keeps_authority_scoped(
 
 
 @pytest.mark.asyncio
+async def test_corrected_earlier_page_preserves_saved_reading_frontier(packet,monkeypatch):
+    e=packet;e.importer._output=KaggleSourceImporter._output
+    doc=json.loads(e.parent.command.payload)
+    doc['research']['continuation']['arguments']['cursor']='65'
+    parent=replace(e.parent,command_bytes=replace(e.parent.command,payload=canonical(doc)).encode())
+    async def entry(_):return parent
+    monkeypatch.setattr(e.helper,'_entry',entry)
+    # stage saves research without mutating the row originally passed in.
+    e.row['research_json']=canonical(dict(state='pending',continuation=dict(tool='book_pages',
+        arguments=dict(ingestion_id=INGESTION,cursor='100',batch_size=1)))).decode()
+    result=await e.helper._accepted_stage_output(None,e.row,e.helper._state(e.row),e.parent.command.operation_key)
+    assert (result.state,result.next_action,result.next_cursor)==('processing','continue_pages','65')
+
+
+@pytest.mark.asyncio
 async def test_accepted_pending_stage_returns_next_read_cursor_without_status_poll(packet,monkeypatch):
     e=packet;e.importer._output=KaggleSourceImporter._output
     state=e.helper._state(e.row);key=e.parent.command.operation_key
