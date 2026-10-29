@@ -311,6 +311,63 @@ async def test_content_rejection_uses_ordinary_apply_and_preserves_rejected_rece
 
 
 @pytest.mark.asyncio
+async def test_review_rejection_survives_real_apply_validation_and_unknown_reason_is_denied(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from psycopg.pq import TransactionStatus
+    from psycopg.rows import tuple_row
+    from regional_knowledge.kaggle_apply import apply_accepted
+
+    reason = 'native_source_stage_requires_review'
+    value = await worker_fixture(MATERIALIZE_ROUTE, monkeypatch,
+        materializer_error=SourceMaterializationRejected(reason))
+    database = value.worker.database
+    handler = value.worker.registry.resolve(value.command)
+    inserts = []
+
+    class Connection:
+        closed = False
+        row_factory = staticmethod(tuple_row)
+        info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def execute(self, query, params=None):
+            row = None
+            if 'SELECT database_generation' in query:
+                row = (database.database_generation, database.writer_generation, 0)
+            elif 'FROM pg_proc' in query:
+                row = ('boolean' if params[0] == handler.check.signature else 'bytea',
+                       's', False, 'sql', False, 'f')
+            elif 'INSERT INTO rkb_v4.applied_ops' in query:
+                inserts.append(params)
+            else:
+                assert query.startswith(('SELECT set_config', 'SELECT operation_key,sequence',
+                                         'UPDATE rkb_v4.recovery_state'))
+            return SimpleNamespace(fetchone=AsyncMock(return_value=row),
+                                   fetchall=AsyncMock(return_value=[]))
+
+    @asynccontextmanager
+    async def acquire():
+        yield Connection()
+
+    value.worker.acquire = acquire
+    monkeypatch.setattr('regional_knowledge.kaggle_source_commands.apply_accepted', apply_accepted)
+    receipt, outcome = decode_receipt(await value.worker(value.frame))
+    assert receipt.status == 'rejected_precondition'
+    assert json.loads(base64.b64decode(outcome['result_b64'])) == {'reason': reason}
+    assert len(inserts) == 1 and inserts[0][8] == receipt.outcome
+    for unknown in ('native_source_unknown_review', reason + ': private text'):
+        with pytest.raises(ValueError, match='fixed internal source rejection reason'):
+            await apply_accepted(object(), journal=value.journal, seal=value.seal,
+                command=value.command, database_generation=database.database_generation,
+                writer_generation=database.writer_generation, registry=value.worker.registry,
+                reject_reason=unknown)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('route', [SEAL_ROUTE, MATERIALIZE_ROUTE])
 @pytest.mark.parametrize('error_type', [PermissionError])
 async def test_unknown_network_and_revoked_owner_are_not_content_rejections(route, error_type, monkeypatch):

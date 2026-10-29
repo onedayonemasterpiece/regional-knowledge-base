@@ -258,8 +258,13 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bad_packet_does_not_close_import_or_revoke_prior_packets(self):
         self.packet_mode();await self.stage();self.finish();await self.helper.status(self.access,self.row)
-        self.finish(status='rejected_precondition');result=await self.helper.status(self.access,self.row)
-        self.assertEqual(result.warnings,['native_source_packet_requires_review'])
+        self.finish(status='rejected_precondition')
+        reason='native_source_stage_requires_review';raw=canonical(dict(reason=reason))
+        self.pending().apply_receipt.outcome=canonical(dict(
+            result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw)))
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual(result.warnings,[reason])
+        self.assertIn('Correct and retry this packet under the same ingestion.',result.message)
         self.assertEqual(self.state()['phase'],'staging')
         changed=json.loads(canonical(self.payload));changed['pages'][0]['source_review_note']='Explicit model correction.'
         await self.stage(changed)
