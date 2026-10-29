@@ -22,6 +22,11 @@ def complete_unit(pages, *, source_id, page_count, read_complete, article_id):
         read_complete=read_complete, after_ordinal=match["ordinal"]-1, limit=1)[0]
 
 
+def _unit_pages(unit):
+    return list(dict.fromkeys([span["physical_page_index"] for span in unit["source_spans"]]
+        + [unit["end_anchor"]["physical_page_index"]]))
+
+
 def render_accepted_unit(*, unit, pages, edition):
     """Pages must be the actual accepted stage JSON including complete source_text."""
     lookup = {}
@@ -43,9 +48,7 @@ def render_accepted_unit(*, unit, pages, edition):
             "физическая " + str(page["physical_page_index"]+1))
         for page in pages
     }
-    start = unit["start_anchor"]["physical_page_index"]
-    end = unit["end_anchor"]["physical_page_index"]
-    original_pages = tuple(str(printed[index]) for index in range(start, end+1))
+    original_pages = tuple(str(printed[index]) for index in _unit_pages(unit))
     return render_source_unit_pdf(unit=unit,
         regions=[lookup[span] for span in selected],
         accepted_revision=1, edition=StartMetadataInput.model_validate(edition),
@@ -66,16 +69,15 @@ async def render_accepted_source_pdf(*, acquire, source_id, article_id):
                     raise SourceUnitPdfError("unit_not_ready: accepted source not available")
                 unit = complete_unit([row[1] for row in rows], source_id=source_id,
                     page_count=rows[0][2], read_complete=rows[0][3], article_id=article_id)
-                start = unit["start_anchor"]["physical_page_index"]
-                end = unit["end_anchor"]["physical_page_index"]
+                selected = _unit_pages(unit)
                 await cursor.execute("""SELECT page,edition FROM
-                    rkb_v4.read_source_unit_export_pages_v1(%s::uuid,%s::integer,%s::integer)""",
-                    (source_id,start,end))
+                    rkb_v4.read_source_unit_export_pages_v1(%s::uuid,%s::integer[])""",
+                    (source_id,selected))
                 material = await cursor.fetchall()
-                if len(material) != end-start+1:
+                if len(material) != len(selected):
                     raise SourceUnitPdfError("unit_not_ready: not all accepted pages are available")
                 pages = [row[0] for row in material]
-                if [p["physical_page_index"] for p in pages] != list(range(start,end+1)):
-                    raise SourceUnitPdfError("unit_not_ready: accepted pages are not contiguous")
+                if [p["physical_page_index"] for p in pages] != selected:
+                    raise SourceUnitPdfError("unit_not_ready: accepted page order differs")
                 edition = material[0][1]
     return await asyncio.to_thread(render_accepted_unit,unit=unit,pages=pages,edition=edition)

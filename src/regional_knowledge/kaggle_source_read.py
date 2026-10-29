@@ -44,7 +44,7 @@ class SourceReadRequest(ReadIdentity):
         if self.operation in ('source_units','source_unit_pdf'):
             if (self.query is not None or self.source_id is None
                     or self.page_start is not None or self.page_end is not None
-                    or self.after_ordinal is not None
+                    or self.operation=='source_unit_pdf' and self.after_ordinal is not None
                     or (self.article_id is not None)!=(self.operation=='source_unit_pdf')):
                 raise ValueError('unit read needs one exact accepted source ID')
             try:

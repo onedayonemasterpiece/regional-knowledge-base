@@ -18,7 +18,10 @@ working attachment. Spec: https://modelcontextprotocol.io/specification/2025-11-
 
 **Bytes and authorization:** Kaggle's existing PG read gets the *complete*
 `source_unit_boundaries` projection and only accepted original regions from
-SQL045 (not search chunks or the 16-span public preview), then renders the PDF.
+SQL046 (not search chunks or the 16-span public preview), then renders the PDF.
+Export selects the exact ordered unique pages from the complete unit's source
+spans and end anchor. It preserves accepted model reading order, including
+nonmonotone physical page indexes, in both author text and bibliography.
 The existing ephemeral `SOURCE_READ_RESULT` sends its base64 PDF through the
 authenticated Kaggle→Dev WSS. Dev only holds bytes transiently in the active
 read ticket and MCP HTTP JSON response; it does not write PDF bytes to a file,
