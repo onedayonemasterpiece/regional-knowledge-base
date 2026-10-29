@@ -558,8 +558,12 @@ class NativeSourceIntake:
                 "AND operation_key LIKE ? AND (? OR apply_state='APPLIED') ORDER BY sequence DESC LIMIT 1",
                 (row['source_id'],f"source-stage:{row['ingestion_id']}:{str(rejected_batch)+':' if retry else ''}%",retry)).fetchone()
         entry=await self._entry(latest[0]) if latest else None
-        pages=[p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages']] if entry else []
-        return (str(min(pages)) if retry else str(max(pages)+1)) if pages else None
+        if entry is None:return None
+        doc=json.loads(entry.command.payload)
+        pages=doc['model_payload']['pages']
+        if retry:return str(pages[0]['physical_page_index'])
+        cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
+        return cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
 
     def _output(self, row, state, *, rejected_next_cursor=None):
         phase=state['phase']
@@ -597,14 +601,13 @@ class NativeSourceIntake:
                     return tails
             doc=json.loads(entry.command.payload)
             pages=doc['model_payload']['pages']
-            next_page=max(p['physical_page_index'] for p in pages)+1
             cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
-            if isinstance(cursor,str) and cursor.isdecimal(): next_page=max(next_page,int(cursor))
+            next_page=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
             return self.importer._output(row,'processing' if pending else 'staged',
                 'Stage input accepted; continue reading without resending these pages. '
                 'Retain unfinished passages and current tail context for the next reviewed page. '
                 'The server handles packet publication; acceptance is not Dataset Saved.',
-                'continue_pages',next_cursor=str(next_page),source_archive_status='verified')
+                'continue_pages',next_cursor=next_page,source_archive_status='verified')
         return self._output(row,state)
 
     async def _tail_output(self, access, row, state):
@@ -645,7 +648,7 @@ class NativeSourceIntake:
             return self.importer._output(row,'needs_review',
                 'Resume the exact pending spans with the next reviewed page; select small complete semantic passages, without splitting sentences; do not finalize',
                 'continue_tail',source_archive_status='verified',tail_refs=refs,
-                next_cursor=str(refs[0].physical_page_index+1),warnings=['more_source_tails'] if value['has_more'] else [])
+                next_cursor=await self.applied_page_cursor(access,row),warnings=['more_source_tails'] if value['has_more'] else [])
         return None
 
     async def _recover_orphan(self, access, row, state, kind, key):
