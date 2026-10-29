@@ -1316,10 +1316,17 @@ def build_server(
                 'unchanged original text and verified bibliography. Use book_find(view=units) when available '
                 'to select its source_id and article_id. Returns a standard MCP embedded PDF '
                 'resource (application/pdf) for any MCP client, not a Slack upload. '
+                'Optional annotation_ru (1–2 Russian paragraphs) and translation_ru '
+                '(full Russian translation, when original is not Russian) must be supplied '
+                'by the calling model, never generated in Kaggle. Original author text '
+                'remains first and exact. A PDF over the 256 KiB transport limit fails '
+                'with pdf_transport_limit without truncation. '
                 'An incomplete article returns unit_not_ready; continue book_ingest first.'),
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-        async def source_unit_export(source_id: str, article_id: str) -> CallToolResult:
-            return await backend.source_unit_export(source_id,article_id,_principal())
+        async def source_unit_export(source_id: str, article_id: str,
+                annotation_ru: str | None = None, translation_ru: str | None = None) -> CallToolResult:
+            return await backend.source_unit_export(source_id,article_id,_principal(),
+                annotation_ru=annotation_ru,translation_ru=translation_ru)
 
     if profile == "live":
         @mcp.tool(
