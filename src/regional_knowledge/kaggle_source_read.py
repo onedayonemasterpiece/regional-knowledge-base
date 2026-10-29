@@ -83,7 +83,7 @@ class SourceReadResult(ReadIdentity):
     observed_projection_seq: Nonnegative | None
     observed_visibility_epoch: Nonnegative | None = None
     observed_database_generation: Identifier | None = None
-    reason: Literal['projection_lag','deadline_exceeded','not_ready','unit_not_ready','pdf_transport_limit','disconnected','caller_cancelled',
+    reason: Literal['projection_lag','deadline_exceeded','not_ready','unit_not_ready','unit_not_found','pdf_render_unsupported','pdf_transport_limit','disconnected','caller_cancelled',
         'turn_replaced','query_too_large','invalid_input','access_denied','prior_write_pending',
         'evidence_withdrawn','internal_error'] | None = None
     prior_write_pending: bool = False
@@ -265,8 +265,10 @@ async def execute_source_read(request, *, acquire):
                     try:
                         pdf = await render_accepted_source_pdf(acquire=acquire,
                             source_id=request.source_id,article_id=request.article_id)
-                    except SourceUnitPdfError:
-                        return failed('unit_not_ready')
+                    except SourceUnitPdfError as exc:
+                        reason=str(exc)
+                        return failed('unit_not_found' if reason.startswith('unit_not_found') else
+                            'unit_not_ready' if reason.startswith('unit_not_ready') else 'pdf_render_unsupported')
                     blob = base64.b64encode(pdf).decode('ascii')
                     if len(blob) > RESULT_MAX_BYTES - 4096:
                         return failed('pdf_transport_limit')
