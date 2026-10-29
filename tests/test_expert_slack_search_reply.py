@@ -262,21 +262,24 @@ async def test_connector_attribution_is_not_searched_or_removed_from_accepted_in
     monkeypatch.setattr(receiver.backend, "search_adapter", search)
     await reply._answer(request_id)
     assert searched == [expected]
-    assert len(posts) == 1 and _delivery_row(control, request_id)["state"] == "delivered"
+    assert posts == [] and _delivery_row(control, request_id)["state"] == "searching"
     with control.corpus.connect() as db:
         assert db.execute("SELECT input_text FROM rkb_expert_requests WHERE id=?",
                           (request_id,)).fetchone()[0] == original
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("eta_seconds", [300, None])
-async def test_target_warming_pending_posts_one_text_only_reply(service, monkeypatch, eta_seconds):
+@pytest.mark.parametrize("eta_seconds", [240, None])
+async def test_target_warming_original_request_delivers_sourced_answer_after_ready(
+        service, monkeypatch, eta_seconds):
+    from regional_knowledge.read_issuance import retain_read_output
+
     control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+    queries = []
 
     async def target_warming(query, **kwargs):
-        assert query == "Which event is supported by this source?"
+        queries.append(query)
         assert kwargs["authority"].person_id == service.target.auth.p.other.subject
-        # Real backend returns this before any retain_read_output call.
         return EvidenceSearchOutput(evidence=[], status="pending", reason="target_warming",
                                     mode="lexical_degraded", main_state="starting",
                                     startup=StartupStatus(startup_ref="r"*51, status="pending",
@@ -285,19 +288,42 @@ async def test_target_warming_pending_posts_one_text_only_reply(service, monkeyp
 
     monkeypatch.setattr(receiver.backend, "search_adapter", target_warming)
     await reply._answer(request_id)
-    saved = _delivery_row(control, request_id)
-    assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
-    # The backend owns the exact wording, including a later unknown-ETA correction.
-    expected = PENDING_STARTUP_MESSAGE_RU
-    if eta_seconds is not None:
-        expected += "\nОжидание: примерно 300 с."
-    assert len(posts) == 1 and posts[0]["text"] == expected
+    assert _delivery_row(control, request_id)["state"] == "searching"
+    assert _delivery_row(control, request_id)["delivery_attempt"] == 0
+    assert posts == []
+
+    class SourceGate:
+        async def refresh(self, gated):
+            return gated
+
+        def issuance_current(self, ticket):
+            return True
+
+        def release(self, ticket):
+            pass
+
+    async def ready(query, **kwargs):
+        queries.append(query)
+        evidence = {"status": "ok", "mode": "hybrid", "context_gap": False,
+                    "prior_write_pending": False, "evidence": [{
+                        "title": "Gause", "text": "Confirmed synthetic source.",
+                        "metadata": {"citation": "Gause 1994", "locator": "стр. 59"}}]}
+        assert retain_read_output(SourceGate(), SimpleNamespace(ticket=object(), result=evidence),
+                                  lambda value: value)
+        return None
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", ready)
+    reply.notify(request_id)
+    await asyncio.wait_for(reply._tasks[request_id], 6)
+    assert queries == ["Which event is supported by this source?"] * 2
+    assert len(posts) == 1 and "Confirmed synthetic source." in posts[0]["text"]
     assert posts[0]["client_msg_id"] == "Ev-1"
     assert posts[0]["thread_ts"] == "1792000000.100"
+    assert _delivery_row(control, request_id)["state"] == "delivered"
+    assert _delivery_row(control, request_id)["delivery_attempt"] == 1
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)
-    assert len(posts) == 1 and _delivery_row(control, request_id) == saved
-
+    assert len(posts) == 1
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("status", "reason"), [("ok", None), ("denied", "access_denied")])
