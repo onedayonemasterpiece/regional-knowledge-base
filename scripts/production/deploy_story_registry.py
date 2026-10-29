@@ -338,11 +338,28 @@ def verify_pid(source, sha, unit=SERVICE):
     return pid
 
 
+def compiler_checkpoint_preflight(source):
+    """A changed compiler needs the accepted prefix saved before rollout."""
+    pid = cmd("systemctl", "--user", "show", SERVICE, "--value", "-p", "MainPID")
+    current = (Path("/proc") / pid / "cwd").resolve(strict=True)
+    statement = "from regional_knowledge.kaggle_source_materializer import materializer_fingerprint; print(materializer_fingerprint())"
+    pins = [cmd("env", "PYTHONPATH=" + str(path / "src"), sys.executable, "-c", statement) for path in (current, source)]
+    if pins[0] == pins[1]: return
+    with sqlite3.connect(f"file:{STATE / 'bge/queue.sqlite'}?mode=ro", uri=True) as db:
+        db.execute("BEGIN")
+        accepted = db.execute("SELECT accepted_sequence FROM rkb_control_spool_meta WHERE id=1").fetchone()[0]
+        (base, latest), = db.execute("SELECT checkpoint_json,latest_json FROM rkb_dataset_recovery_store").fetchall()
+        saved = json.loads(latest or base)["base_sequence"]
+    if saved < accepted:
+        raise RuntimeError("compiler changed: wait for the accepted prefix checkpoint before rollout")
+
+
 def run(sha, apply, *, with_indexer=False, with_graph_worker=False):
     os.environ["XDG_RUNTIME_DIR"] = "/run/user/" + str(os.getuid())
     os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + os.environ["XDG_RUNTIME_DIR"] + "/bus"
     source = materialize(sha)
     verify_imports(source)
+    compiler_checkpoint_preflight(source)
     units = [SERVICE] + ([INDEXER_SERVICE] if with_indexer else []) + ([GRAPH_SERVICE] if with_graph_worker else [])
     if with_indexer and not (source / "src/regional_knowledge/story_ingestion.py").is_file():
         raise RuntimeError("Candidate release has no story ingestion hook")

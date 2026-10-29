@@ -149,6 +149,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         originals = {p: old for p, (old, _, _) in self.plan().items()}
         with mock.patch.object(deploy, "materialize", return_value=self.source), \
              mock.patch.object(deploy, "verify_imports"), \
+             mock.patch.object(deploy, "compiler_checkpoint_preflight"), \
              mock.patch.object(deploy, "offline_backup", return_value={"db_backup": "mock-only"}), \
              mock.patch.object(deploy, "systemctl") as systemctl, \
              mock.patch.object(deploy, "cmd", return_value=str(self.source)), \
@@ -164,6 +165,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         originals = {p: old for p, (old, _, _) in self.plan().items()}
         with mock.patch.object(deploy, "materialize", return_value=self.source), \
              mock.patch.object(deploy, "verify_imports"), \
+             mock.patch.object(deploy, "compiler_checkpoint_preflight"), \
              mock.patch.object(deploy, "offline_backup", return_value={"db_backup": "mock-only"}), \
              mock.patch.object(deploy, "systemctl") as systemctl, \
              mock.patch.object(deploy, "cmd", return_value="/unhandled/late/pin"), \
@@ -191,6 +193,58 @@ class ReleaseConfigurationTests(unittest.TestCase):
              mock.patch.object(deploy, "cmd", side_effect=["123", str(self.source)]):
             with self.assertRaisesRegex(RuntimeError, "working directory"):
                 deploy.verify_pid(self.source, self.sha)
+
+
+class CompilerCheckpointTests(unittest.TestCase):
+    def test_changed_compiler_requires_saved_accepted_frontier_before_installation(self):
+        import json
+        import os
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / "bge").mkdir()
+            with sqlite3.connect(state / "bge/queue.sqlite") as db:
+                db.execute("CREATE TABLE rkb_control_spool_meta(id INTEGER, accepted_sequence INTEGER)")
+                db.execute("INSERT INTO rkb_control_spool_meta VALUES(1,1040)")
+                db.execute("CREATE TABLE rkb_dataset_recovery_store(checkpoint_json TEXT, latest_json TEXT)")
+                db.execute("INSERT INTO rkb_dataset_recovery_store VALUES(?,?)",
+                           (json.dumps({"base_sequence": 948}), json.dumps({"base_sequence": 1019})))
+            source = state / "candidate"
+            # No jobs/intake rows are needed: accepted-but-unsaved commands
+            # remain a replay obligation after their native APPLIED receipt.
+            with mock.patch.object(deploy, "STATE", state):
+                for running, candidate, saved, refused in (
+                    ("old", "new", 1019, True),
+                    ("same", "same", 1019, False),
+                    ("old", "new", 1040, False),
+                ):
+                    with self.subTest(running=running, candidate=candidate, saved=saved):
+                        with sqlite3.connect(state / "bge/queue.sqlite") as db:
+                            db.execute("UPDATE rkb_dataset_recovery_store SET latest_json=?",
+                                       (json.dumps({"base_sequence": saved}),))
+                        with mock.patch.object(deploy, "cmd", side_effect=[str(os.getpid()), running, candidate]) as commands:
+                            if refused:
+                                with self.assertRaisesRegex(RuntimeError, "checkpoint"):
+                                    deploy.compiler_checkpoint_preflight(source)
+                            else:
+                                deploy.compiler_checkpoint_preflight(source)
+                            self.assertIn("PYTHONPATH=" + str(Path.cwd() / "src"), commands.call_args_list[1].args)
+                            self.assertIn("PYTHONPATH=" + str(source / "src"), commands.call_args_list[2].args)
+                            self.assertIn("materializer_fingerprint", commands.call_args_list[2].args[-1])
+
+    def test_installation_runs_compiler_guard_before_configuration_or_service_effects(self):
+        with mock.patch.object(deploy, "materialize", return_value=Path("/candidate")), \
+             mock.patch.object(deploy, "verify_imports"), \
+             mock.patch.object(deploy, "compiler_checkpoint_preflight", side_effect=RuntimeError("checkpoint required")), \
+             mock.patch.object(deploy, "configuration_plan") as configuration, \
+             mock.patch.object(deploy, "offline_backup") as backup, \
+             mock.patch.object(deploy, "systemctl") as service:
+            with self.assertRaisesRegex(RuntimeError, "checkpoint"):
+                deploy.run("c" * 40, True)
+            configuration.assert_not_called()
+            backup.assert_not_called()
+            service.assert_not_called()
 
 
 if __name__ == "__main__":
