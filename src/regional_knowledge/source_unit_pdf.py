@@ -114,87 +114,115 @@ def _blocks(unit, regions, accepted_revision):
     return blocks
 
 
-def _bibliography(unit, edition, original_pages):
+def _bibliography(unit, edition, original_pages, annotation_ru):
     if type(edition) is not StartMetadataInput or not edition.title:
         raise SourceUnitPdfError('verified_edition_required')
     if not original_pages or any(type(p) is not str or not p.strip() for p in original_pages):
         raise SourceUnitPdfError('verified_original_page_labels_required')
-    values = ['; '.join(edition.authors), edition.title, unit['title']]
-    if edition.publication_year is not None: values.append(str(edition.publication_year))
+    values = [(unit['title'], 'cover-title')]
+    if edition.authors: values.append(('; '.join(edition.authors), 'metadata'))
+    values.append((edition.title, 'metadata'))
+    if edition.publication_year is not None: values.append((str(edition.publication_year), 'metadata'))
     catalog = edition.catalog
     if catalog is not None:
-        for name in ('subtitle','publisher','date','edition','volume','issue'):
+        for name in ('subtitle', 'publisher', 'date', 'edition', 'volume', 'issue'):
             value = getattr(catalog, name)
-            if value: values.append(value)
+            if value: values.append((value, 'metadata'))
         for item in catalog.identifiers:
-            # Preserve the existing catalog's exact identifier label/value
-            # objects; no guessed identifier schema or invented values.
-            for label,value in item.items():
+            for label, value in item.items():
                 if not label.strip() or not value.strip():
                     raise SourceUnitPdfError('unsupported_bibliographic_identifier')
-                values.append(label + ': ' + value)
-    values += ['Исходные страницы: ' + ', '.join(original_pages), SERVICE_CAPTION]
-    return [value for value in values if value]
+                values.append((label + ': ' + value, 'metadata'))
+    values.append(('Исходные страницы: ' + ', '.join(original_pages), 'metadata'))
+    if annotation_ru and annotation_ru.strip():
+        values.append(('Краткое изложение, подготовлено сервисом', 'label'))
+        values.extend((part.strip(), 'annotation') for part in
+            re.split(r'\n\s*\n', annotation_ru.strip()) if part.strip())
+    values.append((SERVICE_CAPTION, 'metadata'))
+    return values
 
 
-def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, original_pages):
-    """Return complete PDF bytes or an explicit failure, never a partial file.
+def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, original_pages,
+                           annotation_ru=None, translation_ru=None):
+    """Render accepted author text first, followed only by optional caller text.
 
-    ``unit`` is the full internal completed source_units projection, ``regions``
-    are existing Region objects with original source_text. A source span is one
-    explicit supplied author block; internal newlines are retained. Callers must
-    not infer paragraph/list/note structure or pass the 16-span public preview.
-    Bibliography uses existing StartMetadataInput/CatalogMetadata fields already
-    verified by the caller. Revision is a required binding, not an auth proof.
-    Unsupported significant region kinds fail until their structure is wired.
+    Annotation and translation are caller-authored strings. This Kaggle helper
+    has no LLM, does not infer missing text, and does not truncate content.
     """
     import pymupdf
     started = time.monotonic()
     blocks = _blocks(unit, regions, accepted_revision)
-    bibliography = _bibliography(unit, edition, original_pages)
-    if sum(map(len, bibliography)) + sum(len(t) for _, t in blocks) > MAX_CHARACTERS:
+    bibliography = _bibliography(unit, edition, original_pages, annotation_ru)
+    translations = []
+    if translation_ru and translation_ru.strip():
+        translations = [('translation-title', 'Автоматический перевод; авторитетен оригинал выше')]
+        translations.extend(('translation', part.strip()) for part in
+            re.split(r'\n\s*\n', translation_ru.strip()) if part.strip())
+    if (sum(len(t) for t, _ in bibliography) + sum(len(t) for _, t in blocks)
+            + sum(len(t) for _, t in translations) > MAX_CHARACTERS):
         raise SourceUnitPdfError('render_limit_exceeded')
     paper = pymupdf.paper_rect('a4')
     bottom = paper.height - _MARGIN
-    full_lines = int((bottom - _MARGIN) / _LINE_HEIGHT)
+    running = ' · '.join(filter(None, (unit['title'], '; '.join(edition.authors), edition.title)))
 
     def check():
         if time.monotonic() - started > MAX_SECONDS:
             raise SourceUnitPdfError('render_deadline_exceeded')
 
-    def story(text, kind='body'):
-        # Text is never interpreted as author HTML, resource URLs, or CSS.
-        escaped = html.escape(text).replace('\r\n','\n').replace('\r','\n').replace('\n','<br>')
-        # MuPDF ignores CSS ligature controls. Separate literal ASCII f nodes
-        # preserve fi/ff/ffi in ToUnicode without normalizing original ligatures.
-        escaped = escaped.replace('f','<span>f</span>')
-        indent = '14pt' if kind == 'body' else '0'
-        weight = 'bold' if kind == 'heading' else 'normal'
-        css = (f'body {{font-family:serif;font-size:{_FONT_SIZE}pt;'
-            f'line-height:1.3;margin:0}} p {{margin:0;text-indent:{indent};font-weight:{weight}}}')
+    def story(text, kind='body', highlight=None):
+        # The original and caller-authored strings are inert literal text.
+        if highlight and text.startswith(highlight) and (
+                len(text) == len(highlight) or not text[len(highlight)].isalnum()):
+            escaped = '<strong>' + html.escape(highlight) + '</strong>' + html.escape(text[len(highlight):])
+        else:
+            escaped = html.escape(text)
+        escaped = escaped.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '<br>')
+        # Explicit span boundaries avoid MuPDF substituting fi/ff/ffi ligatures
+        # in selectable text; preserve original literal Unicode ligatures.
+        escaped = escaped.replace('f', '<span>f</span>')
+        size = {'cover-title': 20, 'source-title': 17, 'heading': 13,
+                'translation-title': 14, 'label': 10, 'running': 8, 'folio': 9}.get(kind, _FONT_SIZE)
+        leading = size * 1.3
+        indent = '14pt' if kind in ('body', 'translation', 'annotation') else '0'
+        weight = 'bold' if kind in ('cover-title', 'source-title', 'heading',
+                                    'translation-title', 'label') else 'normal'
+        align = 'center' if kind == 'folio' else 'left'
+        css = (f'body {{font-family:serif;font-size:{size}pt;line-height:1.3;margin:0}}'
+               f'p {{margin:0;text-indent:{indent};font-weight:{weight};text-align:{align}}}')
         check()
-        value = pymupdf.Story(html='<p>'+escaped+'</p>',user_css=css)
-        more, filled = value.place(pymupdf.Rect(_MARGIN,_MARGIN,paper.width-_MARGIN,100000))
+        value = pymupdf.Story(html='<p>' + escaped + '</p>', user_css=css)
+        more, filled = value.place(pymupdf.Rect(_MARGIN, _MARGIN, paper.width - _MARGIN, 100000))
         if more: raise SourceUnitPdfError('render_limit_exceeded')
-        lines = max(1, round(pymupdf.Rect(filled).height / _LINE_HEIGHT))
+        lines = max(1, round(pymupdf.Rect(filled).height / leading))
         value.reset()
-        return value, lines
+        return value, lines, leading
 
-    # Premeasure actual shaped text at the final width. CSS pagination hints
-    # are deliberately not trusted: MuPDF currently ignores several of them.
-    prepared = [(kind,text,*story(text,kind)) for kind,text in blocks]
-    if prepared[-1][0] == 'heading':
+    if blocks[-1][0] == 'heading':
         raise SourceUnitPdfError('orphan_heading_without_body')
+    prepared = [('source-title', unit['title'], *story(unit['title'], 'source-title'))]
+    first_body = True
+    for kind, text in blocks:
+        lead = unit['title'].split(',', 1)[0].split()[0] if unit.get('kind') == 'article' else None
+        highlight = lead if first_body and kind == 'body' else None
+        prepared.append((kind, text, *story(text, kind, highlight)))
+        if kind == 'body': first_body = False
+    prepared.extend((kind, text, *story(text, kind)) for kind, text in translations)
+
     stream = io.BytesIO()
     writer = pymupdf.DocumentWriter(stream)
     pages = 0
     device = None
     y = _MARGIN
 
+    def stamp(text, kind, top, end):
+        value, _, _ = story(text, kind)
+        more, filled = value.place(pymupdf.Rect(_MARGIN, top, paper.width - _MARGIN, end))
+        if more or pymupdf.Rect(filled).y1 > end:
+            raise SourceUnitPdfError('running_furniture_overflow')
+        value.draw(device)
+
     def end_page():
-        footer,_ = story(f'Страница PDF {pages}','metadata')
-        footer.place(pymupdf.Rect(_MARGIN,paper.height-35,paper.width-_MARGIN,paper.height-15))
-        footer.draw(device)
+        stamp(str(pages), 'folio', paper.height - 35, paper.height - 15)
         writer.end_page()
 
     def new_page():
@@ -205,41 +233,41 @@ def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, origina
         device = writer.begin_page(paper)
         pages += 1
         y = _MARGIN
+        stamp(running, 'running', 15, 49)
 
     try:
         new_page()
-        # The first page is the bibliographic service passport, separate from
-        # the immutable author sequence which starts on the following page.
-        for text in bibliography:
+        for text, kind in bibliography:
             check()
-            value, lines = story(text,'metadata')
-            if y + lines * _LINE_HEIGHT > bottom:
+            value, lines, leading = story(text, kind)
+            if y + lines * leading > bottom:
                 raise SourceUnitPdfError('bibliography_page_overflow')
-            more, filled = value.place(pymupdf.Rect(_MARGIN,y,paper.width-_MARGIN,bottom))
+            more, filled = value.place(pymupdf.Rect(_MARGIN, y, paper.width - _MARGIN, bottom))
             if more: raise SourceUnitPdfError('bibliography_page_overflow')
             value.draw(device)
-            y = pymupdf.Rect(filled).y1 + _LINE_HEIGHT
+            y = pymupdf.Rect(filled).y1 + leading * (0.7 if kind == 'cover-title' else 0.4)
         new_page()
-        for index, (kind,text,value,remaining) in enumerate(prepared):
+        headings = ('heading', 'source-title', 'translation-title')
+        for index, (kind, text, value, remaining, leading) in enumerate(prepared):
             check()
-            if kind == 'heading':
-                needed = remaining + 0.4
-                for next_kind,_,_,next_lines in islice(prepared,index+1,None):
-                    needed += next_lines + 0.4 if next_kind == 'heading' else next_lines if next_lines <= 4 else 2
-                    if next_kind != 'heading': break
-                if needed > full_lines: raise SourceUnitPdfError('heading_group_too_large')
-                if y + needed * _LINE_HEIGHT > bottom: new_page()
+            if kind in headings:
+                needed = remaining * leading + _LINE_HEIGHT * 0.4
+                for next_kind, _, _, next_lines, next_leading in islice(prepared, index + 1, None):
+                    needed += (next_lines if next_lines <= 4 or next_kind in headings else 2) * next_leading + _LINE_HEIGHT * 0.4
+                    if next_kind not in headings: break
+                if needed > bottom - _MARGIN: raise SourceUnitPdfError('heading_group_too_large')
+                if y + needed > bottom: new_page()
             while remaining:
                 check()
-                available = int((bottom-y+0.001) / _LINE_HEIGHT)
-                if available < min(2,remaining) or remaining <= 4 and remaining > available:
+                available = int((bottom - y + 0.001) / leading)
+                if available < min(2, remaining) or remaining <= 4 and remaining > available:
                     new_page(); continue
-                take = min(remaining,available)
-                if remaining-take == 1: take -= 1
+                take = min(remaining, available)
+                if remaining - take == 1: take -= 1
                 if take < 1: new_page(); continue
-                more, filled = value.place(pymupdf.Rect(_MARGIN,y,paper.width-_MARGIN,
-                    y + take * _LINE_HEIGHT + 0.01))
-                consumed = round(pymupdf.Rect(filled).height / _LINE_HEIGHT)
+                more, filled = value.place(pymupdf.Rect(_MARGIN, y, paper.width - _MARGIN,
+                    y + take * leading + 0.01))
+                consumed = round(pymupdf.Rect(filled).height / leading)
                 if consumed != take or bool(more) != (remaining > take):
                     raise SourceUnitPdfError('layout_measurement_mismatch')
                 value.draw(device)
@@ -253,21 +281,25 @@ def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, origina
     check()
     raw = stream.getvalue()
     if len(raw) > MAX_BYTES: raise SourceUnitPdfError('render_byte_limit_exceeded')
-    with pymupdf.open(stream=raw,filetype='pdf') as document:
-        # Actual selectable text and embedded Unicode maps, not a successful
-        # library return, are the fidelity boundary. Layout whitespace differs.
-        expected = ''.join(bibliography) + ''.join(text for _,text in blocks)
+    with pymupdf.open(stream=raw, filetype='pdf') as document:
+        expected = ''.join(text for text, _ in bibliography) + ''.join(text for _, text, *_ in prepared)
         extracted_parts = []
-        for number,page in enumerate(document,start=1):
+        for number, page in enumerate(document, start=1):
             check()
-            if any(word[0] < _MARGIN-1 or word[2] > paper.width-_MARGIN+1
-                    or word[1] < 40 or word[3] > paper.height-15
+            if any(word[0] < _MARGIN - 1 or word[2] > paper.width - _MARGIN + 1
+                    or word[1] < 10 or word[3] > paper.height - 15
                     for word in page.get_text('words')):
                 raise SourceUnitPdfError('layout_bounds_exceeded')
-            text = page.get_text(sort=False)
-            footer = f'Страница PDF {number}\n'
-            if not text.endswith(footer): raise SourceUnitPdfError('render_page_number_failed')
-            extracted_parts.append(text[:-len(footer)])
+            header, content, footer = [], [], []
+            for block in page.get_text('blocks', sort=False):
+                if block[6] != 0: continue
+                if block[3] < _MARGIN - 7: header.append(block[4])
+                elif block[1] > paper.height - 43: footer.append(block[4])
+                else: content.append(block[4])
+            flatten = lambda text: re.sub(r'[ \t\r\n]+', '', text)
+            if flatten(''.join(header)) != flatten(running) or flatten(''.join(footer)) != str(number):
+                raise SourceUnitPdfError('render_page_number_failed')
+            extracted_parts.extend(content)
         extracted = ''.join(extracted_parts)
         flatten = lambda text: re.sub(r'[ \t\r\n]+', '', text)
         if '\ufffd' in extracted or flatten(extracted) != flatten(expected):
@@ -276,10 +308,10 @@ def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, origina
         if not fonts or any('/ToUnicode' not in document.xref_object(xref)
                 or not document.extract_font(xref)[3] for xref in fonts):
             raise SourceUnitPdfError('embedded_unicode_font_required')
-        document.set_metadata(dict(title=unit['title'],author='; '.join(edition.authors),
-            subject=edition.title,creator='Regional Knowledge Base',
+        document.set_metadata(dict(title=unit['title'], author='; '.join(edition.authors),
+            subject=edition.title, creator='Regional Knowledge Base',
             keywords=f"source:{unit['source_id']} unit:{unit['article_id']} accepted_revision:{accepted_revision}"))
-        raw = document.tobytes(garbage=3,deflate=True,no_new_id=True)
+        raw = document.tobytes(garbage=3, deflate=True, no_new_id=True)
     check()
     if len(raw) > MAX_BYTES: raise SourceUnitPdfError('render_byte_limit_exceeded')
     return raw
