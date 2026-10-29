@@ -536,7 +536,7 @@ class KaggleSourceBackend:
                     backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'),
                 **extra),separators=(',',':')))
         try:
-            async with asyncio.timeout_at(None if illustration else deadline) as timeout:
+            async with asyncio.timeout_at(None if illustration else min(deadline,attempt.started+2)) as timeout:
                 try:
                     filters = QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
                         kinds=kinds)
@@ -584,6 +584,7 @@ class KaggleSourceBackend:
                     return EvidenceSearchOutput(evidence=[],**common) if evidence else SearchOutput(results=[],**common)
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
+                if not exact:timeout.reschedule(deadline)
                 try:
                     identity = dict(request_id=attempt.request_id,
                         connection_generation=binding.connection_generation,

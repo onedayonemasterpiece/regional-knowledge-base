@@ -233,7 +233,8 @@ Draft admission-budget proposal (not deployed): normal search may wait up to
 eight seconds for the existing single shared read slot, then receives at most
 two seconds of worker execution from actual dispatch. The existing cancellation
 timer is rearmed at dispatch; worker concurrency and resource-release ownership
-are unchanged. Exact reads retain their two-second total budget, and delegated
+are unchanged. Authentication and cold-start estimates retain their two-second
+budget before READY admission. Exact reads retain their two-second total budget, and delegated
 calls retain their supplied absolute deadline. This changes waiting policy,
 not native execution speed. The protected total-latency requirement is unchanged;
 owner approval and matching protected wording remain necessary before adoption.
