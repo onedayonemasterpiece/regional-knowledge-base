@@ -96,6 +96,36 @@ class SlackChatSender:
                 or current is not None and not current()):
             raise PermissionError("Slack bot identity or evidence changed")
 
+    async def reserve_pdf_upload(self, *, size, current=None):
+        """Dev issues only a Slack external-upload URL, never handles PDF bytes."""
+        async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
+            await self._authenticate(http,current)
+            response=await http.post("https://slack.com/api/files.getUploadURLExternal",
+                headers={"Authorization":"Bearer "+self.token},
+                data={"filename":"rkb-source-unit.pdf","length":str(size)})
+        data=response.json()
+        from urllib.parse import urlsplit
+        url=data.get("upload_url")
+        if (response.status_code!=200 or data.get("ok") is not True
+                or type(url) is not str or urlsplit(url).scheme!="https"
+                or type(data.get("file_id")) is not str or not data["file_id"].startswith("F")):
+            raise RuntimeError("Slack PDF upload ticket unavailable")
+        return {"upload_url":url,"file_id":data["file_id"]}
+
+    async def complete_pdf_upload(self, *, file_id, channel, thread, title, current=None):
+        """Only Slack file ID reaches Dev; completion posts to the existing thread."""
+        async with httpx.AsyncClient(transport=self.transport,timeout=8) as http:
+            await self._authenticate(http,current)
+            response=await http.post("https://slack.com/api/files.completeUploadExternal",
+                headers={"Authorization":"Bearer "+self.token},
+                json={"files":[{"id":file_id,"title":title}],"channel_id":channel,
+                    "thread_ts":thread})
+        data=response.json()
+        if (response.status_code!=200 or data.get("ok") is not True
+                or not any(item.get("id")==file_id for item in data.get("files",[]))):
+            raise RuntimeError("Slack PDF completion unverified")
+        return {"file_id":file_id,"channel":channel,"thread_ts":thread}
+
     async def find_post(self,origin,marker):
         async with asyncio.timeout(30), httpx.AsyncClient(transport=self.transport,timeout=8) as http:
             await self._authenticate(http)
