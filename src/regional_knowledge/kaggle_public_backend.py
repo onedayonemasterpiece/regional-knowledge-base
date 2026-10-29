@@ -17,7 +17,7 @@ from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import CallToolResult, ImageContent, TextContent
+from mcp.types import CallToolResult, ImageContent, TextContent, EmbeddedResource, BlobResourceContents
 
 from .contracts import EvidenceSearchOutput, FetchOutput, ReadTrace, SearchOutput, SearchResult, BookFindOutput, StartupStatus
 from .kaggle_protocol import Query, QueryFilters, TrustedActorContext, PassageContinuation, PassageReadRequest, StoryReadRequest
@@ -36,6 +36,17 @@ from .read_telemetry import ReadTelemetry
 
 class TargetUnavailable(RuntimeError):
     pass
+
+
+def source_unit_pdf_result(record):
+    """One standard MCP embedded binary resource; no file state on Dev."""
+    return CallToolResult(content=[
+        TextContent(type='text',text='PDF исходной статьи: '+record['article_id']),
+        EmbeddedResource(type='resource',resource=BlobResourceContents(
+            uri='rkb://source/'+record['source_id']+'/article/'+record['article_id']+'.pdf',
+            mimeType='application/pdf',blob=record['blob'])),
+    ])
+
 
 
 _PASSAGE_ID = 'rkb:passage:v1:'
@@ -609,6 +620,10 @@ class KaggleSourceBackend:
                 permit = None
                 status, reason = gated.result.status, gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
+                    if catalog_request is not None and catalog_request.get('operation')=='source_unit_pdf':
+                        raise failure(status,reason,next_action=(
+                            'continue_book_ingest' if reason=='unit_not_ready' else
+                            'try_another_complete_unit' if reason=='pdf_transport_limit' else 'retry_later'))
                     raise failure(status,reason)
                 if graph_request is not None:
                     render = lambda value: self._render_graph(value,attempt=attempt)
@@ -622,6 +637,8 @@ class KaggleSourceBackend:
                             status='ok',source_id=catalog_request['source_id'],
                             units=list(value.records),
                             next_after_ordinal=value.next_after_ordinal)
+                    elif operation == 'source_unit_pdf':
+                        render = lambda value: source_unit_pdf_result(value.records[0])
                     else:
                         render = lambda value: BookFindOutput(
                             query=catalog_request['query'],results=list(value.records))
@@ -834,12 +851,10 @@ class KaggleSourceBackend:
             operation='source_units',source_id=source_id,after_ordinal=after_ordinal,
             limit=limit))
 
-    async def source_units_adapter(self,source_id,*,authority,request_id,destination):
-        """Slack's verified actor uses the same existing source read/issuance."""
-        return await self._search(None,None,evidence=True,
-            catalog_request=dict(operation='source_units',source_id=source_id,limit=1),
-            trusted=dict(authority=authority,request_id=request_id,turn_generation=0,
-                min_data_seq=0,deadline=time.monotonic()+2,destination=destination))
+    async def source_unit_export(self,source_id,article_id,principal):
+        """Client-neutral, authorized native PDF read; return actual MCP bytes."""
+        return await self._search(None,principal,evidence=True,catalog_request=dict(
+            operation='source_unit_pdf',source_id=source_id,article_id=article_id,limit=1))
 
     async def search_adapter(self,query,*,authority,request_id,turn_generation,min_data_seq,
                              deadline_monotonic,destination,source_ids=None,limit=3):
