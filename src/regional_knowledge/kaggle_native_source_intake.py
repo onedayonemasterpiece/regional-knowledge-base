@@ -755,6 +755,15 @@ class NativeSourceIntake:
             model_payload=payload,research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']),'research')),
                 **research.model_dump(mode='json')))
         validate_stage_payload(canonical(doc),source_id=row['source_id'])
+        # Check 512-token limit before acceptance (same semantics Kaggle applies after).
+        chunks = doc['model_payload']['chunks']
+        token_counts = await self.importer._counts([chunk.text for chunk in chunks])
+        for chunk, tokens in zip(chunks, token_counts, strict=True):
+            if not 1 <= tokens <= 512:
+                raise failure(
+                    f'complete_source_input_exceeds_512_tokens:chunk_key={chunk["chunk_key"]}',
+                    status='invalid_query',
+                )
         if (self._request_hash(doc)==state['last_request_sha256']
                 and state.get('rejected_batch_index') is None):
             return self._output(row,await self._packet_progress(access,row,state))
