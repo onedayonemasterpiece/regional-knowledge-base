@@ -42,6 +42,7 @@ class StagedPage(BaseModel):
     source_review_note: str | None = Field(default=None, min_length=1, max_length=500)
     page_id: UUID
     physical_page_index: int = Field(ge=0)
+    previous_physical_page_index: int | None = Field(default=None, ge=0, le=2499)
     printed_page_number: str | None = Field(default=None, max_length=80)
     width: int = Field(default=1000, gt=0, le=20_000)
     height: int = Field(default=1000, gt=0, le=20_000)
@@ -222,6 +223,7 @@ def compile_model_stage(
             StagedPage(
                 page_id=expected_page_id,
                 physical_page_index=page.physical_page_index,
+                previous_physical_page_index=page.previous_physical_page_index,
                 printed_page_number=page.printed_page_number,
                 layout_kind=page.layout_kind,
                 source_material=page.source_material,
@@ -560,10 +562,11 @@ def merge_stage(graph: StagedGraph, payload: IngestStagePayload) -> StagedGraph:
     for item in payload.poi_media_links:
         poi_media_links[str(item.link_id)] = item
 
+    from .source_units import ordered_model_pages
     return StagedGraph(
         revision=graph.revision,
         entity_candidates=graph.entity_candidates,
-        pages=sorted(pages.values(), key=lambda item: item.physical_page_index),
+        pages=ordered_model_pages(pages.values())[0],
         relations=list(relations.values()),
         illustrations=list(illustrations.values()),
         chunks=list(chunks.values()),
