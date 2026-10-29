@@ -43,8 +43,9 @@ def render(values):
 
 
 def author_text(doc):
-    return ''.join(p.get_text().removesuffix(f'Страница PDF {i}\n')
-        for i,p in enumerate(doc,start=1) if i > 1)
+    content = ''.join(block[4] for page in list(doc)[1:] for block in page.get_text('blocks')
+        if block[6] == 0 and 49 <= block[1] < page.rect.height - 43)
+    return content.removeprefix('Точная глава\n')
 
 
 def test_real_pdf_ru_de_source_pasport_embedded_fonts_and_exact_author_sequence():
@@ -55,14 +56,17 @@ def test_real_pdf_ru_de_source_pasport_embedded_fonts_and_exact_author_sequence(
         first=doc[0].get_text()
         assert flatten(SERVICE_CAPTION) in flatten(first)
         assert all(value in first for value in ['Автор / Verfasser','1901','verified-isbn','verified-doi','XVII','18–20'])
-        assert 'Страница PDF 1' in first
+        assert 'Страница PDF' not in first
+        assert first.endswith('1\n')
+        assert 'Точная глава' in first
+        assert 'Точная глава' in doc[1].get_text()
         assert flatten(author_text(doc))==flatten(''.join(r.source_text for r in values['regions']))
         assert '\ufffd' not in author_text(doc)
         for page in doc:
             assert page.rect==pymupdf.paper_rect('a4')
             for word in page.get_text('words'):
                 assert 55 <= word[0] < word[2] <= page.rect.width-55
-                assert 40 <= word[1] < word[3] <= page.rect.height-15
+                assert 10 <= word[1] < word[3] <= page.rect.height-15
             for font in page.get_fonts(full=True):
                 assert doc.extract_font(font[0])[3]
                 assert '/ToUnicode' in doc.xref_object(font[0])
@@ -104,10 +108,10 @@ def test_long_paragraph_flows_with_two_line_minimum_and_first_line_indent():
                 for line in block['lines'] if line['bbox'][1]<780]
             assert len(lines)>=2
         words=body_pages[0].get_text('words')
-        assert words[0][0]>=69
-        # Next visual line is flush left, not another inferred paragraph.
-        first_y=words[0][1]
-        next_line=next(w for w in words if w[1]>first_y+2)
+        first=next(w for w in words if w[4]=='W0000')
+        assert first[0]>=69
+        # Next visual author-text line is flush left, not another paragraph.
+        next_line=next(w for w in words if w[1]>first[1]+2 and w[4].startswith('W'))
         assert 55<=next_line[0]<=57
 
 
