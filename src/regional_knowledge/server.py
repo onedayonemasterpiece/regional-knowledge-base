@@ -651,7 +651,7 @@ def build_server(
         ) if selected!='kaggle_source' else (
             "Mandatory import checklist:\n"
             "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
-            "2. Never resend an accepted page; continue from next_cursor.\n"
+            "2. Never resend an accepted page; next_cursor is a hint, choose the next printed page with book_pages(cursor).\n"
             "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
             "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
             "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
