@@ -232,6 +232,34 @@ def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops():
     assert calls==[('run',generation)]
 
 
+def test_pending_checkpoint_keeps_runtime_and_retries_only_on_authenticated_heartbeat():
+    from concurrent.futures import ThreadPoolExecutor
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from regional_knowledge.bge_channel import channel_route
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    calls=[];entered=threading.Event();verified=threading.Event()
+    async def pre_stop(run_id,generation):
+        calls.append((run_id,generation));entered.set()
+        if not verified.is_set():raise CheckpointPending('dataset_seed_publication_pending')
+    queue=PlannedQueue()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with TestClient(Starlette(routes=[channel_route(queue,before_stop=pre_stop)])) as app:
+            with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer secret'}) as socket:
+                generation=attach(socket)['connection_generation']
+                assert ready(socket,generation)['status']=='ready'
+                queue.current=False
+                assert entered.wait(1)
+                received=pool.submit(socket.receive_json)
+                with pytest.raises(TimeoutError):received.result(timeout=.65)
+                assert calls==[('run',generation)]  # More than two dispatch reconciliation cycles.
+                verified.set()
+                send(socket,generation,'HEARTBEAT')
+                assert received.result(timeout=1)['type']=='HEARTBEAT_ACK'
+                assert socket.receive_json()==expected_stop(generation)
+    assert calls==[('run',generation)]*2
+
+
 def test_final_checkpoint_can_finish_its_dispatch_before_stop():
     from concurrent.futures import ThreadPoolExecutor
     from starlette.applications import Starlette

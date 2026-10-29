@@ -30,6 +30,7 @@ from .kaggle_geo_contracts import GeoReadRequest, GeoReadResult
 from .kaggle_editorial_contracts import EditorialReadRequest, EditorialReadResult
 from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult
 from .kaggle_acceptance_contracts import AcceptanceReadResult
+from .kaggle_dataset_checkpoint import CheckpointPending
 
 
 def _failure_site(error):
@@ -252,7 +253,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         return False
                 # Only an authenticated, idle run reaches this point. Await
                 # the existing target checkpoint owner before sending STOP;
-                # success AND explicit failure are terminal for this wait.
+                # Pending publication is not permission to discard this run.
                 # The target callback enforces the original nine-hour limit.
                 if before_stop is not None:
                     if stop_checkpoint is None:
@@ -269,6 +270,8 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             'run_id':run_id,'connection_generation':generation,'outcome':'settled'}))
                     except asyncio.CancelledError:
                         raise
+                    except CheckpointPending:
+                        return False  # Retry only on the next authenticated heartbeat.
                     except Exception as error:
                         logger.warning(json.dumps({'event':'bge_stop_checkpoint',
                             'run_id':run_id,'outcome':'error','error_type':type(error).__name__}))
@@ -404,6 +407,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
 
             async def receiver(service=False):
                 nonlocal ready, promoted, probe_nonce, runtime_readiness, runtime_blocked, telegram_inflight, telegram_challenge
+                nonlocal stop_checkpoint
                 while True:
                     message = await (service_frames.get() if service else socket.receive())
                     received_at=time.monotonic_ns()
@@ -545,6 +549,13 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         await queue_call(queue.heartbeat, run_id, token,
                                          diagnostics=frame.get('diagnostics'),
                                          connection_generation=generation)
+                        if (stop_checkpoint is not None and stop_checkpoint.done()
+                                and not stop_checkpoint.cancelled()
+                                and isinstance(stop_checkpoint.exception(),CheckpointPending)):
+                            logger.info(json.dumps({'event':'bge_stop_checkpoint',
+                                'run_id':run_id,'connection_generation':generation,'outcome':'pending'}))
+                            tasks.remove(stop_checkpoint)
+                            stop_checkpoint = None
                         if not await maybe_stop():
                             await send('HEARTBEAT_ACK', provider_version=(str(observed['provider_version'])
                                        if observed['provider_version'] is not None else None))
