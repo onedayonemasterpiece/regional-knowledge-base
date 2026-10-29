@@ -36,7 +36,7 @@ class SourceReadRequest(ReadIdentity):
     def bounded_query(self):
         if self.operation=='source_illustration':
             if (self.query is None or self.source_id is None
-                    or any(x is not None for x in (self.page_start,self.page_end,self.after_ordinal))):
+                    or any(x is not None for x in (self.page_start,self.page_end,self.after_ordinal,self.article_id))):
                 raise ValueError('exact accepted illustration selector required')
             if any(str(UUID(x))!=x for x in (self.source_id,self.query)):
                 raise ValueError('canonical illustration UUIDs required')
@@ -44,6 +44,7 @@ class SourceReadRequest(ReadIdentity):
         if self.operation in ('source_units','source_unit_pdf'):
             if (self.query is not None or self.source_id is None
                     or self.page_start is not None or self.page_end is not None
+                    or self.after_ordinal is not None
                     or (self.article_id is not None)!=(self.operation=='source_unit_pdf')):
                 raise ValueError('unit read needs one exact accepted source ID')
             try:
