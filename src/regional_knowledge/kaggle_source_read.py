@@ -23,6 +23,8 @@ class SourceReadRequest(ReadIdentity):
     query: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
     source_id: Identifier | None = None
     article_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$')] | None = None
+    annotation_ru: str | None = None
+    translation_ru: str | None = None
     page_start: Annotated[int, Field(strict=True, ge=0, le=2499)] | None = None
     page_end: Annotated[int, Field(strict=True, ge=0, le=2499)] | None = None
     after_ordinal: Annotated[int, Field(strict=True, ge=0)] | None = None
@@ -34,6 +36,9 @@ class SourceReadRequest(ReadIdentity):
 
     @model_validator(mode='after')
     def bounded_query(self):
+        if self.operation != 'source_unit_pdf' and (
+                self.annotation_ru is not None or self.translation_ru is not None):
+            raise ValueError('PDF additions require source_unit_pdf')
         if self.operation=='source_illustration':
             if (self.query is None or self.source_id is None
                     or any(x is not None for x in (self.page_start,self.page_end,self.after_ordinal,self.article_id))):
@@ -264,7 +269,8 @@ async def execute_source_read(request, *, acquire):
                     from .kaggle_protocol import RESULT_MAX_BYTES
                     try:
                         pdf = await render_accepted_source_pdf(acquire=acquire,
-                            source_id=request.source_id,article_id=request.article_id)
+                            source_id=request.source_id,article_id=request.article_id,
+                            annotation_ru=request.annotation_ru,translation_ru=request.translation_ru)
                     except SourceUnitPdfError as exc:
                         reason=str(exc)
                         return failed('unit_not_found' if reason.startswith('unit_not_found') else

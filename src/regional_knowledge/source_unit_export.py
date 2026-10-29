@@ -27,7 +27,7 @@ def _unit_pages(unit):
         + [unit["end_anchor"]["physical_page_index"]]))
 
 
-def render_accepted_unit(*, unit, pages, edition):
+def render_accepted_unit(*, unit, pages, edition, annotation_ru=None, translation_ru=None):
     """Pages must be the actual accepted stage JSON including complete source_text."""
     lookup = {}
     for page in pages:
@@ -52,10 +52,12 @@ def render_accepted_unit(*, unit, pages, edition):
     return render_source_unit_pdf(unit=unit,
         regions=[lookup[span] for span in selected],
         accepted_revision=1, edition=StartMetadataInput.model_validate(edition),
-        original_pages=original_pages)
+        original_pages=original_pages,annotation_ru=annotation_ru,
+        translation_ru=translation_ru)
 
 
-async def render_accepted_source_pdf(*, acquire, source_id, article_id):
+async def render_accepted_source_pdf(*, acquire, source_id, article_id,
+                                     annotation_ru=None, translation_ru=None):
     """One read-only PG snapshot; PDF bytes are created only on Kaggle."""
     async with acquire() as connection:
         async with connection.transaction():
@@ -81,4 +83,5 @@ async def render_accepted_source_pdf(*, acquire, source_id, article_id):
                     raise SourceUnitPdfError("unit_not_ready: accepted page order differs")
                 edition = material[0][1]
     # Keep the read's resource until actual rendering exits, even after cancel.
-    return await _blocking(lambda: render_accepted_unit(unit=unit,pages=pages,edition=edition))
+    return await _blocking(lambda: render_accepted_unit(unit=unit,pages=pages,edition=edition,
+        annotation_ru=annotation_ru,translation_ru=translation_ru))
