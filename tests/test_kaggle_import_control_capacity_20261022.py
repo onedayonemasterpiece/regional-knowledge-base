@@ -34,6 +34,10 @@ def _terminal_fixture(s, ingestion_id, *, extra=None, failed=False):
     """
     row = s.importer._row(s.principal.subject, ingestion_id)
     changes = dict(phase='failed' if failed else 'finalized')
+    if not failed:
+        changes['research_json'] = canonical({'state':'complete','continuation':{}}).decode()
+    s.importer.native_intake._state(row, create=True)
+    s.importer.native_intake._update(row, phase=changes['phase'])
     if extra is not None:
         changes['semantic_json'] = json.dumps({'fixture_retained':extra})
     done = s.importer._save(row, **changes)
@@ -42,6 +46,7 @@ def _terminal_fixture(s, ingestion_id, *, extra=None, failed=False):
     assert done['file_id'] == row['file_id']
     assert done['request_id'] == row['request_id']
     assert done['rights_json'] == row['rights_json']
+    assert s.importer.native_intake._state(done)['phase'] == done['phase']
     return done
 
 
@@ -83,9 +88,13 @@ async def test_sequential_100_owner_intakes_after_32_completed_rows_preserve_his
     with pytest.raises(ToolError, match='owned_ingestion_required'):
         s.importer._row('00000000-0000-0000-0000-000000000077', history[0])
 
+    # The synthetic settled state must be valid on ordinary full status too.
+    current_status = await s.importer.book_ingest(command='status', principal=s.principal, ingestion_id=history[0])
+    assert current_status.state == 'finalized' and current_status.next_action == 'done'
     # Idempotent same file identity wins even after 100 historical rows.
     duplicate = await start(s, file_id='prior-original-000')
     assert duplicate.ingestion_id == history[0]
+    assert duplicate.model_dump() == current_status.model_dump()
     with s.t.queue.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0] == 100
 

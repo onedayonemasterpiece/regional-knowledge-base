@@ -1114,3 +1114,45 @@ async def test_missing_region_diagnostic_crosses_native_receipt_to_status(native
         await finish(s,book)
         completed=await call(s,book,'status')
     assert completed.next_cursor=='124' and state(s,book)['rejected_reason'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_tail',[False,True])
+async def test_reused_start_returns_full_nonmonotonic_research_status(native_intake,monkeypatch,with_tail):
+    s=native_intake;book=await start(s)
+    for physical,next_cursor in ((64,'126'),(126,'125')):
+        config=options(research=True,ingestion_id=book.ingestion_id,state='pending')
+        config=config.model_copy(update={'research':config.research.model_copy(update={'continuation':
+            dict(tool='book_pages',arguments=dict(ingestion_id=book.ingestion_id,cursor=next_cursor,batch_size=1))})})
+        await call(s,book,'stage',payload=batch(s,book,first=physical,count=1),source_import=config)
+        for _ in range(3):
+            await finish(s,book)
+            await call(s,book,'status')
+    if with_tail:
+        page_id=str(uuid5(UUID(book.document_id),'page:1:126'))
+        async def tails(binding,source_id,ingestion_id):
+            assert (source_id,ingestion_id)==(book.document_id,book.ingestion_id)
+            return dict(tail_refs=[dict(page_id=page_id,physical_page_index=126,
+                region_id=str(uuid5(UUID(page_id),'region:body')),region_key='body',
+                source_text_sha256='e'*64,start=0,end=10)],has_more=False)
+        monkeypatch.setattr(s.startup.history,'source_tail_refs',tails)
+    full=await call(s,book,'status')
+    before=operation_count(s)
+    with s.t.queue.connect(write=False) as db:
+        jobs=[tuple(r) for r in db.execute('SELECT id,state FROM jobs ORDER BY id')]
+        rows=db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0]
+    begins=list(s.originals.calls)
+    receipts={key:value.wire() for key,value in s.originals.receipts.items()}
+    async with asyncio.timeout(2): # A shared status path must not reacquire importer._lock.
+        reused=await start(s)
+    assert reused.next_cursor==full.next_cursor=='125'
+    assert reused.model_dump()==full.model_dump()
+    assert reused.next_action==('continue_tail' if with_tail else 'continue_pages')
+    assert bool(reused.tail_refs)==with_tail
+    if not with_tail:assert reused.warnings.count('model_authored_research_pending')==1
+    assert s.originals.calls==begins+[begins[-1]] # Existing idempotent begin/spec validation.
+    assert {key:value.wire() for key,value in s.originals.receipts.items()}==receipts
+    assert operation_count(s)==before
+    with s.t.queue.connect(write=False) as db:
+        assert [tuple(r) for r in db.execute('SELECT id,state FROM jobs ORDER BY id')]==jobs
+        assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0]==rows==1
