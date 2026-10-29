@@ -333,6 +333,9 @@ def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, origina
     raw = stream.getvalue()
     if len(raw) > MAX_BYTES: raise SourceUnitPdfError('render_byte_limit_exceeded')
     with pymupdf.open(stream=raw, filetype='pdf') as document:
+        # Preserve Unicode/ToUnicode while embedding only glyphs actually used.
+        # This is critical under the existing 256 KiB PDF+JPEG transport envelope.
+        document.subset_fonts()
         expected = ''.join(text for text, _ in bibliography) + ''.join(text for _, text, *_ in prepared)
         extracted_parts = []
         for number, page in enumerate(document, start=1):
