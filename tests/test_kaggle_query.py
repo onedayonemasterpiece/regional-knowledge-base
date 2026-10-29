@@ -85,26 +85,27 @@ async def test_exact_pinned_input_count_rejects_513_without_truncation_or_sql():
 
 
 @pytest.mark.asyncio
-async def test_total_deadline_covers_tokenizer_and_pool_acquisition():
+async def test_timing_goal_does_not_mask_token_or_pool_failure():
     async def slow_count(_):
         await asyncio.sleep(.05)
-        return 12
+        return 513
 
     result = await execute_query(query(deadline_ms=10), acquire=forbidden_acquire,
                                  tokenizer=tokenizer(slow_count), encode=encode)
-    assert result.reason == "deadline_exceeded"
+    assert result.reason == "token_limit_exceeded"
 
     @asynccontextmanager
     async def slow_acquire():
         await asyncio.sleep(.05)
-        raise AssertionError("deadline failed to bound acquire")
+        from regional_knowledge.kaggle_query import ReadUnavailable
+        raise ReadUnavailable("not_ready")
         yield
 
     telemetry = asyncio.Queue(maxsize=1)
     telemetry.put_nowait({"occupied": 1})
     result = await execute_query(query(deadline_ms=10), acquire=slow_acquire, tokenizer=tokenizer(),
                                  encode=encode, telemetry=telemetry)
-    assert result.reason == "deadline_exceeded" and telemetry.qsize() == 1
+    assert result.reason == "not_ready" and telemetry.qsize() == 1
 
 
 @pytest.mark.asyncio
@@ -477,9 +478,12 @@ async def test_timeout_cancel_cleanup_and_actual_forward_permit_retention(env, c
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        result = await task
-        assert result.reason == "deadline_exceeded" and result.observed_data_seq == 5
-    assert semaphore.locked() and env["connection"].info.transaction_status == TransactionStatus.IDLE
+        await asyncio.sleep(.15)
+        assert not task.done() and semaphore.locked()
+        finish.set()
+        assert (await task).status == "ok"
+    assert env["connection"].info.transaction_status == TransactionStatus.IDLE
+    if cancel:assert semaphore.locked()
     finish.set()
     await asyncio.wait_for(semaphore.acquire(), 1)
     semaphore.release()

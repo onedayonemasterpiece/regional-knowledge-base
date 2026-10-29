@@ -27,6 +27,8 @@ _OPAQUE_REF = re.compile(r"(?i)(?:urn:rkb:|rkb:passage:|[0-9a-f]{8}-[0-9a-f]{4}-
 
 def _error_reply(reason):
     code=reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,80}",reason) else None
+    if code=='native_query_stalled':
+        return "Поиск временно недоступен. Повторите запрос. Код: unavailable/native_query_stalled"
     return "Не удалось проверить базу сейчас. Код: unavailable"+("/"+code if code is not None else "")
 
 

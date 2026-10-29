@@ -681,6 +681,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
                 if generation is not None:
+                    if shared is not None:shared.channel_lost(run_id,generation)
                     try:
                         await queue_call(queue.detach_channel, run_id, token, generation)
                     except PermissionError:

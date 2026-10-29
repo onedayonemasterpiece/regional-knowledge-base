@@ -162,7 +162,7 @@ class SharedReadAdmission:
     def _cancel(self, key):
         read=self._reads.pop(key,None)
         if read is not None:
-            read.timer.cancel()
+            read.timer.cancel() if read.timer is not None else None
             if not read.ticket.result.done():read.ticket.result.cancel()
             self._event.set()
         # _work deliberately retains only the compute descriptor after this.
@@ -179,7 +179,7 @@ class SharedReadAdmission:
     async def begin_read(self, authority, query, *, dialog_ref, deadline, on_dispatch=None):
         self._active();_identity(dialog_ref)
         now=self.clock()
-        if (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
+        if deadline is not None and (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
                 or not math.isfinite(deadline) or not now<deadline<=now+2):
             raise ValueError('absolute remaining deadline must be at most two seconds')
         if not isinstance(query,(Query,SqlHealthRequest,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest,EditorialReadRequest,SourceGraphReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
@@ -187,7 +187,7 @@ class SharedReadAdmission:
         if on_dispatch is not None and not callable(on_dispatch):
             raise TypeError('internal dispatch observer must be callable')
         encode_envelope(query)
-        deadline=min(deadline,now+query.deadline_ms/1000)
+        deadline=math.inf if deadline is None else min(deadline,now+query.deadline_ms/1000)
         # Parsing a TrustedActorContext never authenticates it. Bind every
         # projection back to the identical resolver-owned context instead.
         actor=query.actor
@@ -208,12 +208,17 @@ class SharedReadAdmission:
         if len(self._reads)>=self.max_reads:raise AdmissionLimit('read_capacity')
         future=asyncio.get_running_loop().create_future()
         ticket=ReadTicket(query.request_id,query.connection_generation,query.turn_generation,future)
-        timer=asyncio.get_running_loop().call_later(max(0,deadline-self.clock()),self._cancel,key)
+        timer=None if math.isinf(deadline) else asyncio.get_running_loop().call_later(max(0,deadline-self.clock()),self._cancel,key)
         self._reads[key]=_Read(ticket,authority,query,dialog_ref,float(deadline),timer,
                               on_dispatch=on_dispatch)
         future.add_done_callback(lambda _:self._cancel_ticket(ticket))
         self._event.set()
         return ticket
+
+    def channel_lost(self, run_id, generation):
+        if self._attachment is None or self._attachment[:2]!=(run_id,generation):return
+        for key,read in tuple(self._reads.items()):
+            if key[0]==generation:self._cancel(key)
 
     def _require_acceptance(self,authority,query):
         if type(query) is not AcceptanceReadRequest:return
@@ -428,7 +433,7 @@ class SharedReadAdmission:
             maintenance=getattr(self.queue,'_recovery_phases',None)
             now=self.clock()
             for key,read in tuple(self._reads.items()):
-                if read.deadline<=now or read.ticket.result.done():self._cancel(key)
+                if read.deadline<=now or read.ticket.result.done() or (not ready and math.isinf(read.deadline)):self._cancel(key)
             waiting_result=False
             if self._document_result is not None:
                 waiting_result=await asyncio.to_thread(self.queue._document_claim_waiting,*self._document_result)
@@ -481,7 +486,7 @@ class SharedReadAdmission:
                 person_reads=[r for r in reads if r.authority.person_id==person]
                 person_docs=[d for d in eligible if d['actor']==person]
                 selected_doc=person_docs[0] if person_docs and not person_reads else None
-                read=min(person_reads,key=lambda r:(self._dialog_turn.get((person,r.dialog),0),r.deadline,r.ticket.request_id)) if selected_doc is None and person_reads else None
+                read=min(person_reads,key=lambda r:self._dialog_turn.get((person,r.dialog),0)) if selected_doc is None and person_reads else None
             if read is not None:
                 try:
                     await self.authority.require(read.authority,'case_read' if type(read.query) is CaseReadRequest else 'public_search')
@@ -489,7 +494,7 @@ class SharedReadAdmission:
                 except PermissionError:
                     self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 if read.deadline<=self.clock() or (read.ticket.connection_generation,read.ticket.request_id) not in self._reads:return None
-                remaining=min(read.query.deadline_ms,int((read.deadline-self.clock())*1000))
+                remaining=read.query.deadline_ms if math.isinf(read.deadline) else min(read.query.deadline_ms,int((read.deadline-self.clock())*1000))
                 if remaining<1:self._cancel((read.ticket.connection_generation,read.ticket.request_id));return None
                 resource=ResourceClaim(run_id,run['runtime_incarnation'],secrets.token_urlsafe(24),connection_generation,'read',read.ticket.request_id)
                 updates={'deadline_ms':remaining}
@@ -598,7 +603,7 @@ class SharedReadAdmission:
         if result.status in {'ok','degraded'} and (result.observed_data_seq<read.query.min_data_seq
                 or result.observed_projection_seq<read.query.min_data_seq):
             raise ValueError('read result violates minimum sequence')
-        self._reads.pop(key);read.timer.cancel();read.ticket.result.set_result(result)
+        self._reads.pop(key);read.timer.cancel() if read.timer is not None else None;read.ticket.result.set_result(result)
         return True
 
     async def confirm_terminal(self, expected, capabilities, observed, *, max_age_seconds):

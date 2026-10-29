@@ -167,7 +167,7 @@ async def test_token_limit_and_loaded_tokenizer_failure_fail_before_sql():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('caller_cancel', [False, True])
-async def test_cancel_or_timeout_cleans_lease_but_does_not_cancel_worker_owned_forward(caller_cancel):
+async def test_cancel_or_long_read_preserves_worker_owned_forward(caller_cancel):
     lease = Lease()
     entered, finish = asyncio.Event(), asyncio.Event()
     permit = asyncio.Lock()
@@ -190,10 +190,12 @@ async def test_cancel_or_timeout_cleans_lease_but_does_not_cancel_worker_owned_f
             with pytest.raises(asyncio.CancelledError):
                 await task
         else:
-            result = await task
-            assert result['reason'] == 'deadline_exceeded' and result['evidence'] == []
+            await asyncio.sleep(.05)
+            assert not task.done() and permit.locked()
+            finish.set()
+            assert (await task)['status'] == 'ok'
         assert lease.connection.cleaned and lease.exited == 1
-        assert permit.locked() and not native.done()
+        if caller_cancel:assert permit.locked() and not native.done()
     finally:
         finish.set()
         if native is not None:

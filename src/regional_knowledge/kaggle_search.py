@@ -15,6 +15,8 @@ from psycopg.rows import tuple_row
 from .bge_contract import validate_vector
 from .kaggle_protocol import QueryFilters
 
+STATEMENT_TIMEOUT_MESSAGE = "canceling statement due to statement timeout"
+
 # Strong references only until encoder completion; no dispatch/retry/job semantics.
 _PENDING_ENCODERS: set[asyncio.Task] = set()
 
@@ -112,7 +114,7 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
     if (type(top_k) is not int or type(candidate_budget) is not int
             or not 1 <= top_k <= 10 or not top_k <= candidate_budget <= 200):
         raise ValueError("require integer 1 <= top_k <= 10 and top_k <= budget <= 200")
-    if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+    if timeout_seconds is not None and (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
             or not 0 < timeout_seconds <= 2):
         raise ValueError("deadline must be within 2 seconds")
     source_ids = None
@@ -135,11 +137,11 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
             or connection.row_factory is not tuple_row):
         raise ValueError("connection must be open, idle and use tuple_row")
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
+    deadline = math.inf if timeout_seconds is None else loop.time() + timeout_seconds
     encoding = None
     deadline_query_cancel = None
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
             async with connection.transaction():
                 async with connection.cursor() as cursor:
                     async def execute(statement, params=()):
@@ -147,10 +149,10 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         remaining = deadline - loop.time()
                         if remaining <= 0:
                             raise TimeoutError("search deadline exhausted")
-                        # Refresh before every SQL operation. The outer absolute
-                        # deadline also bounds this setting query and fetches.
+                        # Exact/acceptance reads retain their remaining budget.
+                        # Normal search bounds only an executing SQL statement.
                         await cursor.execute("SELECT set_config('statement_timeout', %s, true)",
-                                             (str(max(1, int(remaining * 1000))),))
+                                             (str(60000 if math.isinf(remaining) else max(1, int(remaining * 1000))),))
                         try:
                             await cursor.execute(statement, params)
                         except QueryCanceled as exc:
@@ -158,12 +160,13 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                             # asyncio's absolute deadline. Capture the receipt
                             # time before rollback, which may itself take time.
                             if (loop.time() + .001 >= deadline
-                                    and exc.diag.message_primary ==
-                                    "canceling statement due to statement timeout"):
+                                    and exc.diag.message_primary == STATEMENT_TIMEOUT_MESSAGE):
                                 deadline_query_cancel = exc
                             raise
 
-                    # This is the first SQL after BEGIN; read-only must precede SELECT.
+                    if timeout_seconds is None:
+                        await cursor.execute("SET LOCAL statement_timeout='60000ms'")
+                    # Isolation/read-only must precede SELECT.
                     await cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                     if snapshot_guard is not None:
                         await snapshot_guard(cursor, execute)

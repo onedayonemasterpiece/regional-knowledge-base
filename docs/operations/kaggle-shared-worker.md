@@ -228,3 +228,15 @@ including rollback and reuse after an actual held-lock timeout. Locale facts
 come from `pg_database.datcollate/datctype`, rather than unavailable locale GUCs.
 The timeout assertion requires the deadline/cancellation reason and an actual
 wait, so an unrelated early SQL error cannot satisfy it.
+
+Normal search latency targets are measurements, not rejection deadlines. A live
+normal Query waits in the existing single-slot fair admission queue and executes
+without an elapsed-time rejection, including native forward and SQL. Cancellation,
+withdrawal, binding changes and actual channel loss still terminate the consumer;
+actual compute cleanup retains its existing ownership. Exact reads, acceptance
+checks, SQL health and explicitly delegated caller deadlines retain their separate
+contracts. Output tickets retain their existing finite lifetime after completion.
+No additional worker, queue, retry, parallel forward or transport is introduced.
+Owner intent: https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1793281299333039;
+protected requirements change: `op_303a11fa1e9fc253df59ef33`. Source and synthetic
+validation do not establish deployment or live latency acceptance.

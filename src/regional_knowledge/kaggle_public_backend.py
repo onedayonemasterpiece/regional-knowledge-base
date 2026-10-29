@@ -499,17 +499,18 @@ class KaggleSourceBackend:
 
     async def _search(self, query, principal, *, evidence, source_ids=None, limit=3, exact_locator=None,
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
-        # One budget includes auth, admission, network, native execution and gate.
+        # Search latency is measured, not a reason to reject a live read.
         illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
+        exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         deadline = (min(time.monotonic()+2,trusted['deadline'])
             if trusted is not None else time.monotonic()+2)
         telemetry = self.read_telemetry
-        exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation)
         authority = trusted['authority'] if trusted is not None else None
         destination=trusted['destination'] if trusted is not None else self.destination
         ticket = permit = gated = None
+        admission_deadline=deadline
         retained = False
         status, reason = 'unavailable', 'not_ready'
         branches = ()
@@ -535,7 +536,7 @@ class KaggleSourceBackend:
                     backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'),
                 **extra),separators=(',',':')))
         try:
-            async with asyncio.timeout_at(None if illustration else deadline):
+            async with asyncio.timeout_at(None if illustration else min(deadline,attempt.started+2)) as timeout:
                 try:
                     filters = QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
                         kinds=kinds)
@@ -583,6 +584,7 @@ class KaggleSourceBackend:
                     return EvidenceSearchOutput(evidence=[],**common) if evidence else SearchOutput(results=[],**common)
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
+                if not exact and trusted is None:deadline=math.inf;timeout.reschedule(None)
                 try:
                     identity = dict(request_id=attempt.request_id,
                         connection_generation=binding.connection_generation,
@@ -590,7 +592,7 @@ class KaggleSourceBackend:
                         min_data_seq=max(binding.min_data_seq,trusted['min_data_seq']) if trusted else binding.min_data_seq,
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                        deadline_ms=min(2000,max(1,int((deadline-time.monotonic())*1000))))
+                        deadline_ms=2000 if math.isinf(deadline) else min(2000,max(1,int((deadline-time.monotonic())*1000))))
                     request = (SourceGraphReadRequest(**graph_request,**identity) if graph_request is not None else
                         SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
@@ -610,8 +612,9 @@ class KaggleSourceBackend:
                         runtime=ReadRuntime(resource.run_id, resource.runtime_incarnation),
                         connection_generation=resource.dispatch_generation,
                         turn_generation=request.turn_generation)
+                admission_deadline=None if math.isinf(deadline) else min(deadline,time.monotonic()+2)
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
-                    dialog_ref=destination.key, deadline=min(deadline,time.monotonic()+2), on_dispatch=dispatched)
+                    dialog_ref=destination.key, deadline=admission_deadline, on_dispatch=dispatched)
                 result = await asyncio.shield(ticket.result)
                 received_at=time.monotonic()
                 if dispatched_at is not None:

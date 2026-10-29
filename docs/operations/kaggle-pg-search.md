@@ -189,3 +189,29 @@ Python executor. Existing search tests passed separately with fixture opt-ins
 skipped. No model/provider call, corpus import or deployment was performed.
 This slice adds filtering only: public QUERY wiring, canonical person resolution,
 shared fair admission and the delayed-output authority gate remain separate work.
+
+## Normal Query statement guard — 2026-10-29
+
+[Product approval](https://mira-projects.slack.com/archives/C0C8RT9JB2P/p1793287432139079)
+at15:23:52 UTC permits `statement_timeout=60000` for each executing normal-search
+SQL statement. It does not limit queue wait, tokenization, model execution or
+total request time, and does not change exact/acceptance/health deadlines.
+The existing transaction sets the guard before isolation/read-only setup;
+the existing per-statement settings retain it before each frontier, lexical,
+dense, hydration and dependency query. This adds one setup SQL roundtrip to
+normal Query, not a timer, retry or parallel execution path.
+
+Only a real PostgreSQL statement-timeout cancellation produces
+`unavailable/native_query_stalled`. Its fixed log contains request ID and SQLSTATE,
+never SQL, query text or arbitrary exception text. Transaction rollback and the
+pool lease finish before the existing WSS resource-release path makes the slot
+available. The existing Slack error renderer asks the person to retry; the
+system does not automatically repeat the query. Several individual statements
+can cumulatively take longer than60s. A stalled model or connection acquisition
+is outside this SQL-only guard.
+
+The distinguishing disposable-PG test scales only its selected SQL statement
+to20ms and executes `pg_sleep(1)` to obtain an actual57014 cancellation without
+waiting60s. It verifies rollback-to-IDLE, resource release and a successful next
+query on the same WSS session and model load. Synthetic verification is not a
+live SQL-stall diagnosis or deployment acceptance.

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import UUID
@@ -15,8 +17,11 @@ from .kaggle_protocol import (
     EvidenceItem, EvidenceMetadata, ItemDependencies, PassageContinuation, Query,
     QueryResult, SourceDependency, PassageReadRequest, PassageReadResult, encode_envelope,
 )
-from .kaggle_search import SearchEvidence, fused_search, vector_literal
+from .kaggle_search import SearchEvidence, fused_search, vector_literal, STATEMENT_TIMEOUT_MESSAGE
 from .kaggle_acceptance_contracts import AcceptanceReadRequest, AcceptanceReadResult, BranchRanks
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class DenseUnavailable(RuntimeError):
@@ -134,12 +139,12 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
         type(query).model_validate(query.model_dump())
     loop = asyncio.get_running_loop()
     started = loop.time()
-    deadline = started + min(query.deadline_ms, 2000) / 1000
+    deadline = math.inf if type(query) is Query else started + min(query.deadline_ms, 2000) / 1000
     observed = {}
     stages = {}
     mark = started
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
             _scope(query)  # Unsupported kinds/source IDs do not acquire SQL or inference.
             try:
                 count = await tokenizer.count(query.query)
@@ -203,7 +208,7 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
                         from .kaggle_search import acceptance_search
                     searched = await (acceptance_search if acceptance else fused_search)(connection, query.query, encode=checked_encode,
                         **({} if acceptance else {'top_k':query.evidence_limit}), filters=query.filters,
-                        timeout_seconds=max(.000001, deadline - loop.time()),
+                        timeout_seconds=None if type(query) is Query else max(.000001, deadline - loop.time()),
                         snapshot_guard=guard, snapshot_finish=finish, stage_timings=stages)
                     stages["search_ms"] = (loop.time() - mark) * 1000
                     budget = 24000
@@ -247,6 +252,12 @@ async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, en
         return _unavailable(query, "not_ready", observed)
     except psycopg.errors.UndefinedTable:
         return _unavailable(query, "not_ready", observed)
+    except psycopg.errors.QueryCanceled as exc:
+        if type(query) is Query and exc.diag.message_primary == STATEMENT_TIMEOUT_MESSAGE:
+            _LOG.warning("native_query_sql_cancel request_id=%s sqlstate=%s reason=native_query_stalled",
+                         query.request_id, exc.sqlstate)
+            return _unavailable(query, "native_query_stalled", observed)
+        return _unavailable(query, "internal_error", observed)
     except psycopg.Error:
         return _unavailable(query, "internal_error", observed)
     finally:
@@ -354,7 +365,7 @@ async def read_continuation(query: Query | PassageReadRequest, locator: PassageC
     except TimeoutError:
         return unavailable("deadline_exceeded")
     except psycopg.errors.QueryCanceled as exc:
-        if loop.time() + .001 >= deadline and exc.diag.message_primary == "canceling statement due to statement timeout":
+        if loop.time() + .001 >= deadline and exc.diag.message_primary == STATEMENT_TIMEOUT_MESSAGE:
             return unavailable("deadline_exceeded")
         return unavailable("internal_error")
     except psycopg.Error:

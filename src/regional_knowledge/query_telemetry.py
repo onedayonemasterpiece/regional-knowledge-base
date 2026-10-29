@@ -24,7 +24,7 @@ _REASONS = frozenset({'dense_unavailable', 'projection_lag', 'deadline_exceeded'
     'invalid_filters', 'invalid_input', 'token_limit_exceeded', 'access_denied', 'prior_write_pending',
     'context_gap', 'evidence_withdrawn', 'internal_error', 'bounded_retrieval', 'capacity_wait',
     'read_capacity', 'person_read_capacity', 'dialog_read_capacity', 'output_gate_denied',
-    'hybrid_search_required', 'target_warming'})
+    'hybrid_search_required', 'target_warming', 'native_query_stalled'})
 _RUNTIME = ContextVar('rkb_read_runtime_diagnostics', default=None)
 _NATIVE = ContextVar('rkb_native_read_diagnostics', default=None)
 

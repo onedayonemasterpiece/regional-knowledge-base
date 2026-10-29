@@ -165,7 +165,9 @@ async def test_capacity_deadline_release_and_explicit_invalidation(env,auth):
     permit=await gate.dispatch(authority,query(),b)
     with pytest.raises(SourceGateDenied):await gate.dispatch(authority,query(),b)
     now[0]=11
-    with pytest.raises(SourceGateDenied):await gate.finish(permit,result())
+    gated=await gate.finish(permit,result())
+    now[0]+=gate.ttl_seconds+1
+    with pytest.raises(SourceGateDenied):await gate.refresh(gated)
     permit=await gate.dispatch(authority,query(),b)
     gated=await gate.finish(permit,result())
     gate.invalidate()
