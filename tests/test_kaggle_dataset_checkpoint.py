@@ -344,9 +344,14 @@ async def test_continuous_writes_request_checkpoint_at_30_minutes_without_faked_
 
 @pytest.mark.asyncio
 async def test_cooperative_stop_forces_checkpoint_without_waiting_for_quiet(tmp_path,monkeypatch):
+    import asyncio
     p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
     key=await put_control(p)
-    assert await p.owner.before_stop(p.binding)
+    async with p.owner._refresh_lock:
+        stopped=asyncio.create_task(p.owner.before_stop(p.binding))
+        await asyncio.sleep(0)
+        assert not stopped.done(), 'busy checkpoint lock is not proof that the prefix is protected'
+    assert await stopped
     assert p.owner.saved_seq==7
     assert p.store.remote_durable(key,b'pending')
     assert p.calls==['capture','finalize','verify']

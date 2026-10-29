@@ -255,7 +255,8 @@ class SourceDatasetCheckpoints:
             await task
         if not self.startup.checkpoint_binding_current(binding):
             raise CheckpointPending('dataset_checkpoint_writer_changed')
-        return await self.refresh(binding,planned_stop=True)
+        async with self._refresh_lock:
+            return await self._refresh(binding,planned_stop=True)
 
     async def aclose(self):
         task=self._task
