@@ -504,13 +504,12 @@ class NativeSnapshotFactory:
             env=self.native_env,**self._identity())
         candidate=_CandidatePg(process,self.database,self.connect);self._owned_candidates.add(candidate)
         try:
-            async with asyncio.timeout(20):
-                while True:
-                    if process.returncode is not None:raise SnapshotError('native_restore_start_failed')
-                    try:
-                        async with candidate.acquire():pass
-                        break
-                    except psycopg.OperationalError:await asyncio.sleep(.1)
+            while True:
+                if process.returncode is not None:raise SnapshotError('native_restore_start_failed')
+                try:
+                    async with candidate.acquire():pass
+                    break
+                except psycopg.OperationalError:await asyncio.sleep(.1)
             async with candidate.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute("SET LOCAL statement_timeout='2000ms'")
