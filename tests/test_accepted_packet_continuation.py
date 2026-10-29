@@ -194,7 +194,7 @@ async def test_corrected_earlier_page_preserves_saved_reading_frontier(packet,mo
     e=packet;e.importer._output=KaggleSourceImporter._output
     doc=json.loads(e.parent.command.payload)
     doc['research']['continuation']['arguments']['cursor']='65'
-    parent=replace(e.parent,command=replace(e.parent.command,payload=canonical(doc)))
+    parent=replace(e.parent,command_bytes=replace(e.parent.command,payload=canonical(doc)).encode())
     async def entry(_):return parent
     monkeypatch.setattr(e.helper,'_entry',entry)
     # stage saves research without mutating the row originally passed in.
