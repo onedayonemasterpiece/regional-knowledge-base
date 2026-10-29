@@ -185,7 +185,6 @@ class RecoveryPhaseDispatch:
 
     async def issue_upload(self,frame,*,run_id,token,generation):
         """Ticket intent stays on control while capture retains compute permit."""
-        if self.snapshot_tickets is None:raise PermissionError('snapshot ticket issuer unavailable')
         with self.queue.connect(write=False) as db:
             run=self._run(db,run_id,token,generation)
             job=db.execute("select * from jobs where id=? and kind='recovery_phase'",(frame['job_id'],)).fetchone()
@@ -193,10 +192,17 @@ class RecoveryPhaseDispatch:
                     or job['state']!='claimed' or not self.eligible(job,run,generation)):
                 raise StaleClaim('snapshot transfer assignment changed')
             identity=json.loads(job['identity'])
-            if (identity['phase'] not in ('capture','capture_upload') or frame['operation_key']!=identity['operation_key']
+            if (identity['phase'] not in ('capture','capture_upload','source_unit_pdf') or frame['operation_key']!=identity['operation_key']
                     or tuple(frame[k] for k in ('run_id','launch_nonce','runtime_incarnation'))!=self.identity):
                 raise PermissionError('snapshot transfer capture binding changed')
             binding=self._bindings[job['id']]
+        if identity['phase']=='source_unit_pdf':
+            sender=getattr(self.queue,'pdf_slack_sender',None)
+            if sender is None:raise PermissionError('existing Slack sender unavailable')
+            ticket=await sender.reserve_pdf_upload(size=frame['size'],current=lambda:self.current(binding))
+            if not self.current(binding):raise PermissionError('PDF transfer binding expired')
+            return ticket
+        if self.snapshot_tickets is None:raise PermissionError('snapshot ticket issuer unavailable')
         ticket=await self.snapshot_tickets.issue_upload(binding,frame['operation_key'],size=frame['size'],sha256=frame['sha256'])
         if not self.current(binding):raise PermissionError('snapshot transfer binding expired')
         return ticket.wire()
