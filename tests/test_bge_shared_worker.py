@@ -799,3 +799,102 @@ async def test_persistent_document_forward_error_exhausts_existing_reconnect_bud
             worker.stop.set()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_eight_successful_reads_pipeline_sql_and_keep_each_result_and_release():
+    active=0;peak=0;calls=[];entered=set();sql_release=asyncio.Event()
+    first_entered=threading.Event();first_release=threading.Event()
+    def native(text):
+        nonlocal active,peak
+        active+=1;peak=max(peak,active);calls.append(text)
+        try:
+            if text=='success-0':first_entered.set();assert first_release.wait(3)
+            return [1.]+[0.]*1023
+        finally:active-=1
+    async def handler(frame,*,encode):
+        await encode(frame['query'])
+        entered.add(frame['request_id'])
+        await sql_release.wait()
+        answer=result(frame);answer.update(status='ok',reason=None)
+        return answer
+    try:
+        async with running(handler,native) as (peer,worker,loads):
+            for n in range(8):
+                await peer.put(query(request=f'success-{n}',claim=f'compute-{n}',text=f'success-{n}'))
+            assert await asyncio.to_thread(first_entered.wait,1)
+            await asyncio.sleep(.01)
+            assert calls==['success-0'] and not entered
+            first_release.set()
+            async with asyncio.timeout(1):
+                while len(entered)!=8:await asyncio.sleep(.005)
+            assert calls==[f'success-{n}' for n in range(8)] and peak==1
+            assert not peer.frames('QUERY_RESULT') and not peer.frames('RESOURCE_RELEASED')
+            sql_release.set()
+            for n in range(8):
+                response=await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']==f'success-{n}')
+                release=await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_id']==f'success-{n}')
+                assert response['status']=='ok' and release['compute_claim']==f'compute-{n}'
+            await peer.put(query(request='next-wave',claim='next-compute',text='next-wave'))
+            await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']=='next-wave')
+            await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_id']=='next-wave')
+            assert len(peer.frames('QUERY_RESULT'))==9 and loads==['loaded'] and peak==1
+    finally:first_release.set();sql_release.set()
+
+
+@pytest.mark.asyncio
+async def test_backpressure_late_result_survives_new_read_pruning(monkeypatch):
+    from contextlib import asynccontextmanager
+    writer_held=asyncio.Event();resume_writer=asyncio.Event()
+    first_blocked=asyncio.Event();second_blocked=asyncio.Event()
+    early=asyncio.Event();late=asyncio.Event();late_done=asyncio.Event();entered=set()
+    resume_states=asyncio.Event();next_entered=asyncio.Event()
+    original_queue=asyncio.PriorityQueue
+    class TrackedOutbound(original_queue):
+        async def put(self,item):
+            hold_states=self.full() and item[2].get('type')=='QUERY_RESULT' and not first_blocked.is_set()
+            if self.full() and item[2].get('type')=='QUERY_RESULT':
+                if first_blocked.is_set():second_blocked.set()
+                else:first_blocked.set()
+            await super().put(item)
+            if hold_states:await resume_states.wait()
+    monkeypatch.setattr(asyncio,'PriorityQueue',TrackedOutbound)
+    class HeldPeer(Peer):
+        @asynccontextmanager
+        async def connect(self):
+            async with super().connect() as socket:
+                class HeldSocket:
+                    async def send(self,raw):
+                        if json.loads(raw)['type']=='QUERY_RESULT' and not writer_held.is_set():
+                            writer_held.set();await resume_writer.wait()
+                        await socket.send(raw)
+                    async def receive(self):return await socket.receive()
+                yield HeldSocket()
+    async def handler(frame,*,encode):
+        entered.add(frame['request_id'])
+        if frame['request_id']=='next':next_entered.set()
+        if frame['request_id']=='late':
+            await late.wait();late_done.set()
+        elif frame['request_id']!='next':await early.wait()
+        return result(frame)
+    try:
+        async with running(handler,peer=HeldPeer()) as (peer,worker,loads):
+            for name in ['late']+[f'early-{n}' for n in range(7)]:
+                await peer.put(query(request=name,claim='claim-'+name))
+            async with asyncio.timeout(1):
+                while len(entered)!=8:await asyncio.sleep(.005)
+            early.set();await asyncio.wait_for(writer_held.wait(),1)
+            await asyncio.wait_for(first_blocked.wait(),1)
+            await peer.put(query(request='next',claim='claim-next'))
+            await asyncio.wait_for(second_blocked.wait(),1)
+            late.set();await asyncio.wait_for(late_done.wait(),1)
+            await asyncio.sleep(0)  # Run the actual consumer-done release callback.
+            resume_writer.set()
+            await asyncio.wait_for(next_entered.wait(),1)
+            resume_states.set()
+            for name in ['late']+[f'early-{n}' for n in range(7)]+['next']:
+                response=await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']==name)
+                release=await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_id']==name)
+                assert response['request_id']==name and release['compute_claim']=='claim-'+name
+            assert len(peer.frames('QUERY_RESULT'))==9
+    finally:early.set();late.set();resume_writer.set();resume_states.set()

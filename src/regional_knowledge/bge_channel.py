@@ -140,8 +140,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
             service_frames = asyncio.Queue()
             sequence = count()
             probe_nonce = None
-            last_work = None
-            cancelled_work = None
+            cancelled_work = set()
             ready = False
             promoted = False
             ready_ack_sent = False
@@ -248,7 +247,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                 if shared is not None:
                     state = shared.status()
                     resource = state['resource']
-                    if (state['document_result_pending'] or
+                    if (state['state']=='unknown' or state['document_result_pending'] or
                             resource is not None and resource.run_id == run_id):
                         return False
                 # Only an authenticated, idle run reaches this point. Await
@@ -341,7 +340,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         await send('READY_ACK', status='ready', provider_version=str(observed['provider_version']))
 
             async def dispatch():
-                nonlocal last_work, cancelled_work
+                nonlocal cancelled_work
                 resume_pending = True
                 while True:
                     if not promoted or shared is None or probe_nonce is not None:
@@ -356,21 +355,17 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
                             if settled is not None:
                                 await send('RESULT_ACK',**settled)
-                        if (last_work is not None and last_work.query is not None
-                                and last_work.query.connection_generation == generation
-                                and shared.status()['resource'] == last_work.resource
-                                and cancelled_work != last_work.resource
-                                and not shared.read_consumer_active(last_work)):
-                            # Consumer cancellation is independent from actual
-                            # forward/SQL cleanup and never releases capacity.
-                            await send('CANCEL_QUERY', request_id=last_work.query.request_id,
-                                       turn_generation=last_work.query.turn_generation,
-                                       reason='caller_cancelled')
-                            cancelled_work = last_work.resource
+                        reads=shared.dispatched_reads()
+                        cancelled_work.intersection_update(w.resource for w in reads)
+                        for work in reads:
+                            if (work.dispatch_generation==generation and work.resource not in cancelled_work
+                                    and not shared.read_consumer_active(work)):
+                                await send('CANCEL_QUERY', request_id=work.query.request_id,
+                                           turn_generation=work.query.turn_generation,reason='caller_cancelled')
+                                cancelled_work.add(work.resource)
                         if probe_nonce is None and (promoted or getattr(queue,'_recovery_phases',None) is not None):
                             work = await shared.next_channel_work(run_id, token, generation)
                             if work is not None:
-                                last_work = work
                                 try:
                                     if work.query is not None:
                                         payload = work.query.model_dump(mode='json')

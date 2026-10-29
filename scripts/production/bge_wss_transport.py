@@ -116,12 +116,8 @@ class BgeWssTransport:
         self.forward_lock = asyncio.Lock()
         self.forwards = {}
         self.resource = None
-        self.last_released = None
-        self.read_task = None
-        self.read_frame = None
-        self.read_cancelled = False
-        self.read_discard = False
-        self.read_pending = None
+        self.reads = {}
+        self.released = {}
 
     @staticmethod
     def _identifier(value):
@@ -136,37 +132,42 @@ class BgeWssTransport:
         return tuple(frame.get(key) for key in ('request_id', 'connection_generation', 'turn_generation'))
 
     def _resource_state(self, probe_nonce=None):
-        frame = {'type': 'RESOURCE_STATE', 'state': 'busy' if self.resource else 'idle'}
-        if self.resource:
-            frame.update(self.resource)
+        frame = {'type': 'RESOURCE_STATE', 'state': 'busy' if self.resource or any(not r['released'] for r in self.reads.values()) else 'idle'}
+        resource=self.resource or next((r['resource'] for r in self.reads.values() if not r['released']),None)
+        if resource:frame.update(resource)
         if probe_nonce is not None:
             frame['probe_nonce'] = probe_nonce
         return frame
 
     def _claim_resource(self, frame, kind):
-        if self.resource is not None:
-            raise ValueError('worker resource busy')
-        self.last_released = None  # New assignment implicitly acknowledges release.
-        if kind == 'document':
-            self.read_frame, self.read_pending = None, None
-        self.resource = {'resource_kind': kind,
+        if kind=='read':
+            self.reads={k:r for k,r in self.reads.items()
+                if not r['released'] or r['pending'] is not None and not r['discard']}
+            if sum(not r['released'] for r in self.reads.values())>=8:raise ValueError('worker read capacity busy')
+        elif self.resource is not None:raise ValueError('worker document resource busy')
+        resource = {'resource_kind': kind,
             'resource_id': frame['request_id'] if kind == 'read' else frame['id'],
             'compute_claim': frame['compute_claim'],
             'dispatch_generation': frame['connection_generation']}
+        if kind=='document':self.resource=resource
         self.changed.set()
-        return self.resource
+        return resource
+
+    def _released(self, resource):
+        self.released[resource['compute_claim']]=resource
+        while len(self.released)>9:self.released.pop(next(iter(self.released)))
+        self.changed.set()
 
     def _maybe_release(self):
-        if (not self.shared_reads or self.resource is None
-                or any(owner is self.resource for owner in self.forwards.values())):
-            return
-        task = self.read_task if self.resource['resource_kind'] == 'read' else self.encoding
-        if task is not None and task.done():
-            self.last_released, self.resource = self.resource, None
-            self.changed.set()
+        for read in self.reads.values():
+            if (not read['released'] and read['task'].done()
+                    and (read['pending'] is None or read['discard'])
+                    and not any(owner is read['resource'] for owner in self.forwards.values())):
+                read['released']=True
+                self._released(read['resource'])
 
     async def _forward(self, text, resource=None):
-        if resource is not None and self.resource is not resource:
+        if resource is not None and not any(r['resource'] is resource and not r['released'] for r in self.reads.values()):
             raise ValueError('encode consumer no longer owns resource')
         async def actual():
             async with self.forward_lock:
@@ -184,12 +185,12 @@ class BgeWssTransport:
         task.add_done_callback(finished)
         return await asyncio.shield(task)
 
-    def _cancel_read(self):
-        self.read_discard = True
-        self.read_pending = None
-        if self.read_task is not None and not self.read_task.done() and not self.read_cancelled:
-            self.read_cancelled = True
-            self.read_task.cancel()
+    def _cancel_read(self, identity=None):
+        for key,read in self.reads.items():
+            if identity is not None and key!=identity:continue
+            read['discard']=True;read['pending']=None
+            if not read['task'].done() and not read['cancelled']:
+                read['cancelled']=True;read['task'].cancel()
 
     @staticmethod
     def _unavailable(frame, reason):
@@ -265,9 +266,8 @@ class BgeWssTransport:
 
     def _start_read(self, frame):
         resource = self._claim_resource(frame, 'read')
-        self.read_frame = frame
-        self.read_pending = None
-        self.read_cancelled = self.read_discard = False
+        read=dict(frame=frame,resource=resource,pending=None,cancelled=False,discard=False,released=False)
+        self.reads[self._read_identity(frame)]=read
         async def consume():
             async def encode(text):
                 return await self._forward(text, resource)
@@ -276,8 +276,7 @@ class BgeWssTransport:
                 async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
                     if frame.get('type')=='SQL_HEALTH':
                         def lease_current():
-                            return (self.resource is resource and self.read_frame is frame
-                                and not self.read_discard
+                            return (not read['released'] and not read['discard']
                                 and self._connection_generation==frame['connection_generation'])
                         result=await self.query_handler(frame,encode=encode,lease_current=lease_current)
                     else:
@@ -291,11 +290,11 @@ class BgeWssTransport:
                 reason = 'deadline_exceeded' if asyncio.get_running_loop().time() >= deadline else 'internal_error'
                 result = self._unavailable(frame, reason)
             # Read completion only publishes the bounded protocol result.
-            if not self.read_discard:
-                self.read_pending = result
+            if not read['discard']:
+                read['pending'] = result
                 self.changed.set()
-        self.read_task = asyncio.create_task(consume())
-        self.read_task.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
+        read['task'] = asyncio.create_task(consume())
+        read['task'].add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
     async def _export_read_events(self, frame):
         """Consume optional native observations after the wire result, never in writer.
@@ -322,6 +321,7 @@ class BgeWssTransport:
 
     async def _load(self):
         self.encoder = await asyncio.to_thread(self.load_encoder)
+        self.forward_lock=getattr(self.encoder,'forward_lock',self.forward_lock)
         if self.prepare_runtime is not None:
             prepared = await self.prepare_runtime(self.encoder, run_id=self.config['run_id'],
                 launch_nonce=self.config['launch_nonce'], runtime_incarnation=self.incarnation)
@@ -408,7 +408,7 @@ class BgeWssTransport:
         if self.shared_reads and job is not self.waiting_job:
             # Durable job/claim/result remain singular. Actual model forwards
             # serialize in forward_lock, independently of control/PG latency.
-            self.last_released,self.resource=self.resource,None
+            self._released(self.resource);self.resource=None
         self.encoding = asyncio.create_task(self._encode(job))
         self.encoding.add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
@@ -450,13 +450,14 @@ class BgeWssTransport:
             self.recovery_attachment.attached(generation,runtime_incarnation=self.incarnation)
         if self.source_history_handler is not None:self.source_history_handler.attached(generation)
         if self.original_intake_handler is not None:self.original_intake_handler.attached(generation)
-        attachment_release = attachment_state = None
+        attachment_releases=()
+        attachment_state = None
         if self.shared_reads:
             self._maybe_release()
-            attachment_release = self.last_released
-            if attachment_release is not None:
-                await send({'type': 'RESOURCE_RELEASED', 'connection_generation': generation, **attachment_release})
+            attachment_releases=tuple(self.released.values())
             attachment_state = self._resource_state()
+            for attachment_release in attachment_releases:
+                await send({'type': 'RESOURCE_RELEASED', 'connection_generation': generation, **attachment_release})
             await send({'connection_generation': generation, **attachment_state})
         if self.loading is None:
             # Minimal authenticated control is established before Torch/model imports.
@@ -464,7 +465,7 @@ class BgeWssTransport:
             self.loading.add_done_callback(lambda _: self.changed.set())
         outbound = asyncio.PriorityQueue(maxsize=4)
         order = 0
-        read_sent = None
+        read_sent = set()
 
         async def put(frame, priority=0):
             nonlocal order
@@ -492,14 +493,12 @@ class BgeWssTransport:
                                 self._observe_diagnostic)
 
         async def queue_read_result():
-            nonlocal read_sent
-            result = self.read_pending
-            if result is not None and read_sent is not result:
-                # Once queued this immutable frame belongs to this session,
-                # independently of the next read consumer. Server finish_read
-                # still checks its original ticket/deadline/current authority.
-                read_sent = result
-                await put(result, priority=0)
+            for read in tuple(self.reads.values()):
+                result=read['pending'];key=read['resource']['compute_claim']
+                if result is not None and key not in read_sent:
+                    read_sent.add(key)
+                    await put(result,priority=0)
+                    if read['pending'] is result:read['pending']=None
 
         ready_confirmed=False
         telegram_request_pending=False
@@ -522,7 +521,7 @@ class BgeWssTransport:
             ready_sent = False
             result_sent = None
             intent_sent = None
-            released_sent = attachment_release
+            released_sent = {r['compute_claim'] for r in attachment_releases}
             state_sent = attachment_state
             self.changed.set()
             while True:
@@ -539,9 +538,11 @@ class BgeWssTransport:
                     # release, which can immediately authorize the next read.
                     await queue_read_result()
                     self._maybe_release()
-                    if self.last_released is not None and self.last_released != released_sent:
-                        await put({'type': 'RESOURCE_RELEASED', **self.last_released})
-                        released_sent = self.last_released
+                    for key,release in tuple(self.released.items()):
+                        if key not in released_sent:
+                            await put({'type':'RESOURCE_RELEASED',**release});released_sent.add(key)
+                    released_sent.intersection_update(self.released)
+                    read_sent.intersection_update(r['resource']['compute_claim'] for r in self.reads.values())
                     state = self._resource_state()
                     if state != state_sent:
                         await put(state)
@@ -573,28 +574,23 @@ class BgeWssTransport:
                     if not self._identifier(frame.get('probe_nonce')):
                         raise ValueError('bounded resource probe nonce required')
                     self._maybe_release()
-                    if self.last_released is not None:
-                        # Idle alone cannot distinguish a never-received claim
-                        # from completed work whose durable result is pending.
-                        await put({'type': 'RESOURCE_RELEASED', **self.last_released})
+                    for release in tuple(self.released.values()):
+                        await put({'type':'RESOURCE_RELEASED',**release})
                     await put(self._resource_state(frame['probe_nonce']))
                 elif self.shared_reads and kind == 'CANCEL_QUERY':
                     if (not self._identifier(frame.get('request_id'))
                             or type(frame.get('turn_generation')) is not int or frame['turn_generation'] < 0):
                         raise ValueError('cancel QUERY identity contract')
-                    if (self.read_frame is not None
-                            and self._read_identity(frame) == self._read_identity(self.read_frame)):
-                        self._cancel_read()
+                    self._cancel_read(self._read_identity(frame))
                 elif self.shared_reads and kind in ('QUERY','SQL_HEALTH','PASSAGE_READ','STORY_READ','FACT_READ','SOURCE_READ','CASE_READ','GEO_READ','EDITORIAL_READ','SOURCE_GRAPH_READ','ACCEPTANCE_READ'):
                     self._validate_query(frame)
-                    if (self.read_frame is not None
-                            and frame['compute_claim'] == self.read_frame['compute_claim']
-                            and frame['connection_generation'] != self.read_frame['connection_generation']):
-                        raise ValueError('ephemeral QUERY cannot replay across sessions')
-                    if self.read_frame is not None and self._read_identity(frame) == self._read_identity(self.read_frame):
-                        if json.dumps(frame, sort_keys=True, allow_nan=False) != json.dumps(self.read_frame, sort_keys=True, allow_nan=False):
+                    previous=self.reads.get(self._read_identity(frame))
+                    if previous is not None:
+                        if json.dumps(frame,sort_keys=True,allow_nan=False)!=json.dumps(previous['frame'],sort_keys=True,allow_nan=False):
                             raise ValueError('replayed QUERY payload mismatch')
                         continue
+                    if any(r['frame']['compute_claim']==frame['compute_claim'] for r in self.reads.values()):
+                        raise ValueError('ephemeral QUERY cannot replay across sessions')
                     await queue_read_result()
                     self._start_read(frame)
                 elif kind == 'SNAPSHOT_UPLOAD_TICKET':
@@ -738,7 +734,7 @@ class BgeWssTransport:
                         raise ValueError('exact authenticated worker STOP required')
                     # An unacknowledged result, native effect, forwarded encode
                     # or queued assignment must not be interrupted by a STOP.
-                    if (self.job is None and self.pending is None and self.resource is None
+                    if (self.job is None and self.pending is None and self._resource_state()['state']=='idle'
                             and self.waiting_job is None
                             and not any(not task.done() for task in self.forwards)):
                         self.stop.set()
@@ -889,7 +885,7 @@ class BgeWssTransport:
                         break
                 if not task.cancelled():
                     task.exception()
-            for task in (self.loading, self.read_task, self.encoding):
+            for task in (self.loading, self.encoding, *(r['task'] for r in self.reads.values())):
                 await drain(task)
             # A read's cancellation/cleanup can create its final tracked native
             # Task after shutdown began. Enumerate only after consumer cleanup.

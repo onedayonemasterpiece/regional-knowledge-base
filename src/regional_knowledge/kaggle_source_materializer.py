@@ -789,7 +789,9 @@ def resident_source_materializer(encoder,*,current):
     if type(encoder) is not ResidentEncoder:
         raise TypeError('same verified resident BGE/tokenizer required')
     async def forward(text):
-        task=asyncio.create_task(asyncio.to_thread(encoder,text))
+        async def actual():
+            async with encoder.forward_lock:return await asyncio.to_thread(encoder,text)
+        task=asyncio.create_task(actual())
         cancelled=False
         while not task.done():
             try:await asyncio.shield(task)

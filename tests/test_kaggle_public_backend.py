@@ -188,12 +188,15 @@ async def test_search_waits_past_queue_and_native_timing_goals(target,env):
     assert not task.done(), 'elapsed queue time must not reject a live read'
     value=await work(s)
     native._start_read(value.query.model_dump(mode='json'))
-    await native.read_task
+    await next(reversed(native.reads.values()))['task']
     native._maybe_release()
-    assert native.resource is None and native.last_released is not None
-    assert lease.entered==lease.exited==1,native.read_pending
+    assert not native.released  # Result has not reached outbound yet.
+    read=next(reversed(native.reads.values()))
+    response=read['pending'];read['pending']=None # Existing session's completed outbound handoff.
+    native._maybe_release()
+    assert native.released and lease.entered==lease.exited==1
     assert await s.admission.finish_read(s.run,s.token,s.generation,
-        QueryResult.model_validate_json(json.dumps(native.read_pending)))
+        QueryResult.model_validate_json(json.dumps(response)))
     assert (await task).status=='ok'
     assert any('statement_timeout' in sql and params==('60000',)
         for sql,params in lease.connection.statements)
