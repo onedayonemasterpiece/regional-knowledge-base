@@ -97,7 +97,10 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     imported = native_tools["book_ingest"]
     native_text = imported.description
     for text in (native.instructions, native_text):
-        assert 'Revising an accepted book is unsupported in this profile' in text
+        assert 'Ordinary continuation: never blindly replay' in text
+        assert 'ANY previously accepted physical page' in text
+        assert 'source_review_note (1-500 characters)' in text
+        assert 'Revising an accepted book is unsupported in this profile' not in text
     assert imported.title == "Import and continue an attached scanned book"
     assert "book_ingest(command=start)" in native_text
     assert "book_pages (default 1, maximum 4" in native_text
@@ -119,7 +122,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     checklist = (
         "Mandatory import checklist:\n"
         "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
-        "2. Never resend an accepted page; next_cursor is a hint, choose the next printed page with book_pages(cursor).\n"
+        "2. During ordinary continuation never blindly replay accepted pages; next_cursor is a hint, choose the next printed page with book_pages(cursor).\n"
         "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
         "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
         "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
