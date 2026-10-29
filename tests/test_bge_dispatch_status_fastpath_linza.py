@@ -28,14 +28,14 @@ from test_participants import people
 import regional_knowledge.bge_channel as production
 
 ORIGINAL = """            async def dispatch():
-                nonlocal last_work, cancelled_work
+                nonlocal cancelled_work
                 resume_pending = True
                 while True:
                     observed = await status()
                     await promote(observed)
 """
 CANDIDATE = """            async def dispatch():
-                nonlocal last_work, cancelled_work
+                nonlocal cancelled_work
                 resume_pending = True
                 while True:
                     if not promoted or shared is None or probe_nonce is not None:
