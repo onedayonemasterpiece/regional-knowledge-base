@@ -503,7 +503,7 @@ class KaggleSourceBackend:
         illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
         deadline = (min(time.monotonic()+2,trusted['deadline'])
-            if trusted is not None else time.monotonic()+2)
+            if trusted is not None and exact else time.monotonic()+2)
         telemetry = self.read_telemetry
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation)
@@ -584,7 +584,7 @@ class KaggleSourceBackend:
                     return EvidenceSearchOutput(evidence=[],**common) if evidence else SearchOutput(results=[],**common)
                 if story_cursor_generation is not None and story_cursor_generation!=binding.database_generation:
                     raise PublicQueryInvalid
-                if not exact and trusted is None:deadline=math.inf;timeout.reschedule(None)
+                if not exact:deadline=math.inf;timeout.reschedule(None)
                 try:
                     identity = dict(request_id=attempt.request_id,
                         connection_generation=binding.connection_generation,

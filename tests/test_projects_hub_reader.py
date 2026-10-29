@@ -105,12 +105,42 @@ async def test_final_service_revocation_withholds_actual_http_evidence(target):
 
 
 @pytest.mark.asyncio
-async def test_deadline_failure_is_typed_and_no_query_dispatch(target):
+async def test_exact_fetch_deadline_failure_is_typed_and_no_query_dispatch(target):
     s=target;reader,app,body,headers=setup(s);body['deadline_monotonic']=time.monotonic()-1
+    body.pop('query')
+    body.update(codec='rkb.knowledge-query.v3',operation='fetch',
+        source_id='00000000-0000-0000-0000-000000000001',page_start=0,page_end=0)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),base_url='http://127.0.0.1') as client:
         value=(await client.post(PATH,json=body,headers=headers)).json()
         assert value['status']=='unavailable' and value['reason']=='deadline_exceeded'
         assert value['mode'] is None and value['evidence']==[] and not s.gate.permits
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route',['projects_hub','expert'])
+async def test_trusted_http_search_delivers_after_internal_timing_goal(service,route):
+    from test_expert_evidence_receiver import _receiver,PATH as EXPERT_PATH
+    s=service.target
+    if route=='projects_hub':
+        reader,app,body,headers=setup(s);path=PATH
+    else:
+        reader,app,body,headers,_,_=await _receiver(service);path=EXPERT_PATH
+    body['deadline_monotonic']=time.monotonic()-1  # Legacy indicator is not authority expiry.
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,client=('127.0.0.1',9001)),
+                                 base_url='http://127.0.0.1') as client:
+        task=asyncio.create_task(client.post(path,json=body,headers=headers))
+        dispatched=await work(s)
+        try:
+            await asyncio.sleep(2.1)
+            assert not task.done(), 'internal timing goal must not terminate a current search'
+            await settle(s,dispatched)
+            value=(await task).json()
+            assert value['mode']=='hybrid' and value['evidence'][0]['text']=='Evidence'
+            assert not value['context_gap'] and not s.auth.resolver._contexts
+        finally:
+            if not task.done():task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
+            await release(s,dispatched)
 
 
 @pytest.mark.asyncio

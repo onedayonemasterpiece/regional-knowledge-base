@@ -11,7 +11,6 @@ import asyncio
 import hashlib
 import json
 import math
-import time
 
 from mcp.server.mcpserver.exceptions import ToolError
 from starlette.responses import JSONResponse
@@ -84,7 +83,6 @@ class ExpertEvidenceReceiver:
                 or not 0<=payload['min_data_seq']<2**63
                 or type(payload['deadline_monotonic']) not in (int,float)
                 or not math.isfinite(payload['deadline_monotonic'])
-                or payload['deadline_monotonic']>time.monotonic()+2.05
                 or type(payload.get('top_k',3)) is not int or not 1<=payload.get('top_k',3)<=10):
             raise ValueError('invalid delegated request bounds')
         return ReadContext(payload['request_id'],payload['generation'],
@@ -118,48 +116,42 @@ class ExpertEvidenceReceiver:
                     if len(raw)>MAX_REQUEST:raise ValueError('bounded request required')
             value=json.loads(raw)
             context=self._input(value)
-            if context.deadline_monotonic<=time.monotonic():
-                return JSONResponse(_failure(context,'deadline_exceeded'))
-            async with asyncio.timeout_at(context.deadline_monotonic):
-                # Current service epoch, exact lease and Slack account are
-                # checked by canonical Participants under the same control DB.
-                claim=await asyncio.to_thread(self.control.claim_context,credential,
-                    context.request_id,context.turn_generation,value['execution_token'])
-                origin=claim['origin']
-                destination=self._destination(origin,claim['person_id'],context.request_id)
-                authority=await self.authority.resolve_adapter(
-                    provider='slack',tenant=origin['team_id'],
-                    provider_subject=origin['user_id'],destination=destination)
-                row=await asyncio.to_thread(self.control._row,context.request_id)
-                if (authority.person_id!=claim['person_id']
-                        or authority.link_id!=row['link_id']
-                        or authority.link_revision!=row['link_revision']):
-                    raise PermissionError('verified link changed')
-                assert context.request_id==claim['request_id']
-                with capture_read_output() as calls:
-                    transferred,authority=authority,None
-                    result=await _connected_read(request,self.backend.search_adapter(
-                        claim['input_text'],authority=transferred,
-                        request_id=context.request_id,
-                        turn_generation=context.turn_generation,
-                        min_data_seq=context.min_data_seq,
-                        deadline_monotonic=context.deadline_monotonic,
-                        destination=destination,limit=value.get('top_k',3)))
-                    if len(calls)!=1:
-                        raise RuntimeError('retained source provenance required')
-                    # The ASGI issuance middleware runs after the handler's
-                    # timeout_at scope. The original absolute deadline must
-                    # still be current when buffered evidence is emitted.
-                    current=lambda:(time.monotonic()<context.deadline_monotonic
-                        and self.control.issuance_current(
-                            credential,context.request_id,context.turn_generation,
-                            value['execution_token'],origin))
-                    calls[0].gate=_RequestFence(calls[0].gate,current)
-                    bind_json_output(request,calls,context.request_id,
-                        lambda output:_render(output,context),
-                        lambda:_failure(context))
-                    return JSONResponse(_render(result,context),
-                                        headers={'Cache-Control':'no-store'})
+            # Current service epoch, exact lease and Slack account are
+            # checked by canonical Participants under the same control DB.
+            claim=await asyncio.to_thread(self.control.claim_context,credential,
+                context.request_id,context.turn_generation,value['execution_token'])
+            origin=claim['origin']
+            destination=self._destination(origin,claim['person_id'],context.request_id)
+            authority=await self.authority.resolve_adapter(
+                provider='slack',tenant=origin['team_id'],
+                provider_subject=origin['user_id'],destination=destination)
+            row=await asyncio.to_thread(self.control._row,context.request_id)
+            if (authority.person_id!=claim['person_id']
+                    or authority.link_id!=row['link_id']
+                    or authority.link_revision!=row['link_revision']):
+                raise PermissionError('verified link changed')
+            assert context.request_id==claim['request_id']
+            with capture_read_output() as calls:
+                transferred,authority=authority,None
+                result=await _connected_read(request,self.backend.search_adapter(
+                    claim['input_text'],authority=transferred,
+                    request_id=context.request_id,
+                    turn_generation=context.turn_generation,
+                    min_data_seq=context.min_data_seq,
+                    deadline_monotonic=context.deadline_monotonic,
+                    destination=destination,limit=value.get('top_k',3)))
+                if len(calls)!=1:
+                    raise RuntimeError('retained source provenance required')
+                # Recheck the actual request lease at final HTTP issuance.
+                current=lambda:self.control.issuance_current(
+                    credential,context.request_id,context.turn_generation,
+                    value['execution_token'],origin)
+                calls[0].gate=_RequestFence(calls[0].gate,current)
+                bind_json_output(request,calls,context.request_id,
+                    lambda output:_render(output,context),
+                    lambda:_failure(context))
+                return JSONResponse(_render(result,context),
+                                    headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
         except TimeoutError:

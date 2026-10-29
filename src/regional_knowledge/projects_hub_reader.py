@@ -243,7 +243,7 @@ class ProjectsHubReader:
                 or any(type(value[k]) is not int or not 0 <= value[k] < 2**63 for k in ('turn_generation','min_data_seq'))
                 or type(value['max_evidence']) is not int or not 1 <= value['max_evidence'] <= 5
                 or type(value['deadline_monotonic']) not in (int,float) or not math.isfinite(value['deadline_monotonic'])
-                or value['deadline_monotonic'] > time.monotonic() + 2.05):
+                or (operation == 'fetch' and value['deadline_monotonic'] > time.monotonic() + 2.05)):
             raise ValueError('invalid query')
         expected = self.bindings.get((value['actor_sub'],value['workspace_id']))
         if (value['provider_tenant'] != self.tenant or expected is None
@@ -277,11 +277,12 @@ class ProjectsHubReader:
                 credential_id=self.credential_id,epoch=self.credential_epoch,provider_tenant=self.tenant,workspace_id=value['workspace_id'])
             if service is None:
                 raise PermissionError('provisioned service scope unavailable')
-            if context.deadline_monotonic <= time.monotonic():
+            fetching = value.get('codec') == 'rkb.knowledge-query.v3' and value.get('operation') == 'fetch'
+            if fetching and context.deadline_monotonic <= time.monotonic():
                 return JSONResponse(failure(context,'deadline_exceeded'))
             destination_ref = hashlib.sha256(json.dumps([self.tenant,value['workspace_id'],value['actor_sub']],separators=(',',':')).encode()).hexdigest()
             destination = TrustedReadDestination('projects_hub','personal',destination_ref)
-            async with asyncio.timeout_at(context.deadline_monotonic):
+            async with asyncio.timeout_at(context.deadline_monotonic if fetching else None):
                 authority = await self.authority.resolve_adapter(provider='projects_hub', tenant=self.tenant,
                     provider_subject=value['actor_sub'], destination=destination)
                 if (authority.link_id,authority.link_revision) != (value['link_id'],value['link_revision']):
@@ -292,7 +293,6 @@ class ProjectsHubReader:
                     trusted = dict(authority=transferred,request_id=context.request_id,
                         turn_generation=context.turn_generation,min_data_seq=context.min_data_seq,
                         deadline=context.deadline_monotonic,destination=destination)
-                    fetching = value.get('codec') == 'rkb.knowledge-query.v3' and value.get('operation') == 'fetch'
                     if fetching:
                         # Exactly the same Kaggle _search admission, read gate and issuance as MCP fetch.
                         selector = (dict(exact_locator=parse_passage_fetch_id(value['id']))
@@ -310,7 +310,7 @@ class ProjectsHubReader:
                     result = await _connected_read(request,operation)
                     if len(calls) != 1:
                         raise RuntimeError('current output provenance required')
-                    calls[0].gate = _ServiceFence(calls[0].gate,lambda: self.current() and self.provider.service_credential_current(service) and time.monotonic() < context.deadline_monotonic)
+                    calls[0].gate = _ServiceFence(calls[0].gate,lambda: self.current() and self.provider.service_credential_current(service) and (not fetching or time.monotonic() < context.deadline_monotonic))
                     projector = render_fetch if fetching else render
                     bind_json_output(request,calls,context.request_id,lambda output:projector(output,context),lambda:failure(context))
                     return JSONResponse(projector(result,context),headers={'Cache-Control':'no-store'})
