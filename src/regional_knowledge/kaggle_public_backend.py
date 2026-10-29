@@ -854,10 +854,12 @@ class KaggleSourceBackend:
             operation='source_units',source_id=source_id,after_ordinal=after_ordinal,
             limit=limit))
 
-    async def source_unit_export(self,source_id,article_id,principal):
+    async def source_unit_export(self,source_id,article_id,principal,*,
+                                 annotation_ru=None,translation_ru=None):
         """Client-neutral, authorized native PDF read; return actual MCP bytes."""
         return await self._search(None,principal,evidence=True,catalog_request=dict(
-            operation='source_unit_pdf',source_id=source_id,article_id=article_id,limit=1))
+            operation='source_unit_pdf',source_id=source_id,article_id=article_id,limit=1,
+            annotation_ru=annotation_ru,translation_ru=translation_ru))
 
     async def search_adapter(self,query,*,authority,request_id,turn_generation,min_data_seq,
                              deadline_monotonic,destination,source_ids=None,limit=3):
