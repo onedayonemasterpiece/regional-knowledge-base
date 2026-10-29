@@ -278,11 +278,16 @@ async def test_concrete_factory_binds_tools_to_retained_stage0_manifest(fixture,
 
 async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):
     task=asyncio.create_task(bridge.request(s,phase,args or {'reference':'retained-ref'},operation_key=key))
-    for _ in range(100):
-        work=await s.a.next_channel_work(s.run,s.token,s.generation)
-        if work is not None:break
-        await asyncio.sleep(.001)
-    else:raise AssertionError('maintenance work absent')
+    try:
+        async with asyncio.timeout(5):
+            while True:
+                work=await s.a.next_channel_work(s.run,s.token,s.generation)
+                if work is not None:break
+                await s.a.wait_channel_work()
+    except BaseException:
+        task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+        raise
     s.a.mark_work_sent(work)
     frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
         **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
