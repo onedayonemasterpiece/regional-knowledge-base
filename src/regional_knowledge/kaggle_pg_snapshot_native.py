@@ -503,6 +503,7 @@ class NativeSnapshotFactory:
             stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
             env=self.native_env,**self._identity())
         candidate=_CandidatePg(process,self.database,self.connect);self._owned_candidates.add(candidate)
+        startup_started=asyncio.get_running_loop().time()
         try:
             while True:
                 if process.returncode is not None:raise SnapshotError('native_restore_start_failed')
@@ -510,6 +511,8 @@ class NativeSnapshotFactory:
                     async with candidate.acquire():pass
                     break
                 except psycopg.OperationalError:await asyncio.sleep(.1)
+            print(encode(dict(event='native_pg_restore_startup',run_id=self.identity[0],state='ready',
+                elapsed_seconds=round(asyncio.get_running_loop().time()-startup_started,3))).decode(),flush=True)
             async with candidate.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute("SET LOCAL statement_timeout='2000ms'")
