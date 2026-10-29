@@ -144,7 +144,10 @@ Stage0 check. The tokenizer settings document is bounded to64MiB.
 Its nonblocking `count` uses `to_thread` with complete special-token-inclusive,
 no-truncation/no-padding token IDs. The same resident encoder remains the only
 model; this unit does not load a model in tests or on DevCoveer.
-Counting and inference serialize access to the same mutable fast tokenizer.
+Counting retains the independently loaded tokenizer reference whose complete
+materialized state, configuration and token IDs were verified against the model's
+actual tokenizer. Counts serialize on that reference; actual model forwards
+remain serialized separately. A count does not wait for a whole document forward.
 Cancellation drains any started native count, including repeated cancellation,
 before handler cleanup may relinquish the worker resource.
 

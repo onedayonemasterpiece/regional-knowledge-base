@@ -113,6 +113,8 @@ def retained_encoder():
     object.__setattr__(encoder, 'encode', encode)
     object.__setattr__(encoder, 'tokenizer', SimpleNamespace(encode=tokenize))
     object.__setattr__(encoder, '_tokenizer_lock', threading.Lock())
+    object.__setattr__(encoder, '_counter', encoder.tokenizer)
+    object.__setattr__(encoder, '_counter_lock', threading.Lock())
     return encoder, counted, forwarded, vector
 
 
