@@ -98,6 +98,32 @@ async def test_complete_two_page_36_span_pdf_and_incomplete_is_actionable():
         assert "Abschnitt 17" in authored and "Abschnitt 0" in authored
         # 36 full accepted regions: the 16-span public preview would omit page 2.
 
+    # Dev holds only the Slack file ticket; the PDF payload never reaches its API.
+    import httpx
+    from regional_knowledge.expert_slack_search_reply import SlackChatSender
+    seen=[]
+    def slack(request):
+        seen.append((request.url.path,request.content))
+        if request.url.path.endswith("auth.test"):
+            return httpx.Response(200,json={"ok":True,"team_id":"T111","user_id":"UBOT"})
+        if request.url.path.endswith("files.getUploadURLExternal"):
+            assert b"length="+str(len(pdf)).encode() in request.content
+            return httpx.Response(200,json={"ok":True,
+                "file_id":"F111","upload_url":"https://files.slack.com/upload/one-time"})
+        if request.url.path.endswith("files.completeUploadExternal"):
+            body=__import__("json").loads(request.content)
+            assert body["channel_id"]=="C111" and body["thread_ts"]=="1792000000.100"
+            assert body["files"]==[{"id":"F111","title":"albinus-unit"}]
+            return httpx.Response(200,json={"ok":True,"files":[{"id":"F111"}]})
+        raise AssertionError(request.url.path)
+    sender=SlackChatSender(token="xoxb-synthetic-token",app_id="A111",
+        team_id="T111",bot_user_id="UBOT",transport=httpx.MockTransport(slack))
+    ticket=await sender.reserve_pdf_upload(size=len(pdf))
+    assert ticket=={"file_id":"F111","upload_url":"https://files.slack.com/upload/one-time"}
+    assert (await sender.complete_pdf_upload(file_id=ticket["file_id"],
+        channel="C111",thread="1792000000.100",title="albinus-unit"))["file_id"]=="F111"
+    assert all(b"%PDF-" not in payload for _,payload in seen)
+
     incomplete=Connection(fixture_pages(complete=False))
     @asynccontextmanager
     async def acquire_incomplete():
