@@ -151,6 +151,7 @@ class ExpertSlackSearchReply:
             raise ValueError("one signed ingress, human read and Slack bot authority required")
         self.ingress,self.evidence,self.sender=ingress,evidence,sender
         self.control=ingress.control
+        self.evidence.backend.worker_queue.pdf_slack_sender=sender
         self._tasks={}
 
     def notify(self, request_id):
@@ -267,7 +268,6 @@ class ExpertSlackSearchReply:
             if type(bridge) is not RecoveryPhaseDispatch or not bridge.current(binding):
                 raise RuntimeError("existing Kaggle operation unavailable")
             operation_key=sha(encode(["source_unit_pdf",request_id,source_id,article_id]))
-            queue.pdf_slack_sender=self.sender
             value=await bridge.request(binding,'source_unit_pdf',
                 dict(source_id=source_id,article_id=article_id),operation_key=operation_key)
         else:
