@@ -305,6 +305,7 @@ async def test_target_warming_original_request_delivers_sourced_answer_after_rea
     async def ready(query, **kwargs):
         queries.append(query)
         evidence = {"status": "ok", "mode": "hybrid", "context_gap": False,
+                    "observed_data_seq": 1, "observed_projection_seq": 1,
                     "prior_write_pending": False, "evidence": [{
                         "title": "Gause", "text": "Confirmed synthetic source.",
                         "metadata": {"citation": "Gause 1994", "locator": "стр. 59"}}]}
