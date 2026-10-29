@@ -236,7 +236,7 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         await execute(f"""SELECT h.passage_id,h.source_id,h.revision,h.locator,h.body,h.bibliography,
                             jsonb_build_object('catalog',jsonb_build_object('title',picked.metadata->>'title',
                                 'authors',picked.metadata->'authors','publication_year',picked.metadata->'publication_year')),
-                            p.passage_id IS NOT NULL
+                            p.passage_id IS NOT NULL AND to_regclass('rkb_v4.source_batch_publications') IS NOT NULL
                             FROM {hydration} WITH ORDINALITY h
                             LEFT JOIN rkb_v4.source_passage_provenance p ON p.passage_id=h.passage_id
                                 AND p.source_id=h.source_id AND p.source_revision=h.revision

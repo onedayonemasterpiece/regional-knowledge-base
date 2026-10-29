@@ -47,7 +47,7 @@ class ServingConnection(FixtureConnection):
         if 'lexical_candidates(' in self.statement or 'dense_candidates(' in self.statement:
             return [(UUID(PASSAGE), .5)]
         if 'hydrate(' in self.statement:
-            return [(UUID(PASSAGE), UUID(SOURCE), 1, 'p1', 'synthetic complete body', 'synthetic bibliography')]
+            return [(UUID(PASSAGE), UUID(SOURCE), 1, 'p1', 'synthetic complete body', 'synthetic bibliography', None, False)]
         if 'SELECT a.source_id,a.revision,v.eligibility_revision' in self.statement:
             return [(UUID(SOURCE), 1, 7)]
         return []
