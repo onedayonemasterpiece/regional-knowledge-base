@@ -395,9 +395,10 @@ Slack app/team/bot identity and original nonowner participant link and
 `ExecutorCredentials(service_id, token)` and bind
 `ExpertExecutorContext` to real `TargetExpertDeliveryControl` with a
 current source gate (no permissive fake); (3) provision a distinct
-restricted RKB OAuth client for dot, never an owner bearer, and a
-trusted gateway to existing loopback claim/evidence/result that
-preserves original request identity and delegated ACL; (4) install
+restricted RKB OAuth client for dot, never an owner bearer; RKB must
+expose the existing loopback claim/evidence/result control through
+authorized tools on its **same** MCP endpoint, preserving original
+request identity and delegated ACL (no separate service or gateway); (4) install
 the actual MCP Events webhook publisher/subscription, have dot subscribe
 and verify callback; (5) connect actual model result to the **existing**
 one-shot bot sender/receipt controls; (6) only then enable the model-first
