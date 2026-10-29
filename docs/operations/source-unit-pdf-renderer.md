@@ -1,13 +1,13 @@
 # Source-unit PDF renderer seam
 
 `source_unit_pdf.render_source_unit_pdf` is the existing pure A4 helper.
-Draft PR #607 wires its complete accepted unit via `source_unit_export` as an
-**MCP read tool**, equally available to ChatGPT, Grok, Claude, Slack agents and
-other clients. There is no automatic Slack upload or extra client-specific path.
-This code is **not deployed or live-accepted**.
+Merged PRs #607/#624 provide the current accepted-unit `source_unit_export`
+**MCP read tool**. The first Albinus/Hoffmann article PDF opened in ChatGPT.
+This v2 formatting change is source-only until reviewed, merged and installed
+by Shkiper; there is no automatic Slack upload or extra client-specific path.
 
 **MCP transport (2025-11-25):** on a warm read, `source_unit_export(source_id,
-article_id)` returns one `CallToolResult` with an `EmbeddedResource`:
+article_id, annotation_ru=None, translation_ru=None)` returns one `CallToolResult` with an `EmbeddedResource`:
 `type=resource`, `resource.blob` is base64 of the actual PDF,
 `resource.mimeType=application/pdf` and the descriptive URI identifies the
 source and unit. The text block identifies the article; it is not the file.
@@ -32,8 +32,11 @@ Dev handles authenticated, short-lived MCP transport only.
 
 **Current bounded vertical slice:** the existing SOURCE_READ wire envelope
 remains 256 KiB and the shared read deadline 2 s. The complete PDF is returned
-only when it fits those limits. Oversize returns `pdf_transport_limit`; a
-not-yet-complete unit returns `unit_not_ready` with the instruction to finish
+only when it fits those limits. Optional caller-supplied annotation/translation
+increase both request and PDF size: the existing 16 KiB request envelope and
+256 KiB result envelope remain unchanged. No content is shortened to fit.
+Oversize PDF returns `pdf_transport_limit`, while oversized requests follow the
+existing query-size rejection; a not-yet-complete unit returns `unit_not_ready` with the instruction to finish
 `book_ingest`. Neither case returns partial PDF. Longer/heavier units require a
 separately reviewed larger-file transfer, not an untested limit increase or
 a second ad hoc store. No live throughput/SLA or universal client support is
@@ -72,14 +75,25 @@ omitted or converted into invented endnotes. Richer structures require their
 accepted relationships in a later integration; this helper does not establish a
 second source model.
 
-The fixed layout is A4 with 56 pt margins, 11.5 pt serif type, 1.3 line spacing and
-14 pt first-line body indent. It measures actual shaped blocks at final width,
+The fixed layout is A4 with 56 pt margins, 11.5 pt serif body type, larger
+bold article and source heading styles, 1.3 line spacing, 14 pt first-line
+body/translation indent, and source-title-word emphasis when a dictionary
+article's first body word matches its exact accepted title. It measures actual shaped blocks at final width,
 keeps short blocks together, reserves heading plus following body, and splits
 long blocks with at least two visual lines on either side. It does not rely on
-MuPDF's ignored CSS pagination hints. The separate first page contains existing
-bibliography, exact service caption and original page labels; generated footers
-say `Страница PDF` so new pagination is distinct. PDF metadata binds the supplied
-source/unit/revision. Missing edition identifiers are never invented.
+MuPDF's ignored CSS pagination hints. The separate first page leads with a large article title, then the verified
+bibliography, original page labels and exact service caption. An optional
+1–2-paragraph `annotation_ru` appears there with the label
+«Краткое изложение, подготовлено сервисом». The following pages begin with
+the article title and the *verbatim* accepted author text, followed (only if
+supplied) by `translation_ru` in a separately labeled section
+«Автоматический перевод; авторитетен оригинал выше».
+The caller model supplies both strings; Kaggle only lays out, never translates
+or summarizes. No supplied text means no empty sections. Every page has a
+title · authors · book running header and a bare PDF page number below, without
+the word «PDF». PDF metadata binds the supplied source/unit/revision.
+Missing edition identifiers are never invented; ISBN, ISSN, УДК, ББК and DOI
+are shown only when supplied by the verified catalog.
 
 Author text is HTML-escaped and cannot load arbitrary resources. Inert span
 boundaries preserve literal ASCII f/fi/ff/ffi sequences because MuPDF's default
