@@ -58,6 +58,7 @@ def _blocks(unit, regions, accepted_revision):
         lookup[region.region_id] = region
     blocks = []
     prior = None
+    passed_pages = set()
     for index,span in enumerate(unit['source_spans']):
         region = lookup.get(span.get('region_id'))
         start, end = span.get('start'), span.get('end')
@@ -70,11 +71,14 @@ def _blocks(unit, regions, accepted_revision):
         if ((index > 0 and start != 0)
                 or (index < len(unit['source_spans'])-1 and end != len(region.source_text))):
             raise SourceUnitPdfError('contiguous_source_range_required')
-        position = (page, region.reading_order, start)
-        if prior is not None and (position < prior[0] or
-                position[:2] == prior[0][:2] and start < prior[1]):
-            raise SourceUnitPdfError('source_order_or_overlap_invalid')
-        prior = (position, end)
+        if prior is not None:
+            if page != prior[0]:
+                passed_pages.add(prior[0])
+                if page in passed_pages:
+                    raise SourceUnitPdfError('source_order_or_overlap_invalid')
+            elif (region.reading_order, start) < prior[1:]:
+                raise SourceUnitPdfError('source_order_or_overlap_invalid')
+        prior = (page, region.reading_order, end)
         if region.needs_review:
             raise SourceUnitPdfError('source_review_required')
         # No footnote callout/cell/list semantics are inferred from plain text.
@@ -102,8 +106,8 @@ def _blocks(unit, regions, accepted_revision):
         # so its page/order can be checked without inventing an empty block.
         last_region = lookup[last['region_id']]
         if (end_offset != 0 or last['end'] != len(last_region.source_text)
-                or (end_page,end_region.reading_order) <=
-                   (last['physical_page_index'],last_region.reading_order)):
+                or (end_page == last['physical_page_index']
+                    and end_region.reading_order <= last_region.reading_order)):
             raise SourceUnitPdfError('exact_source_end_required')
     if sum(len(text) for _, text in blocks) > MAX_CHARACTERS:
         raise SourceUnitPdfError('render_limit_exceeded')

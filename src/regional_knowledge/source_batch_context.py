@@ -84,9 +84,11 @@ async def load_current(connection,raw,source_id,text_only):
                                 for s in selection['source_spans']]
         else:chunk['region_refs']=[region_refs[r] for r in selection['region_ids']]
         chunks.append(chunk);context_ids[key]=ident
-    ordered=sorted(pages.values(),key=lambda row:row[0]['physical_page_index'])
-    result['issued_images_b64']=[img for _,img in ordered]
-    result['model_payload']['pages']=[p for p,_ in ordered]
+    from .source_units import ordered_model_pages
+    sequence,_=ordered_model_pages(p for p,_ in pages.values())
+    image_by_page={p['page_id']:img for p,img in pages.values()}
+    result['issued_images_b64']=[image_by_page[p['page_id']] for p in sequence]
+    result['model_payload']['pages']=sequence
     result['model_payload']['chunks']=chunks
     if not text_only:
         result['model_payload']['entity_candidates']=dict(entities=list(nodes.values()),entity_refs=refs,relations=relations)

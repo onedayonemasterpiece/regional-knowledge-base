@@ -332,7 +332,7 @@ class BgeQueue:
             if remaining<=0:return None,'overdue'
             # Minute granularity communicates an estimate rather than a
             # countdown; overdue launches explicitly stop offering an ETA.
-            return int(math.ceil(remaining/60)*60),'estimated'
+            return max(60,int((remaining+30)//60)*60),'estimated'
 
     def finish_startup(self, run_id):
         """Mark ready only after current full history/PG/BGE proof on caller."""

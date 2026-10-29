@@ -279,10 +279,12 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejected_packet_stage_keeps_same_import_and_next_explicit_stage_can_retry(self):
         self.packet_mode();await self.stage();old_key=self.state()['pending_operation_key']
         self.finish(status='rejected_precondition')
-        entry=self.spool.entries[old_key];raw=canonical({'reason':'native_source_sql_rolled_back'})
+        reason='complete_native_input_exceeds_512_tokens:chunk_key=Page-0.body:tokens=513'
+        entry=self.spool.entries[old_key];raw=canonical({'reason':reason})
         entry.apply_receipt.outcome=canonical(dict(result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw)))
         result=await self.helper.status(self.access,self.row)
-        self.assertEqual(result.warnings,['native_source_sql_rolled_back'])
+        self.assertEqual(result.warnings,[reason])
+        self.assertIn(reason,result.message)
         self.assertEqual(self.state()['phase'],'staging');self.assertEqual(self.state()['batch_count'],0)
         self.assertIsNone(self.state()['pending_operation_key'])
         # No automatic resend on status, but an explicit normal stage is a

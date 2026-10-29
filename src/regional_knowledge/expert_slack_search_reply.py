@@ -21,34 +21,46 @@ from . import request_order
 
 _LOG = logging.getLogger(__name__)
 _PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
-_TEMPORARILY_UNAVAILABLE = "Сейчас не могу проверить, повторите вопрос через пару минут"
+_GERMAN_QUESTION = re.compile(r"(?i)^\s*(?:wann|wo|wer|was|wie|warum|weshalb|welche\w*|in welchem|seit wann|ist|hat|gibt es)\b")
+_OPAQUE_REF = re.compile(r"(?i)(?:urn:rkb:|rkb:passage:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 
 def _error_reply(reason):
     code=reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,80}",reason) else None
-    return "Ошибка поиска. Код: unavailable"+("/"+code if code is not None else "")
+    return "Не удалось проверить базу сейчас. Код: unavailable"+("/"+code if code is not None else "")
 
 
-def answer_from_evidence(result):
+def answer_from_evidence(result, question=""):
     if (result.get("context_gap") is not False or result.get("status") not in ("ok","degraded")
             or result.get("mode") != "hybrid" or result.get("prior_write_pending")):
         raise PermissionError("verified source evidence required")
     if not result.get("evidence"):
-        return "В доступных источниках подтверждений не найдено. Источник и страница не установлены."
+        return ("In den verfügbaren Quellen wurden keine Belege gefunden. Русский перевод: В доступных источниках подтверждений не найдено."
+                if _GERMAN_QUESTION.search(question) else "В доступных источниках подтверждений не найдено.")
     clean=lambda s,n:html.escape(" ".join(s.split())[:n],quote=False) if type(s) is str else ""
-    lines=[]
+    lines=["Найдено в источниках:"]
+    seen=set()
     for item in result["evidence"][:3]:
         meta=item.get("metadata") or {}
         if type(meta) is not dict or not item.get("text"):
             raise PermissionError("exact source text required")
+        title=clean(item.get("title"),250)
+        citation=clean(meta.get("citation"),350)
         locator=clean(meta.get("locator"),160)
-        lines.append("*Источник:* "+(clean(item.get("title"),250) or "не указан")
-            + "\n*Страница:* "+(locator if _PAGE.search(locator) else "не указана")
-            + ("\n*Библиография:* "+clean(meta.get("citation"),350) if meta.get("citation") else "")
-            + "\n*Цитата (фрагмент):* «"+clean(item["text"],480)+"»")
-    text="\n\n".join(lines)
-    if len(text.encode())>12000:raise ValueError("bounded reply required")
-    return text
+        title="" if _OPAQUE_REF.search(title) else title
+        citation="" if _OPAQUE_REF.search(citation) else citation
+        locator="" if _OPAQUE_REF.search(locator) else locator
+        name=title or citation
+        if not name:continue
+        key=citation or re.split(r"(?i),\s*(?:с\.|стр\.|p\.|s\.)\s*\d",title)[0]
+        if key in seen:continue
+        seen.add(key)
+        if citation and citation not in name:name+=". "+citation
+        if locator and _PAGE.search(locator) and locator not in name:name+=", "+locator
+        fragment=clean(item["text"],200)
+        sentence=re.split(r"(?<=[.!?])\s+",fragment,maxsplit=1)[0]
+        lines.append(f"{len(lines)}. {name} — {sentence}")
+    return "\n".join(lines) if len("\n".join(lines).encode())<=12000 else "Найдено в источниках: (ответ превышает допустимый размер)"
 
 
 class SlackChatSender:
@@ -263,18 +275,14 @@ class ExpertSlackSearchReply:
                     elif type(details) is not dict or details.get("status") not in ("unavailable","pending"):
                         raise
                     else:
-                        text=(_error_reply(details.get("reason")) if details["status"]=="unavailable"
-                              else _TEMPORARILY_UNAVAILABLE)
+                        if details["status"]=="pending":return
+                        text=_error_reply(details.get("reason"))
             else:
                 if (not calls and type(outcome) is EvidenceSearchOutput
                         and outcome.status=="pending" and outcome.reason=="target_warming"
                         and not outcome.evidence):
-                    # Already-authorized startup status issues no source text.
-                    startup=outcome.startup
-                    text=(startup.message_ru if startup is not None and startup.message_ru
-                          else _TEMPORARILY_UNAVAILABLE)
-                    if startup is not None and startup.eta_seconds is not None:
-                        text+=f"\nОжидание: примерно {startup.eta_seconds} с."
+                    # Keep the original request searching; the existing task retries after warmup.
+                    return
                 else:
                     if len(calls)!=1:raise PermissionError("retained source gate required")
                     issued=calls[0]
@@ -285,7 +293,7 @@ class ExpertSlackSearchReply:
                     evidence=render_evidence(issued.render(issued.gated.result),ctx)
                     text=(_error_reply(evidence.get("reason"))
                           if evidence.get("context_gap") is True and evidence.get("status")=="unavailable"
-                          else answer_from_evidence(evidence))
+                          else answer_from_evidence(evidence,query))
             permit=None
             async def claim_for_post():
                 nonlocal permit
