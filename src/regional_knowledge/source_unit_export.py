@@ -17,7 +17,7 @@ def complete_unit(pages, *, source_id, page_count, read_complete, article_id):
     if match is None:
         raise SourceUnitPdfError("unit_not_found: select an existing article_id from book_find(view=units)")
     if match["state"] != "complete":
-        raise SourceUnitPdfError("unit_not_ready: continue book_ingest until the article ends and its pages are accepted")
+        raise SourceUnitPdfError("unit_not_ready: статья ещё не завершена; продолжите book_ingest до закрытия границ и приёмки всех страниц")
     return resolve_source_units(pages, source_id=source_id, page_count=page_count,
         read_complete=read_complete, after_ordinal=match["ordinal"]-1, limit=1)[0]
 
