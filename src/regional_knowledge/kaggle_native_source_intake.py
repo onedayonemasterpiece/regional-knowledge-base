@@ -737,6 +737,10 @@ class NativeSourceIntake:
         limit=4
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
+        if state.get('rejected_batch_index') is not None:
+            retry_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
+            if retry_cursor is not None and str(payload['pages'][0]['physical_page_index'])!=retry_cursor:
+                return self._output(row,state,rejected_next_cursor=retry_cursor)
         selections=tuple((p['physical_page_index'],None) for p in payload['pages'])
         issued=await self.importer.originals.selected_image_receipts(access.context,row['ingestion_id'],selections)
         await self._check(access,row)

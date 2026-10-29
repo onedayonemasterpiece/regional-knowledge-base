@@ -978,3 +978,31 @@ async def test_next_stage_before_semantic_still_enriches_every_batch(native_inta
     await drain()
     assert {(i,c) for i in range(3) for c in ('text','semantic')} <= set(issued), issued
     assert state(s,result)['enriched_batch_count'] == state(s,result)['batch_count'] == 3
+
+
+@pytest.mark.asyncio
+async def test_rejected_page_refuses_advancement_but_corrected_page_can_continue(native_intake):
+    s=native_intake
+    book=await start(s)
+    await stage(s,book,batch(s,book,first=59,count=1))
+    await finish(s,book)
+    await call(s,book,'status')
+    reason='complete_native_input_exceeds_512_tokens'
+    await finish(s,book,status='rejected_precondition',reason=reason)
+    rejected=await call(s,book,'status')
+    assert rejected.next_cursor=='59' and rejected.warnings==[reason]
+    before=operation_count(s)
+    refused=await stage(s,book,batch(s,book,first=60,count=1))
+    assert refused.next_cursor=='59' and refused.warnings==[reason]
+    assert operation_count(s)==before
+    corrected=await stage(s,book,batch(s,book,first=59,count=1))
+    assert corrected.state=='processing' and operation_count(s)==before+1
+    corrected_entry=await pending(s,book)
+    assert corrected_entry.command.route==STAGE_ROUTE
+    assert json.loads(corrected_entry.command.payload)['model_payload']['pages'][0]['physical_page_index']==59
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    assert state(s,book)['rejected_batch_index'] is None
+    advanced=await stage(s,book,batch(s,book,first=60,count=1))
+    assert advanced.next_action=='continue_pages' and advanced.next_cursor=='61'
