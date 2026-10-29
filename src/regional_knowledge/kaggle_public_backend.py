@@ -623,7 +623,9 @@ class KaggleSourceBackend:
                     if catalog_request is not None and catalog_request.get('operation')=='source_unit_pdf':
                         raise failure(status,reason,next_action=(
                             'continue_book_ingest' if reason=='unit_not_ready' else
-                            'try_another_complete_unit' if reason=='pdf_transport_limit' else 'retry_later'))
+                            'book_find_units' if reason=='unit_not_found' else
+                            'select_shorter_complete_unit' if reason=='pdf_transport_limit' else
+                            'source_structure_unsupported' if reason=='pdf_render_unsupported' else 'retry_later'))
                     raise failure(status,reason)
                 if graph_request is not None:
                     render = lambda value: self._render_graph(value,attempt=attempt)
