@@ -39,17 +39,23 @@ def _sender(**options):
                            bot_user_id="UBOT",**options)
 
 
-def test_sourced_reply_uses_exact_citation_and_honest_missing_page():
-    sourced=answer_from_evidence(_evidence([{
-        "title":"Гаузе", "text":"Возникла крепость. <@U111>",
-        "metadata":{"citation":"Кёнигсберг, том I","locator":"стр. 31"}}]))
-    assert "Гаузе" in sourced and "стр. 31" in sourced and "Кёнигсберг, том I" in sourced
-    assert "Возникла крепость." in sourced and "<@U111>" not in sourced
-    assert "&lt;@U111&gt;" in sourced
+def test_sourced_reply_fallback_is_one_excerpt_per_book_not_three_source_cards():
+    evidence=_evidence([{
+        "title":"Гаузе", "text":"Возникла крепость. Второе предложение <@U111>.",
+        "metadata":{"citation":"Кёнигсберг, том I <@U111>", "locator":"стр. 31"}}])
+    sourced=answer_from_evidence(evidence)
+    assert sourced.startswith("Найдено в источниках:\n1. Гаузе")
+    assert "стр. 31" in sourced and "Возникла крепость." in sourced
+    assert "Второе предложение" not in sourced and "не удалось" not in sourced.lower()
+    assert "<@U111>" not in sourced and "&lt;@U111&gt;" in sourced
+    assert "Цитата (фрагмент)" not in sourced
     no_page=answer_from_evidence(_evidence([{
-        "title":"Wiechert","text":"Ein Satz","metadata":{"locator":"opaque-id"}}]))
-    assert "Страница:* не указана" in no_page
+        "title":"Wiechert","text":"Ein Satz. Weiterer Satz","metadata":{"locator":"opaque-id"}}]))
+    assert "Найдено в источниках:\n1. Wiechert — Ein Satz." in no_page
     assert "opaque-id" not in no_page
+    german=answer_from_evidence(_evidence([]), "Wo lag die Königsberger Synagoge?")
+    assert german.startswith("In den verfügbaren Quellen")
+    assert "Русский перевод:" in german
     assert "не найдено" in answer_from_evidence(_evidence([]))
     for denied in (_evidence([],status="denied"),_evidence([],gap=True),
                    dict(_evidence([]),prior_write_pending=True)):
@@ -220,6 +226,59 @@ def _delivery_row(control, request_id):
 
 
 @pytest.mark.asyncio
+async def test_three_guarded_passages_post_one_answer_with_sources_in_original_thread(
+        service, monkeypatch):
+    from regional_knowledge.read_issuance import retain_read_output
+
+    control, receiver, reply, request_id, posts = _temporary_reply_harness(service)
+
+    class CurrentGate:
+        async def refresh(self, gated):
+            return gated
+
+        def issuance_current(self, ticket):
+            return True
+
+        def release(self, ticket):
+            pass
+
+    result = {
+        "status": "ok", "mode": "hybrid", "reason": None,
+        "prior_write_pending": False,
+        "observed_data_seq": 1, "observed_projection_seq": 1,
+        "evidence": [
+            {"title": "Гаузе", "text": "Текст первого фрагмента.",
+             "metadata": {"citation": "Кёнигсберг. Том I. 1996", "locator": "стр. 31"}},
+            {"title": "Гаузе", "text": "Текст второго фрагмента.",
+             "metadata": {"citation": "Кёнигсберг. Том I. 1996", "locator": "стр. 32"}},
+            {"title": "11111111-1111-1111-1111-111111111111",
+             "text": "Нерелевантный фрагмент.",
+             "metadata": {"locator": "opaque-id"}},
+        ],
+    }
+
+    async def search(query, **kwargs):
+        assert retain_read_output(CurrentGate(),
+            SimpleNamespace(ticket=object(), result=result), lambda value: value)
+        return None
+
+    monkeypatch.setattr(receiver.backend, "search_adapter", search)
+    await reply._answer(request_id)
+    await reply._answer(request_id)
+    assert len(posts) == 1
+    sent = posts[0]
+    assert sent["thread_ts"] == "1792000000.100" and sent["client_msg_id"] == "Ev-1"
+    assert sent["text"].count("Найдено в источниках:") == 1
+    assert "Гаузе" in sent["text"] and "стр. 31" in sent["text"]
+    assert "Цитата (фрагмент)" not in sent["text"]
+    assert "11111111-1111-1111-1111-111111111111" not in sent["text"]
+    assert "Текст первого фрагмента." in sent["text"]
+    assert "Текст второго фрагмента" not in sent["text"]
+    assert "не удалось" not in sent["text"].lower()
+    assert _delivery_row(control, request_id)["state"] == "delivered"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("query",["", "я"*1001, "*Sent using* <@U123>"])
 async def test_invalid_query_completes_once_without_search_and_unblocks_dialog(service,monkeypatch,query):
     control,receiver,reply,request_id,posts=_temporary_reply_harness(service)
@@ -370,7 +429,7 @@ async def test_transient_preclaim_failure_sends_error_code_via_existing_permit(s
     assert saved["state"] == "delivered" and saved["delivery_attempt"] == 1
     assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is not None
     assert len(posts) == 1
-    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/deadline_exceeded"
+    assert posts[0]["text"] == "Не удалось проверить базу сейчас. Код: unavailable/deadline_exceeded"
     assert posts[0]["client_msg_id"] == "Ev-1"
     assert posts[0]["thread_ts"] == "1792000000.100"
 
@@ -394,7 +453,7 @@ async def test_error_code_never_reflects_untrusted_exception_detail(service, mon
     await reply._answer(request_id)
     assert _delivery_row(control, request_id)["state"] == "delivered"
     assert len(posts) == 1
-    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable"
+    assert posts[0]["text"] == "Не удалось проверить базу сейчас. Код: unavailable"
     assert "secret" not in posts[0]["text"]
 
 
@@ -483,7 +542,7 @@ async def test_guarded_context_gap_returns_error_code_without_exposing_source(se
     monkeypatch.setattr(receiver.backend, "search_adapter", incomplete)
     await reply._answer(request_id)
     assert _delivery_row(control, request_id)["state"] == "delivered"
-    assert len(posts) == 1 and posts[0]["text"] == "Ошибка поиска. Код: unavailable/not_ready"
+    assert len(posts) == 1 and posts[0]["text"] == "Не удалось проверить базу сейчас. Код: unavailable/not_ready"
     assert "unverified source" not in posts[0]["text"]
     assert gate.refreshes == gate.releases == 1 and gate.checked >= 2
 
@@ -505,7 +564,7 @@ async def test_generic_post_unknown_never_resends_after_provider_lost_ack(servic
     assert saved["state"] == "unknown" and saved["delivery_attempt"] == 1
     assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is None
     assert len(posts) == 1
-    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/target_warming"
+    assert posts[0]["text"] == "Не удалось проверить базу сейчас. Код: unavailable/target_warming"
 
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)
@@ -617,7 +676,7 @@ async def test_generic_post_unknown_never_resends_after_provider_lost_ack(servic
     assert saved["state"] == "unknown" and saved["delivery_attempt"] == 1
     assert saved["delivery_id"] == "Ev-1" and saved["delivery_receipt"] is None
     assert len(posts) == 1
-    assert posts[0]["text"] == "Ошибка поиска. Код: unavailable/target_warming"
+    assert posts[0]["text"] == "Не удалось проверить базу сейчас. Код: unavailable/target_warming"
 
     assert control.accept(_observation())["request_id"] == request_id
     await reply._answer(request_id)

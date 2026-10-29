@@ -222,7 +222,8 @@ async def test_full_and_live_source_calls_share_actual_admission_and_no_domain_f
     monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.target.principal)
     full=build_server(target_startup=startup)
     live=build_server(target_startup=startup,profile='live')
-    assert {tool.name for tool in live._tool_manager.list_tools()}=={'knowledge_search','startup_status'}
+    assert {tool.name for tool in live._tool_manager.list_tools()}=={'knowledge_search','startup_status','source_unit_export'}
+    assert 'source_unit_export' in {tool.name for tool in full._tool_manager.list_tools()}
     async with startup.lifespan(full):
         for server,name in ((full,'search'),(live,'knowledge_search')):
             request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],

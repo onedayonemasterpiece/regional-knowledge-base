@@ -292,6 +292,11 @@ class SourceReadGate:
                 or record.get('state') not in ('complete','unit_not_ready')
                 for record in result.records):
             raise SourceGateDenied('accepted source unit scope differs')
+        if catalog and q.operation=='source_unit_pdf' and (len(result.records)!=1 or
+                result.records[0].get('source_id')!=q.source_id or
+                result.records[0].get('article_id')!=q.article_id or
+                type(result.records[0].get('blob')) is not str):
+            raise SourceGateDenied('accepted PDF source scope differs')
         if fact and (not self.facts_supported() or len(result.records)>q.limit or
                 any(record.get('kind')!=('observations' if q.action=='observation_compare' else q.action) for record in result.records) or
                 q.source_id is not None and any(source!=q.source_id for source in sources)):

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from functools import wraps
 from uuid import UUID, uuid5
 
+from .bge_contract import TOKEN_REJECTION_PATTERN
 from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH,
     canonical, digest, encode_issued_image, validate_stage_payload)
 
@@ -444,12 +445,14 @@ class NativeSourceIntake:
                 raw=json.loads(entry.apply_receipt.outcome)
                 body=base64.b64decode(raw['result_b64'],validate=True)
                 code=self._result(entry).get('reason') if body else None
-                if type(code) is str and re.fullmatch(r'[a-z0-9_]{1,64}',code):
+                if type(code) is str and (re.fullmatch(r'[a-z0-9_]{1,64}',code)
+                        or re.fullmatch(TOKEN_REJECTION_PATTERN,code)):
                     reason=code
                 # One invalid packet remains an explicit review result. It
                 # neither revokes prior packets nor closes the whole import.
                 changes=dict(phase='staging',pending_operation_key=None,pending_kind=None,
-                    rejected_batch_index=max(0,state['batch_count']-1),rejected_reason=reason,
+                    rejected_batch_index=(json.loads(entry.command.payload)['batch_index'] if kind=='stage'
+                        else max(0,state['batch_count']-1)),rejected_reason=reason,
                     command_attempt=state['command_attempt']+1,read_completion_requested=0)
                 if kind=='batch':changes.update(published_batch_count=state['batch_count'],enriched_batch_count=state['batch_count'])
                 return await asyncio.to_thread(self._update,row,**changes)
@@ -558,8 +561,12 @@ class NativeSourceIntake:
                 "AND operation_key LIKE ? AND (? OR apply_state='APPLIED') ORDER BY sequence DESC LIMIT 1",
                 (row['source_id'],f"source-stage:{row['ingestion_id']}:{str(rejected_batch)+':' if retry else ''}%",retry)).fetchone()
         entry=await self._entry(latest[0]) if latest else None
-        pages=[p['physical_page_index'] for p in json.loads(entry.command.payload)['model_payload']['pages']] if entry else []
-        return (str(min(pages)) if retry else str(max(pages)+1)) if pages else None
+        if entry is None:return None
+        doc=json.loads(entry.command.payload)
+        pages=doc['model_payload']['pages']
+        if retry:return str(pages[0]['physical_page_index'])
+        cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
+        return cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
 
     def _output(self, row, state, *, rejected_next_cursor=None):
         phase=state['phase']
@@ -597,14 +604,13 @@ class NativeSourceIntake:
                     return tails
             doc=json.loads(entry.command.payload)
             pages=doc['model_payload']['pages']
-            next_page=max(p['physical_page_index'] for p in pages)+1
             cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
-            if isinstance(cursor,str) and cursor.isdecimal(): next_page=max(next_page,int(cursor))
+            next_page=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
             return self.importer._output(row,'processing' if pending else 'staged',
                 'Stage input accepted; continue reading without resending these pages. '
                 'Retain unfinished passages and current tail context for the next reviewed page. '
                 'The server handles packet publication; acceptance is not Dataset Saved.',
-                'continue_pages',next_cursor=str(next_page),source_archive_status='verified')
+                'continue_pages',next_cursor=next_page,source_archive_status='verified')
         return self._output(row,state)
 
     async def _tail_output(self, access, row, state):
@@ -645,7 +651,8 @@ class NativeSourceIntake:
             return self.importer._output(row,'needs_review',
                 'Resume the exact pending spans with the next reviewed page; select small complete semantic passages, without splitting sentences; do not finalize',
                 'continue_tail',source_archive_status='verified',tail_refs=refs,
-                next_cursor=str(refs[0].physical_page_index+1),warnings=['more_source_tails'] if value['has_more'] else [])
+                next_cursor=await self.applied_page_cursor(access,row) or str(refs[0].physical_page_index+1),
+                warnings=['more_source_tails'] if value['has_more'] else [])
         return None
 
     async def _recover_orphan(self, access, row, state, kind, key):
@@ -737,6 +744,10 @@ class NativeSourceIntake:
         limit=4
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
+        if state.get('rejected_batch_index') is not None:
+            retry_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
+            if retry_cursor is not None and str(payload['pages'][0]['physical_page_index'])!=retry_cursor:
+                return self._output(row,state,rejected_next_cursor=retry_cursor)
         selections=tuple((p['physical_page_index'],None) for p in payload['pages'])
         issued=await self.importer.originals.selected_image_receipts(access.context,row['ingestion_id'],selections)
         await self._check(access,row)

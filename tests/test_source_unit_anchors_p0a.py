@@ -23,10 +23,11 @@ def event(ident, action, region_key, offset, *, kind=None, title=None):
     return result
 
 
-def reviewed(index, regions, markers=(), *, version=1):
+def reviewed(index, regions, markers=(), *, version=1, previous=None):
     """Validate through the actual model-bound book_ingest StagePageInput."""
     page_id = str(uuid5(UUID(SOURCE), f"page:1:{index}"))
     raw = dict(page_id=page_id,physical_page_index=index,
+        previous_physical_page_index=previous,
         source_material="visual_reviewed",source_review_note="Reviewed synthetic page",
         source_unit_version=version,
         regions=[dict(region_key=key,kind=kind,reading_order=i,source_text=text,
@@ -41,6 +42,7 @@ def projection(page):
     wire = page.model_dump(mode="json",exclude_none=True)
     return dict(page_id=wire["page_id"],
         physical_page_index=wire["physical_page_index"],
+        previous_physical_page_index=wire.get("previous_physical_page_index"),
         source_unit_boundaries=wire["source_unit_boundaries"],
         regions=[dict(region_key=r["region_key"],reading_order=r["reading_order"],
                       kind=r["kind"],source_length=len(r["source_text"]))
@@ -52,6 +54,33 @@ def spans_text(unit, original_pages):
             for p in original_pages for r in p.regions}
     return "".join(lookup[(s["physical_page_index"],s["region_key"])][s["start"]:s["end"]]
                    for s in unit["source_spans"])
+
+
+
+def test_albinus_printed_129_to_130_follows_model_not_reversed_scan():
+    """Article spans already accepted p64 and new p126, not physical p65."""
+    first = "Printed 129: Hoffmann article begins."
+    finish = "Printed 130: Hoffmann article continues and ends."
+    next_article = "Printed 132: another article begins."
+    pages = [
+        reviewed(64, [("body", "body", first)],
+            [event("hoffmann", "start", "body", 0, kind="article", title="Hoffmann")]),
+        reviewed(126, [("body", "body", finish)],
+            [event("hoffmann", "end", "body", len(finish))], previous=64),
+        reviewed(125, [("body", "body", next_article)],
+            [event("other", "start", "body", 0, kind="article", title="Other")],
+            previous=126),
+    ]
+    # The SQL reader can return physical order; explicit predecessors decide.
+    units = resolve_source_units([projection(p) for p in reversed(pages)],
+        source_id=SOURCE, page_count=128, read_complete=False)
+    assert [unit["article_id"] for unit in units] == ["hoffmann", "other"]
+    assert units[0]["state"] == "complete"
+    assert [span["physical_page_index"] for span in units[0]["source_spans"]] == [64, 126]
+    assert spans_text(units[0], pages) == first + finish
+    assert units[1]["state"] == "unit_not_ready"
+    assert units[1]["start_anchor"]["physical_page_index"] == 125
+    assert [page.previous_physical_page_index for page in pages] == [None, 64, 126]
 
 
 def test_i01_three_accepted_pages_remain_open_with_exact_start_and_search_independence():

@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
+import re
 import time
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from psycopg.pq import TransactionStatus
 
 from .kaggle_apply import ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, StaleWriter
+from .bge_contract import TOKEN_REJECTION_PATTERN
 from .source_import import SOURCE_IMPORT, IMPORT_DEPENDENCY, validate_import_command, source_import_handler
 
 SOURCE_WITHDRAW='source.withdraw.v1'
@@ -252,7 +254,7 @@ class WorkerSourceExecutor:
                         database=self.database)
                 except SourceMaterializationRejected as error:
                     reason=str(error)
-                    if not 1<=len(reason)<=100 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_' for c in reason):
+                    if not (re.fullmatch(r'[a-z0-9_]{1,100}',reason) or re.fullmatch(TOKEN_REJECTION_PATTERN,reason)):
                         reason='invalid_model_input'
                     reject_reason=reason
                     _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
