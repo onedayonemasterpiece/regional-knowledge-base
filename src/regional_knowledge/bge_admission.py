@@ -1,7 +1,7 @@
 """Internal RAM admission owned by BgeQueue's existing WSS controller.
 
 No model, dispatcher, transport, or caller identity authority lives here. One
-actual compute claim spans ephemeral QUERY and the existing durable job queue.
+document claim and up to eight read claims share the existing worker.
 """
 from __future__ import annotations
 
@@ -115,7 +115,8 @@ class SharedReadAdmission:
         self._attachment=None
         self._state='unknown'
         self._work=None
-        self._last_release=None
+        self._read_work={}
+        self._last_release=()
         self._document_result=None
         self._sent=False
         self._slot_version=object()
@@ -285,7 +286,9 @@ class SharedReadAdmission:
             self._changed_slot()
             for key in tuple(self._reads):self._cancel(key)
             if self._work is not None and not self._sent:
-                self._work=None;self._state='unknown'
+                self._work=None
+            self._read_work={k:v for k,v in self._read_work.items() if v[1]}
+            if self._attachment is not None:self._state='unknown'
             self._attachment=attachment
 
     def _changed_slot(self):
@@ -335,34 +338,34 @@ class SharedReadAdmission:
                 if not probed:raise StaleAttachment('stale resource probe')
             if (owner['run_id'],owner['incarnation'])!=(run_id,runtime_incarnation):
                 await asyncio.to_thread(self.queue._admission_bind,run_id,token,connection_generation,runtime_incarnation)
-            if self._work is not None and self._work.resource.run_id!=run_id:
+            if ((self._work is not None and self._work.resource.run_id!=run_id)
+                    or any(w.resource.run_id!=run_id for w,_ in self._read_work.values())):
                 self._work=None;self._sent=False;self._state='unknown'
-                self._last_release=None;self._document_result=None
+                self._last_release=();self._read_work.clear();self._document_result=None
                 self._changed_slot()
             self._observe_attachment(run,connection_generation)
             if probed and (self._probe is not probe_record or probe_record[2] is not self._slot_version):
                 raise StaleAttachment('resource changed during probe reconciliation')
-            if self._work is not None:
-                if probed and descriptor is None:
-                    # Fresh ordered same-worker observation also proves that a
-                    # dispatch lost before receipt cannot still start later.
-                    r=self._work.resource
+            claims=[w.resource for w,_ in self._read_work.values()]
+            if self._work is not None:claims.append(self._work.resource)
+            if descriptor is None:
+                if claims and not probed:
+                    if self._last_release:return self.status()
+                    raise StaleAttachment('actual compute claims still held')
+                for r in claims:
                     if r.resource_kind=='read':self._cancel((r.dispatch_generation,r.resource_id))
-                    self._work=None;self._sent=False
-                elif descriptor!=self._work.resource:
-                    if (not probed and self._last_release is not None
-                            and self._last_release.dispatch_generation==connection_generation
-                            and (descriptor is None or descriptor==self._last_release)):
-                        # states() may have queued the old idle/busy notice
-                        # behind RELEASED while admission reserved new work.
-                        # This weak notice cannot retire or contradict that
-                        # newer claim. Only a fresh ordered probe can do so.
-                        return self.status()
-                    raise StaleAttachment('actual compute claim still held')
-            elif descriptor is not None:
-                self._work=ChannelWork(descriptor);self._sent=True
+                self._read_work.clear();self._work=None;self._sent=False;self._state='idle'
+            elif descriptor in claims:
+                # A representative busy observation cannot inventory K8. On
+                # reconnect retain all debt until a fresh aggregate idle proof.
+                if self._state!='unknown':self._state='busy'
+            elif not probed and descriptor in self._last_release:
+                return self.status()
+            elif claims:
+                raise StaleAttachment('actual compute claim still held')
+            else:
+                self._work=ChannelWork(descriptor);self._sent=True;self._state='unknown'
             self._changed_slot()
-            self._state='busy' if self._work is not None else 'idle'
             _LOG.info('bge_resource_reconciled run_id=%s generation=%s state=%s',run_id,connection_generation,self._state)
             self._event.set()
             return self.status()
@@ -392,17 +395,17 @@ class SharedReadAdmission:
             if (run['runtime_incarnation']!=runtime_incarnation
                     or (owner['run_id'],owner['incarnation'])!=(run_id,runtime_incarnation)):
                 raise StaleAttachment('stale or unknown resource release')
-            if self._last_release==descriptor:
-                return False # exact replay never touches a newer reservation.
-            if self._work is None and self._state=='unknown':
-                self._last_release=descriptor
-                self._remember_document_result(descriptor,resumed)
-                self._changed_slot()
-                return True # restart has no claim memory; baseline still needed.
-            if self._work is None or not self._sent or self._work.resource!=descriptor:
+            if descriptor in self._last_release:return False
+            entry=self._read_work.get(descriptor.compute_claim)
+            if entry is not None and entry[1] and entry[0].resource==descriptor:
+                del self._read_work[descriptor.compute_claim]
+            elif self._work is not None and self._sent and self._work.resource==descriptor:
+                self._work=None;self._sent=False
+            elif self._state!='unknown':
                 raise StaleAttachment('stale or unknown resource release')
-            self._work=None;self._sent=False;self._state='idle'
-            self._last_release=descriptor
+            if self._state!='unknown':
+                self._state='busy' if self._work or self._read_work else 'idle'
+            self._last_release=(*self._last_release[-8:],descriptor)
             self._remember_document_result(descriptor,resumed)
             self._changed_slot()
             _LOG.info('bge_resource_released run_id=%s generation=%s dispatch_generation=%s kind=%s',run_id,connection_generation,dispatch_generation,resource_kind)
@@ -426,7 +429,7 @@ class SharedReadAdmission:
         self._active()
         async with self._lock:
             run,owner,docs,resumed=await self._snapshot(run_id,token,connection_generation)
-            if (self._state!='idle' or self._work is not None
+            if (self._state in ('unknown','reserving')
                     or (owner['run_id'],owner['incarnation'])!=(run_id,run['runtime_incarnation'])):return None
             ready=(run['status']=='ready' and run['provider_version'] is not None
                 and (not run.get('runtime_required') or run.get('runtime_verified')))
@@ -439,7 +442,7 @@ class SharedReadAdmission:
                 waiting_result=await asyncio.to_thread(self.queue._document_claim_waiting,*self._document_result)
                 if not waiting_result:self._document_result=None
             eligible=[];authorized={}
-            for doc in ([] if waiting_result else [resumed] if resumed else docs):
+            for doc in ([] if waiting_result or self._work is not None else [resumed] if resumed else docs):
                 if doc['kind']=='recovery_phase':
                     if maintenance is not None and maintenance.eligible(doc,run,connection_generation):eligible.append(doc)
                     continue
@@ -473,7 +476,9 @@ class SharedReadAdmission:
                     if authorized[doc['actor']]:eligible.append(doc)
             recovery=[d for d in eligible if d['kind']=='recovery_phase']
             if recovery:eligible=recovery
-            reads=[r for r in self._reads.values() if r.dispatched is None] if ready else []
+            reserved={(w.dispatch_generation,w.resource.resource_id) for w,_ in self._read_work.values()}
+            reads=[r for key,r in self._reads.items() if r.dispatched is None and key not in reserved] \
+                if ready and len(self._read_work)<8 else []
             if not reads and not eligible:return None
             # Person first, then dialog. Many dialogs cannot multiply a
             # person's share. Forced document turn bounds continuous read runs.
@@ -529,14 +534,17 @@ class SharedReadAdmission:
             self._turn+=1;self._person_turn[person]=self._turn
             dialogs={(r.authority.person_id,r.dialog) for r in self._reads.values()}
             self._dialog_turn={d:n for d,n in self._dialog_turn.items() if d in dialogs}
-            self._work=work;self._sent=False;self._state='reserved'
+            if work.query is not None:self._read_work[work.compute_claim]=(work,False)
+            else:self._work=work;self._sent=False
+            self._state='reserved'
             self._changed_slot()
             return work
 
     def mark_work_sent(self, work):
         """Call BEFORE attempting socket send; an uncertain send retains debt."""
         self._active()
-        if self._work is not work or self._state!='reserved' or self._sent:
+        if ((work.query is not None and self._read_work.get(work.compute_claim)!=(work,False))
+                or (work.query is None and (self._work is not work or self._sent))):
             raise StaleAttachment('stale work reservation')
         if work.query is not None:
             key=(work.query.connection_generation,work.query.request_id)
@@ -544,7 +552,9 @@ class SharedReadAdmission:
             if read is None or read.deadline<=self.clock():
                 raise StaleAttachment('read consumer no longer active')
             read.dispatched=work.resource
-        self._sent=True;self._state='busy'
+        if work.query is not None:self._read_work[work.compute_claim]=(work,True)
+        else:self._sent=True
+        self._state='busy'
         self._changed_slot()
         if work.query is not None and read.on_dispatch is not None:
             try:
@@ -557,9 +567,17 @@ class SharedReadAdmission:
     def discard_unsent(self, work):
         """Only for work provably never handed to network/worker."""
         self._active()
-        if self._work is not work or self._sent:raise StaleAttachment('compute may already be active')
-        self._work=None;self._state='idle';self._event.set()
+        if work.query is not None:
+            if self._read_work.get(work.compute_claim)!=(work,False):raise StaleAttachment('compute may already be active')
+            del self._read_work[work.compute_claim]
+        else:
+            if self._work is not work or self._sent:raise StaleAttachment('compute may already be active')
+            self._work=None
+        self._state='busy' if self._work or self._read_work else 'idle';self._event.set()
         self._changed_slot()
+
+    def dispatched_reads(self):
+        return tuple(w for w,sent in self._read_work.values() if sent)
 
     def read_consumer_active(self, work):
         """Cancellation observation only; never releases actual compute."""
@@ -570,7 +588,7 @@ class SharedReadAdmission:
                     and read.deadline>self.clock()
                     and read.ticket.turn_generation==work.query.turn_generation
                     and (read.dispatched==work.resource or
-                         (read.dispatched is None and self._work is work and self._state=='reserved')))
+                         (read.dispatched is None and self._read_work.get(work.compute_claim)==(work,False))))
 
     async def finish_read(self, run_id, token, connection_generation, result):
         """Consumer delivery only. Source/withdrawal output gate remains separate."""
@@ -615,7 +633,7 @@ class SharedReadAdmission:
             if result.ok:
                 for key in tuple(self._reads):self._cancel(key)
                 self._work=None;self._sent=False;self._state='unknown';self._attachment=None
-                self._last_release=None
+                self._last_release=();self._read_work.clear()
                 self._document_result=None
                 self._changed_slot()
                 self._event.set()
@@ -623,7 +641,7 @@ class SharedReadAdmission:
 
     def status(self):
         return {'state':self._state,'pending_reads':len(self._reads),
-                'resource':self._work.resource if self._work else None,
+                'resource':self._work.resource if self._work else next((w.resource for w,_ in self._read_work.values()),None),
                 'document_result_pending':self._document_result is not None,
                 'document_contexts':len(self._documents),'command_contexts':len(self._commands)}
 

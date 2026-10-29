@@ -100,7 +100,9 @@ async def test_cancel_deadline_and_result_leave_actual_slot_held(state):
     assert first.result.cancelled()
     assert not s.a.read_consumer_active(work)
     second=await begin(s,'waiting')
-    assert await s.q.next_channel_work(s.run,s.token,1) is None
+    parallel=await s.q.next_channel_work(s.run,s.token,1)
+    assert parallel.query.request_id=='waiting' and work in s.a.dispatched_reads()
+    s.a.discard_unsent(parallel)
     assert not await s.a.finish_read(s.run,s.token,1,answer(work))
     await release(s,work)
     next_work=await s.q.next_channel_work(s.run,s.token,1)
@@ -247,7 +249,7 @@ async def test_probe_cannot_free_new_reservation_or_cross_attachment(state):
     generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
     with pytest.raises(StaleAttachment):
         await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle',probe_nonce=nonce)
-    assert s.a.status()['state']=='busy'
+    assert s.a.status()['state']=='unknown' and s.a.status()['resource']==work.resource
 
 
 @pytest.mark.asyncio
@@ -309,9 +311,12 @@ async def test_restart_recovers_same_incarnation_then_owned_current_run_handover
         generation=reopened.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
         await a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='busy',
             resource_kind='read',resource_id='lost-context',compute_claim=work.compute_claim,dispatch_generation=1)
-        assert a.status()['pending_reads']==0 and a.status()['state']=='busy'
+        assert a.status()['pending_reads']==0 and a.status()['state']=='unknown'
         await a.resource_released(s.run,s.token,generation,runtime_incarnation='incarnation-a',
             resource_kind='read',resource_id='lost-context',compute_claim=work.compute_claim,dispatch_generation=1)
+        assert a.status()['state']=='unknown'
+        nonce=await a.begin_resource_probe(s.run,s.token,generation)
+        await a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle',probe_nonce=nonce)
         assert a.status()['state']=='idle'
         # Existing current-run fencing authorizes a new baseline after handover;
         # provider compute closure remains independent.
@@ -387,7 +392,9 @@ async def test_dialog_pending_queue_reclaimed_on_cancel_without_releasing_comput
     s.a.cancel_read(first)
     await begin(s,'dialog-replacement')
     assert s.a.status()['pending_reads']==3 and s.a.status()['state']=='busy'
-    assert await s.q.next_channel_work(s.run,s.token,1) is None
+    parallel=await s.q.next_channel_work(s.run,s.token,1)
+    assert parallel.query.request_id=='dialog-second' and work in s.a.dispatched_reads()
+    s.a.discard_unsent(parallel)
 
 
 @pytest.mark.asyncio
@@ -449,9 +456,12 @@ async def test_document_result_is_durable_but_does_not_free_compute(state):
             [[1]+[0]*1023],{},connection_generation=1)==expected
         assert s.a.status()['state']=='busy'
     await begin(s,'behind-done-document')
-    assert await s.q.next_channel_work(s.run,s.token,1) is None
+    parallel=await s.q.next_channel_work(s.run,s.token,1)
+    assert parallel.kind=='read' and s.a._work is w
+    s.a.mark_work_sent(parallel)
     await release(s,w)
-    assert (await s.q.next_channel_work(s.run,s.token,1)).kind=='read'
+    assert parallel in s.a.dispatched_reads()
+    await release(s,parallel)
 
 
 @pytest.mark.asyncio
@@ -543,6 +553,14 @@ async def test_document_release_before_result_holds_only_result_debt_and_serves_
     await s.a.register_document_actor(s.auth.p.admin)
     work=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(work)
     payload=work.document_payload
+    # Even before the worker's early document release arrives, only another
+    # document is exclusive; a read may overlap its actual PG/model work.
+    await begin(s,'read-during-document-claim')
+    parallel=await s.q.next_channel_work(s.run,s.token,1)
+    assert parallel.kind=='read' and s.a._work is work
+    s.a.mark_work_sent(parallel)
+    assert await s.q.next_channel_work(s.run,s.token,1) is None
+    await release(s,parallel)
     await release(s,work)
     assert s.a.status()['state']=='idle' and s.a.status()['document_result_pending']
     second=s.q.enqueue(s.auth.p.owner.subject,'second-document',['another passage'],kind='document')
@@ -664,16 +682,16 @@ async def test_noncurrent_successor_cannot_clear_ram_before_owned_baseline(state
     with pytest.raises(StaleAttachment):
         await s.a.resource_state(successor,token,generation,runtime_incarnation='successor',state='idle')
     assert await s.q.next_channel_work(successor,token,generation) is None
-    assert s.a._work is work and s.a._sent
+    assert work in s.a.dispatched_reads()
     assert s.a._attachment==attachment and s.a._slot_version is slot
     assert not ticket.result.done()
     with s.q.connect() as db:
         db.execute('update control set current_run=?,successor=null where id=1',(successor,))
     assert await s.q.next_channel_work(successor,token,generation) is None
-    assert s.a._work is work and not ticket.result.done()
+    assert work in s.a.dispatched_reads() and not ticket.result.done()
     await s.a.resource_state(successor,token,generation,runtime_incarnation='successor',state='idle')
     assert ticket.result.cancelled()
-    assert s.a._work is None and not s.a._sent
+    assert not s.a.dispatched_reads() and s.a.status()['resource'] is None
     with s.q.connect(write=False) as db:
         owner=db.execute('select run_id,incarnation from bge_shared_admission where id=1').fetchone()
     assert tuple(owner)==(successor,'successor')
@@ -706,3 +724,62 @@ async def test_queued_reads_keep_same_dialog_arrival_order(state):
         assert await s.a.finish_read(s.run,s.token,s.generation,result)
         assert (await ticket.result).status=='ok'
         await release(s,work)
+
+
+@pytest.mark.asyncio
+async def test_eight_claims_cancel_second_and_reconnect_retains_real_worker_debt(state):
+    from test_bge_shared_worker import running, result
+    s=state
+    entered=set(); leave=asyncio.Event(); cleanup=asyncio.Event(); cancelled=asyncio.Event()
+    async def handler(frame, *, encode):
+        entered.add(frame['request_id'])
+        try:
+            await encode(frame['query'])
+            await leave.wait()  # Synthetic independent PG transactions.
+        except asyncio.CancelledError:
+            if frame['request_id']=='k8-2':cancelled.set()
+            await cleanup.wait()  # SQL rollback has not finished yet.
+            raise
+        return result(frame)
+    async with running(handler) as (peer, worker, loads):
+        tickets=[await begin(s,'k8-1',dialog='d-1')]
+        first=await s.q.next_channel_work(s.run,s.token,1)
+        assert first is not None
+        assert await s.q.next_channel_work(s.run,s.token,1) is None # Reserved, not yet sent.
+        tickets.extend([await begin(s,f'k8-{n}',dialog=f'd-{n}') for n in range(2,10)])
+        works=[first]
+        for n in range(1,8):
+            work=await s.q.next_channel_work(s.run,s.token,1)
+            if work is None:leave.set();cleanup.set()
+            assert work is not None, f'only {n} reads admitted concurrently'
+            works.append(work)
+        assert len({w.query.request_id for w in works})==8
+        for work in works:
+            s.a.mark_work_sent(work)
+            await peer.put(work.query.model_dump(mode='json'))
+        assert await s.q.next_channel_work(s.run,s.token,1) is None
+        async with asyncio.timeout(1):
+            while len(entered)!=8:await asyncio.sleep(.005)
+        s.a.cancel_read(tickets[1])
+        await peer.put(dict(type='CANCEL_QUERY',request_id=works[1].query.request_id,turn_generation=0))
+        await asyncio.wait_for(cancelled.wait(),1)
+        assert await s.q.next_channel_work(s.run,s.token,1) is None
+        assert not peer.frames('RESOURCE_RELEASED')
+        await peer.disconnect()
+        await peer.wait('ATTACH',generation=2)
+        generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+        nonce=await s.a.begin_resource_probe(s.run,s.token,generation)
+        await peer.put(dict(type='RESOURCE_PROBE',probe_nonce=nonce),2)
+        busy=await peer.wait('RESOURCE_STATE',generation=2,predicate=lambda f:f.get('probe_nonce')==nonce)
+        assert busy['state']=='busy'
+        await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',
+            **{k:v for k,v in busy.items() if k not in ('type','protocol_version','connection_generation')})
+        assert await s.q.next_channel_work(s.run,s.token,generation) is None
+        cleanup.set();leave.set()
+        await peer.wait('RESOURCE_STATE',generation=2,predicate=lambda f:f['state']=='idle')
+        nonce=await s.a.begin_resource_probe(s.run,s.token,generation)
+        await peer.put(dict(type='RESOURCE_PROBE',probe_nonce=nonce),2)
+        idle=await peer.wait('RESOURCE_STATE',generation=2,predicate=lambda f:f.get('probe_nonce')==nonce)
+        assert idle['state']=='idle'
+        await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle',probe_nonce=nonce)
+        assert not s.a.status()['resource'] and loads==['loaded']

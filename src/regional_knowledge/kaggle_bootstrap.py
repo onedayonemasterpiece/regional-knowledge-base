@@ -250,6 +250,7 @@ class ResidentEncoder:
     model_directory: Path
     model_load_count: int
     tokenizer_fingerprint: str = field(init=False)
+    forward_lock: object = field(default_factory=asyncio.Lock, init=False, repr=False, compare=False)
     _tokenizer_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     def __post_init__(self):

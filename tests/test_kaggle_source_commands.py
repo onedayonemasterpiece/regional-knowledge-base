@@ -657,7 +657,7 @@ async def test_source_release_allows_read_and_keeps_original_native_receipt(acce
     assert await s.a.finish_read(s.run,s.token,s.generation,answer(read))
     assert (await ticket.result).status=='ok'
     await release_read(s,read)
-    assert s.a._last_release==read.resource # QUERY overwrote source's transient release.
+    assert read.resource in s.a._last_release and native.resource in s.a._last_release
     generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
     await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle')
     late=response(e,native,frame);late['connection_generation']=generation
@@ -711,7 +711,8 @@ async def test_worker_query_and_reconnect_do_not_wait_for_native_pg_work(monkeyp
         assert not finish.is_set() and worker.job['id']=='held-source'
         await peer.disconnect()
         await peer.wait('RESOURCE_RELEASED',generation=2,predicate=lambda x:x['resource_id']=='beside-source')
-        assert not any(x['resource_id']=='held-source' for x in peer.frames('RESOURCE_RELEASED',2))
+        assert any(x['resource_id']=='held-source' and x['compute_claim']=='source-permit'
+            for x in peer.frames('RESOURCE_RELEASED',2)) # Exact retained release, not reexecution.
         await peer.put(query(generation=2,request='after-reconnect',claim='second-query'))
         await peer.wait('QUERY_RESULT',generation=2,predicate=lambda x:x['request_id']=='after-reconnect')
         finish.set();receipt=await peer.wait('SOURCE_COMMAND_RESULT',generation=2)

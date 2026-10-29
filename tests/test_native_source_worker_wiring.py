@@ -7,6 +7,7 @@ so ambient imported modules cannot conceal a missing notebook dependency.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import json
@@ -113,6 +114,7 @@ def retained_encoder():
     object.__setattr__(encoder, 'encode', encode)
     object.__setattr__(encoder, 'tokenizer', SimpleNamespace(encode=tokenize))
     object.__setattr__(encoder, '_tokenizer_lock', threading.Lock())
+    object.__setattr__(encoder, 'forward_lock', asyncio.Lock())
     return encoder, counted, forwarded, vector
 
 

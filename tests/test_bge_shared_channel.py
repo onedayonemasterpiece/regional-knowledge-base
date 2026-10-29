@@ -219,11 +219,10 @@ def test_ready_typed_hybrid_delivery_does_not_release_compute(peer, large):
         assert len(received.evidence) == (3 if large else 0)
         assert p.client.portal.call(p.a.status)['state'] == 'busy'
         second = begin(p, generation, 'second-read')
-        # This ordered ACK proves no second QUERY was dispatched before release.
-        heartbeat(socket, generation)
-        assert not p.client.portal.call(second.result.done)
-        release(socket, generation, frame)
         following = receive_expected(socket, 'QUERY')
+        assert not p.client.portal.call(second.result.done)
+        assert len(p.client.portal.call(p.a.dispatched_reads))==2
+        release(socket, generation, frame)
         assert following['type'] == 'QUERY' and following['request_id'] == 'second-read'
         p.client.portal.call(p.a.cancel_read, second)
         cancellation = socket.receive_json()
@@ -299,7 +298,7 @@ def test_reconnect_lost_before_receipt_requires_fresh_same_worker_probe(peer, mo
         # A stale queued idle baseline cannot settle uncertain work.
         send(second, generation, 'RESOURCE_STATE', state='idle')
         heartbeat(second, generation)
-        assert p.client.portal.call(p.a.status)['state'] == 'busy'
+        assert p.client.portal.call(p.a.status)['state'] == 'unknown'
         ready(second, generation, probe_nonce=challenge['probe_nonce'])
         assert p.client.portal.call(p.a.status)['state'] == 'idle'
         fresh = begin(p, generation, 'fresh-after-probe')
@@ -464,7 +463,7 @@ def test_completed_read_precedes_release_while_admission_lock_is_held(peer, monk
             # Let states() enqueue QUERY_RESULT, RESOURCE_RELEASED and RESOURCE_STATE
             # in one iteration while writer is held on an earlier heartbeat.
             async with asyncio.timeout(.4):
-                while worker.read_pending is None or worker.last_released is None:
+                while not any(r['task'].done() for r in worker.reads.values()) or not worker.released:
                     await asyncio.sleep(.005)
             await asyncio.sleep(.02)
             started = time.monotonic()
@@ -519,3 +518,46 @@ def test_channel_boundaries_separate_socket_and_delivery_without_gating_result(p
             assert receive['elapsed_ms']>=receive['settle_ms']>=30
             assert receive['status_ms']>=0
         release(socket,generation,frame)
+
+
+def test_eight_actual_channel_claims_cancel_second_without_freeing_capacity(peer):
+    p=peer
+    with connect(p) as socket:
+        generation=attach(p,socket);ready(socket,generation)
+        tickets=[begin(p,generation,f'parallel-{n}') for n in range(9)]
+        frames=[receive_expected(socket,'QUERY') for _ in range(8)]
+        assert {f['request_id'] for f in frames}=={f'parallel-{n}' for n in range(8)}
+        p.client.portal.call(p.a.cancel_read,tickets[1])
+        cancel=receive_expected(socket,'CANCEL_QUERY')
+        assert cancel['request_id']=='parallel-1'
+        heartbeat(socket,generation)
+        assert len(p.client.portal.call(p.a.dispatched_reads))==8
+        assert all(not p.client.portal.call(t.result.done) for n,t in enumerate(tickets) if n!=1)
+        release(socket,generation,frames[1])
+        ninth=receive_expected(socket,'QUERY')
+        assert ninth['request_id']=='parallel-8'
+        assert len(p.client.portal.call(p.a.dispatched_reads))==8
+        for frame in frames[:1]+frames[2:]+[ninth]:release(socket,generation,frame)
+        heartbeat(socket,generation)
+        assert p.client.portal.call(p.a.status)['state']=='idle'
+
+
+def test_unknown_aggregate_debt_blocks_stop_until_fresh_idle(peer,monkeypatch):
+    p=peer;drain={'enabled':False}
+    monkeypatch.setattr(p.q,'stop_eligible',lambda *args:drain['enabled'])
+    with connect(p) as first:
+        old=attach(p,first);ready(first,old)
+        begin(p,old,'old-aggregate');frame=receive_expected(first,'QUERY')
+    with connect(p) as second:
+        generation=attach(p,second)
+        assert second.receive_json()['type']=='RESOURCE_PROBE'
+        release(second,generation,frame)
+        challenge=second.receive_json()
+        assert challenge['type']=='RESOURCE_PROBE'
+        state=p.client.portal.call(p.a.status)
+        assert state['state']=='unknown' and state['resource'] is None
+        drain['enabled']=True
+        heartbeat(second,generation) # No STOP while other native work is unobserved.
+        ready(second,generation,probe_nonce=challenge['probe_nonce'])
+        stop=second.receive_json()
+        assert stop['type']=='STOP' and stop['connection_generation']==generation

@@ -438,8 +438,8 @@ class TargetRuntime:
             with bootstrap_stage(run_id,'native_pg_start'):
                 await self.owner.start_empty(**options)
             self.native_bundle=native_bundle
-        self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=4,
-            open=False,timeout=2,max_waiting=4)
+        self.pool = self.pool_factory(kwargs=reader_kwargs,min_size=1,max_size=8,
+            open=False,timeout=2,max_waiting=8)
         await self.pool.open(wait=True,timeout=10)
         read_events=asyncio.Queue(maxsize=64)
         prepared = await self.prepare_resident(encoder,acquire=self.pool.connection,

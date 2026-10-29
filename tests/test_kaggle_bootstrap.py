@@ -358,3 +358,45 @@ def test_prepared_template_rejects_missing_target_inventory_before_any_loader(mo
         pytest.fail('incomplete target must not prepare')
     with pytest.raises(ValueError, match='explicit shared model inventory'):
         worker.main(prepare_runtime=prepare)
+
+
+@pytest.mark.asyncio
+async def test_source_document_and_query_share_resident_fifo_forward_and_drain_cancel(artifacts):
+    from regional_knowledge.kaggle_source_materializer import resident_source_materializer
+    from test_bge_shared_worker import running, query, result
+    from regional_knowledge.bge_contract import SPACE
+    encoder,_=resident(artifacts)
+    query_entered=asyncio.Event()
+    entered=threading.Event();finish=threading.Event();calls=[];active=0;peak=0
+    def native(text):
+        nonlocal active,peak
+        active+=1;peak=max(peak,active);calls.append(text)
+        try:
+            if text=='document':entered.set();assert finish.wait(3)
+            return [1.]+[0.]*1023
+        finally:active-=1
+    encoder=replace(encoder,encode=native)
+    materializer=resident_source_materializer(encoder,current=lambda:True)
+    async def handler(frame,*,encode):
+        query_entered.set();await encode(frame['query']);return result(frame)
+    source=None
+    try:
+        async with running(handler,encoder) as (peer,worker,loads):
+            await peer.put(dict(type='DISPATCH',id='fifo-doc',claim='doc-claim',kind='document',
+                texts=['document'],space=SPACE,compute_claim='fifo-doc-compute',dispatch_generation=1))
+            assert await asyncio.to_thread(entered.wait,1)
+            await peer.wait('RESOURCE_RELEASED',predicate=lambda f:f['resource_kind']=='document')
+            await peer.put(query())
+            await asyncio.wait_for(query_entered.wait(),1)
+            source=asyncio.create_task(materializer.encode('source'))
+            await asyncio.sleep(.01)
+            source.cancel();await asyncio.sleep(.01)
+            assert not source.done() and calls==['document']
+            finish.set()
+            with pytest.raises(asyncio.CancelledError):await source
+            await peer.wait('QUERY_RESULT');await peer.wait('RESULT')
+            assert calls==['document','fixture query','source'] and peak==1 and loads==['loaded']
+            await peer.put(dict(type='RESULT_ACK',job_id='fifo-doc',claim='doc-claim',status='accepted'))
+    finally:
+        finish.set()
+        if source is not None:await asyncio.gather(source,return_exceptions=True)

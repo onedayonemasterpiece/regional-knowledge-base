@@ -91,14 +91,14 @@ async def test_actual_transport_supplies_current_read_resource_and_connection_le
     worker.encoder=lambda _:(_ for _ in ()).throw(AssertionError('health inference'))
     worker._connection_generation=1
     value=frame();worker._validate_query(value);worker._start_read(value)
-    await asyncio.wait_for(worker.read_task,1)
-    result=decode_envelope(json.dumps(worker.read_pending).encode())
+    await asyncio.wait_for(next(reversed(worker.reads.values()))['task'],1)
+    result=decode_envelope(json.dumps(next(reversed(worker.reads.values()))['pending']).encode())
     assert result.status=='ok' and result.health.ready
     # A later connection cannot reuse the previous resource's health callback.
     worker._maybe_release();worker._connection_generation=2
     worker._start_read(frame(request_id='stale-generation'))
-    await asyncio.wait_for(worker.read_task,1)
-    result=decode_envelope(json.dumps(worker.read_pending).encode())
+    await asyncio.wait_for(next(reversed(worker.reads.values()))['task'],1)
+    result=decode_envelope(json.dumps(next(reversed(worker.reads.values()))['pending']).encode())
     assert result.status=='unavailable' and result.health.reason=='pg_binding_changed'
     assert native.acquired==native.released==1
     if resident_slot:
