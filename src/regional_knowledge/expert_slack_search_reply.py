@@ -263,18 +263,14 @@ class ExpertSlackSearchReply:
                     elif type(details) is not dict or details.get("status") not in ("unavailable","pending"):
                         raise
                     else:
-                        text=(_error_reply(details.get("reason")) if details["status"]=="unavailable"
-                              else _TEMPORARILY_UNAVAILABLE)
+                        if details["status"]=="pending":return
+                        text=_error_reply(details.get("reason"))
             else:
                 if (not calls and type(outcome) is EvidenceSearchOutput
                         and outcome.status=="pending" and outcome.reason=="target_warming"
                         and not outcome.evidence):
-                    # Already-authorized startup status issues no source text.
-                    startup=outcome.startup
-                    text=(startup.message_ru if startup is not None and startup.message_ru
-                          else _TEMPORARILY_UNAVAILABLE)
-                    if startup is not None and startup.eta_seconds is not None:
-                        text+=f"\nОжидание: примерно {startup.eta_seconds} с."
+                    # Keep the original request searching; the existing task retries after warmup.
+                    return
                 else:
                     if len(calls)!=1:raise PermissionError("retained source gate required")
                     issued=calls[0]
