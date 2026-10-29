@@ -177,3 +177,41 @@ async def test_complete_all_span_model_order_mcp_pdf_and_incomplete_is_actionabl
     assert failed.records==()
     assert not any("read_source_unit_export_pages_v1" in q
                    for q in incomplete.cursor_value.reads)
+
+
+@pytest.mark.asyncio
+async def test_pdf_v2_optional_text_crosses_native_mcp_and_oversize_is_explicit(monkeypatch):
+    pages=fixture_pages(complete=True)
+    connection=Connection(pages)
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    async def frontier(cursor,execute,request,observed,require_dense=False):
+        observed.update(data=1,projection=1,visibility=1,database='gen1')
+    monkeypatch.setattr("regional_knowledge.kaggle_source_read._frontier",frontier)
+    request=SourceReadRequest(request_id="v2-context",connection_generation=1,
+        turn_generation=0,operation="source_unit_pdf",source_id=SOURCE,
+        article_id="albinus-unit",limit=1,min_data_seq=0,deadline_ms=2000,
+        annotation_ru="Краткое изложение по-русски.",
+        translation_ru="Полный текст на русском языке.",
+        actor=dict(person_id="reader",audience="personal",auth_epoch=1,
+                   visibility_epoch=0,context_ref="request"))
+    native=await execute_source_read(request,acquire=acquire)
+    assert native.status=='ok' and len(native.records)==1
+    embedded=source_unit_pdf_result(native.records[0]).content[1]
+    with pymupdf.open(stream=base64.b64decode(embedded.resource.blob),filetype='pdf') as doc:
+        assert 'Краткое изложение по-русски.' in doc[0].get_text()
+        body=''.join(page.get_text() for page in list(doc)[1:])
+        assert body.index('Seite 1') < body.index('Автоматический перевод')
+        assert 'Полный текст на русском языке.' in body
+        assert all('Страница PDF' not in page.get_text() for page in doc)
+    with pytest.raises(ValueError,match='PDF additions require'):
+        SourceReadRequest.model_validate(request.model_dump() | dict(
+            operation='source_units',article_id=None))
+
+    async def oversized(**_):
+        return b'%PDF-' + b'x'*200_000
+    monkeypatch.setattr('regional_knowledge.source_unit_export.render_accepted_source_pdf',oversized)
+    denied=await execute_source_read(request,acquire=acquire)
+    assert denied.status=='unavailable' and denied.reason=='pdf_transport_limit'
+    assert denied.records==()  # Never a truncated/partial PDF.
