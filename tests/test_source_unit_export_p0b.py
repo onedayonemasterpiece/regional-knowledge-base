@@ -91,6 +91,8 @@ class Cursor:
                 publication_year=1902)) for p in self.pages]
         elif "read_source_unit_pages_v1" in sql:
             self.rows=[(p["physical_page_index"],projection(p),max(p["physical_page_index"] for p in self.pages)+1,False) for p in self.pages]
+        else:
+            self.rows=[]  # Existing no-media fixture still has no accepted images.
     async def fetchall(self):
         return self.rows
     async def __aenter__(self):
