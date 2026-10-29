@@ -83,7 +83,21 @@ The queue is bounded at 128 by default, each JSONL file at 256 KiB, and local op
 
 The next separately authorized archive package must select a specific private Kaggle Dataset/quota and an existing transfer mechanism with Shkiper; read sealed filenames/bytes, calculate size/hash at transfer, verify Dataset version readback, and only then design GC. This PR makes no Dataset/provider effects, deletes no logs and creates no credentials/permissions.
 
-Resource-Реализация owns /proc/cgroup sampling and heartbeat. Integrate through this same ProductTelemetry.try_emit interface and a small explicit resource metadata whitelist, not another disk writer. The adapter is fail-open and independent of query permits.
+Resource sampling uses the existing off-loop heartbeat and the same
+`ProductTelemetry.try_emit` sink. Each `resource.sample` retains its run,
+incarnation, connection generation, sample time and loaded code hash. Own-cgroup
+observations include CPU quota/period, usage and throttling counters, memory
+usage/limit/OOM events and I/O; process RSS/PSS remain separate measurements and
+are never added into a cgroup usage total. The PostgreSQL PID comes from the
+actual restored candidate or fresh database owner.
+
+Missing or inaccessible measurements disappear from the latest sample and stay
+absent in history. An omitted quota/limit can also mean an unlimited kernel
+setting; absence is not zero capacity. The former `cpu_threads=4` diagnostic was
+a configured Torch thread count, not a measured CPU allocation. No resource
+observation changes admission, readiness or a domain receipt. A source change
+does not install the sampler in an already-running notebook; verify its actual
+heartbeat and historical events after deployment.
 
 ## Validation / rollout
 
