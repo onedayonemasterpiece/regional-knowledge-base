@@ -1,6 +1,11 @@
 """Distinguishing #504 P0: all accepted spans across pages, never a preview."""
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
+import base64
 import re
+
+from psycopg.pq import TransactionStatus
+from psycopg.rows import tuple_row
 from uuid import UUID, uuid5
 
 import pytest
@@ -9,6 +14,8 @@ pymupdf = pytest.importorskip("pymupdf")
 from regional_knowledge.contracts import StagePageInput
 from regional_knowledge.source_unit_export import render_accepted_source_pdf
 from regional_knowledge.source_unit_pdf import SourceUnitPdfError, SERVICE_CAPTION
+from regional_knowledge.kaggle_source_read import SourceReadRequest, execute_source_read
+from regional_knowledge.kaggle_public_backend import source_unit_pdf_result
 
 SOURCE = "31111111-2222-4333-8444-555555555555"
 
@@ -63,6 +70,9 @@ class Cursor:
 class Connection:
     def __init__(self,pages):
         self.cursor_value=Cursor(pages)
+        self.closed=False
+        self.info=SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+        self.row_factory=tuple_row
     def transaction(self):
         return self
     def cursor(self):
@@ -74,15 +84,34 @@ class Connection:
 
 
 @pytest.mark.asyncio
-async def test_complete_two_page_36_span_pdf_and_incomplete_is_actionable():
+async def test_complete_two_page_36_span_mcp_pdf_and_incomplete_is_actionable(monkeypatch):
     pages=fixture_pages(complete=True)
     connection=Connection(pages)
     @asynccontextmanager
     async def acquire():
         yield connection
 
-    pdf=await render_accepted_source_pdf(acquire=acquire,source_id=SOURCE,
-        article_id="albinus-unit")
+    async def frontier(cursor,execute,request,observed,require_dense=False):
+        observed.update(data=1,projection=1,visibility=1,database="gen1")
+    monkeypatch.setattr("regional_knowledge.kaggle_source_read._frontier",frontier)
+    request=SourceReadRequest(request_id="synthetic-export",connection_generation=1,
+        turn_generation=0,operation="source_unit_pdf",source_id=SOURCE,
+        article_id="albinus-unit",limit=1,min_data_seq=0,deadline_ms=2000,
+        actor=dict(person_id="reader",audience="personal",auth_epoch=1,
+                   visibility_epoch=0,context_ref="request"))
+    native=await execute_source_read(request,acquire=acquire)
+    assert native.status=="ok" and native.operation=="source_unit_pdf"
+    assert len(native.records)==1
+    # This is the exact MCP tools/call content, not merely a PDF helper's bytes.
+    result=source_unit_pdf_result(native.records[0]).model_dump(
+        mode="json",by_alias=True,exclude_none=True)
+    assert result["content"][0]["type"]=="text"
+    embedded=result["content"][1]
+    assert embedded["type"]=="resource"
+    assert embedded["resource"]["mimeType"]=="application/pdf"
+    assert embedded["resource"]["uri"].startswith("rkb://source/")
+    pdf=base64.b64decode(embedded["resource"]["blob"],validate=True)
+    assert pdf.startswith(b"%PDF-") and embedded["resource"]["blob"]==native.records[0]["blob"]
     assert len([q for q in connection.cursor_value.reads
                 if "read_source_unit_export_pages_v1" in q])==1
     with pymupdf.open(stream=pdf,filetype="pdf") as doc:
@@ -98,38 +127,12 @@ async def test_complete_two_page_36_span_pdf_and_incomplete_is_actionable():
         assert "Abschnitt 17" in authored and "Abschnitt 0" in authored
         # 36 full accepted regions: the 16-span public preview would omit page 2.
 
-    # Dev holds only the Slack file ticket; the PDF payload never reaches its API.
-    import httpx
-    from regional_knowledge.expert_slack_search_reply import SlackChatSender
-    seen=[]
-    def slack(request):
-        seen.append((request.url.path,request.content))
-        if request.url.path.endswith("auth.test"):
-            return httpx.Response(200,json={"ok":True,"team_id":"T111","user_id":"UBOT"})
-        if request.url.path.endswith("files.getUploadURLExternal"):
-            assert b"length="+str(len(pdf)).encode() in request.content
-            return httpx.Response(200,json={"ok":True,
-                "file_id":"F111","upload_url":"https://files.slack.com/upload/one-time"})
-        if request.url.path.endswith("files.completeUploadExternal"):
-            body=__import__("json").loads(request.content)
-            assert body["channel_id"]=="C111" and body["thread_ts"]=="1792000000.100"
-            assert body["files"]==[{"id":"F111","title":"albinus-unit"}]
-            return httpx.Response(200,json={"ok":True,"files":[{"id":"F111"}]})
-        raise AssertionError(request.url.path)
-    sender=SlackChatSender(token="xoxb-synthetic-token",app_id="A111",
-        team_id="T111",bot_user_id="UBOT",transport=httpx.MockTransport(slack))
-    ticket=await sender.reserve_pdf_upload(size=len(pdf))
-    assert ticket=={"file_id":"F111","upload_url":"https://files.slack.com/upload/one-time"}
-    assert (await sender.complete_pdf_upload(file_id=ticket["file_id"],
-        channel="C111",thread="1792000000.100",title="albinus-unit"))["file_id"]=="F111"
-    assert all(b"%PDF-" not in payload for _,payload in seen)
-
     incomplete=Connection(fixture_pages(complete=False))
     @asynccontextmanager
     async def acquire_incomplete():
         yield incomplete
-    with pytest.raises(SourceUnitPdfError,match="unit_not_ready: статья ещё не завершена"):
-        await render_accepted_source_pdf(acquire=acquire_incomplete,source_id=SOURCE,
-            article_id="albinus-unit")
+    failed=await execute_source_read(request,acquire=acquire_incomplete)
+    assert failed.status=="unavailable" and failed.reason=="unit_not_ready"
+    assert failed.records==()
     assert not any("read_source_unit_export_pages_v1" in q
                    for q in incomplete.cursor_value.reads)
