@@ -65,8 +65,8 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def failure(reason, *, status='unavailable'):
-    return ToolError(json.dumps({'status': status, 'reason': reason}))
+def failure(reason, *, status='unavailable', **details):
+    return ToolError(json.dumps({'status': status, 'reason': reason, **details}))
 
 
 def uuid_value(value):
@@ -159,7 +159,7 @@ class KaggleSourceImporter:
             raise PermissionError('owner personal import route required')
         await asyncio.to_thread(self.participants.require, context, 'import')
         if not self._binding_current(binding):
-            raise failure('target_runtime_changed')
+            raise failure('target_runtime_changed', next_action='status')
 
     @asynccontextmanager
     async def _access(self, principal):
@@ -712,7 +712,7 @@ class KaggleSourceImporter:
             expected = self.queue._runtime_expected(runtime)
             if (runtime['accepted_generation'] != binding.connection_generation
                     or expected.database_generation != binding.database_generation):
-                raise failure('target_runtime_changed')
+                raise failure('target_runtime_changed', next_action='status')
             return self.import_revisions
 
     def _intake_coverage_current(self,binding):

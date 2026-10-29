@@ -418,8 +418,12 @@ async def test_copied_rights_model_and_wrong_launch_pin_cannot_acquire_original(
     with pytest.raises(ToolError,match='invalid_small_source_input'):
         await s.importer.book_ingest(command='start',principal=s.principal,source_import=forged)
     s.importer.launch_config_sha256='f'*64
-    with pytest.raises(ToolError,match='target_runtime_changed'):
+    with pytest.raises(ToolError,match='target_runtime_changed') as error:
         await start(s)
+    assert json.loads(str(error.value))['next_action']=='status'
+    with pytest.raises(ToolError,match='target_runtime_changed') as error:
+        s.importer._revisions(replace(s.startup.binding,connection_generation=s.startup.binding.connection_generation+1))
+    assert json.loads(str(error.value))['next_action']=='status'
     assert not s.originals.calls
 
 
