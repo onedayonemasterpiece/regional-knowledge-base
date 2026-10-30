@@ -44,7 +44,9 @@ def _put_control(grant, data):
     connection = http.client.HTTPSConnection(parsed.hostname, timeout=30)
     try:
         path = parsed.path + ('?' + parsed.query if parsed.query else '')
-        connection.request('PUT', path, body=data,
+        view=memoryview(data)
+        body=(view[offset:offset+1024*1024] for offset in range(0,len(view),1024*1024))
+        connection.request('PUT', path, body=body,
             headers={'Content-Length':str(len(data)), 'Content-Type':'application/octet-stream'})
         response = connection.getresponse()
         if response.status not in (200, 201, 204):
