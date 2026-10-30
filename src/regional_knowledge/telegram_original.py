@@ -21,18 +21,19 @@ class TelegramOriginalLocator:
     chat_id: int
     topic_id: int
     message_id: int
-    document_id: int
-    sha256: str
-    size: int
+    document_id: int | None = None
+    sha256: str | None = None
+    size: int | None = None
 
     def __post_init__(self):
         if (type(self.chat_id) is not int or not -(2**63) < self.chat_id < 0
                 or any(type(v) is not int or not 0 < v < 2**31
                        for v in (self.topic_id, self.message_id))
-                or type(self.document_id) is not int or not -(2**63) < self.document_id < 2**63 or self.document_id == 0
-                or type(self.size) is not int or not 5 <= self.size <= 512*1024*1024):
+                or self.document_id is not None and (type(self.document_id) is not int
+                    or not -(2**63) < self.document_id < 2**63 or self.document_id == 0)
+                or self.size is not None and (type(self.size) is not int or not 5 <= self.size <= 512*1024*1024)):
             raise OriginalIntakeError('original_telegram_locator_invalid')
-        hash_value(self.sha256)
+        if self.sha256 is not None:hash_value(self.sha256)
 
     def wire(self):
         return asdict(self)
@@ -54,6 +55,11 @@ class TelegramOriginalLocator:
     @property
     def mime_type(self):
         return 'application/pdf'
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramDownloadedFile(DownloadedFile):
+    telegram_locator: TelegramOriginalLocator
 
 
 class NativeTelegramOriginalDownloader:
@@ -90,8 +96,12 @@ class NativeTelegramOriginalDownloader:
         if (getattr(message, 'id', None) != locator.message_id
                 or getattr(message, 'chat_id', None) != self._chat_id
                 or topic != self._topic_id
-                or getattr(document, 'id', None) != locator.document_id
-                or getattr(document, 'size', None) != locator.size):
+                or type(getattr(document, 'id', None)) is not int
+                or not -(2**63) < document.id < 2**63 or document.id == 0
+                or type(getattr(document, 'size', None)) is not int
+                or not 5 <= document.size <= 512*1024*1024
+                or locator.document_id is not None and document.id != locator.document_id
+                or locator.size is not None and document.size != locator.size):
             raise OriginalIntakeError('original_telegram_document_changed')
         return message
 
@@ -153,7 +163,8 @@ class NativeTelegramOriginalDownloader:
     async def download(self, locator, directory, *, max_bytes, current):
         if type(locator) is not TelegramOriginalLocator or not callable(current):
             raise OriginalIntakeError('original_telegram_locator_invalid')
-        if type(max_bytes) is not int or not locator.size <= max_bytes <= 512*1024*1024:
+        if (type(max_bytes) is not int or not 5 <= max_bytes <= 512*1024*1024
+                or locator.size is not None and locator.size > max_bytes):
             raise OriginalIntakeError('original_telegram_byte_bound')
         path = Path(directory) / 'telegram-original.source'
         iterator = None
@@ -161,6 +172,9 @@ class NativeTelegramOriginalDownloader:
         try:
             async with asyncio.timeout(120):
                 message = await self.presence(locator, current=current)
+                expected_size = message.document.size
+                if expected_size > max_bytes:
+                    raise OriginalIntakeError('original_telegram_byte_bound')
                 iterator = self._client.iter_download(message.document, request_size=65536, chunk_size=65536)
                 size = 0
                 sha = hashlib.sha256()
@@ -170,17 +184,19 @@ class NativeTelegramOriginalDownloader:
                         if not isinstance(chunk, (bytes, memoryview)) or not 0 < len(chunk) <= 65536:
                             raise OriginalIntakeError('original_telegram_chunk_invalid')
                         size += len(chunk)
-                        if size > locator.size:
+                        if size > expected_size:
                             raise OriginalIntakeError('original_telegram_byte_bound')
                         sha.update(chunk)
                         output.write(chunk)
                 self._check(locator, current)
-                if size != locator.size or sha.hexdigest() != locator.sha256:
+                if size != expected_size or locator.sha256 is not None and sha.hexdigest() != locator.sha256:
                     raise OriginalIntakeError('original_telegram_bytes_changed')
                 # The existing native parser identifies PDF versus DjVu after
                 # download; a Telegram locator does not assert a MIME type.
                 acquired = True
-                return DownloadedFile(path, sha.hexdigest(), size)
+                resolved = TelegramOriginalLocator(locator.chat_id, locator.topic_id, locator.message_id,
+                    message.document.id, sha.hexdigest(), size)
+                return TelegramDownloadedFile(path, sha.hexdigest(), size, resolved)
         except (OriginalIntakeError, asyncio.CancelledError):
             raise
         except Exception:

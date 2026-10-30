@@ -622,14 +622,14 @@ class ChatFile(BaseModel):
 
 
 class TelegramOriginalInput(BaseModel):
-    """Exact registered document metadata; never credentials or a download URL."""
+    """Scoped Telegram message; optional exact metadata remains an assertion."""
     model_config = {'extra': 'forbid', 'strict': True}
     chat_id: int
     topic_id: int
     message_id: int
-    document_id: int
-    sha256: str
-    size: int
+    document_id: int | None = None
+    sha256: str | None = None
+    size: int | None = None
 
     def locator(self):
         from .telegram_original import TelegramOriginalLocator

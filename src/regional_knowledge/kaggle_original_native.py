@@ -344,6 +344,7 @@ class NativeOriginalIntake:
                     downloaded=await self.telegram_downloader.download(locator,folder,max_bytes=spec.max_bytes,
                         current=lambda:not self.closed and self.generation==frame['connection_generation']
                             and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation'])))
+                    locator=downloaded.telegram_locator
                 else:downloaded=await self.downloader.download(private['download_url'],folder,max_bytes=spec.max_bytes)
                 with downloaded.path.open('rb') as stream:header=stream.read(16)
                 if header.startswith(b'%PDF-'):

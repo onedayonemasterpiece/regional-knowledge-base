@@ -112,8 +112,10 @@ async def test_cancellation_and_lease_loss_cleanup(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_foreign_scope_and_expired_dispatch_do_not_read(tmp_path):
+@pytest.mark.parametrize('minimal',[False,True])
+async def test_foreign_scope_and_expired_dispatch_do_not_read(tmp_path,minimal):
     for loc,current in [(replace(locator(),topic_id=3),lambda:True),(locator(),lambda:False)]:
+        if minimal:loc=replace(loc,document_id=None,sha256=None,size=None)
         client=Client()
         with pytest.raises(OriginalIntakeError):
             await downloader(client).download(loc,tmp_path,max_bytes=len(PDF),current=current)

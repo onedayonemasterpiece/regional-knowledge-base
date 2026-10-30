@@ -222,7 +222,6 @@ class OriginalIntakeController:
                     stored=OriginalIntakeSpec.from_wire(json.loads(prior['spec_json']))
                     if (prior['actor']!=actor or prior['operation_id']!=operation_id
                             or prior['storage_sha256']!=self._storage
-                            or telegram and prior['telegram_locator_json']!=locator_json
                             or telegram and (stored.expected_sha256,stored.expected_size)!=(spec.expected_sha256,spec.expected_size)
                             or (stored.source_id,stored.ingestion_id,stored.request_id,stored.file_id,
                                 stored.file_name,stored.mime_type)!=(source_id,ingestion_id,request_id,
@@ -270,7 +269,7 @@ class OriginalIntakeController:
             record['acquisition_sha256'],native['native_verification_sha256'])
         await self._authorize(context)
         with self.queue.connect() as db:db.execute(
-            'UPDATE rkb_original_intakes SET receipt_json=?,telegram_locator_json=COALESCE(telegram_locator_json,?) WHERE ingestion_id=?',
+            'UPDATE rkb_original_intakes SET receipt_json=?,telegram_locator_json=? WHERE ingestion_id=?',
             (canonical(receipt.wire()).decode(),canonical(native['telegram_locator']).decode(),spec.ingestion_id))
         _LOG.info('original_intake state=verified run_id=%s ingestion_id=%s',binding.run_id,spec.ingestion_id)
         return receipt
