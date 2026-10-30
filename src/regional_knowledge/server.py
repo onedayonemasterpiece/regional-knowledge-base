@@ -455,6 +455,7 @@ def build_server(
     backend_profile: Literal['legacy','kaggle_source'] | None = None,
     target_startup=None,
     projects_hub_receiver=None,
+    import_activity_receiver=None,
     expert_evidence_receiver=None,
     expert_slack_ingress=None,
     expert_claim_receiver=None,
@@ -729,6 +730,14 @@ def build_server(
                 or projects_hub_receiver.backend is not backend):
             raise RuntimeError('PH receiver requires the same configured target backend')
         mcp.custom_route(PATH, methods=['POST'])(projects_hub_receiver.__call__)
+
+    if import_activity_receiver is not None:
+        from .import_activity_reader import ImportActivityReader, PATH as ACTIVITY_PATH
+        if (selected != 'kaggle_source' or type(import_activity_receiver) is not ImportActivityReader
+                or target_startup.importer is None
+                or import_activity_receiver.importer is not target_startup.importer):
+            raise RuntimeError('import activity requires the current target importer')
+        mcp.custom_route(ACTIVITY_PATH, methods=['GET'])(import_activity_receiver.__call__)
 
     if expert_evidence_receiver is not None:
         from .expert_evidence_receiver import ExpertEvidenceReceiver, PATH as EXPERT_PATH
@@ -1857,7 +1866,7 @@ def build_server(
     return mcp
 
 
-def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=None,
+def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiver=None,expert_slack_ingress=None,
          expert_executor_context=None) -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
@@ -1878,6 +1887,12 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
             raise RuntimeError('PH receiver requires explicit target composition')
         from .projects_hub_reader import ProjectsHubReader
         projects_hub_receiver=ProjectsHubReader.from_file(reader_config,backend=target_startup.backend)
+    activity_config=os.getenv('RKB_IMPORT_ACTIVITY_CONFIG','').strip()
+    if activity_config and import_activity_receiver is None:
+        if target_startup is None or target_startup.importer is None:
+            raise RuntimeError('import activity requires configured target importer')
+        from .import_activity_reader import ImportActivityReader
+        import_activity_receiver=ImportActivityReader.from_file(activity_config,importer=target_startup.importer)
     slack_config=os.getenv('RKB_EXPERT_SLACK_INGRESS_CONFIG','').strip()
     if slack_config:
         if expert_slack_ingress is not None:
@@ -1934,6 +1949,7 @@ def main(*,target_startup=None,projects_hub_receiver=None,expert_slack_ingress=N
         expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
     mcp=build_server(profile=profile,target_startup=target_startup,
         projects_hub_receiver=projects_hub_receiver,
+        import_activity_receiver=import_activity_receiver,
         expert_slack_ingress=expert_slack_ingress,
         expert_evidence_receiver=expert_evidence_receiver,
         expert_claim_receiver=expert_claim_receiver,
