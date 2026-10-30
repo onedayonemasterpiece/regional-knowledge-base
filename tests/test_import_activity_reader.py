@@ -70,7 +70,7 @@ def watcher(tmp_path, auth):
     ident, token = new_service_token()
     auth.provider.issue_service_credential(
         auth.p.admin, service_id="launcher-import-watch", token=token,
-        scope={"operation":"import_activity"}, expires_at=auth.now[0]+86400,
+        scope={"operation":"import_activity","owner_person_id":actor}, expires_at=auth.now[0]+86400,
         reason="synthetic read-only watcher")
     receiver = ImportActivityReader(
         importer=importer, service_id="launcher-import-watch",
@@ -119,6 +119,35 @@ async def test_authorized_activity_is_redacted_read_only_and_cold_is_honest(watc
     assert (cold.json()["state"],cold.json()["next_action"])==("processing","wait")
     assert cold.json()["last_operation_at"]==result["last_operation_at"]
     assert cold.json()["accepted_pages"]==2 and read_timestamp(w)==original
+
+
+@pytest.mark.asyncio
+async def test_scoped_service_can_read_assigned_ingestion_not_real_foreign_owner(watcher):
+    w = watcher
+    foreign_ingestion, foreign_source = str(uuid4()), str(uuid4())
+    foreign_owner = w.auth.p.other.subject
+    foreign_timestamp = time.time() - 20
+    with w.queue.connect() as db:
+        db.execute(
+            "INSERT INTO rkb_source_intake_control VALUES(?,?,?,?,?,?,?)",
+            (foreign_ingestion, foreign_source, foreign_owner, "staging",
+             foreign_timestamp - 10, foreign_timestamp, None),
+        )
+        assert db.execute("SELECT person_id FROM rkb_source_intake_control WHERE ingestion_id=?",
+                          (foreign_ingestion,)).fetchone()[0] == foreign_owner
+    own_before = read_timestamp(w)
+    own = await get(w)
+    foreign = await get(w, query={"ingestion_id": foreign_ingestion})
+    assert own.status_code == 200 and foreign.status_code == 403
+    assert foreign.json() == {"error": "service_scope_required"}
+    with w.queue.connect(write=False) as db:
+        assert db.execute("SELECT last_operation_at FROM rkb_source_intake_control WHERE ingestion_id=?",
+                          (foreign_ingestion,)).fetchone()[0] == foreign_timestamp
+    assert read_timestamp(w) == own_before
+    with pytest.raises(ValueError):
+        service_scope({"operation":"import_activity"})
+    with pytest.raises(ValueError):
+        service_scope({"operation":"import_activity","owner_person_id":str(uuid4()),"extra":"read"})
 
 
 @pytest.mark.asyncio
