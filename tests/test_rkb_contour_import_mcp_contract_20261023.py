@@ -73,7 +73,7 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     assert "2500 physical pages" in ingest.description
     assert "no per-book public_rights declaration" in ingest.description
     assert "narrative_outcome=needs_context or facts_only" in ingest.description
-    assert "When evidence is insufficient, OMIT basic_variant" in props["story_candidates"]["description"]
+    assert "When evidence is insufficient, OMIT basic_variant" in candidates["description"]
     assert "2 MiB and 32 pages" not in server.instructions
 
 
@@ -179,7 +179,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "finalize while status still indicates continue_tail",
     ):
         assert expected in chunk_guidance, expected
-    assert "When evidence is insufficient, OMIT basic_variant" in imported.input_schema["properties"]["story_candidates"]["description"]
+    assert "When evidence is insufficient, OMIT basic_variant" in _non_null(imported.input_schema, imported.input_schema["properties"]["story_candidates"])["description"]
     assert "Finalization alone activates" not in native.instructions
     # Cold search continuation is one native instruction, not a new method.
     for instruction in ("startup.message_ru", "startup.eta_seconds",
@@ -198,7 +198,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
 
     # Runtime-registered rules must be available in tools/list, not only initialize.
     instruction = native.instructions
-    story_rules = imported.input_schema["properties"]["story_candidates"]["description"]
+    story_rules = _non_null(imported.input_schema, imported.input_schema["properties"]["story_candidates"])["description"]
     assert instruction.count("Story rules: see book_ingest.story_candidates.") == 1
     assert "Story body: write" not in instruction
     assert "Story rules: see book_ingest.story_candidates field description." in native_text
@@ -249,8 +249,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     legacy_commands = legacy_schema['properties']['command'].pop('enum')
     assert native_commands == ['start', 'stage', 'validate', 'finalize', 'status']
     assert legacy_commands == ['start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status']
-    native_story_description = native_schema["properties"]["story_candidates"].pop("description")
-    legacy_story_description = legacy_schema["properties"]["story_candidates"].pop("description")
+    native_story_description = _non_null(native_schema, native_schema["properties"]["story_candidates"]).pop("description")
+    legacy_story_description = _non_null(legacy_schema, legacy_schema["properties"]["story_candidates"]).pop("description")
     assert native_story_description != legacy_story_description
     assert native_schema == legacy_schema  # Structural contract unchanged.
     for command in ('reprocess', 'rechunk'):
