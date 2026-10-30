@@ -137,7 +137,7 @@ async def start(s,metadata=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('tool',['status','pages'])
-async def test_cold_native_binding_is_unavailable_and_preserves_intake(intake,tool):
+async def test_cold_native_binding_requests_existing_startup_and_preserves_intake(intake,tool):
     s=intake;result=await start(s)
     with s.t.queue.connect(write=False) as db:
         before=[tuple(row) for row in db.execute('SELECT * FROM rkb_source_intake_control')]
@@ -148,9 +148,30 @@ async def test_cold_native_binding_is_unavailable_and_preserves_intake(intake,to
             await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
         else:
             await s.importer.book_pages(principal=s.principal,ingestion_id=result.ingestion_id)
-    assert json.loads(str(caught.value))=={'status':'unavailable','reason':'target_runtime_not_ready'}
+    output=json.loads(str(caught.value))
+    assert output=={'status':'unavailable','reason':'target_warming',
+                   'startup_ref':output['startup_ref'],'next_action':'startup_status'}
+    assert s.t.queue.startup_status(output['startup_ref'])['status']=='pending'
+    assert s.t.queue.request_startup()['startup_ref']==output['startup_ref']
     with s.t.queue.connect(write=False) as db:
         assert [tuple(row) for row in db.execute('SELECT * FROM rkb_source_intake_control')]==before
+        assert db.execute('select current_run from control where id=1').fetchone()[0]==s.t.run
+
+
+@pytest.mark.asyncio
+async def test_cold_import_denial_does_not_request_startup(intake,monkeypatch):
+    s=intake;result=await start(s)
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.t.run,))
+    def deny(*args,**kwargs):
+        raise PermissionError('import capability revoked')
+    def unexpected_demand():
+        pytest.fail('denied import must not start compute')
+    monkeypatch.setattr(s.startup.config.participants,'require',deny)
+    monkeypatch.setattr(s.t.queue,'request_startup',unexpected_demand)
+    with pytest.raises(ToolError) as caught:
+        await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
+    assert json.loads(str(caught.value))=={'status':'denied','reason':'access_denied'}
 
 
 def stage_payload(s, result, *, text=TEXT):
