@@ -24,6 +24,37 @@ from test_recovery_s3 import BotoFailure
 
 
 @pytest.mark.asyncio
+async def test_fresh_telegram_message_pins_native_receipt_once_and_reuses_same_intake(owner,native):
+    from regional_knowledge.contracts import TelegramOriginalInput
+    from test_telegram_original import Client,downloader,locator
+    from test_kaggle_original_intake import frame
+    e,n=owner,native;client=Client();n.handler.telegram_downloader=downloader(client)
+    exact=locator()
+    file=TelegramOriginalInput(chat_id=exact.chat_id,topic_id=exact.topic_id,message_id=exact.message_id).locator()
+    assert file.sha256 is file.document_id is file.size is None
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=lambda b:b==binding,
+        current_binding=lambda:binding,allowed_origins=frozenset({'https://archive.invalid'}))
+    async def phase(actual,operation,args,private=None,*,operation_key=None):
+        assert actual==binding and private is None
+        value=(await n.handler(frame(operation,args,key=operation_key)))['value']
+        assert 'error' not in value
+        return value
+    controller._phase=phase
+    args=dict(operation_id='fresh-topic-message',source_id=SOURCE,ingestion_id=INGEST,file=file,max_bytes=len(PDF))
+    status=await controller.begin(e.auth.p.admin,**args)
+    assert status.verified and status.receipt.sha256==exact.sha256 and status.receipt.size==exact.size
+    row=controller._row(e.auth.p.owner.subject,INGEST)
+    assert json.loads(row['telegram_locator_json'])==exact.wire()
+    assert json.loads(row['spec_json'])['file_id']==file.file_id
+    assert (await controller.begin(e.auth.p.admin,**args)).receipt==status.receipt
+    assert (await controller.verified(e.auth.p.admin,INGEST))==status.receipt
+    assert client.downloads==1 and client.send_calls==n.download.calls==0 and not n.transfer.calls
+
+
+@pytest.mark.asyncio
 async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_verify(owner,native):
     from dataclasses import replace
     from test_telegram_original import Client,downloader
