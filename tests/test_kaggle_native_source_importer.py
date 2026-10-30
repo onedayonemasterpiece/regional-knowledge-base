@@ -370,6 +370,28 @@ async def test_journal_budget_counts_unsaved_tail_and_retains_import_progress(na
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mixed',[False,True])
+async def test_optional_semantic_rejection_allows_the_reported_next_new_page(native_intake,mixed):
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,first=0,count=4))
+    await finish(s,book);await call(s,book,'status')
+    await finish(s,book);await call(s,book,'status')
+    rejected=await finish(s,book,status='rejected_precondition')
+    status=await call(s,book,'status')
+    assert status.next_cursor=='4'
+    before=operation_count(s)
+    if mixed:
+        with pytest.raises(ToolError,match='native_stage_mixed_published_pages'):
+            await stage(s,book,batch(s,book,first=3,count=2))
+    assert operation_count(s)==before
+    assert (await stage(s,book,batch(s,book,first=4,count=1))).state=='processing'
+    command=await pending(s,book)
+    assert command.command.route==STAGE_ROUTE
+    assert json.loads(command.command.payload)['model_payload']['pages'][0]['physical_page_index']==4
+    assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('authored_cursor',[None,'4'])
 async def test_status_after_pause_returns_next_unaccepted_physical_page(native_intake,authored_cursor):
     s=native_intake
@@ -397,6 +419,89 @@ async def test_status_after_pause_returns_next_unaccepted_physical_page(native_i
     assert operation_count(s)==count
     row=s.importer._row(s.principal.subject,book.ingestion_id)
     assert row['stage_json'] is None  # no second model payload table
+
+@pytest.mark.asyncio
+async def test_published_text_overrules_stale_authored_cursor_and_rejects_changed_duplicate(native_intake):
+    """The model once wrote cursor=0 even though pages 0–3 were TEXT APPLIED."""
+    from regional_knowledge.kaggle_import_contracts import TargetSourceImportInput
+    s=native_intake;book=await start(s);payload=batch(s,book,first=0,count=4)
+    research=TargetSourceImportInput.model_validate({"research":dict(state="pending",
+        continuation=dict(tool="book_pages",arguments=dict(
+            ingestion_id=book.ingestion_id,cursor="0",batch_size=1)))})
+    assert (await call(s,book,"stage",payload=payload,source_import=research)).state=="processing"
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,"status")
+    resumed=await call(s,book,"status")
+    assert resumed.next_cursor=="4", "the last authored 0 is already TEXT APPLIED"
+    before=operation_count(s)
+    changed=copy.deepcopy(payload)
+    changed["pages"][0]["regions"][0]["source_text"]="Changed published synthetic page"
+    changed["chunks"][0]["title"]="Changed published synthetic chunk"
+    duplicate=await call(s,book,"stage",payload=changed,source_import=research)
+    assert duplicate.state=="staged" and duplicate.next_cursor=="4"
+    assert operation_count(s)==before
+    assert state(s,book)["batch_count"]==1
+    assert (await call(s,book,"status")).next_cursor=="4"
+    assert operation_count(s)==before
+
+
+@pytest.mark.asyncio
+async def test_legacy_rejected_duplicate_of_published_pages_unblocks_fresh_page(native_intake,monkeypatch):
+    """A historical stage APPLIED / TEXT REJECTED duplicate must not trap p4."""
+    import regional_knowledge.source_page_progress as progress
+    s=native_intake;book=await start(s)
+    duplicate=batch(s,book,first=0,count=4)
+    await stage(s,book,duplicate)
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    assert (await call(s,book,'status')).next_cursor=='4'
+    # Construct only the legacy duplicate via the actual journal, with the
+    # prior guard disabled at this synthetic test seam (not production).
+    original=progress.publication_progress
+    legacy=copy.deepcopy(duplicate)
+    legacy['pages'][0]['regions'][0]['source_text']='Historical duplicated page changed by a resumed model'
+    monkeypatch.setattr(progress,'publication_progress',lambda *_:(set(),set()))
+    try:
+        assert (await stage(s,book,legacy)).state=='processing'
+    finally:
+        monkeypatch.setattr(progress,'publication_progress',original)
+    await finish(s,book)                    # duplicate STAGE APPLIED
+    await call(s,book,'status')
+    rejected=await finish(s,book,status='rejected_precondition',
+                          reason='native_source_packet_requires_review')
+    old=await s.spool.get(rejected.command.operation_key)
+    assert old.apply_state=='REJECTED_PRECONDITION'
+    status=await call(s,book,'status')
+    assert state(s,book)['rejected_batch_index']==1
+    assert status.next_cursor=='4'       # not the rejected page 0
+    before=operation_count(s)
+    fresh=await stage(s,book,batch(s,book,first=4,count=1))
+    assert fresh.state=='processing' and fresh.next_action=='wait'
+    assert operation_count(s)==before+1
+    new_stage=await pending(s,book)
+    assert json.loads(new_stage.command.payload)['model_payload']['pages'][0]['physical_page_index']==4
+    await finish(s,book)
+    await call(s,book,'status')
+    assert state(s,book)['rejected_batch_index'] is None
+    assert (await s.spool.get(old.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
+
+
+@pytest.mark.asyncio
+async def test_mixed_published_and_new_pages_require_explicit_new_packet(native_intake):
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,first=0,count=4))
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    before=operation_count(s)
+    with pytest.raises(ToolError,match='native_stage_mixed_published_pages'):
+        await stage(s,book,batch(s,book,first=3,count=2))
+    assert operation_count(s)==before
+    assert (await stage(s,book,batch(s,book,first=4,count=1))).state=='processing'
+    assert operation_count(s)==before+1
+
 
 @pytest.mark.asyncio
 async def test_applied_page_status_needs_no_second_original_head(native_intake, monkeypatch):
@@ -535,7 +640,11 @@ async def test_exact_pending_retry_preserves_request_and_rejects_changed_text(na
     assert (await pending(s,result)).command.route=='source.batch.v1'
     await finish(s,result);await call(s,result,'status')
     await finish(s,result);await call(s,result,'status')
-    await stage(s,result,changed)
+    before=operation_count(s)
+    duplicate=await stage(s,result,changed)
+    assert duplicate.state=='staged' and duplicate.next_cursor=='1'
+    assert operation_count(s)==before  # Published page cannot be overwritten.
+    await stage(s,result,batch(s,result,first=1,count=1))
     second = await pending(s,result)
     assert second.command.sequence == entry.command.sequence+3
     assert json.loads(second.command.payload)['previous_batch_sha256'] == digest(entry.command.payload)
@@ -1109,6 +1218,23 @@ async def test_rejected_page_refuses_advancement_but_corrected_page_can_continue
     assert state(s,book)['rejected_batch_index'] is None
     advanced=await stage(s,book,batch(s,book,first=60,count=1))
     assert advanced.next_action=='continue_pages' and advanced.next_cursor=='61'
+
+
+
+@pytest.mark.asyncio
+async def test_unpublished_rejected_page_four_stays_retry_cursor(native_intake):
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,first=4,count=1))
+    await finish(s,book)
+    await call(s,book,'status')
+    await finish(s,book,status='rejected_precondition',reason='native_source_packet_requires_review')
+    rejected=await call(s,book,'status')
+    assert rejected.next_cursor=='4'
+    count=operation_count(s)
+    refused=await stage(s,book,batch(s,book,first=5,count=1))
+    assert refused.next_cursor=='4' and operation_count(s)==count
+    assert (await stage(s,book,batch(s,book,first=4,count=1))).state=='processing'
+    assert operation_count(s)==count+1
 
 
 @pytest.mark.asyncio
