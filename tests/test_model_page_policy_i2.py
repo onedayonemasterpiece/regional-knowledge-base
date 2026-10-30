@@ -180,6 +180,9 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     async def reply(access_value, result, *, render=None):
         return result
     importer._reply = reply
+    # This image-only fixture bypasses importer initialization and has no intake DB.
+    # Timestamp persistence is exercised by test_import_activity_reader.py.
+    importer._record_reader_operation = lambda *_: None
     batch = await KaggleSourceImporter._pages(
         importer, principal="fixture", ingestion_id=INGEST, cursor=None)
     assert batch.pages[0].data == pdf_image
