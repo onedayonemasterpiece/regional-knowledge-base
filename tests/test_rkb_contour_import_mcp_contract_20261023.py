@@ -72,8 +72,8 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     assert "128 MiB" in ingest.description
     assert "2500 physical pages" in ingest.description
     assert "no per-book public_rights declaration" in ingest.description
-    assert "narrative_outcome=needs_context or facts_only" in ingest.description
-    assert "When the evidence does not support such a body, omit basic_variant" in server.instructions
+    assert "narrative_outcome=needs_context or facts_only" in candidates["description"]
+    assert "When evidence is insufficient, OMIT basic_variant" in candidates["description"]
     assert "2 MiB and 32 pages" not in server.instructions
 
 
@@ -179,7 +179,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "finalize while status still indicates continue_tail",
     ):
         assert expected in chunk_guidance, expected
-    assert "When the evidence does not support such a body, omit basic_variant" in native.instructions
+    assert "When evidence is insufficient, OMIT basic_variant" in _non_null(imported.input_schema, imported.input_schema["properties"]["story_candidates"])["description"]
     assert "Finalization alone activates" not in native.instructions
     # Cold search continuation is one native instruction, not a new method.
     for instruction in ("startup.message_ru", "startup.eta_seconds",
@@ -196,41 +196,32 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "General Case discovery/search is not presently registered" not in native_text
     assert "General Case discovery/search is a separately unresolved capability gap" not in native.instructions
 
-    # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
+    # Runtime-registered rules must be available in tools/list, not only initialize.
     instruction = native.instructions
-    assert instruction.count("Story body:") == 1
-    assert instruction.count("Say where and when the episode happened whenever the source does") == 1
-    assert instruction.count("Review the whole page for episodes") == 1
+    story_rules = _non_null(imported.input_schema, imported.input_schema["properties"]["story_candidates"])["description"]
+    assert instruction.count("Story rules: see book_ingest.story_candidates.") == 1
+    assert "Story body: write" not in instruction
+    assert "Story rules: see book_ingest.story_candidates field description." in native_text
     for required in (
-        "basic_variant.body for an ordinary reader or visitor",
-        "the same saved text is read, voiced and posted",
-        "usually 2-6 connected sentences",
-        "what was at stake",
-        "For a place, keep source-grounded details",
-        "origin of a name (coat of arms, patron or older language)",
-        "a documented change of use",
-        "one coherent episode with a source-backed development or outcome",
-        "keep them as facts/observations instead of forcing a Story",
-        "'до наших дней' or 'сохранилась до наших дней'",
-        "the author's time, not 2026",
-        "по Гаузе, сохранилась до его времени",
-        "a year only when the source actually gives it",
-        "never invent a calendar year or assert present-day survival",
-        "Say where and when the episode happened whenever the source does",
-        "(city, district, street, school, building, decade)",
-        "memoirs and biographies most easily lose this setting",
-        "When the source does not say where or when, do not invent it",
-        "treat a legend or burial tradition as attributed tradition",
-        "never as established historical fact",
-        "a famous visitor, a demolished landmark, a first performance, an invention,",
-        "a legend or burial tradition, an everyday custom such as where a traveller slept or what a trade was nicknamed",
-        "Do not split one episode into a body plus separate facts_only candidates",
-        "there is no story quota",
-        "fetch that page with book_pages and stage both pages in one packet (up to 4)",
-        "on this ending page with evidence_refs to the accepted earlier pages",
-        "Write every basic_variant.body in Russian",
-        "German or English originals",
-        "source proof in the original language",
+        "max 12 per stage", "2-6 connected Russian sentences",
+        "read, voiced and posted", "Map complete basic_variant.blocks",
+        "including handbooks and lexicons", "Согласно справочнику",
+        "По изложению книги", "По данным авторов",
+        "По сообщению <автора>", "<Автор> сообщает/перечисляет/отмечает",
+        "the author writes", "author, page and footnote go in evidence_refs",
+        "attribute only opinion, estimate, legend, recollection or dispute AFTER",
+        "exact source names, dates, numbers, historical places",
+        "where/when when printed", "close with known outcome or honest uncertainty",
+        "its author's time, not 2026", "never invent causes, motives",
+        "ONE body, not separate facts_only",
+        "cite accepted earlier pages without restaging",
+        "A lone dated fact, list or uses without development stays facts/observations",
+        "first/invention with adjacent development",
+        "Review whole page for episodes, with no story quota",
+        "OMIT basic_variant and set narrative_outcome=needs_context or facts_only",
+    ):
+        assert required in story_rules, required
+    for required in (
         "metadata.title", "metadata.authors", "metadata.publication_year",
         "metadata.language", "metadata.catalog.kind",
         "editors, translators, publisher, date, edition, identifiers and topics",
@@ -258,7 +249,10 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     legacy_commands = legacy_schema['properties']['command'].pop('enum')
     assert native_commands == ['start', 'stage', 'validate', 'finalize', 'status']
     assert legacy_commands == ['start', 'reprocess', 'rechunk', 'stage', 'validate', 'finalize', 'status']
-    assert native_schema == legacy_schema
+    native_story_description = _non_null(native_schema, native_schema["properties"]["story_candidates"]).pop("description")
+    legacy_story_description = _non_null(legacy_schema, legacy_schema["properties"]["story_candidates"]).pop("description")
+    assert native_story_description != legacy_story_description
+    assert native_schema == legacy_schema  # Structural contract unchanged.
     for command in ('reprocess', 'rechunk'):
         with pytest.raises(ToolError, match='invalid_query'):
             await native.call_tool('book_ingest', {'command': command})
