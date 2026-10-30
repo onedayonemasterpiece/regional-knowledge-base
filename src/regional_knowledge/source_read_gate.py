@@ -23,6 +23,10 @@ class SourceGateDenied(PermissionError):
     pass
 
 
+class SourceGateExpired(SourceGateDenied):
+    """An expired runtime proof is not an actor authorization denial."""
+
+
 def _source_ids(values, *, maximum):
     if (type(values) is not tuple or not 1 <= len(values) <= maximum
             or len(set(values)) != len(values)):
@@ -192,7 +196,7 @@ class SourceReadGate:
             self._require_acceptance(authority,query,binding)
         key = binding_key(binding)
         if not self.binding_current(binding) or query.connection_generation != key[2]:
-            raise SourceGateDenied('runtime binding changed')
+            raise SourceGateExpired('runtime binding changed')
         story = type(query) in (StoryReadRequest,EditorialReadRequest) or (type(query) is Query and query.filters.kinds == ('story',))
         if story and not self.story_supported():
             raise SourceGateDenied('native story semantics unavailable')
@@ -224,7 +228,7 @@ class SourceReadGate:
     async def _gate(self, read, result):
         await self.authority.require(read.authority, 'public_search')
         if not self._binding(read):
-            raise SourceGateDenied('runtime binding changed')
+            raise SourceGateExpired('runtime binding changed')
         q = read.query
         acceptance=type(q) is AcceptanceReadRequest
         if acceptance:self._require_acceptance(read.authority,q,read.binding)
@@ -381,7 +385,7 @@ class SourceReadGate:
         self._expire()
         read = self._permits.pop(permit, None)
         if read is None:
-            raise SourceGateDenied('dispatch permit expired or unknown')
+            raise SourceGateExpired('dispatch permit expired or unknown')
         result = await self._gate(read, result)
         read.deadline=min(read.deadline,self.clock()+self.ttl_seconds)
         ticket = OutputTicket()
@@ -392,7 +396,7 @@ class SourceReadGate:
         self._expire()
         read = self._tickets.get(gated.ticket) if type(gated) is GatedResult else None
         if read is None or read.result is not gated.result:
-            raise SourceGateDenied('output ticket expired or unknown')
+            raise SourceGateExpired('output ticket expired or unknown')
         try:
             result = await self._gate(read, read.result)
         except BaseException:
