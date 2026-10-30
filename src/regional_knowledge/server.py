@@ -1653,7 +1653,9 @@ def build_server(
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12,
             description=(
                 "Model-authored source-grounded story candidates (max 12 per stage; when more episodes, stage fewer pages). "
-                "Each basic_variant.body is one complete person/place/event episode for a reader or visitor, normally 2-6 connected Russian sentences; the saved body is read, voiced and posted. Map complete basic_variant.blocks to exact evidence_refs; preserve original-language source quotations. "
+                "Each basic_variant.body is one complete person/place/event episode for a reader or visitor, normally 2-6 connected Russian sentences; the saved body is read, voiced and posted. "
+                "Each body must stand alone for a listener who has read neither the book nor any other story: on first mention give each person, office, institution, term or earlier event the one clause the book itself supplies (who the person was or became, what the office or law meant, which crisis), and never point to the book or its layout ('figure 5', 'on the next page', 'as said above'); if the book gives no such context, keep it as facts_only rather than guessing. "
+                "Map complete basic_variant.blocks to exact evidence_refs; preserve original-language source quotations. "
                 "Open with who/what happened, never book, author or footnote in ANY language/source, including handbooks and lexicons: no 'Согласно справочнику', 'По изложению книги', 'По данным авторов', 'По сообщению <автора>', '<Автор> сообщает/перечисляет/отмечает', 'the author writes', 'according to the book'; author, page and footnote go in evidence_refs. "
                 "State supported facts directly, including painful events; attribute only opinion, estimate, legend, recollection or dispute AFTER the claim, never first. "
                 "Keep exact source names, dates, numbers, historical places; give where/when when printed, concrete action, stakes, first, name origin or changed use, and close with known outcome or honest uncertainty. Answer How/Why titles. "
