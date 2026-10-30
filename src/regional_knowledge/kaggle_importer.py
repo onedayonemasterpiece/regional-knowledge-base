@@ -422,6 +422,10 @@ class KaggleSourceImporter:
             raise failure('native_research_continuation_unreachable')
         if output.next_cursor is not None: cursor=output.next_cursor  # a packet retry or tail page wins
         elif cursor is None and output.state=='staged': cursor=await self.native_intake.applied_page_cursor(access,current)
+        if output.state=='staged' and output.next_action=='continue_pages':
+            from .source_page_progress import published_pages,next_unaccepted
+            with self.queue.connect(write=False) as db:
+                cursor=next_unaccepted(cursor,published_pages(db,current))
         await self._check(access.authority, access.context, access.binding)
         return output.model_copy(update={
             'next_action': 'continue_pages', **({'next_cursor':cursor} if cursor is not None else {}),

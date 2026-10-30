@@ -5,6 +5,7 @@ All objects/data are synthetic. No Kaggle, original PDF or live credentials.
 from contextlib import asynccontextmanager
 import asyncio
 import base64
+import hashlib
 import json
 from types import SimpleNamespace
 import time
@@ -52,14 +53,16 @@ def watcher(tmp_path, auth):
             "INSERT INTO rkb_native_source_intake_state VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (ingestion, source, actor, "staging", None, 1, 1, 1, 1, None, 0),
         )
-        for seq, pages in ((1, (3, 8)), (2, (8,))):
-            doc = {"ingestion_id":ingestion, "batch_index":0,
-                   "model_payload":{"pages":[{"physical_page_index":page} for page in pages]}}
-            command = json.dumps({"payload_b64":base64.b64encode(
-                json.dumps(doc).encode()).decode()}).encode()
+        stage = {"ingestion_id":ingestion, "batch_index":0,
+                 "model_payload":{"pages":[{"physical_page_index":page} for page in (3,8)]}}
+        raw=json.dumps(stage).encode()
+        packet = {"ingestion_id":ingestion, "batch_index":0, "component":"text",
+                  "last_batch_sha256":hashlib.sha256(raw).hexdigest()}
+        for seq, key, payload in ((1,f"source-stage:{ingestion}:0:0",raw),
+                                  (2,f"source-packet:{ingestion}:0:text",json.dumps(packet).encode())):
+            command=json.dumps({"payload_b64":base64.b64encode(payload).decode()}).encode()
             db.execute("INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?)",
-                       (source, actor, f"source-stage:{ingestion}:0:{seq}",
-                        seq, "ACCEPTED", "APPLIED", command))
+                (source,actor,key,seq,"ACCEPTED","APPLIED",command))
     startup = SimpleNamespace(importer=None,
         config=SimpleNamespace(queue=queue, oauth_provider=auth.provider),
         reads_current=lambda:True)
@@ -98,6 +101,81 @@ async def get(w, *, headers=None, client="127.0.0.1", query=None):
                                 {"ingestion_id":w.ingestion},
                                 headers=w.headers if headers is None else headers)
 
+
+
+def synthetic_page_records(db,w,*,batch,physical,sequence,text_state="APPLIED"):
+    stage=dict(ingestion_id=w.ingestion,batch_index=batch,
+        model_payload=dict(pages=[dict(physical_page_index=physical,
+            synthetic_review='x'*16384)]))
+    raw=json.dumps(stage,separators=(",",":")).encode()
+    text=dict(ingestion_id=w.ingestion,batch_index=batch,component="text",
+              last_batch_sha256=hashlib.sha256(raw).hexdigest())
+    for n,kind,payload,applied in (
+        (0,"stage",raw,"APPLIED"),
+        (1,"packet",json.dumps(text).encode(),text_state)):
+        key=(f"source-stage:{w.ingestion}:{batch}:0" if kind=="stage" else
+             f"source-packet:{w.ingestion}:{batch}:text")
+        command=json.dumps({"payload_b64":base64.b64encode(payload).decode()}).encode()
+        db.execute("INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?)",
+            (w.source,w.actor,key,sequence+n,"ACCEPTED",applied,command))
+
+
+@pytest.mark.asyncio
+async def test_activity_requires_matching_text_receipt_and_respects_unaccepted_reverse_cursor(watcher):
+    w=watcher
+    with w.queue.connect() as db:
+        synthetic_page_records(db,w,batch=1,physical=9,sequence=3,text_state="REJECTED_PRECONDITION")
+        # Native published counters must not invent accepted page 9.
+        db.execute("UPDATE rkb_native_source_intake_state SET published_batch_count=100")
+        db.execute("UPDATE rkb_source_intake_control SET research_json=? WHERE ingestion_id=?",
+            (json.dumps({"continuation":{"arguments":{"cursor":"3"}}}),w.ingestion))
+    status=(await get(w)).json()
+    assert status["accepted_pages"]==2 and status["next_cursor"]=="4"
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_source_intake_control SET research_json=? WHERE ingestion_id=?",
+            (json.dumps({"continuation":{"arguments":{"cursor":"5"}}}),w.ingestion))
+    assert (await get(w)).json()["next_cursor"]=="5", "unaccepted reverse/gap cursor is preserved"
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_source_intake_control SET research_json=? WHERE ingestion_id=?",
+            (json.dumps({"continuation":{"arguments":{"cursor":"9"}}}),w.ingestion))
+    assert (await get(w)).json()["accepted_pages"]==2
+    key=f"source-packet:{w.ingestion}:1:text"
+    with w.queue.connect() as db:
+        original=db.execute("SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?",
+            (key,)).fetchone()[0]
+        command=json.loads(original)
+        packet=json.loads(base64.b64decode(command['payload_b64']))
+        packet['last_batch_sha256']='0'*64
+        command['payload_b64']=base64.b64encode(json.dumps(packet).encode()).decode()
+        db.execute("UPDATE rkb_control_operations SET apply_state='APPLIED',command_bytes=? WHERE operation_key=?",
+            (json.dumps(command).encode(),key))
+    assert (await get(w)).json()['accepted_pages']==2, 'wrong TEXT parent hash is not publication'
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_control_operations SET command_bytes=? WHERE operation_key=?",(original,key))
+    status=(await get(w)).json()
+    assert status["accepted_pages"]==3 and status["next_cursor"]=="10"
+
+
+@pytest.mark.asyncio
+async def test_activity_199_page_journal_skips_stale_140_not_rejected_198(watcher):
+    """Synthetic scale of the observed 199 APPLIED TEXT pages + rejected duplicate."""
+    import time as clock
+    w=watcher
+    with w.queue.connect() as db:
+        db.execute("DELETE FROM rkb_control_operations")
+        for index in range(199):
+            synthetic_page_records(db,w,batch=index,physical=index,sequence=2*index+1)
+        synthetic_page_records(db,w,batch=213,physical=198,sequence=399,
+                               text_state="REJECTED_PRECONDITION")
+        db.execute("UPDATE rkb_native_source_intake_state SET batch_count=214,"
+                   "published_batch_count=214,enriched_batch_count=214,rejected_batch_index=213")
+        db.execute("UPDATE rkb_source_intake_control SET research_json=? WHERE ingestion_id=?",
+            (json.dumps({"continuation":{"arguments":{"cursor":"140"}}}),w.ingestion))
+    begin=clock.perf_counter()
+    result=(await get(w)).json()
+    elapsed_ms=round(1000*(clock.perf_counter()-begin),2)
+    print(f"synthetic 199 TEXT APPLIED pages + 1 rejected duplicate: watch={elapsed_ms} ms")
+    assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"199")
 
 @pytest.mark.asyncio
 async def test_authorized_activity_is_redacted_read_only_and_cold_is_honest(watcher):

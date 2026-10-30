@@ -614,9 +614,16 @@ class NativeSourceIntake:
         if entry is None:return None
         doc=json.loads(entry.command.payload)
         pages=doc['model_payload']['pages']
-        if retry:return str(pages[0]['physical_page_index'])
+        from .source_page_progress import publication_progress,next_unaccepted
+        with self.queue.connect(write=False) as db:
+            published,text_batches=publication_progress(db,row)
+        if retry:
+            first=str(pages[0]['physical_page_index'])
+            return (next_unaccepted(first,published) if rejected_batch not in text_batches
+                and all(p['physical_page_index'] in published for p in pages) else first)
         cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
-        return cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
+        raw=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
+        return next_unaccepted(raw,published)
 
     def _output(self, row, state, *, rejected_next_cursor=None):
         phase=state['phase']
@@ -630,7 +637,7 @@ class NativeSourceIntake:
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
                 message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
-                    'Correct and retry this packet under the same ingestion.\n'
+                    'Resume from next_cursor: retry unpublished rejected pages, or advance past already TEXT APPLIED duplicates.\n'
                     'For unreadable spans use [?] with needs_review=false; never guess.')
                 return self.importer._output(row,'staged',message,
                     'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=rejected_next_cursor)
@@ -800,6 +807,20 @@ class NativeSourceIntake:
         limit=4
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
+        from .source_page_progress import publication_progress,next_unaccepted
+        with self.queue.connect(write=False) as db:
+            published,text_batches=publication_progress(db,row)
+        retry_semantic=state.get('rejected_batch_index') in text_batches
+        selected={page['physical_page_index'] for page in payload['pages']}
+        if selected and selected<=published and not retry_semantic:
+            if state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count']:
+                return self._output(row,state)
+            return self.importer._output(row,'staged',
+                'Selected pages already TEXT APPLIED in an earlier packet; no new stage was created',
+                'continue_pages',source_archive_status='verified',
+                next_cursor=next_unaccepted(str(min(selected)),published))
+        if selected & published and not retry_semantic:
+            raise _failure('native_stage_mixed_published_pages',status='invalid_query')
         if state.get('rejected_batch_index') is not None:
             retry_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
             if retry_cursor is not None and str(payload['pages'][0]['physical_page_index'])!=retry_cursor:
