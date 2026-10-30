@@ -18,8 +18,15 @@ def canonical(value):
 
 
 def service_scope(value):
-    if value == {'operation': 'import_activity'} and type(value) is dict:
-        return {'operation': 'import_activity'}
+    if type(value) is dict and value.get('operation') == 'import_activity':
+        owner = value.get('owner_person_id')
+        try:
+            if (set(value) != {'operation', 'owner_person_id'} or type(owner) is not str
+                    or str(UUID(owner)) != owner):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('exact import activity owner scope required') from None
+        return dict(value)
     if (type(value) is not dict or set(value) != {'operation','provider','provider_tenant','workspace_ids'}
             or value['operation'] != 'knowledge_search' or value['provider'] != 'projects_hub'
             or type(value['provider_tenant']) is not str
@@ -50,6 +57,7 @@ class VerifiedServiceCredential:
     scope_sha256: str
     expires_at: float
     token_sha256: str = field(repr=False)
+    scope_owner_person_id: str | None = field(default=None, repr=False)
 
 
 class ServiceOAuthMixin:
@@ -138,14 +146,16 @@ class ServiceOAuthMixin:
             row=state['service_credentials'].get(credential_id)
             if (row is None or not row['enabled'] or row['epoch']!=epoch or row['service_id']!=service_id
                     or row['expires_at']<=self.clock() or not hmac.compare_digest(row['secret_hash'],secret_hash)
-                    or not ((operation == 'import_activity' and row['scope'] == {'operation': 'import_activity'})
+                    or not ((operation == 'import_activity' and set(row['scope']) == {'operation','owner_person_id'}
+                            and row['scope']['operation'] == 'import_activity')
                         or (operation == 'knowledge_search' and row['scope'].get('operation') == 'knowledge_search'
                             and row['scope'].get('provider') == 'projects_hub'
                             and row['scope'].get('provider_tenant') == provider_tenant
                             and workspace_id in row['scope'].get('workspace_ids', [])))):
                 return None
             return VerifiedServiceCredential(credential_id,epoch,service_id,
-                hashlib.sha256(canonical(row['scope'])).hexdigest(),row['expires_at'],secret_hash)
+                hashlib.sha256(canonical(row['scope'])).hexdigest(),row['expires_at'],secret_hash,
+                row['scope']['owner_person_id'] if operation == 'import_activity' else None)
         try:return self.store.try_read(read)
         except Exception:return None
 
