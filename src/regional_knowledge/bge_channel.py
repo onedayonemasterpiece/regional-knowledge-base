@@ -358,6 +358,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             settled=await source_dispatch.poll_settlement(run_id=run_id,token=token,generation=generation)
                             if settled is not None:
                                 await send('RESULT_ACK',**settled)
+                                shared.durable_result_settled(settled['job_id'],settled['claim'],settled['status'])
                         reads=shared.dispatched_reads()
                         cancelled_work.intersection_update(w.resource for w in reads)
                         for work in reads:
