@@ -24,7 +24,11 @@ saved numeric continuation or physical-page hint, otherwise null).
 
 This is a local snapshot of existing SQLite control/progress rows and accepted
 command receipts. **No Kaggle access, background wakeup, status reconciliation,
-reading of book text, participant lookup or mutation happens on GET.** If Kaggle
+reading of book text, participant lookup or mutation happens on GET.** The
+service credential pins one existing ingestion owner; the row's stored
+`person_id` must match that scope **before** native state or stage data is read.
+New books from the same assigned owner remain eligible without changing scope.
+If Kaggle
 is cold/unverified, any otherwise runnable ingestion reports
 `processing / wait` rather than a false ready state or HTTP 500. The
 last reader operation timestamp is updated on the existing ingestion control
@@ -34,16 +38,22 @@ extend the reader activity clock. Historical ingestions have a null timestamp
 until their next authorized operation.
 
 Access denied: HTTP 403 for missing/invalid/revoked credential, wrong principal,
-wrong epoch or non-loopback client. Invalid selector: 422. Unknown ingestion:
+wrong epoch, non-loopback client or a real ingestion belonging to another
+owner (403 before snapshot). Invalid selector: 422. Unknown ingestion:
 404. Local control unavailable: 503. All responses are no-store. HTTP error
 bodies are fixed, without book text, URLs, user identifiers or credentials.
 
 ## Operator installation (not performed in PR)
 
 1. On the **RKB host**, prepare an existing protected directory (0700).
-   Create a 0600 JSON scope file containing exactly
-   `{"operation":"import_activity"}`. The RKB owner/operator issues a *new*
-   service identity using the existing encrypted OAuth authority:
+   Select the **existing** owner UUID (`person_id` on the intended ingestion
+   control row, matching the reviewed RKB owner identity); do not create or
+   impersonate a new person. Create a 0600 JSON scope file containing exactly:
+   ```json
+   {"operation":"import_activity","owner_person_id":"<assigned-owner-UUID>"}
+   ```
+   The RKB operator then issues a *new technical* service identity using the
+   existing encrypted OAuth authority (no owner OAuth token):
    ```sh
    python -m regional_knowledge.personal_auth_cli service issue \
      --service-id launcher-import-watch \
@@ -68,8 +78,10 @@ bodies are fixed, without book text, URLs, user identifiers or credentials.
 3. Configure Launcher with `http://127.0.0.1:8000`, the issued private token
    and the matching metadata headers. Keep the file under owner-only
    permissions; no remote DNS, reverse proxy, OAuth relay or extra service.
-   Verify one authorized loopback GET, then a denial without credentials and
-   with a different principal. Operator can revoke by credential ID and epoch
+   Verify an assigned ingestion returns 200 and an **existing foreign-owner**
+   ingestion returns 403 with the same valid technical credential, without
+   extending `last_operation_at` on either GET. Also deny missing/foreign
+   credentials. Operator can revoke by credential ID and epoch
    using the existing `service revoke` command.
 4. Poll only the known ingestion ID. An idle timer uses `last_operation_at`;
    **do not** treat `processing/wait` during cold Kaggle as a failed import,
@@ -80,8 +92,9 @@ bodies are fixed, without book text, URLs, user identifiers or credentials.
 
 Caller: local Launcher; receiver: existing RKB HTTP process; transport:
 loopback HTTP GET. Principal: `launcher-import-watch`; scope:
-`{"operation":"import_activity"}`; methods: GET only; target: an exact known
-ingestion UUID. No idempotency/receipt lifecycle is needed for a read-only GET.
+`{"operation":"import_activity","owner_person_id":"<assigned-owner-UUID>"}`;
+methods: GET only; target: an existing ingestion belonging to that assigned
+owner (including subsequently started books). No idempotency/receipt lifecycle is needed for a read-only GET.
 Database authority remains the current source intake control and accepted
 packet journal. No second registry/table, tokens in query strings, new
 provider dependencies, or public listener. Local CI is **not** live E2E
