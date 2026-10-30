@@ -9,6 +9,31 @@ from test_kaggle_recovery_phases import database, work_for
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('ready',[False,True])
+async def test_maintenance_uses_existing_person_fairness_after_ready_without_starving_documents(state,ready):
+    s=state
+    await s.a.register_document_actor(s.auth.p.admin)
+    if not ready:
+        with s.q.connect() as db:db.execute("update runs set status='starting' where id=?",(s.run,))
+    bridge=RecoveryPhaseDispatch(s.q,database=database(),identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b is s)
+    task=asyncio.create_task(bridge.request(s,'verify',{'reference':'maintenance'},operation_key='maintenance'))
+    try:
+        for _ in range(100):
+            if bridge._bindings:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('maintenance not queued')
+        work=await s.a.next_channel_work(s.run,s.token,s.generation)
+        assert work is not None
+        assert work.document_payload['kind']==('document' if ready else 'recovery_phase')
+        if ready:assert work.document_payload['id']==s.doc
+        assert not task.done()
+    finally:
+        task.cancel();await asyncio.gather(task,return_exceptions=True)
+        await bridge.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('position',['pending','claimed_unsent','released_unknown'])
 async def test_recovery_keeps_its_receipt_identity_without_excluding_reads(state,position):
     s=state
