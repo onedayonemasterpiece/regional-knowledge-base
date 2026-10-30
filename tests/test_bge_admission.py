@@ -589,6 +589,28 @@ async def test_document_release_before_result_holds_only_result_debt_and_serves_
 
 
 @pytest.mark.asyncio
+async def test_committed_result_waits_for_channel_ack_before_next_document_but_not_reads(state):
+    s=state
+    await s.a.register_document_actor(s.auth.p.admin)
+    work=await s.q.next_channel_work(s.run,s.token,1);s.a.mark_work_sent(work)
+    payload=work.document_payload
+    await release(s,work)
+    second=s.q.enqueue(s.auth.p.owner.subject,'after-ack',['another passage'],kind='document')
+    status=s.q.complete(s.run,s.token,payload['id'],payload['claim'],SPACE,
+        [[1]+[0]*1023],{},connection_generation=1)
+    assert await s.q.next_channel_work(s.run,s.token,1) is None,'DB commit is not the worker RESULT_ACK'
+    await begin(s,'read-before-document-ack')
+    read=await s.q.next_channel_work(s.run,s.token,1)
+    assert read.kind=='read'
+    s.a.mark_work_sent(read)
+    assert await s.a.finish_read(s.run,s.token,1,answer(read))
+    await release(s,read)
+    assert s.a.durable_result_settled(payload['id'],payload['claim'],status)
+    successor=await s.q.next_channel_work(s.run,s.token,1)
+    assert successor.document_payload['id']==second
+
+
+@pytest.mark.asyncio
 async def test_restart_retained_document_release_blocks_replay_until_result_settled(state):
     s=state
     await s.a.register_document_actor(s.auth.p.admin)

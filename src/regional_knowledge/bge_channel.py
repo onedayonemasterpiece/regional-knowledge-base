@@ -215,6 +215,9 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         if frame.get('type')=='RKB1_BIND_GRANT':
                             for key in ('bundle_b64','api_id','api_hash'):frame.pop(key,None)
                         encoded=None
+                    if frame.get('type')=='RESULT_ACK':
+                        logger.info(json.dumps({'event':'bge_result_ack_sent','run_id':run_id,
+                            'connection_generation':generation,'job_id':frame['job_id'],'status':frame['status']}))
                     if work is not None and work.query is not None:
                         observe_boundary('write',frame,write_started,time.monotonic_ns())
                     if frame.get('type')=='READY_ACK' and frame.get('status')=='ready':
@@ -592,8 +595,8 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             settled=await recovery_dispatch.receive(frame,run_id=run_id,token=token,generation=generation)
                         except (StaleClaim,LookupError):
                             settled=dict(job_id=frame['job_id'],claim=frame['claim'],status='stale')
-                        shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
                         await send('RESULT_ACK',**settled)
+                        shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
                     elif frame['type']=='SOURCE_COMMAND_RESULT':
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
                             'runtime_incarnation','compute_claim','dispatch_generation'))
@@ -607,8 +610,8 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         if settled is None:
                             await send('RESULT_ACK',job_id=frame['job_id'],claim=frame['claim'],status='apply_received')
                         else:
-                            shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
                             await send('RESULT_ACK',**settled)
+                            shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
                     elif frame['type'] == 'RESULT':
                         _fields(frame, (*common, 'job_id', 'claim', 'space', 'vectors'), ('timings',))
                         if (not ready or observed['provider_version'] is None
@@ -635,11 +638,11 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                                 connection_generation=generation)
                         except StaleClaim:
                             outcome = 'stale'
-                        if shared is not None:
-                            shared.durable_result_settled(job_id, frame['claim'], outcome)
                         logger.info(json.dumps({'event': 'bge_channel_result', 'run_id': run_id,
                                                 'connection_generation': generation, 'status': outcome}))
                         await send('RESULT_ACK', job_id=job_id, claim=frame['claim'], status=outcome)
+                        if shared is not None:
+                            shared.durable_result_settled(job_id, frame['claim'], outcome)
                     else:
                         raise ValueError('unsupported_frame')
 
