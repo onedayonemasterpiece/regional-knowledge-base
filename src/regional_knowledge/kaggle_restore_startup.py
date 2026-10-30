@@ -144,6 +144,9 @@ class SourceRestoreCoordinator:
         """Refresh retained work before dispatch, without waiting for a client call."""
         if self.startup.schema_migrations.resume_attachment():return True
         binding,nonce=self._observe()
+        from .kaggle_public_backend import current_binding,TargetUnavailable
+        try:binding=current_binding(self.queue)
+        except TargetUnavailable:pass  # Bootstrap/restore still uses pre-READY authority.
         if (binding.run_id,nonce,binding.runtime_incarnation)!=self.dispatch.identity:
             raise SnapshotError('restore_retained_runtime_changed')
         self.dispatch.bind_attachment(binding)
