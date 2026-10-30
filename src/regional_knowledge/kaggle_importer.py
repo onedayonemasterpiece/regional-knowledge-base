@@ -132,6 +132,8 @@ class KaggleSourceImporter:
             for name in ('native_proof_sha256', 'semantic_json'):
                 if name not in columns:
                     db.execute('ALTER TABLE rkb_source_intake_control ADD COLUMN '+name+' TEXT')
+            if 'last_operation_at' not in columns:
+                db.execute('ALTER TABLE rkb_source_intake_control ADD COLUMN last_operation_at REAL')
         self.native_intake=None
         if self.import_revisions==ACTIVATION_REVISIONS:
             from .kaggle_native_source_intake import NativeSourceIntake
@@ -200,6 +202,19 @@ class KaggleSourceImporter:
             if ingestion_id and document_id and row['source_id'] != uuid_value(document_id):
                 raise failure('ingestion_source_mismatch', status='invalid_query')
             return dict(row)
+
+    def _record_reader_operation(self, ingestion_id, actor):
+        # One timestamp on the existing control row: no second event table.
+        # Advance even when two requests share the same clock tick.
+        with self.queue.connect() as db:
+            updated = db.execute(
+                'UPDATE rkb_source_intake_control SET '
+                'last_operation_at=MAX(COALESCE(last_operation_at,created)+0.000001, ?) '
+                'WHERE ingestion_id=? AND person_id=?',
+                (self.queue.clock(), ingestion_id, actor),
+            ).rowcount
+            if updated != 1:
+                raise failure('owned_ingestion_required', status='denied')
 
     def _save(self, row, **changes):
         allowed = {'stage_json', 'research_json', 'phase', 'frozen_sha256', 'native_proof_sha256', 'semantic_json'}
@@ -878,10 +893,12 @@ class KaggleSourceImporter:
                         if ingestion_id or document_id:
                             raise failure('fresh_source_identity_is_server_owned', status='invalid_query')
                         output = await self._start(access, file=file, metadata=payload or {}, source_import=source_import)
+                        await asyncio.to_thread(self._record_reader_operation, output.ingestion_id, access.authority.person_id)
                     else:
                         if file is not None:
                             raise failure('file_only_supported_for_original_start_or_stage_json', status='invalid_query')
                         row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id, document_id)
+                        await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
                         if command == 'stage':
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
@@ -934,6 +951,7 @@ class KaggleSourceImporter:
     async def _pages(self, *, principal, ingestion_id, cursor):
         async with self._access(principal) as access:
             row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id)
+            await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
             if await self._receipt(access, row) is None:
                 raise failure('verified_original_pending')
             batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1)
