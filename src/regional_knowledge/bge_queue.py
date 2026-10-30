@@ -886,7 +886,9 @@ class BgeQueue:
     def _document_claim_waiting(self, job_id, claim):
         with self.connect(write=False) as db:
             row=db.execute('select state,claim,lease_until from jobs where id=?',(job_id,)).fetchone()
-            return bool(row and row['state']=='claimed' and row['claim']==claim
+            # A committed result still belongs to the worker until its channel
+            # has queued RESULT_ACK. Keep the existing lease as the stale bound.
+            return bool(row and row['state'] in ('claimed','done') and row['claim']==claim
                         and row['lease_until'] is not None and row['lease_until']>self.clock())
 
     def _admission_terminal(self, expected, capabilities, observed, *, max_age_seconds):

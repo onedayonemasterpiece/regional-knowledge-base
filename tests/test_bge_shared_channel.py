@@ -315,6 +315,32 @@ def test_reconnect_lost_before_receipt_requires_fresh_same_worker_probe(peer, mo
         heartbeat(second, generation)
 
 
+def test_committed_receipt_cannot_dispatch_successor_before_result_ack(peer,monkeypatch):
+    p=peer;committed=threading.Event();deliver=threading.Event();complete=p.q.complete
+    def delayed_complete(*args,**kwargs):
+        outcome=complete(*args,**kwargs)
+        committed.set()
+        assert deliver.wait(3)
+        return outcome
+    monkeypatch.setattr(p.q,'complete',delayed_complete)
+    p.client.portal.call(p.a.register_document_actor,p.auth.p.admin)
+    with connect(p) as socket:
+        generation=attach(p,socket);ready(socket,generation)
+        document=receive_expected(socket,'DISPATCH')
+        release(socket,generation,document)
+        second=p.q.enqueue(p.auth.p.owner.subject,'next-after-ack',['next passage'],kind='document')
+        send(socket,generation,'RESULT',job_id=document['id'],claim=document['claim'],space=SPACE,
+            vectors=[[1.]+[0.]*1023],timings={})
+        try:
+            assert committed.wait(1)
+            assert p.client.portal.call(p.q.next_channel_work,p.run,p.token,generation) is None
+        finally:deliver.set()
+        ack=socket.receive_json()
+        assert ack['type']=='RESULT_ACK' and ack['job_id']==document['id']
+        successor=receive_expected(socket,'DISPATCH')
+        assert successor['id']==second
+
+
 def test_retained_document_release_precedes_probe_idle_and_preserves_result_debt(peer):
     p = peer
     p.client.portal.call(p.a.register_document_actor, p.auth.p.admin)
