@@ -66,44 +66,6 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def resolve_stage_entity_evidence(payload, source_id):
-    """Lower same-packet source keys using the existing Story evidence contract."""
-    bundle = payload.get('entity_candidates') if type(payload) is dict else None
-    if type(bundle) is not dict:
-        return payload
-    from .story_contracts import StageStoryEvidenceInput
-    from .entity_graph import GraphBundle
-
-    bundle = json.loads(canonical(bundle))
-    references = []
-    nodes = bundle.get('entities')
-    for node in nodes if type(nodes) is list else []:
-        if type(node) is dict:
-            references.append(node.get('evidence'))
-            aliases = node.get('aliases')
-            if type(aliases) is list:
-                references.extend(alias.get('evidence') for alias in aliases if type(alias) is dict)
-    edges = bundle.get('relations')
-    for edge in edges if type(edges) is list else []:
-        if type(edge) is dict and type(edge.get('evidence')) is list:
-            references.extend(edge['evidence'])
-    changed = False
-    for evidence in references:
-        if type(evidence) is not dict or not ({'region_key', 'chunk_key'} & evidence.keys()):
-            continue
-        ref = StageStoryEvidenceInput.model_validate(
-            {key: value for key, value in evidence.items() if key != 'exact_quote'})
-        evidence['region_id'] = str(uuid5(UUID(ref.page_id), 'region:' + ref.region_key))
-        evidence['chunk_id'] = ref.chunk_id or str(uuid5(UUID(source_id), 'chunk:1:' + ref.chunk_key))
-        evidence.pop('region_key', None)
-        evidence.pop('chunk_key', None)
-        changed = True
-    validated = GraphBundle.model_validate(bundle)
-    if not changed:
-        return payload
-    return {**payload, 'entity_candidates': validated.model_dump(mode='json')}
-
-
 def failure(reason, *, status='unavailable', **details):
     return ToolError(json.dumps({'status': status, 'reason': reason, **details}))
 
@@ -562,6 +524,7 @@ class KaggleSourceImporter:
         partial = compile_model_stage(graph, document_id=row['source_id'], revision=1, pages=pages, chunks=chunks,poi_facts=poi_facts)
         graph = merge_stage(graph, partial)
         if payload.get('entity_candidates'):
+            from .kaggle_native_source_intake import resolve_stage_entity_evidence
             payload=resolve_stage_entity_evidence(payload,row['source_id'])
             from .entity_graph import GraphBundle,validate_staged_bundle,digest as graph_digest
             bundle=GraphBundle.model_validate(payload['entity_candidates'])

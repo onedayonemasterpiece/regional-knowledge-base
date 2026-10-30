@@ -28,6 +28,44 @@ _LOG=logging.getLogger(__name__)
 _PACKET_WORK="phase='staging' AND packet_mode=1 AND (pending_kind IN ('stage','batch') OR enriched_batch_count<batch_count)"
 
 
+def resolve_stage_entity_evidence(payload, source_id):
+    """Lower same-packet source keys using the existing Story evidence contract."""
+    bundle = payload.get('entity_candidates') if type(payload) is dict else None
+    if type(bundle) is not dict:
+        return payload
+    from .story_contracts import StageStoryEvidenceInput
+    from .entity_graph import GraphBundle
+
+    bundle = json.loads(canonical(bundle))
+    references = []
+    nodes = bundle.get('entities')
+    for node in nodes if type(nodes) is list else []:
+        if type(node) is dict:
+            references.append(node.get('evidence'))
+            aliases = node.get('aliases')
+            if type(aliases) is list:
+                references.extend(alias.get('evidence') for alias in aliases if type(alias) is dict)
+    edges = bundle.get('relations')
+    for edge in edges if type(edges) is list else []:
+        if type(edge) is dict and type(edge.get('evidence')) is list:
+            references.extend(edge['evidence'])
+    changed = False
+    for evidence in references:
+        if type(evidence) is not dict or not ({'region_key', 'chunk_key'} & evidence.keys()):
+            continue
+        ref = StageStoryEvidenceInput.model_validate(
+            {key: value for key, value in evidence.items() if key != 'exact_quote'})
+        evidence['region_id'] = str(uuid5(UUID(ref.page_id), 'region:' + ref.region_key))
+        evidence['chunk_id'] = ref.chunk_id or str(uuid5(UUID(source_id), 'chunk:1:' + ref.chunk_key))
+        evidence.pop('region_key', None)
+        evidence.pop('chunk_key', None)
+        changed = True
+    validated = GraphBundle.model_validate(bundle)
+    if not changed:
+        return payload
+    return {**payload, 'entity_candidates': validated.model_dump(mode='json')}
+
+
 @dataclass(frozen=True)
 class _AcceptedPacketProof:
     """Internal accepted-parent scope; never an HTTP access or owner Principal."""
@@ -711,7 +749,6 @@ class NativeSourceIntake:
             return await self.catalog_update(access,row,payload['catalog_update'])
         raw_payload=canonical(payload)
         if len(raw_payload)>1024*1024: raise _failure('stage_envelope_bound',status='invalid_query')
-        from .kaggle_importer import resolve_stage_entity_evidence
         payload=resolve_stage_entity_evidence(json.loads(raw_payload),row['source_id'])
         state=await asyncio.to_thread(self._state,row,create=True)
         pending=await self._entry(state['pending_operation_key'] or self._stage_key(row,state))
