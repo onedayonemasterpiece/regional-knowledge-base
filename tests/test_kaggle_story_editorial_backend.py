@@ -53,7 +53,7 @@ async def editorial(target,tmp_path):
     await owner.aclose();await startup.source_dispatch.aclose();spool.close()
 
 
-async def context(s,task,role='editor',*,second_role=None,second_revision=None):
+async def context(s,task,role='editor',*,second_role=None,second_revision=None,first_revision=None):
     async def respond(role,revision=None):
         w=await work(s.t)
         assert type(w.query) is EditorialReadRequest and w.query.view=='edit_context'
@@ -63,7 +63,7 @@ async def context(s,task,role='editor',*,second_role=None,second_revision=None):
             record=r,evidence=(story_item(r),),observed_data_seq=5,observed_projection_seq=5,observed_visibility_epoch=1,observed_database_generation='synthetic-db')
         assert await s.t.admission.finish_read(s.t.run,s.t.token,s.t.generation,result)
         await release(s.t,w)
-    await respond(role)
+    await respond(role,first_revision)
     # Real OAuth/spool operations can outlive the old300ms poll on a busy CI
     # runner. Observe the actual task/admission events; do not assume the
     # first reply is a causal barrier for journal acceptance or next preflight.
@@ -319,3 +319,66 @@ async def test_story_edit_waits_for_packet_apply_but_not_dataset_checkpoint(edit
         assert entry.accepted and entry.command.route=='story.edit.v1'
         assert entry.command.sequence==packet.sequence+1
         assert (await s.spool.get(packet.operation_key)).outcome_state=='NOT_SENT'
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['applied_not_saved','apply_unknown','writer_changed','head_rewritten','grant_revoked'])
+async def test_next_story_edit_requires_current_accepted_applied_prefix_not_dataset_save(editorial,phase):
+    """Real SQLite spool + conditional journal + Dataset cursor; no live PG or BGE."""
+    from regional_knowledge.kaggle_domain_bindings import resolved_current_story_edit_command
+    from test_control_spool import receipt
+    s=editorial;t=s.t;binding=current_binding(t.queue)
+    source=record()['source']
+    first=resolved_current_story_edit_command(
+        sequence=1,operation_key='previous-story-edit',request_id='previous-editorial',
+        person_id=t.auth.p.other.subject,logical_time='2026-10-30T10:00:00Z',
+        source_id=source['source_id'],story_id=STORY,expected_revision=1,
+        source_revision=source['content_revision'],eligibility_revision=source['eligibility_revision'],
+        operation=operation(),embedding=[1.]+[0.]*1023,input_tokens=10)
+    await s.spool.stage_story_editorial(t.auth.p.personal,first,database_generation='synthetic-db')
+    await s.spool.seal(t.auth.p.personal,first.operation_key,
+        predecessor=None,writer_generation='writer-1')
+    if phase!='apply_unknown':
+        await s.spool.record_apply(first.operation_key,receipt(first,database='synthetic-db'))
+    else:
+        await s.spool.mark_apply_sent(first.operation_key)
+    original=await s.spool.get(first.operation_key)
+    assert original.accepted is not None and original.outcome_state=='NOT_SENT'
+    assert (await s.spool.scope_state())['pending']
+    assert (await s.spool.read_facts(None)).pending
+    current=[True]
+    s.startup.coverage=await s.spool.dataset_cursor(binding,control=dict(sequence=0,heads=[]),
+        current=lambda candidate:current[0] and candidate==binding)
+    assert s.startup.coverage.accepted_sequence==1
+    assert s.startup.coverage.applied_sequence==(0 if phase=='apply_unknown' else 1)
+    args=dict(story_id=STORY,expected_revision=2,idempotency_key='following-edit',
+        operation=operation(variant_id=None,expected_variant_revision=None))
+    first_call=await context(s,asyncio.create_task(s.workflow.mutate(t.principal,**args)),
+        first_revision=2,second_revision=2)
+    assert first_call['reason']=='exact_narrative_vector_pending'
+    w=await t.queue.next_channel_work(t.run,t.token,t.generation)
+    assert w.kind=='document'
+    t.admission.mark_work_sent(w);payload=w.document_payload
+    assert t.queue.complete(t.run,t.token,payload['id'],payload['claim'],SPACE,
+        [[1.]+[0.]*1023],{},connection_generation=t.generation)=='accepted'
+    await release(t,w)
+    if phase=='writer_changed':current[0]=False
+    if phase=='head_rewritten':
+        store=s.spool.journal.store;head_key=s.spool.journal.head_key
+        store.write(head_key,store.objects[head_key].data)  # same manifest, changed CAS token
+    attempt=asyncio.create_task(s.workflow.mutate(t.principal,**args))
+    if phase!='applied_not_saved':
+        with pytest.raises((ToolError,PermissionError),match='prior_write_pending|source_context_changed|access_denied'):
+            await context(s,attempt,first_revision=2,second_revision=2,
+                second_role='viewer' if phase=='grant_revoked' else None)
+        assert (await s.spool.scope_state())['sequence']==1
+        return
+    outcome=await context(s,attempt,first_revision=2,second_revision=2)
+    second=await s.spool.get(outcome['operation_id'])
+    assert second.command.sequence==2 and second.accepted is not None
+    assert second.command.route=='story.edit.v1'
+    assert second.command.ids['story_id']==STORY
+    assert second.outcome_state=='NOT_SENT' and not outcome['remote_outcome_durable']
+    assert (await s.spool.get(first.operation_key)).outcome_state=='NOT_SENT', 'Saved requires remote receipt'
+    again=await s.workflow.mutate(t.principal,**args)
+    assert again['operation_id']==outcome['operation_id']
+    assert (await s.spool.scope_state())['sequence']==2
