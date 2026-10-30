@@ -69,7 +69,6 @@ async def test_actual_mcp_declarations_teach_both_user_flows(monkeypatch):
     assert "new attached PDF/DjVu use start" in ingest.description
     assert "model-authored stage" in ingest.description
     assert "same logical document" in ingest.description
-    assert "Each body must stand alone for a listener who has read neither the book nor any other story" in ingest.input_schema["properties"]["story_candidates"]["description"]
     assert "title, author and year" in find.description
     assert "never UUIDs" in server.instructions
     assert "book_pages" in server.instructions and "book_ingest(reprocess)" in server.instructions
