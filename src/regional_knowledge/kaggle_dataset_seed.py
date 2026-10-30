@@ -48,8 +48,10 @@ def _put_control(grant, data):
             headers={'Content-Length':str(len(data)), 'Content-Type':'application/octet-stream'})
         response = connection.getresponse()
         if response.status not in (200, 201, 204):
+            _LOG.warning('dataset_control_upload state=failed bytes=%s http_status=%s',len(data),response.status)
             raise DatasetPublicationError('dataset_control_upload_pending')
-    except (OSError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException) as exc:
+        _LOG.warning('dataset_control_upload state=failed bytes=%s error_type=%s',len(data),type(exc).__name__)
         raise DatasetPublicationError('dataset_control_upload_pending') from None
     finally:
         connection.close()
@@ -179,8 +181,16 @@ class SourceDatasetSeed:
                 journal_control=await self._journal_control()
                 for name, data in (('base-manifest.json', manifest),
                         ('source-control.json', control), ('journal-control.json',journal_control)):
-                    grant, _expires = await self.tickets.reserve(binding, self.config.operation_key+':'+name,
-                        name=name, size=len(data), sha256=sha(data))
+                    # These uploads are unpublished preparation. Keep their
+                    # tokens only with the complete publication intent below,
+                    # rather than pinning changing control bytes to old URLs.
+                    async with self.startup.config.writer_owner(self.startup.config.writer_generation):
+                        if not self.binding_current(binding):
+                            raise DatasetPublicationError('dataset_capture_writer_changed')
+                        grant=await asyncio.to_thread(self.publisher.reserve,
+                            name=name,size=len(data),sha256=sha(data),now=self.tickets.clock())
+                        if not self.binding_current(binding):
+                            raise DatasetPublicationError('dataset_capture_writer_changed')
                     await asyncio.to_thread(_put_control, grant, data)
                     files.append(grant)
                 previous = await asyncio.to_thread(self.publisher.observe)

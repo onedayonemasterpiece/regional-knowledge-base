@@ -207,6 +207,33 @@ async def put_control(p,name='one',data=b'pending'):
 
 
 @pytest.mark.asyncio
+async def test_failed_control_upload_retries_current_bytes_after_ticket_expiry(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    from regional_knowledge.kaggle_dataset_publisher import DatasetPublicationError
+    p=control_cycle(tmp_path,monkeypatch)
+    key=await put_control(p,data=b'first')
+    fail=True
+    def upload(grant,data):
+        nonlocal fail
+        if grant.name=='journal-control.json' and fail:
+            fail=False
+            raise DatasetPublicationError('dataset_control_upload_pending')
+        p.uploads[grant.name]=data
+    monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed._put_control',upload)
+    with pytest.raises(CheckpointPending):
+        await p.owner.refresh(p.binding,planned_stop=True)
+    assert p.store.latest_checkpoint.dataset_version==1 and not p.saved
+    with p.q.connect() as db:
+        db.execute("UPDATE rkb_dataset_blob_upload SET expires=0 WHERE name LIKE '%.json'")
+    await put_control(p,data=b'changed while publication has not started')
+    assert await p.owner.refresh(p.binding,planned_stop=True)
+    assert p.store.latest_checkpoint.dataset_version==2
+    assert p.store.remote_durable(key,b'changed while publication has not started')
+    assert not p.store.remote_durable(key,b'first')
+    assert p.calls.count('finalize')==1
+
+
+@pytest.mark.asyncio
 async def test_control_bytes_at_unchanged_pg_cursor_are_grouped_not_per_write_or_tick(tmp_path,monkeypatch):
     p=control_cycle(tmp_path,monkeypatch)
     assert not await p.owner.refresh(p.binding,planned_stop=True) and not p.calls
