@@ -72,7 +72,7 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     assert "128 MiB" in ingest.description
     assert "2500 physical pages" in ingest.description
     assert "no per-book public_rights declaration" in ingest.description
-    assert "narrative_outcome=needs_context or facts_only" in ingest.description
+    assert "narrative_outcome=needs_context or facts_only" in candidates["description"]
     assert "When evidence is insufficient, OMIT basic_variant" in candidates["description"]
     assert "2 MiB and 32 pages" not in server.instructions
 
