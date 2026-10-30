@@ -303,6 +303,7 @@ async def test_existing_mcp_fileparams_and_stage_json_use_target_owned_workflow(
     tools={tool.name:tool for tool in server._tool_manager.list_tools()}
     assert tools['book_ingest'].meta['openai/fileParams']==['file']
     assert 'source_import' in tools['book_ingest'].parameters['properties']
+    assert 'Each body must stand alone for a listener who has read neither the book nor any other story' in tools['book_ingest'].parameters['properties']['story_candidates']['description']
     async def call(name, arguments):
         request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
             'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
