@@ -106,7 +106,8 @@ async def test_native_book_ingest_registered_description_requires_same_pass_enti
         "person, organization, event, historical_thread, and poi_ref",
         "places, toponyms, historical addresses",
         "exact_source_spelling",
-        "page_id + region_key + chunk_key (or an already accepted chunk_id)",
+        "In entity_candidates, evidence may use page_id, region_key and chunk_key from this stage packet.",
+        "source passage evidence using those packet keys or an already accepted chunk_id",
         "An empty entity_candidates bundle is valid only when the reviewed page names no source-grounded entities.",
     ):
         assert required in description, required
