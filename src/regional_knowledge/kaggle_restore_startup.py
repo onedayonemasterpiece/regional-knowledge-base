@@ -140,6 +140,15 @@ class SourceRestoreCoordinator:
             yield
             if not self.current(binding):raise SnapshotError('restore_maintenance_binding_changed')
 
+    def resume_attachment(self):
+        """Refresh retained work before dispatch, without waiting for a client call."""
+        if self.startup.schema_migrations.resume_attachment():return True
+        binding,nonce=self._observe()
+        if (binding.run_id,nonce,binding.runtime_incarnation)!=self.dispatch.identity:
+            raise SnapshotError('restore_retained_runtime_changed')
+        self.dispatch.bind_attachment(binding)
+        return True
+
     def _compose(self,binding,nonce):
         from .kaggle_recovery_dispatch import RecoveryPhaseDispatch,WssSnapshotPhases
         from .snapshot_tickets import SnapshotTicketIssuer
@@ -162,7 +171,7 @@ class SourceRestoreCoordinator:
         self.dispatch=RecoveryPhaseDispatch(self.queue,database=self.database,identity=identity,
             binding_current=self.current,timeout_seconds=self.config.seconds,snapshot_tickets=tickets,
             dataset_checkpoint=self.config.dataset_checkpoint,
-            rebind_current=lambda:self.startup.schema_migrations.resume_attachment())
+            rebind_current=self.resume_attachment)
         # Retained original jobs can dispatch before any new client page call.
         # Reuse the configured owner on API restart, not a lazy caller binding.
         if self.startup.config.import_originals is not None:
