@@ -57,12 +57,14 @@ class ImportActivityReader:
         with self.importer.queue.connect(write=False) as db:
             row = db.execute(
                 "SELECT source_id,person_id,phase,last_operation_at,research_json "
-                "FROM rkb_source_intake_control WHERE ingestion_id=?", (ingestion_id,)
+                "FROM rkb_source_intake_control WHERE ingestion_id=? AND person_id=?",
+                (ingestion_id, owner_person_id),
             ).fetchone()
             if row is None:
+                if db.execute("SELECT 1 FROM rkb_source_intake_control WHERE ingestion_id=?",
+                              (ingestion_id,)).fetchone():
+                    raise PermissionError('activity target scope denied')
                 return None
-            if row['person_id'] != owner_person_id:
-                raise PermissionError('activity target scope denied')
             native = db.execute(
                 "SELECT phase,pending_operation_key,packet_mode,batch_count,"
                 "published_batch_count,enriched_batch_count,rejected_batch_index,"
