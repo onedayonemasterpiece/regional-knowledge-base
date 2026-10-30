@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from io import BytesIO
 import json
 import secrets
 
@@ -90,7 +91,8 @@ class DatasetRecoveryStore:
 
     def export_control(self):
         # One SQLite read snapshot, read in bounded pages and key order.
-        raw=bytearray(b'{"codec":"rkb.dataset-journal.v1","objects":[')
+        raw=BytesIO()
+        raw.write(b'{"codec":"rkb.dataset-journal.v1","objects":[')
         count=0
         with self.queue.connect(write=False) as db:
             rows=db.execute('SELECT key,data,token FROM rkb_dataset_recovery_objects WHERE storage=? '
@@ -101,10 +103,10 @@ class DatasetRecoveryStore:
                     if len(row['data'])>1024*1024:raise JournalLimit('dataset_control_object_budget')
                     record=json.dumps(dict(key=row['key'],token=row['token'],
                         data_b64=base64.b64encode(row['data']).decode()),sort_keys=True,separators=(',',':')).encode()
-                    if count:raw.extend(b',')
-                    raw.extend(record);count+=1
-        raw.extend(b']}')
-        return bytes(raw)
+                    if count:raw.write(b',')
+                    raw.write(record);count+=1
+        raw.write(b']}')
+        return raw.getvalue()
 
     def pending_control(self):
         """Exact pending control revision for the existing grouped owner.

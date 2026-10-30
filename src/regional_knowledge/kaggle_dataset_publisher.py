@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+from io import BytesIO
 import json
 import re
 import os
@@ -173,14 +174,15 @@ class KaggleDatasetPublisher:
                 response=client.datasets.dataset_api_client.download_dataset(request)
                 if response.status_code!=200:
                     raise DatasetPublicationError('dataset_control_read_unavailable')
-                data=bytearray()
+                data=BytesIO()
                 for chunk in response.iter_content(chunk_size=65536):
-                    data.extend(chunk)
-                    if len(data)>file.size:
+                    data.write(chunk)
+                    if data.tell()>file.size:
                         raise DatasetPublicationError('dataset_control_read_bytes_changed')
-            if len(data)!=file.size or hashlib.sha256(data).hexdigest()!=file.sha256:
+            raw=data.getvalue()
+            if len(raw)!=file.size or hashlib.sha256(raw).hexdigest()!=file.sha256:
                 raise DatasetPublicationError('dataset_control_read_bytes_changed')
-            return bytes(data)
+            return raw
         except DatasetPublicationError:
             raise
         except Exception:
