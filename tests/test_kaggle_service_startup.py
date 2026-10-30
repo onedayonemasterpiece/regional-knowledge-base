@@ -34,7 +34,9 @@ class HistoryAdapter:
         self.calls.append(('restore',binding))
         if not self.available:raise OSError('synthetic native history observation unavailable')
         self.binding=binding
-        self.proof=SimpleNamespace(database_generation=binding.database_generation,
+        # This startup seam does not attest an applied native journal tail.
+        self.proof=SimpleNamespace(database_generation=binding.database_generation,binding=None,
+            head=None,accepted_sequence=0,applied_sequence=0,
             current=lambda:not self.revoked and self.binding_current(binding))
         self.spool._source_anchor=self.proof
         return self.proof

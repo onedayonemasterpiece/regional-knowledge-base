@@ -14,7 +14,8 @@ from regional_knowledge.kaggle_native_source_bindings import resolved_native_sta
 from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_stage import STAGE_ROUTE,canonical,digest
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS,resolved_activation_command
-from test_participants import people
+from test_participants import people,change
+from regional_knowledge.participant_contracts import ParticipantGrant
 from test_native_intake_history import commands
 from test_source_stage import SOURCE,INGESTION,REQUEST,batch
 from test_source_activation import activation_payload
@@ -28,7 +29,7 @@ async def applied_candidate(people,tmp_path):
     q=BgeQueue(tmp_path/'queue.sqlite');store=ConditionalMemoryStore()
     journal=RecoveryJournal(store,stream='inactive-work-cycle',max_outcome_bytes=8192)
     registry=current_registry();spool=ControlSpool(q,people.registry,journal,registry)
-    native=pair(NS(q=q,spool=spool,registry=registry,journal=journal),extra_routes=('source.import',))
+    native=pair(NS(q=q,spool=spool,registry=registry,journal=journal),extra_routes=('source.import','story.edit'))
     async def check(*args):pass
     startup=NS(config=NS(writer_generation='writer-1'),coverage=None)
     importer=NS(import_revisions=ACTIVATION_REVISIONS,queue=q,spool=spool,startup=startup,_check=check,
@@ -50,7 +51,7 @@ async def applied_candidate(people,tmp_path):
             'db-source',digest(command.encode()))]
         await spool.record_apply(command.operation_key,outcome)
         startup.coverage=await native.v.extend(native.b)
-        yield NS(q=q,spool=spool,native=native,helper=helper,row=row,access=access,command=command,startup=startup)
+        yield NS(q=q,spool=spool,native=native,helper=helper,row=row,access=access,command=command,startup=startup,people=people)
     finally:
         await native.n.aclose();spool.close()
 
@@ -147,6 +148,74 @@ async def test_unknown_outcome_and_unproved_history_do_not_continue(applied_cand
     await e.spool._write(e.spool._outcome_sent,e.command.operation_key)
     e.startup.coverage=await e.native.v.extend(e.native.b)
     assert not e.helper._inactive_prefix_current(e.access,e.row,await e.spool.scope_state())
+
+
+async def _story_edit_predecessor(e, *, state='applied'):
+    """Real synthetic journal/spool and source cursor; no PG or live mutation."""
+    from regional_knowledge.kaggle_domain_bindings import resolved_current_story_edit_command
+    from regional_knowledge.kaggle_native_source_bindings import new_native_command
+    from test_story_editorial import operation, STORY
+    change(e.people,ParticipantGrant(capability='public_search',granted=True,reason='editor test'))
+    command=new_native_command(resolved_current_story_edit_command(
+        sequence=2,operation_key='pending-editorial',request_id='editorial-request',
+        person_id=e.people.other.subject,logical_time='2026-10-30T10:00:00Z',
+        source_id=e.row['source_id'],story_id=STORY,expected_revision=1,
+        source_revision=1,eligibility_revision=1,operation=operation(),
+        embedding=[1.]+[0.]*1023,input_tokens=10))
+    predecessor=await e.spool.journal.head()
+    await e.spool.stage_story_editorial(e.people.personal,command,database_generation='db-source')
+    if state=='unaccepted':return command
+    sealed=await e.spool.seal(e.people.personal,command.operation_key,
+        writer_generation='writer-1',predecessor=predecessor)
+    if state=='unknown_apply':
+        await e.spool.mark_apply_sent(command.operation_key)
+        return command
+    result=receipt(command)
+    e.native.pg.applied_seq=2
+    e.native.pg.receipts.append((2,command.operation_key,digest(command.encode()),
+        e.spool.registry.resolve(command).fingerprint,sealed.manifest.sha256,result.status,
+        result.outcome_sha256,digest(result.outcome),len(result.outcome),'db-source',digest(command.encode())))
+    await e.spool.record_apply(command.operation_key,result)
+    if state!='coverage_gap':e.startup.coverage=await e.native.v.extend(e.native.b)
+    return command
+
+
+@pytest.mark.asyncio
+async def test_next_source_stage_after_applied_story_edit_does_not_wait_for_dataset(applied_candidate):
+    e=applied_candidate;prior=await _story_edit_predecessor(e)
+    assert prior.ids['source_id']==e.row['source_id'] and prior.person_id!=e.row['person_id']
+    assert (await e.spool.get(prior.operation_key)).outcome_state=='NOT_SENT'
+    scope=await e.spool.scope_state([e.row['source_id']])
+    assert scope['pending'] and e.startup.coverage.applied_sequence==2
+    doc=batch(index=2,previous=digest(e.command.payload),start=1,count=1)
+    entry=await e.helper._stage_exact(e.access,e.row,kind='stage',key='post-editorial-stage',
+        route=STAGE_ROUTE,payload=doc,
+        builder=lambda **kw:resolved_native_stage_command(route=STAGE_ROUTE,**kw))
+    assert entry.command.sequence==3 and entry.accepted is None
+    assert (await e.spool.get(prior.operation_key)).outcome_state=='NOT_SENT'
+
+
+@pytest.mark.parametrize('state',['unaccepted','unknown_apply','coverage_gap','stale_head_cas','writer_changed','binding_changed','acl_revoked'])
+@pytest.mark.asyncio
+async def test_story_edit_does_not_bypass_stage_fences(applied_candidate,state):
+    from mcp.server.mcpserver.exceptions import ToolError
+    e=applied_candidate;await _story_edit_predecessor(e,state=state if state in ('unaccepted','unknown_apply','coverage_gap') else 'applied')
+    if state=='stale_head_cas':
+        store=e.spool.journal.store;head_key=e.spool.journal.head_key
+        store.write(head_key,store.objects[head_key].data)
+    if state=='writer_changed':
+        e.native.v.binding_current=lambda _:False
+    if state=='binding_changed':
+        e.access.binding=NS(**(vars(e.access.binding)|{'database_generation':'another-db'}))
+    if state=='acl_revoked':
+        async def denied(*args):raise PermissionError('access denied')
+        e.helper.importer._check=denied
+    doc=batch(index=2,previous=digest(e.command.payload),start=1,count=1)
+    with pytest.raises((ToolError,PermissionError),match='prior_write_pending|access denied'):
+        await e.helper._stage_exact(e.access,e.row,kind='stage',key='rejected-post-editorial-stage',
+            route=STAGE_ROUTE,payload=doc,
+            builder=lambda **kw:resolved_native_stage_command(route=STAGE_ROUTE,**kw))
+    assert (await e.spool.scope_state())['sequence']==2
 
 
 @pytest.mark.asyncio

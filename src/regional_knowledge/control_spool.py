@@ -494,6 +494,16 @@ class ControlSpool:
         self._source_head=seal.manifest;self._source_covered_sequence=command.sequence
         self._source_version=object()
 
+    def exact_applied_prefix_current(self,proof,binding,head,facts):
+        """PR659's exact accepted+applied prefix, including the live head CAS."""
+        sequence=head.reference.last_sequence if head else 0
+        return (proof is not None and proof is self._source_anchor
+            and proof.binding==binding and proof.current()
+            and proof.database_generation==binding.database_generation
+            and proof.applied_sequence==proof.accepted_sequence==sequence
+            and self._source_covered_sequence==sequence and proof.head==head
+            and self.facts_current(facts))
+
     def facts_current(self,facts):
         """Synchronous final issuance fence; perform no await after success."""
         self._active()
