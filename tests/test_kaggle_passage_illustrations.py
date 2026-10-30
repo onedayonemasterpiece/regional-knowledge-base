@@ -121,3 +121,29 @@ async def test_caption_search_hit_exposes_same_accepted_illustration_id_as_fetch
     assert search.metadata['illustrations'][0]['id'] == fetch.metadata['illustrations'][0]['id']
     assert search.metadata['illustrations'][0]['association_basis'] == 'accepted_chunk_link'
     assert len(calls) == 2 and all('source_batch_publications' in sql for sql, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_actual_search_previews_five_links_while_fetch_retains_six():
+    from uuid import UUID
+    from regional_knowledge.kaggle_search import fused_search
+    from test_kaggle_pg_search import FixtureConnection
+    from test_kaggle_query import SOURCE, PASSAGE, encode
+
+    class LinkedPassage(FixtureConnection):
+        async def fetchall(self):
+            if 'figure_rank<=' in self.statement:
+                return [(PASSAGE, SOURCE, f'figure-{i}', {'page_id': 'page'}, 4,
+                         'accepted_chunk_link') for i in range(min(6, self.statements[-1][1][-1]))]
+            if 'lexical_candidates' in self.statement or 'dense_candidates' in self.statement:
+                return [(UUID(PASSAGE), .1)]
+            return [(UUID(PASSAGE), UUID(SOURCE), 1, 'page 4', 'caption', 'book', {}, True)]
+
+    connection = LinkedPassage()
+    result = await fused_search(connection, 'caption', encode=encode)
+    hit = result.evidence[0]
+    assert len(hit.illustrations) == 5 and hit.illustrations_has_more
+    fetched, more = await read_passage_illustrations(connection, connection.execute,
+        source_id=SOURCE, passage_id=PASSAGE)
+    assert len(fetched) == 6 and not more
+    assert hit.illustrations == fetched[:5]

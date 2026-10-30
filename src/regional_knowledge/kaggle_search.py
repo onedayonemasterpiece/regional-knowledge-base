@@ -260,7 +260,7 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                         links = await read_passage_illustrations_batch(cursor, execute,
                             passage_ids=[str(r[0]) for r in linked_rows],
                             source_ids=[str(r[1]) for r in linked_rows],
-                            limit=max(1, 200 // len(rows)))
+                            limit=5)
                     result = SearchResult(tuple(StorySearchEvidence(r[1]) if story else
                                               SearchEvidence(str(r[0]), str(r[1]), *r[2:7],
                                                   *links.get(str(r[0]), ((), False)))
