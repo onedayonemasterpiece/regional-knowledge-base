@@ -2000,7 +2000,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
         host="127.0.0.1",
         port=8000,
         log_level=mcp.settings.log_level.lower(),
-        timeout_graceful_shutdown=10,
+        # Let a 60-second book call finish before closing its worker channel.
+        timeout_graceful_shutdown=65,
     )
     if target_startup is not None and target_startup.restart_requested:
         raise SystemExit(75)

@@ -67,7 +67,7 @@ async def test_main_explicit_signed_ingress_mounts_same_owner_receiver_and_asgi_
     assert options['stateless_http'] and options['json_response']
     assert options['host']=='127.0.0.1' and options['port']==8000
     assert options['log_level']==mcp.settings.log_level.lower()
-    assert options['timeout_graceful_shutdown']==10
+    assert options['timeout_graceful_shutdown']==65
     assert options['transport_security']==server._transport_security(
         s.startup.config.oauth_provider.resource)
     assert mcp._target_source_profile
@@ -202,7 +202,7 @@ async def test_main_graceful_timeout_reaches_real_lifespan_after_stalled_websock
     assert len(captured)==1
     mcp,options=captured[0]
     assert mcp._target_startup is service.startup
-    assert options['timeout_graceful_shutdown']==10
+    assert options['timeout_graceful_shutdown']==65
 
     opened=asyncio.Event()
     cancelled=asyncio.Event()
