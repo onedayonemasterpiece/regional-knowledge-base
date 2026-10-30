@@ -31,10 +31,13 @@ class Client:
     def __init__(self,data=PDF):
         self.fetches=0;self.downloads=0;self.data=data;self.iterator=None
         self.sent=None;self.send_calls=0;self.send_error=False
+        self.edit_calls=0;self.edit_error=None;self.self_id=8336351413
+        self.caption_editable=True
         loc=locator(data)
         self.message=SimpleNamespace(id=loc.message_id,chat_id=loc.chat_id,
             reply_to=SimpleNamespace(reply_to_top_id=loc.topic_id),
-            document=SimpleNamespace(id=loc.document_id,size=loc.size))
+            document=SimpleNamespace(id=loc.document_id,size=loc.size),
+            sender_id=self.self_id,message='')
         self.chunks=[data]
     async def get_messages(self,chat_id,*,ids):
         assert chat_id==locator().chat_id
@@ -43,7 +46,8 @@ class Client:
         return self.message
     async def iter_messages(self,chat_id,*,search,limit):
         assert chat_id==locator().chat_id and limit==10
-        if self.sent is not None and self.sent.message==search:yield self.sent
+        if self.message is not None and search in self.message.message:yield self.message
+        if self.sent is not None and search in self.sent.message:yield self.sent
 
     async def send_file(self,chat_id,path,*,caption,reply_to,force_document,mime_type,attributes):
         from pathlib import Path
@@ -54,9 +58,28 @@ class Client:
         self.send_calls+=1
         self.sent=SimpleNamespace(id=11,chat_id=chat_id,message=caption,
             reply_to=SimpleNamespace(reply_to_top_id=2),
-            document=SimpleNamespace(id=987654321,size=len(self.data)))
+            document=SimpleNamespace(id=987654321,size=len(self.data)),sender_id=self.self_id)
         if self.send_error:raise TimeoutError('lost send acknowledgment')
         return self.sent
+
+    async def get_me(self):
+        return SimpleNamespace(id=self.self_id)
+
+    async def __call__(self,request):
+        assert request.peer==locator().chat_id and request.id==self.message.id
+        return SimpleNamespace(caption=self.caption_editable)
+
+    async def edit_message(self,chat_id,message_id,*,text,parse_mode):
+        assert parse_mode is None
+        assert chat_id==locator().chat_id
+        target=self.sent if self.sent is not None and self.sent.id==message_id else self.message
+        assert target is not None and target.id==message_id
+        self.edit_calls+=1
+        if self.edit_error=='denied':raise PermissionError('synthetic edit denied')
+        target.message=text
+        if self.edit_error in ('lost_ack','not_modified'):
+            raise TimeoutError(self.edit_error)
+        return target
 
     def iter_download(self,document,*,request_size,chunk_size):
         assert document in (self.message.document, getattr(self.sent,'document',None))
@@ -221,3 +244,59 @@ async def test_native_restore_reads_registered_telegram_document_without_rewriti
     assert result['sha256']==record['sha256'] and result['parser_sha256']==record['parser_sha256']
     assert receipt.wire()==immutable and client.send_calls==client.downloads==1
     assert n.download.calls==1  # initial fixture acquisition; restore never fetched S3 or Dev
+
+@pytest.mark.asyncio
+async def test_caption_probe_and_update_stay_on_owned_document(native):
+    """Distinguishing: captions change in place, with the old archive marker still searchable."""
+    from test_kaggle_original_intake import INGEST
+    client=Client();native.handler.telegram_downloader=downloader(client)
+    args=dict(telegram_locator=locator().wire(),ingestion_id=INGEST)
+    inspected=(await native.handler(frame('original_caption',args,key='caption-probe')))['value']
+    assert inspected['owned'] and not inspected['updated']
+    assert inspected['editable']
+    assert inspected['sender_id']==inspected['self_id']==client.self_id
+    assert client.edit_calls==client.send_calls==client.downloads==0
+    caption='Robert Albinus — Lexikon der Stadt Königsberg (1985)\nRKB-original '+INGEST
+    client.caption_editable=False
+    denied=(await native.handler(frame('original_caption',dict(args,caption=caption),key='not-editable')))['value']
+    assert denied['owned'] and not denied['editable'] and not denied['updated'] and client.edit_calls==0
+    client.caption_editable=True
+    command=frame('original_caption',dict(args,caption=caption),key='caption-update')
+    first=(await native.handler(command))['value']
+    assert first['owned'] and first['updated'] and client.message.message==caption
+    assert (await native.handler(command))['value']==first and client.edit_calls==1
+    noop=(await native.handler(frame('original_caption',dict(args,caption=caption),key='caption-noop')))['value']
+    assert noop['owned'] and not noop['updated'] and client.edit_calls==1
+    assert (await downloader(client).find_archive(sha256=locator().sha256,size=locator().size,
+        ingestion_id=INGEST,current=lambda:True))==locator()
+    assert client.send_calls==client.downloads==0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure',['lost_ack','not_modified'])
+async def test_caption_lost_ack_is_reconciled_by_message_readback(native,failure):
+    from test_kaggle_original_intake import INGEST
+    client=Client();client.edit_error=failure;native.handler.telegram_downloader=downloader(client)
+    args=dict(telegram_locator=locator().wire(),ingestion_id=INGEST,
+        caption='Test author — Test book (1897)\nRKB-original '+INGEST)
+    result=(await native.handler(frame('original_caption',args)))['value']
+    assert result['owned'] and client.edit_calls==1 and client.message.message==args['caption']
+    assert client.send_calls==client.downloads==0
+
+
+@pytest.mark.asyncio
+async def test_caption_foreign_lease_and_invalid_marker_cannot_edit(native):
+    from test_kaggle_original_intake import INGEST
+    client=Client();client.message.sender_id=999999
+    native.handler.telegram_downloader=downloader(client)
+    args=dict(telegram_locator=locator().wire(),ingestion_id=INGEST,
+        caption='Test book\nRKB-original '+INGEST)
+    foreign=(await native.handler(frame('original_caption',args,key='foreign')))['value']
+    assert not foreign['owned'] and client.edit_calls==0
+    client.message.sender_id=client.self_id
+    invalid=(await native.handler(frame('original_caption',dict(args,caption='No marker'),key='bad')))['value']
+    assert invalid['error']=='original_caption_contract' and client.edit_calls==0
+    native.handler.telegram_downloader=downloader(client,current=lambda:False)
+    expired=(await native.handler(frame('original_caption',args,key='lease')))['value']
+    assert expired['error']=='original_telegram_lease_changed'
+    assert client.edit_calls==client.send_calls==client.downloads==0

@@ -279,6 +279,27 @@ class KaggleSourceImporter:
         return BookIngestOutput(ingestion_id=row['ingestion_id'], document_id=row['source_id'],
             state=state, message=message, next_action=action, **kwargs)
 
+    async def _caption_original(self, access, row):
+        # The existing durable phase continues after this optional bounded wait.
+        try:
+            source=json.loads(row['metadata_json'])
+            names=', '.join(' '.join(name.split()) for name in source.get('authors') or [] if name.strip())
+            label=(names+' — ' if names else '')+' '.join(source['title'].split())
+            if source.get('publication_year') is not None:
+                label+=f" ({source['publication_year']})"
+            marker='RKB-original '+row['ingestion_id']
+            label=label.encode('utf-16-le')[:2*(1023-len(marker))].decode('utf-16-le',errors='ignore')
+            caption=label.rstrip()+'\n'+marker
+            async with asyncio.timeout(2):
+                result=await self.originals.caption(access.context,row['ingestion_id'],caption=caption)
+            if result is not None and not result['owned']:
+                _LOG.warning('original_caption state=foreign_sender ingestion_id=%s',row['ingestion_id'])
+        except TimeoutError:
+            _LOG.info('original_caption state=pending ingestion_id=%s',row['ingestion_id'])
+        except Exception as exc:
+            _LOG.warning('original_caption state=unavailable ingestion_id=%s error_class=%s',
+                row['ingestion_id'],type(exc).__name__)
+
     async def _start(self, access, *, file, metadata, source_import):
         if file is None:
             raise failure('attached_source_required', status='invalid_query')
@@ -341,6 +362,7 @@ class KaggleSourceImporter:
         receipt = await self._receipt(access, row)
         if receipt is None:
             return await self._original_pending(row,status)
+        await self._caption_original(access,row)
         if row['phase'] == 'acquiring':
             row = await asyncio.to_thread(self._save, row, phase='staging')
         if prior is not None and prior['phase']!='acquiring' and self.native_intake is not None:

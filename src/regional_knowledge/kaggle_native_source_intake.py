@@ -910,6 +910,7 @@ class NativeSourceIntake:
                 # back into perpetual processing on the next MCP status.
                 return await self.importer._original_pending(row,original)
             if receipt is not None and row['phase']=='acquiring':
+                await self.importer._caption_original(access,row)
                 row=await asyncio.to_thread(self.importer._save,row,phase='staging')
             return self.importer._output(row,'staged' if receipt else 'processing',
                 'Review issued pages and stage exact model input' if receipt else 'Verified original pending',

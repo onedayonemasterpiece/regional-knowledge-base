@@ -91,6 +91,7 @@ class OriginalIntakeController:
 
     async def dispatch_transfer(self,identity,binding):
         if identity['phase'] not in PHASES or not self.binding_current(binding):raise PermissionError('original transfer binding unavailable')
+        if identity['phase']=='original_caption':return None
         if identity['phase']=='original_pages':return {}
         if (identity['phase'] in ('original_archive','original_verify') and 'page_index' not in identity['arguments']
                 and identity['operation_key'] not in self._private):
@@ -112,7 +113,7 @@ class OriginalIntakeController:
         if 'error' in value:
             code=value.get('error')
             if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
-            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required','original_telegram_send_unknown'):
+            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required','original_telegram_send_unknown','original_telegram_caption_unknown','original_telegram_sender_unknown','original_telegram_editability_unknown'):
                 raise OriginalIntakeError(code)
             raise OriginalIntakeError('original_native_receipt_unavailable')
         return value
@@ -287,6 +288,20 @@ class OriginalIntakeController:
             raise OriginalIntakeError('original_verified_object_missing')
         if not self.binding_current(binding):raise OriginalIntakeError('original_current_binding_required')
         return receipt
+
+    async def caption(self,context,ingestion_id,*,caption=None):
+        """Owner-only metadata observation/update via the existing ORIGINAL lease."""
+        actor,binding=await self._authorize(context)
+        row=self._row(actor,ingestion_id)
+        if row['receipt_json'] is None or row['telegram_locator_json'] is None:return None
+        receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
+        locator=TelegramOriginalLocator.from_wire(json.loads(row['telegram_locator_json']))
+        if ((locator.sha256,locator.size)!=(receipt.sha256,receipt.size)
+                or receipt.key.startswith('telegram/') and receipt.key!='telegram/'+digest(canonical(locator.wire()))):
+            raise OriginalIntakeError('original_telegram_receipt_changed')
+        args=dict(telegram_locator=locator.wire(),ingestion_id=ingestion_id)
+        if caption is not None:args['caption']=caption
+        return await self._phase(binding,'original_caption',args)
 
     async def status(self,context,ingestion_id):
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
