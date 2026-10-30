@@ -18,6 +18,8 @@ def canonical(value):
 
 
 def service_scope(value):
+    if value == {'operation': 'import_activity'} and type(value) is dict:
+        return {'operation': 'import_activity'}
     if (type(value) is not dict or set(value) != {'operation','provider','provider_tenant','workspace_ids'}
             or value['operation'] != 'knowledge_search' or value['provider'] != 'projects_hub'
             or type(value['provider_tenant']) is not str
@@ -129,15 +131,18 @@ class ServiceOAuthMixin:
             'credential_id':ident,'epoch':result['epoch']})
         return result
 
-    def verify_service_credential(self,token,*,service_id,credential_id,epoch,provider_tenant,workspace_id):
+    def verify_service_credential(self,token,*,service_id,credential_id,epoch,provider_tenant=None,workspace_id=None,operation='knowledge_search'):
         if service_token_id(token)!=credential_id or type(epoch) is not int or epoch<1:return None
         secret_hash=hashlib.sha256(token.encode()).hexdigest()
         def read(state):
             row=state['service_credentials'].get(credential_id)
             if (row is None or not row['enabled'] or row['epoch']!=epoch or row['service_id']!=service_id
                     or row['expires_at']<=self.clock() or not hmac.compare_digest(row['secret_hash'],secret_hash)
-                    or row['scope']['operation']!='knowledge_search' or row['scope']['provider']!='projects_hub'
-                    or row['scope']['provider_tenant']!=provider_tenant or workspace_id not in row['scope']['workspace_ids']):
+                    or not ((operation == 'import_activity' and row['scope'] == {'operation': 'import_activity'})
+                        or (operation == 'knowledge_search' and row['scope'].get('operation') == 'knowledge_search'
+                            and row['scope'].get('provider') == 'projects_hub'
+                            and row['scope'].get('provider_tenant') == provider_tenant
+                            and workspace_id in row['scope'].get('workspace_ids', [])))):
                 return None
             return VerifiedServiceCredential(credential_id,epoch,service_id,
                 hashlib.sha256(canonical(row['scope'])).hexdigest(),row['expires_at'],secret_hash)
