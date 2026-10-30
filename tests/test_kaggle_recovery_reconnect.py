@@ -8,6 +8,31 @@ from regional_knowledge.kaggle_recovery_dispatch import RecoveryPhaseDispatch
 from regional_knowledge.kaggle_restore_startup import PreReadyRecoveryBinding,SourceRestoreCoordinator
 from test_bge_admission import state,auth,people
 from test_kaggle_recovery_phases import database,response
+from test_kaggle_public_backend import target
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ready',[False,True])
+async def test_attachment_refresh_uses_serving_binding_for_ready_original_transfer(target,ready):
+    from regional_knowledge.kaggle_public_backend import current_binding,TargetReadBinding
+    from regional_knowledge.original_intake_controller import OriginalIntakeController
+    t=target;serving=current_binding(t.queue)
+    pre=PreReadyRecoveryBinding(t.run,serving.runtime_incarnation,t.generation,serving.database_generation,'writer')
+    seen=[];restorer=object.__new__(SourceRestoreCoordinator)
+    restorer.queue=t.queue
+    restorer.startup=SimpleNamespace(schema_migrations=SimpleNamespace(resume_attachment=lambda:False))
+    restorer._observe=lambda:(pre,t.nonce)
+    restorer.dispatch=SimpleNamespace(identity=(t.run,t.nonce,serving.runtime_incarnation),bind_attachment=seen.append)
+    if not ready:
+        with t.queue.connect() as db:db.execute("UPDATE runs SET status='starting' WHERE id=?",(t.run,))
+    assert restorer.resume_attachment()
+    if ready:
+        assert type(seen[0]) is TargetReadBinding
+        originals=object.__new__(OriginalIntakeController)
+        originals.binding_current=lambda value:value==current_binding(t.queue)
+        originals._private={}
+        assert await originals.dispatch_transfer(dict(phase='original_archive',arguments={},operation_key='retained'),seen[0]) is None
+    else:assert seen==[pre]
 
 
 @pytest.mark.asyncio
@@ -17,6 +42,7 @@ async def test_reconnect_dispatches_retained_job_without_another_client_request(
     old=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,db.database_generation,db.writer_generation)
     current=[old]
     restorer=object.__new__(SourceRestoreCoordinator)
+    restorer.queue=s.q
     restorer.startup=SimpleNamespace(schema_migrations=SimpleNamespace(resume_attachment=lambda:False))
     restorer._observe=lambda:(current[0],s.nonce)
     bridge=RecoveryPhaseDispatch(s.q,database=db,identity=(s.run,s.nonce,'incarnation-a'),
