@@ -256,6 +256,20 @@ def _book_mcp_error(exc: Exception) -> ToolError:
         logging.getLogger(__name__).error("book_tool_failure error_type=%s frames=%s",
             type(exc).__name__, frames)
     response = {"status": status, "reason": reason, "error_class": error_class}
+    if reason == "invalid_small_source_input" and isinstance(exc, ToolError):
+        # Only bounded type names and schema locations from this structured boundary.
+        if (type(record) is dict and record.get("exception_class") in
+                {"ValidationError", "ValueError", "KeyError", "TypeError"}):
+            path = record.get("field_path")
+            allowed = {"payload", "pages", "chunks", "entity_candidates", "entities",
+                "aliases", "relations", "evidence", "page_id", "region_id", "region_key",
+                "chunk_id", "chunk_key", "exact_quote", "key", "kind",
+                "canonical_label", "exact_source_spelling", "*"}
+            if (type(path) is str and len(path) <= 128 and
+                    all(part in allowed or part.isdecimal() and len(part) <= 4
+                        for part in path.split("."))):
+                response["exception_class"] = record["exception_class"]
+                response["field_path"] = path
     if reason == "stage_file_schema" and isinstance(exc, ToolError):
         hints = _book_stage_schema_hints(exc)
         if hints:
@@ -664,6 +678,7 @@ def build_server(
             "Build semantically coherent source chunks with model-chosen boundaries at changes of thought, typically about 256 BGE tokens (roughly 800-1000 characters as a rough estimate, not a ceiling); each chunk's complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text) must be at most 512 pinned BGE-M3 tokenizer tokens, including special tokens; chunk.title is metadata, not added separately. Split longer thoughts at complete sentences to stay within the exact token bound; a printed paragraph, physical page or stage packet is not a mandatory chunk boundary. Preserve whole sentences: split a long or visually unbroken paragraph at a complete sentence when the idea changes, using exact span_refs and source_text offsets; combine short adjacent paragraphs about the same idea into one appropriately sized chunk using source-backed region_refs or span_refs. Read continuing text with book_pages; one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages, not one oversized chunk. If a completed thought spans pages and fits current limits, one chunk may use ordered region_refs OR exact span_refs from both real page_ids and source regions; preserve original page/region/span provenance and never invent unseen continuation or force a whole packet into one chunk. "
             "If book_ingest(status) returns next_action=continue_tail, use its tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end; start/end are exact Unicode codepoint offsets in the original source region) for the contiguous uncovered body suffix on the last accepted packet page. Read the next page with book_pages at next_cursor by default; for irregular scans choose the model-selected physical cursor (even below next_cursor), set previous_physical_page_index to the accepted tail page's physical index and then choose small, sentence-complete semantic chunks with ordered exact span_refs or region_refs across the accepted prior tail and newly issued, reviewed page(s), retaining prior page/region/span provenance. For span_refs supply page_id, region_key, start and end; the server derives source_text_sha256 from the known region text, so the model must not calculate or supply a hash. Stage only newly issued, visually reviewed page(s) in a 1-4-page packet: do not re-stage the accepted prior page, split sentences, invent missing text, use system-chosen split/merge boundaries, or finalize while status still indicates continue_tail. "
             "During the same page review, record source-mentioned places in book_ingest(stage).entity_candidates as poi_ref entities with exact_source_spelling and source passage evidence. A new name for the same model-identified place is an alias, not a new entity. Preserve source-supported German and other historical names in aliases; set language, alias_type (such as historical, former or current) and time_scope only when supported by the book or cited research_sources, leaving unsupported values unset. Add a modern Russian name only when the book or cited research_sources (URL and note) supports that alias; keep external research separate from book evidence. Review all source-mentioned place classes: streets, squares, quarters, buildings, churches, castles, fortifications, gates, bridges, islands, rivers, villages and districts of the region. For lost or demolished sites, record the supported state in place_context; do not guess dates, coordinates or modern addresses. "
+            "Entity evidence may use page_id, region_key and chunk_key from this stage packet. "
             "Mark knowledge_reviewed and story_candidates_reviewed only after actually considering the page. "
             "Story rules: see book_ingest.story_candidates. "
             "On the first cover, title, title-verso and imprint pages, populate the existing book metadata from the actual printing: metadata.title, metadata.authors, metadata.publication_year and metadata.language; metadata.catalog.kind (book/journal_issue/article), editors, translators, publisher, date, edition, identifiers and topics (themes). Set metadata.catalog.cover_page to the observed zero-based physical page index together with metadata.catalog.cover_kind (cover, title_page or issue_cover). Do not invent unknown authors, editors, dates, identifiers, book type, topics or cover details; leave unsupported fields unset. "
@@ -1626,7 +1641,7 @@ def build_server(
         chunks: list[StageChunkInput] | None = None,
         poi_facts: list[StagePoiFactInput] | None = None,
         poi_media_links: list[StagePoiMediaLinkInput] | None = None,
-        entity_candidates: GraphBundle | None = None,
+        entity_candidates: GraphBundle | dict[str, Any] | None = None,
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12,
             description=(
                 "Model-authored source-grounded story candidates (max 12 per stage; when more episodes, stage fewer pages). "
@@ -1704,7 +1719,8 @@ def build_server(
                 ],
             }
             if entity_candidates is not None:
-                payload["entity_candidates"] = entity_candidates.model_dump(mode="json")
+                payload["entity_candidates"] = (entity_candidates.model_dump(mode="json")
+                    if isinstance(entity_candidates, GraphBundle) else entity_candidates)
         principal = _principal()
         stage_file_sha = None
         if file is not None and command == 'stage':

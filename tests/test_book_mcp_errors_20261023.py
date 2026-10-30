@@ -105,7 +105,8 @@ async def error_envelope(server, tool, args=None):
     assert 0 <= begin < end
     envelope = json.loads(raw[begin:end + 1])
     assert {"status", "reason", "error_class"} <= set(envelope)
-    assert set(envelope) <= {"status", "reason", "error_class", "hints"}
+    assert set(envelope) <= {"status", "reason", "error_class", "hints",
+                             "exception_class", "field_path"}
     assert len(json.dumps(envelope)) <= 360
     return envelope
 
@@ -166,10 +167,20 @@ async def test_domain_json_extras_and_private_error_text_do_not_escape(registere
     backend.error = ToolError(json.dumps({
         "status": "invalid_query", "reason": "invalid_small_source_input",
         "original_bytes": _SECRET, "traceback": _SECRET, "token": _SECRET,
+        "exception_class": "ValidationError", "field_path": "private_token",
     }))
     assert await error_envelope(server, tool) == {
         "status": "invalid_query", "reason": "invalid_small_source_input",
         "error_class": "domain",
+    }
+    backend.error = ToolError(json.dumps({
+        "status": "invalid_query", "reason": "invalid_small_source_input",
+        "exception_class": "ValidationError", "field_path": "entities.0.evidence.region_key",
+    }))
+    assert await error_envelope(server, tool) == {
+        "status": "invalid_query", "reason": "invalid_small_source_input",
+        "error_class": "domain", "exception_class": "ValidationError",
+        "field_path": "entities.0.evidence.region_key",
     }
 
 

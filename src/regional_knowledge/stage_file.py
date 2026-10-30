@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 from uuid import UUID
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -35,7 +36,7 @@ class StageFile(BaseModel):
     chunks: list[StageChunkInput] = Field(default_factory=list, max_length=100)
     poi_facts: list[StagePoiFactInput] = Field(default_factory=list, max_length=100)
     poi_media_links: list[StagePoiMediaLinkInput] = Field(default_factory=list, max_length=100)
-    entity_candidates: GraphBundle | None = None
+    entity_candidates: GraphBundle | dict[str, Any] | None = None
     story_candidates: list[StageStoryCandidateInput] = Field(default_factory=list, max_length=12)
 
 

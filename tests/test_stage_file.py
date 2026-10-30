@@ -40,6 +40,17 @@ def test_parse_retains_exact_model_content_and_never_infers_review(batch, identi
     assert payload['pages'][0]['story_candidates_reviewed'] is False
 
 
+def test_file_keeps_same_packet_entity_evidence_keys_for_owner_stage(batch):
+    batch["entity_candidates"] = {"entities": [{
+        "key": "school", "kind": "poi_ref", "canonical_label": "Школа",
+        "exact_source_spelling": "школы",
+        "evidence": {"page_id": batch["pages"][0]["page_id"],
+                     "region_key": "body", "chunk_key": "same-packet-school"},
+    }]}
+    payload = parse_stage_file(encode(batch), batch["ingestion_id"], 1)
+    assert payload["entity_candidates"]["entities"][0]["evidence"]["chunk_key"] == "same-packet-school"
+
+
 def test_file_binds_exact_job_revision_and_rejects_control_fields(batch):
     with pytest.raises(ValueError, match='mismatch'):
         parse_stage_file(encode(batch), str(uuid4()), 1)

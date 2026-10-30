@@ -17,6 +17,7 @@ import struct
 from uuid import UUID, uuid4, uuid5
 
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import ValidationError
 
 from .bge_contract import DIMENSION, MAX_TOKENS, REVISION, SPACE, TOKENIZER_SHA256, validate_vector
 from .contracts import (BookIngestOutput, KnowledgeExtractionStatus, Principal,
@@ -523,6 +524,8 @@ class KaggleSourceImporter:
         partial = compile_model_stage(graph, document_id=row['source_id'], revision=1, pages=pages, chunks=chunks,poi_facts=poi_facts)
         graph = merge_stage(graph, partial)
         if payload.get('entity_candidates'):
+            from .kaggle_native_source_intake import resolve_stage_entity_evidence
+            payload=resolve_stage_entity_evidence(payload,row['source_id'])
             from .entity_graph import GraphBundle,validate_staged_bundle,digest as graph_digest
             bundle=GraphBundle.model_validate(payload['entity_candidates'])
             validate_staged_bundle(bundle,graph)
@@ -937,9 +940,21 @@ class KaggleSourceImporter:
             raise failure('access_denied', status='denied') from None
         except OriginalIntakeError:
             raise failure('native_original_unavailable') from None
-        except (ValueError, KeyError, TypeError):
-            # Never include source text, URLs or validation input in diagnostics.
-            raise failure('invalid_small_source_input', status='invalid_query') from None
+        except (ValueError, KeyError, TypeError) as error:
+            # Only controlled schema labels/indices, never input or exception text.
+            field_path = 'payload'
+            if isinstance(error, ValidationError):
+                loc = error.errors(include_input=False, include_context=False, include_url=False)[0]['loc']
+                allowed = {'pages','chunks','entity_candidates','entities','aliases','relations',
+                    'evidence','page_id','region_id','region_key','chunk_id','chunk_key',
+                    'exact_quote','key','kind','canonical_label','exact_source_spelling'}
+                field_path = '.'.join(str(part) if type(part) is int and 0 <= part <= 9999
+                    else part if type(part) is str and part in allowed else '*'
+                    for part in loc[:8]) or 'payload'
+            _LOG.warning('book_ingest_invalid_input exception_class=%s field_path=%s',
+                type(error).__name__, field_path)
+            raise failure('invalid_small_source_input', status='invalid_query',
+                exception_class=type(error).__name__, field_path=field_path) from None
 
     async def book_pages(self, *, principal, ingestion_id, cursor=None, batch_size=1):
         try:
