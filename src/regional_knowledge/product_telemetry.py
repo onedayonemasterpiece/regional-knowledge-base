@@ -83,6 +83,46 @@ def _digest_label(value):
         char in "0123456789abcdef" for char in value)
 
 
+def _resource_number(key, value):
+    if type(value) not in (int, float) or not 0 <= value < 2**63 or not math.isfinite(value):
+        raise ValueError("bounded finite resource reading required")
+    if key in _RESOURCE_INTEGER_FIELDS and type(value) is not int:
+        raise ValueError("integer resource counter required")
+    if key == "cgroup_version" and value not in (1, 2):
+        raise ValueError("supported cgroup scope required")
+    if key in ("sample_seq", "sample_time_unix_ms", "received_unix_ms") and value < 1:
+        raise ValueError("positive sample identity required")
+    return value
+
+
+def clean_resource_numbers(values):
+    """Shared heartbeat/history numeric ABI; unavailable observations stay absent."""
+    if type(values) is not dict or len(values) > 128:
+        return {}
+    clean = {}
+    for key in _RESOURCE_FIELDS & values.keys():
+        try:clean[key] = _resource_number(key, values[key])
+        except ValueError:pass
+    return clean
+
+
+def emit_resource_sample(collector, diagnostics, *, run_id, incarnation, generation, release=None):
+    if collector is None:return False
+    values = clean_resource_numbers(diagnostics)
+    if not values.get('sample_seq') or not values.get('sample_time_unix_ms'):return False
+    values.pop('received_unix_ms',None)  # Receipt time belongs to this host.
+    event = dict(event='resource.sample', phase='resource',
+        status='ok' if 'cgroup_version' in values and 'memory_current_bytes' in values else 'degraded',
+        run_id=run_id, runtime_incarnation=incarnation, connection_generation=generation,
+        scope='own_cgroup' if 'cgroup_version' in values else 'process_only',
+        received_unix_ms=int(time.time()*1000), **values)
+    if release is not None:event['release_sha256']=release
+    try:
+        return collector.try_emit(event, level='standard')
+    except Exception:
+        return False  # Optional history cannot fail the WSS heartbeat.
+
+
 def _clean(record: Mapping[str, object], level: str):
     resource_extras = {"runtime_incarnation", "release_sha256", "scope"}
     if not isinstance(record, Mapping) or len(record) > 64:
@@ -160,15 +200,7 @@ def _clean(record: Mapping[str, object], level: str):
             raise ValueError("fixed resource scope only")
         result["scope"] = record["scope"]
     for key in _RESOURCE_FIELDS & set(record) if is_resource else ():
-        value = record[key]
-        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value < 2**63:
-            raise ValueError("bounded finite resource reading required")
-        if key in _RESOURCE_INTEGER_FIELDS and type(value) is not int:
-            raise ValueError("integer resource counter required")
-        if key == "cgroup_version" and value not in (1, 2):
-            raise ValueError("supported cgroup scope required")
-        if key in ("sample_seq", "sample_time_unix_ms", "received_unix_ms") and value < 1:
-            raise ValueError("positive sample identity required")
+        value = _resource_number(key, record[key])
         result[key] = round(value, 3) if type(value) is float else value
     if ignored:
         result["ignored_fields"] = ignored  # Never include the omitted keys/values.
