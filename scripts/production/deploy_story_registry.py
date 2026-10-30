@@ -316,7 +316,7 @@ def health():
 
 
 def systemctl(action, service=None):
-    cmd("systemctl", "--user", action, *( [service] if service else [] ), timeout=40)
+    cmd("systemctl", "--user", action, *( [service] if service else [] ), timeout=120)
 
 
 def verify_pid(source, sha, unit=SERVICE):

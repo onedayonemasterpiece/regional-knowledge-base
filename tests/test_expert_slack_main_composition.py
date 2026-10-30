@@ -223,7 +223,7 @@ async def test_main_graceful_timeout_reaches_real_lifespan_after_stalled_websock
     sock.bind((options['host'],0))
     sock.listen(16)
     sock.setblocking(False)
-    # Substitute a short budget for CI; the production setting remains 10 s.
+    # Substitute a short budget for CI; the production setting remains 65 s.
     uvicorn_server=uvicorn.Server(uvicorn.Config(
         app,host=options['host'],port=0,log_level='critical',
         timeout_graceful_shutdown=.15))
