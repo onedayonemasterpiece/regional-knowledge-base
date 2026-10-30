@@ -1033,7 +1033,8 @@ async def test_rejected_packet_reports_short_reason_and_first_physical_page(nati
 
 
 @pytest.mark.asyncio
-async def test_next_stage_before_semantic_still_enriches_every_batch(native_intake):
+@pytest.mark.parametrize('previous_applied',[False,True])
+async def test_next_stage_before_semantic_still_enriches_every_batch(native_intake,previous_applied):
     """A model that moves to the next pages right after its text is published
     must not lose the earlier packet's entities/stories (semantic component)."""
     s = native_intake; result = await start(s)
@@ -1048,17 +1049,23 @@ async def test_next_stage_before_semantic_still_enriches_every_batch(native_inta
                 issued.append((doc['batch_index'],doc['component']))
             await finish(s,result)
             await call(s,result,'status')
-    await stage(s,result,batch(s,result,first=0))
+    first = batch(s,result,first=0)
+    await stage(s,result,first)
     await finish(s,result)
     await call(s,result,'status')
     entry = await pending(s,result)
     assert json.loads(entry.command.payload)['component'] == 'text'
     issued.append((0,'text'))
-    await finish(s,result)
+    duplicate = await stage(s,result,first)
+    assert duplicate.state == 'processing' and duplicate.warnings == []
+    assert 'not accepted' not in duplicate.message
+    if previous_applied:
+        await finish(s,result)
     # The model does not wait for enrichment of batch 0: told to wait and resend.
     second = batch(s,result,first=4)
     early = await stage(s,result,second)
     assert early.state == 'processing' and early.warnings == ['previous_packet_applying']
+    assert 'not accepted' in early.message and 'resend this same stage' in early.message
     assert state(s,result)['batch_count'] == 1
     await drain()
     assert (await stage(s,result,second)).state == 'processing'
