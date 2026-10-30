@@ -28,6 +28,7 @@ from .story_editorial import ROLES,EDITORIAL_REVISIONS,resolved_story_edit_comma
 from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_story_edit_command,resolved_current_story_access_command
 from .source_activation import ACTIVATION_REVISIONS
 from .kaggle_native_source_bindings import new_native_command
+from .source_read_gate import SourceGateExpired
 
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
@@ -57,7 +58,8 @@ class KaggleStoryEditorial:
                 or context.principal.subject!=authority.person_id):raise PermissionError('personal Story authority required')
         try:actor=await asyncio.to_thread(self.participants.require,context,'public_search')
         except ParticipantError:raise PermissionError('current Story participant capability required') from None
-        if actor!=authority.person_id or not self._binding_current(binding):raise PermissionError('current Story authority required')
+        if actor!=authority.person_id:raise PermissionError('current Story authority required')
+        if not self._binding_current(binding):raise SourceGateExpired('current Story runtime required')
 
     @asynccontextmanager
     async def _access(self,principal):
@@ -285,7 +287,14 @@ class KaggleStoryEditorial:
                 access['retained']=await self.output_gate.retain(output,access['authority'],access['context'],access['binding'])
                 return output
         except ToolError:raise
-        except PermissionError:raise failure('access_denied','denied') from None
+        except PermissionError as error:
+            expired=isinstance(error,SourceGateExpired)
+            reason='source_context_changed' if expired else 'access_denied'
+            site=error.__traceback__
+            while site.tb_next:site=site.tb_next
+            _LOG.warning('story_editorial_failure story_id=%s reason=%s error_type=%s error_site=%s:%s',
+                story_id,reason,type(error).__name__,site.tb_frame.f_code.co_filename.rsplit('/',1)[-1],site.tb_lineno)
+            raise failure(reason,'unavailable' if expired else 'denied') from None
         except TimeoutError:raise failure('deadline_exceeded') from None
         except (ValueError,TypeError,KeyError):raise failure('invalid_input','invalid_query') from None
 

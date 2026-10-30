@@ -147,6 +147,33 @@ async def test_editor_can_encode_only_exact_authorized_document_then_save_accept
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['binding','dispatch_binding','reply_binding','expired_permit'])
+async def test_expired_editorial_runtime_is_unavailable_not_access_denied(editorial,monkeypatch,caplog,phase):
+    s=editorial
+    if phase=='binding':
+        monkeypatch.setattr(s.startup,'binding_current',lambda binding:False)
+    elif phase=='dispatch_binding':
+        monkeypatch.setattr(s.gate,'binding_current',lambda binding:False)
+    else:
+        finish=s.gate.finish;now=s.gate.clock()
+        async def expire(permit,result):
+            if phase=='expired_permit':monkeypatch.setattr(s.gate,'clock',lambda:now+3)
+            else:monkeypatch.setattr(s.gate,'binding_current',lambda binding:False)
+            return await finish(permit,result)
+        monkeypatch.setattr(s.gate,'finish',expire)
+    task=asyncio.create_task(s.workflow.mutate(s.t.principal,story_id=STORY,expected_revision=1,
+        idempotency_key='expired-runtime',operation=operation()))
+    with pytest.raises(ToolError) as caught:
+        if phase in ('binding','dispatch_binding'):await task
+        else:await context(s,task)
+    assert json.loads(str(caught.value))==dict(status='unavailable',reason='source_context_changed')
+    assert 'story_editorial_failure' in caplog.text and 'error_site=' in caplog.text
+    assert operation().body not in caplog.text
+    assert not s.counts
+    with s.t.queue.connect(write=False) as db:assert db.execute('SELECT count(*) FROM jobs').fetchone()[0]==0
+
+
+@pytest.mark.asyncio
 async def test_native_viewer_is_denied_before_tokenization_or_any_document_job(editorial):
     s=editorial
     task=asyncio.create_task(s.workflow.mutate(s.t.principal,story_id=STORY,expected_revision=1,
