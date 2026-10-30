@@ -83,7 +83,7 @@ def run(apply: bool, restart: bool = False):
         import urllib.request
         for unit in UNITS:
             subprocess.run(["systemctl","--user","restart",unit],check=True,
-                           timeout=40,env=env,stdout=subprocess.DEVNULL,
+                           timeout=120,env=env,stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
         for address,expected in (("http://127.0.0.1:8000/health","status"),
                                  ("http://127.0.0.1:8188/healthz","ok")):
