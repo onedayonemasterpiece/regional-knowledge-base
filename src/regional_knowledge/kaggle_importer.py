@@ -177,7 +177,12 @@ class KaggleSourceImporter:
             except TargetUnavailable:
                 # No import execution has begun; this is an ordinary cold run,
                 # not an unknown mutation outcome or an internal failure.
-                raise failure('target_runtime_not_ready') from None
+                await self.read_authority.recheck(authority)
+                await asyncio.to_thread(self.participants.require, context, 'import')
+                demand = await asyncio.to_thread(self.queue.request_startup)
+                logging.getLogger(__name__).info('import_runtime_wait startup_ref=%s', demand['startup_ref'])
+                raise failure('target_warming', startup_ref=demand['startup_ref'],
+                              next_action='startup_status') from None
             access = ImportAccess(authority, context, binding)
             await self._check(authority, context, binding)
             yield access
