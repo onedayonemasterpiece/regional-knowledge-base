@@ -51,7 +51,7 @@ class ImportActivityReader:
                    credential_id=value["service_credential_id"],
                    credential_epoch=value["service_credential_epoch"], current=config.current)
 
-    def snapshot(self, ingestion_id):
+    def snapshot(self, ingestion_id, owner_person_id):
         # This method never calls book_ingest(status): native status can progress
         # commands and start Kaggle work. Only bounded local SQLite reads.
         with self.importer.queue.connect(write=False) as db:
@@ -61,6 +61,8 @@ class ImportActivityReader:
             ).fetchone()
             if row is None:
                 return None
+            if row['person_id'] != owner_person_id:
+                raise PermissionError('activity target scope denied')
             native = db.execute(
                 "SELECT phase,pending_operation_key,packet_mode,batch_count,"
                 "published_batch_count,enriched_batch_count,rejected_batch_index,"
@@ -147,7 +149,9 @@ class ImportActivityReader:
         if len(params) != 1 or params[0][0] != "ingestion_id" or not _uuid(params[0][1]):
             return JSONResponse({"error": "invalid_ingestion_id"}, status_code=422)
         try:
-            result = await asyncio.to_thread(self.snapshot, params[0][1])
+            result = await asyncio.to_thread(self.snapshot, params[0][1], service.scope_owner_person_id)
+        except PermissionError:
+            return JSONResponse({'error': 'service_scope_required'}, status_code=403)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return JSONResponse({"error": "activity_unavailable"}, status_code=503)
         if not self.current() or not self.provider.service_credential_current(service):
