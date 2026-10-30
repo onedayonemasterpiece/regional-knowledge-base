@@ -261,14 +261,8 @@ class KaggleStoryEditorial:
                                 scope=await self.spool.scope_state();head=await self.spool.journal.head()
                                 sequence=head.reference.last_sequence if head else 0
                                 facts=await self.spool.read_facts(None)
-                                prefix=getattr(self.startup,'coverage',None)
-                                applied_prefix=(prefix is not None and prefix is self.spool._source_anchor
-                                    and prefix.binding==access['binding'] and prefix.current()
-                                    and prefix.database_generation==access['binding'].database_generation
-                                    and prefix.applied_sequence==prefix.accepted_sequence==sequence
-                                    and self.spool._source_covered_sequence==sequence
-                                    and prefix.head==head  # Includes the CAS token, not only the manifest.
-                                    and self.spool.facts_current(facts))
+                                applied_prefix=self.spool.exact_applied_prefix_current(
+                                    getattr(self.startup,'coverage',None),access['binding'],head,facts)
                                 if ((facts.pending and not applied_prefix) or scope['unknown']
                                         or scope['accepted_sequence']!=scope['sequence'] or sequence!=scope['accepted_sequence']):
                                     raise failure('prior_write_pending')
