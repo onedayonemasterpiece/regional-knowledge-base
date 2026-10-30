@@ -199,6 +199,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     # Runtime-registered native guidance: v2 replaces the earlier one-line advice.
     instruction = native.instructions
     assert instruction.count("Story body:") == 1
+    assert instruction.count("This applies to every source and language, including handbooks and lexicons: never open with 'Согласно справочнику', 'По изложению книги', 'По данным авторов', 'По сообщению <author>' or '<Author> сообщает / перечисляет / отмечает'; state the source's facts directly.") == 1
     assert instruction.count("Say where and when the episode happened whenever the source does") == 1
     assert instruction.count("Review the whole page for episodes") == 1
     for required in (
