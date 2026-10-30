@@ -63,7 +63,7 @@ class BranchConnection(FixtureConnection):
             return [(UUID(pid(i)),.5) for i in (*range(1,11),*range(21,26))]
         if 'hydrate_scoped' in self.statement:
             ids=self.statements[-1][1][0]
-            return [(v,UUID(SOURCE if int(v)%2 else OTHER),1,'page 1','synthetic body','citation')
+            return [(v,UUID(SOURCE if int(v)%2 else OTHER),1,'page 1','synthetic body','citation',None,False)
                 for v in (ids[:-1] if self.missing else ids)]
         if 'SELECT a.source_id,a.revision,v.eligibility_revision' in self.statement:
             return [(UUID(SOURCE),1,1),(UUID(OTHER),1,1)]

@@ -44,38 +44,46 @@ async def read_source_illustration(request,cursor,execute):
 
 
 async def read_passage_illustrations(cursor, execute, *, source_id, passage_id):
-    # Select the accepted figure relation, not every picture on a nearby page.
-    # Representation hashes and archive readiness do not decide discoverability.
-    await execute('''SELECT i.illustration_id,i.data,pg.physical_page_index,
-            CASE WHEN linked.explicit THEN 'accepted_chunk_link' ELSE 'exact_shared_region' END
-        FROM rkb_v4.source_passage_provenance p
-        JOIN rkb_v4.source_illustrations i ON i.source_id=p.source_id
-        JOIN LATERAL (SELECT b.media FROM rkb_v4.source_batch_publications b
-            WHERE b.source_id=i.source_id AND b.component='semantic'
-                AND b.figure_ids @> ARRAY[i.illustration_id]
-            ORDER BY b.batch_index DESC LIMIT 1) publication ON true
-        CROSS JOIN LATERAL (SELECT EXISTS (
-            SELECT 1 FROM jsonb_array_elements(publication.media->'passage_links') link
-            WHERE link->>'passage_id'=p.passage_id::text
-                AND link->'illustration_ids' @> jsonb_build_array(i.illustration_id::text)
-        ) AS explicit) linked
-        JOIN rkb_v4.source_stage_pages pg ON pg.source_id=i.source_id
-            AND pg.page_id=(i.data->>'page_id')::uuid
-        JOIN rkb_v4.sources s ON s.source_id=p.source_id
-        JOIN rkb_v4.active_revision a ON a.source_id=p.source_id
-            AND a.revision=p.source_revision
-        WHERE p.source_id=%s::uuid AND p.passage_id=%s::uuid
-            AND s.accepted AND NOT s.withdrawn
-            AND (linked.explicit
-                OR p.data->'region_ids' @> jsonb_build_array(i.data->'source_region_id')
-                OR i.data->'caption_region_ids' ?| ARRAY(
-                    SELECT jsonb_array_elements_text(p.data->'region_ids')))
-        ORDER BY pg.physical_page_index,i.illustration_id LIMIT 201''',
-        (source_id, passage_id))
-    rows = await cursor.fetchall()
-    # Discovery must not consume the text item's 12 KiB metadata budget.
-    # Caption, description and geometry are returned by illustration_fetch.
-    return tuple(dict(id=f'rkb:illustration:v1:{source_id}:{illustration_id}',
-                      page_id=data['page_id'], physical_page_index=physical,
-                      association_basis=basis)
-                 for illustration_id, data, physical, basis in rows[:200]), len(rows)>200
+    linked = await read_passage_illustrations_batch(
+        cursor, execute, passage_ids=(passage_id,), source_ids=(source_id,))
+    return linked.get(passage_id, ((), False))
+
+
+async def read_passage_illustrations_batch(cursor, execute, *, passage_ids, source_ids, limit=200):
+    # One accepted-link lookup for the entire searched hit set, including the exact fetch case.
+    await execute('''SELECT passage_id,source_id,illustration_id,data,physical_page_index,basis
+        FROM (
+            SELECT p.passage_id,p.source_id,i.illustration_id,i.data,pg.physical_page_index,
+                CASE WHEN linked.explicit THEN 'accepted_chunk_link' ELSE 'exact_shared_region' END AS basis,
+                row_number() OVER (PARTITION BY p.passage_id
+                    ORDER BY pg.physical_page_index,i.illustration_id) AS figure_rank
+            FROM rkb_v4.source_passage_provenance p
+            JOIN rkb_v4.source_illustrations i ON i.source_id=p.source_id
+            JOIN LATERAL (SELECT b.media FROM rkb_v4.source_batch_publications b
+                WHERE b.source_id=i.source_id AND b.component='semantic'
+                    AND b.figure_ids @> ARRAY[i.illustration_id]
+                ORDER BY b.batch_index DESC LIMIT 1) publication ON true
+            CROSS JOIN LATERAL (SELECT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(publication.media->'passage_links') link
+                WHERE link->>'passage_id'=p.passage_id::text
+                    AND link->'illustration_ids' @> jsonb_build_array(i.illustration_id::text)
+            ) AS explicit) linked
+            JOIN rkb_v4.source_stage_pages pg ON pg.source_id=i.source_id
+                AND pg.page_id=(i.data->>'page_id')::uuid
+            JOIN rkb_v4.sources s ON s.source_id=p.source_id
+            JOIN rkb_v4.active_revision a ON a.source_id=p.source_id
+                AND a.revision=p.source_revision
+            WHERE p.passage_id=ANY(%s::uuid[]) AND p.source_id=ANY(%s::uuid[])
+                AND s.accepted AND NOT s.withdrawn
+                AND (linked.explicit
+                    OR p.data->'region_ids' @> jsonb_build_array(i.data->'source_region_id')
+                    OR i.data->'caption_region_ids' ?| ARRAY(
+                        SELECT jsonb_array_elements_text(p.data->'region_ids')))
+        ) ranked WHERE figure_rank<=%s ORDER BY passage_id,figure_rank''',
+        (list(passage_ids), list(source_ids), limit+1))
+    linked = {}
+    for passage, source, illustration, data, physical, basis in await cursor.fetchall():
+        linked.setdefault(str(passage), []).append(dict(
+            id=f'rkb:illustration:v1:{source}:{illustration}', page_id=data['page_id'],
+            physical_page_index=physical, association_basis=basis))
+    return {key: (tuple(items[:limit]), len(items)>limit) for key, items in linked.items()}

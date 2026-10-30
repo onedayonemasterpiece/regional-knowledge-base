@@ -120,7 +120,8 @@ def _item(hit: SearchEvidence, source: SourceDependency, epoch: int, *,
         dependencies=ItemDependencies(source_ids=(hit.source_id,), variant_refs=(), grant_refs=(),
                                       source_revisions=(source,)),
         text_form="excerpt" if excerpt else "complete", continuation=continuation,
-        source_continuation=locator, continuation_complete=excerpt and not partial)
+        source_continuation=locator, continuation_complete=excerpt and not partial,
+        illustrations=hit.illustrations, illustrations_has_more=hit.illustrations_has_more)
 
 
 async def execute_query(query: Query, *, acquire, tokenizer: PinnedTokenizer, encode,

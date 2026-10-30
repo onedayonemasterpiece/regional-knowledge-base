@@ -257,6 +257,8 @@ class EvidenceItem(Contract):
     exact_variant_ref: Identifier | None = None
     source_continuation: PassageContinuation | None = None
     continuation_complete: bool = False
+    illustrations: tuple[dict, ...] = Field(default=(), max_length=200)
+    illustrations_has_more: bool = False
 
     @model_validator(mode="after")
     def item_bounds(self) -> Self:

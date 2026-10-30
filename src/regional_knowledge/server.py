@@ -1380,6 +1380,7 @@ def build_server(
         description=(
             "Search accessible regional books and journals. Results include citable IDs/URLs; "
             "source-backed hits include bounded text, provenance, incomplete and next_id. "
+            "Search hits may include illustrations; call illustration_fetch with that id. "
             "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
             "If Kaggle is cold, do not finish the turn on pending: keep calling startup_status with its startup_ref until ready, then rerun this exact search and answer. Do not ask the user to repeat.\n" + _search_policy
         ),
