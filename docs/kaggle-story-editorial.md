@@ -29,8 +29,14 @@ After encoding, the exact vector/body and resolved identities enter the same
 ControlSpool, immutable accepted journal and SOURCE_COMMAND dispatch as source
 imports. The original idempotency key reuses accepted bytes without another
 model call. An operation remains processing until its exact native receipt is
-remotely durable. Final own-operation status uses the existing current HTTP
-issuance guard; narrative reads continue through SourceReadGate.
+remotely durable. A following editorial intent may enter the same writer before
+Dataset Saved only when the **current verified native prefix** covers the exact
+contiguous accepted-and-applied journal head. The original outcome remains
+pending until remote receipt. A missing/unknown apply, changed writer, source,
+role/grants, Story revision, or mismatched prefix still blocks the new intent;
+no local APPLIED observation becomes a Saved receipt. Final own-operation status
+uses the existing current HTTP issuance guard; narrative reads continue through
+SourceReadGate.
 
 Verification includes real OAuth/Participants/spool/journal/admission objects
 with synthetic native context/vector/receipt observations, plus the MCP tool
