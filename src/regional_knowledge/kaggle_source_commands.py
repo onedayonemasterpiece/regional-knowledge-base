@@ -473,7 +473,6 @@ class AcceptedSourceDispatch:
                     and type(exc) is JournalUnknown and exc.args==('outcome_pending_dataset_checkpoint',)):
                 result=await asyncio.to_thread(self.queue._complete_source_command,self,run_id,token,generation,
                     job['id'],job['claim'],entry.command_sha256,remote_outcome_durable=False)
-                self.queue.shared_reads.durable_result_settled(job['id'],job['claim'],result)
                 _LOG.info('source_outcome_checkpoint_pending command_sha256=%s sequence=%s remote_outcome_durable=false',
                     entry.command_sha256,entry.command.sequence)
                 self._packet_settled(entry)
@@ -490,7 +489,6 @@ class AcceptedSourceDispatch:
                 job['id'],job['claim'],entry.command_sha256)
         except StaleAttachment:
             return None  # New attachment reconciles the durable remote receipt.
-        self.queue.shared_reads.durable_result_settled(job['id'],job['claim'],result)
         _LOG.info('source_outcome_remote_durable command_sha256=%s sequence=%s status=%s',entry.command_sha256,entry.command.sequence,result)
         self._packet_settled(entry)
         return dict(job_id=job['id'],claim=job['claim'],status=result)

@@ -315,6 +315,25 @@ def test_reconnect_lost_before_receipt_requires_fresh_same_worker_probe(peer, mo
         heartbeat(second, generation)
 
 
+def test_source_settlement_poller_releases_result_debt_after_queueing_ack(peer):
+    p=peer;settlements=[]
+    async def poll(**_):return settlements.pop(0) if settlements else None
+    p.q._source_commands=SimpleNamespace(poll_settlement=poll)
+    p.client.portal.call(p.a.register_document_actor,p.auth.p.admin)
+    with connect(p) as socket:
+        generation=attach(p,socket);ready(socket,generation)
+        document=receive_expected(socket,'DISPATCH')
+        release(socket,generation,document)
+        heartbeat(socket,generation)
+        assert p.client.portal.call(p.a.status)['document_result_pending']
+        outcome=p.q.complete(p.run,p.token,document['id'],document['claim'],SPACE,
+            [[1.]+[0.]*1023],{},connection_generation=generation)
+        settlements.append(dict(job_id=document['id'],claim=document['claim'],status=outcome))
+        ack=receive_expected(socket,'RESULT_ACK')
+        assert ack['job_id']==document['id']
+        assert not p.client.portal.call(p.a.status)['document_result_pending']
+
+
 def test_committed_receipt_cannot_dispatch_successor_before_result_ack(peer,monkeypatch):
     p=peer;committed=threading.Event();deliver=threading.Event();complete=p.q.complete
     def delayed_complete(*args,**kwargs):

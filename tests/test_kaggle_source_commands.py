@@ -161,6 +161,27 @@ async def test_local_apply_is_pending_until_remote_outcome_then_exact_ack(accept
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('dataset_pending',[False,True])
+async def test_source_publication_keeps_result_debt_until_channel_queues_ack(accepted,monkeypatch,dataset_pending):
+    e=accepted;s=e.s;job,work,frame=await dispatch(e)
+    await release(e,work)
+    await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
+    await s.a.register_document_actor(s.auth.p.admin)
+    successor=s.q.enqueue(s.auth.p.owner.subject,'after-source-ack',['next document'],kind='document')
+    if dataset_pending:
+        # The synthetic journal exercises actual pending-outcome semantics;
+        # stand in for the Dataset provider type without any cloud effects.
+        import regional_knowledge.dataset_recovery_store as stores
+        monkeypatch.setattr(stores,'DatasetRecoveryStore',type(e.store))
+        e.store.remote_durable=lambda key,data:False
+    settled=await e.bridge.reconcile(run_id=s.run,token=s.token,generation=s.generation,job_id=job)
+    assert settled['status']==('checkpoint_pending' if dataset_pending else 'accepted')
+    assert await s.a.next_channel_work(s.run,s.token,s.generation) is None, 'source publication is not a queued RESULT_ACK'
+    assert s.a.durable_result_settled(job,frame['claim'],settled['status'])
+    assert (await s.a.next_channel_work(s.run,s.token,s.generation)).document_payload['id']==successor
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_pending_releases_assignment_without_saved_and_promotes_same_job_after_remote_receipt(accepted):
     from regional_knowledge.control_spool import SpoolConflict
     e=accepted;s=e.s;job,work,frame=await dispatch(e)
