@@ -100,24 +100,16 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     s=service;startup=s.startup
     monkeypatch.setattr('regional_knowledge.server.backend_from_env',lambda:pytest.fail('legacy fallback'))
     server=build_server(target_startup=startup)
-    assert ('state plain dated facts directly. Place such attribution after the claim it qualifies, '
-        'never as the opening words of a body.') in server.instructions
-    assert ('story_candidates holds at most 12 per stage; when the pages hold more episodes '
-        'and facts than that, stage fewer pages per packet instead of dropping or merging them.') in server.instructions
-    assert ('A list of figures, names or institutions is not a story: keep it as facts and '
-        'observations without a body; there is no story quota. '
-        'A first or an invention stated in one sentence still deserves a short body when '
-        'the adjacent sentences continue the same thread; never pad it beyond them.') in server.instructions
-    assert ('Do not split one episode into a body plus separate facts_only candidates: '
-        'the outcome, name, consequence or open question that closes it belongs in the same body. '
-        'One episode is one body even when its steps sit in separate paragraphs: a problem, '
-        'the decision, its execution and result belong together. A single dated fact without '
-        'development (a street laid out, a bridge built) stays a fact; '
-        'the v8 exception covers only firsts and inventions.') in server.instructions
-    assert ('Place such attribution after the claim it qualifies, never as the opening words of a body. '
-        'This holds for contested or painful periods too: state established events '
-        "(a pogrom, a siege, a deportation) directly, attribute only the author's judgment "
-        'or explanation after the event, and never cite a footnote number in the body.') in server.instructions
+    registered = {tool.name: tool for tool in await server.list_tools()}
+    story_rules = registered["book_ingest"].input_schema["properties"]["story_candidates"]["description"]
+    assert server.instructions.count("Story rules: see book_ingest.story_candidates.") == 1
+    assert "Story body: write" not in server.instructions
+    for required in ("max 12 per stage", "attribute only opinion, estimate, legend",
+                     "State supported facts directly, including painful events",
+                     "ONE body, not separate facts_only",
+                     "A lone dated fact, list or uses without development stays facts/observations",
+                     "with no story quota", "first/invention with adjacent development"):
+        assert required in story_rules, required
     assert ('During the same page review, record source-mentioned places in '
         'book_ingest(stage).entity_candidates as poi_ref entities with exact_source_spelling '
         'and source passage evidence. A new name for the same model-identified place '
