@@ -616,11 +616,10 @@ class NativeSourceIntake:
         pages=doc['model_payload']['pages']
         from .source_page_progress import publication_progress,next_unaccepted
         with self.queue.connect(write=False) as db:
-            published,text_batches=publication_progress(db,row)
+            published,_=publication_progress(db,row)
         if retry:
             first=str(pages[0]['physical_page_index'])
-            return (next_unaccepted(first,published) if rejected_batch not in text_batches
-                and all(p['physical_page_index'] in published for p in pages) else first)
+            return next_unaccepted(first,published) if all(p['physical_page_index'] in published for p in pages) else first
         cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
         raw=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
         return next_unaccepted(raw,published)
@@ -819,9 +818,9 @@ class NativeSourceIntake:
                 'Selected pages already TEXT APPLIED in an earlier packet; no new stage was created',
                 'continue_pages',source_archive_status='verified',
                 next_cursor=next_unaccepted(str(min(selected)),published))
-        if selected & published and not retry_semantic:
+        if selected & published and not (retry_semantic and selected<=published):
             raise _failure('native_stage_mixed_published_pages',status='invalid_query')
-        if state.get('rejected_batch_index') is not None:
+        if state.get('rejected_batch_index') is not None and not retry_semantic:
             retry_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
             if retry_cursor is not None and str(payload['pages'][0]['physical_page_index'])!=retry_cursor:
                 return self._output(row,state,rejected_next_cursor=retry_cursor)

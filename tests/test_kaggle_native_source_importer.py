@@ -370,6 +370,28 @@ async def test_journal_budget_counts_unsaved_tail_and_retains_import_progress(na
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mixed',[False,True])
+async def test_optional_semantic_rejection_allows_the_reported_next_new_page(native_intake,mixed):
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,first=0,count=4))
+    await finish(s,book);await call(s,book,'status')
+    await finish(s,book);await call(s,book,'status')
+    rejected=await finish(s,book,status='rejected_precondition')
+    status=await call(s,book,'status')
+    assert status.next_cursor=='4'
+    before=operation_count(s)
+    if mixed:
+        with pytest.raises(ToolError,match='native_stage_mixed_published_pages'):
+            await stage(s,book,batch(s,book,first=3,count=2))
+    assert operation_count(s)==before
+    assert (await stage(s,book,batch(s,book,first=4,count=1))).state=='processing'
+    command=await pending(s,book)
+    assert command.command.route==STAGE_ROUTE
+    assert json.loads(command.command.payload)['model_payload']['pages'][0]['physical_page_index']==4
+    assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('authored_cursor',[None,'4'])
 async def test_status_after_pause_returns_next_unaccepted_physical_page(native_intake,authored_cursor):
     s=native_intake
