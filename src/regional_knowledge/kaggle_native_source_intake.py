@@ -641,6 +641,11 @@ class NativeSourceIntake:
                 'Reading completed; accepted packets remain searchable and research continuation is retained','done',
                 source_archive_status='verified',warnings=[])
 
+    def _previous_packet_output(self,row):
+        return self.importer._output(row,'processing','This stage input is not accepted. '
+            'Previous packet is still being applied; call status until ready, then resend this same stage',
+            'wait',source_archive_status='verified',warnings=['previous_packet_applying'])
+
     async def _accepted_stage_output(self,access,row,state,key):
         entry=await self._entry(key)
         if (state['packet_mode'] and state['phase']=='staging' and not state.get('read_completion_requested')
@@ -775,7 +780,8 @@ class NativeSourceIntake:
                     and {k:v for k,v in frozen['research'].items() if k!='frontier_id'}!=source_import.research.model_dump(mode='json')):
                 raise _failure('native_pending_payload_changed',status='invalid_query')
         state=await self._recover_orphan(access,row,state,'stage',self._stage_key(row,state))
-        if state['pending_operation_key'] or state['phase']=='failed': return self._output(row,state)
+        if (state['pending_operation_key'] and state['pending_kind']!='batch') or state['phase']=='failed':
+            return self._output(row,state)
         if state['phase']!='staging': raise _failure('native_candidate_already_sealed',status='invalid_query')
         receipt=await self.importer._receipt(access,row)
         if receipt is None: return self.importer._output(row,'processing','Verified original pending','wait')
@@ -824,9 +830,7 @@ class NativeSourceIntake:
             # now would silently drop the previous packet's entities/stories.
             state=await self._packet_progress(access,row,state)
             if state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count']:
-                return self.importer._output(row,'processing','Previous packet is still being applied; '
-                    'call status, then resend this same stage','wait',source_archive_status='verified',
-                    warnings=['previous_packet_applying'])
+                return self._previous_packet_output(row)
         builder=lambda **values: resolved_native_stage_command(route=STAGE_ROUTE,**values)
         key=self._stage_key(row,state)
         await self._stage_exact(access,row,kind='stage',key=key,
