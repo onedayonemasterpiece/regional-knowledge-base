@@ -3,8 +3,11 @@
 
 The reader chat is an explicit assignment in <state>/<ing8>.chat (one chat_url);
 only RKB-Import changes it. A Launcher successor chat (continuation limit) is
-followed by writing the job's result_chat_url there. continue is sent only after
-the watched job finished its turn; a busy chat is not an error, its job is watched.
+followed by writing the job's result_chat_url there. The watched job and the
+request_id of a pending continue live in <state>/<ing8>.json, written before the
+send, so a restart resumes the same job and repeats a lost send with the same key.
+continue is sent only after the watched turn finished (model done, or Launcher
+reconcile proved page_completed); a busy chat is not an error, its job is watched.
 After blocked/failed: at most once per 20 min, at most 3 times in a row.
 """
 from __future__ import annotations
@@ -12,7 +15,7 @@ import datetime, json, os, re, subprocess, sys, time
 
 LMCP = os.environ.get('RKB_LAUNCHER_LMCP', '/home/dev/projects/agent-crew/bin/lmcp')
 STATE_DIR = os.environ.get('RKB_AUTOCONTINUE_STATE_DIR', os.path.expanduser('~/.local/state/rkb-import-autocontinue'))
-BLOCKED_RETRY_S, BLOCKED_MAX, CONTINUE_GAP_S = 1200, 3, 170
+BLOCKED_RETRY_S, BLOCKED_MAX, CONTINUE_GAP_S, RECONCILE_GAP_S = 1200, 3, 170, 600
 
 
 def finished_turn(job):
@@ -21,14 +24,14 @@ def finished_turn(job):
 
 
 def decide(job, blocked_tries, since_last_try):
-    """Return 'continue' or 'wait' for the watched job (None: nothing watched yet)."""
-    if since_last_try < CONTINUE_GAP_S:
-        return 'wait'
+    """Return 'continue', 'reconcile' or 'wait' for the watched job (None: nothing watched yet)."""
     if job is None or finished_turn(job):
-        return 'continue'
-    if job.get('model_status') in ('blocked', 'failed') and blocked_tries < BLOCKED_MAX \
-            and since_last_try > BLOCKED_RETRY_S:
-        return 'continue'
+        return 'continue' if since_last_try >= CONTINUE_GAP_S else 'wait'
+    if job.get('model_status') in ('blocked', 'failed'):
+        ok = blocked_tries < BLOCKED_MAX and since_last_try > BLOCKED_RETRY_S
+        return 'continue' if ok else 'wait'
+    if job.get('execution') == 'unconfirmed' or job.get('status') == 'needs_review':
+        return 'reconcile' if since_last_try >= RECONCILE_GAP_S else 'wait'
     return 'wait'
 
 
@@ -39,51 +42,74 @@ def prompt(ingestion, book):
 
 
 def main(ingestion, book, hours=720.0):
-    chat_file = os.path.join(STATE_DIR, f'{ingestion[:8]}.chat')
-    log_file = os.path.join(STATE_DIR, f'{ingestion[:8]}.log')
+    base = os.path.join(STATE_DIR, ingestion[:8])
     now = lambda: datetime.datetime.now(datetime.timezone.utc)
 
     def log(msg):
-        with open(log_file, 'a') as f:
+        with open(base + '.log', 'a') as f:
             f.write(now().strftime('%m-%d %H:%M:%S ') + msg + '\n')
+
+    def load():
+        try:
+            return json.load(open(base + '.json'))
+        except FileNotFoundError:
+            return {'watched': None, 'pending_request': None, 'blocked_tries': 0, 'last_try': 0.0}
+
+    def save(state):
+        with open(base + '.json.tmp', 'w') as f:
+            json.dump(state, f)
+        os.replace(base + '.json.tmp', base + '.json')
 
     def call(tool, args):
         out = subprocess.run([LMCP, tool, json.dumps(args, ensure_ascii=False)],
                              capture_output=True, text=True, timeout=60).stdout
         return json.loads(json.loads(out)['result']['content'][0]['text'])
 
-    deadline, watched, blocked_tries, last_try = time.time() + hours * 3600, None, 0, 0.0
-    log(f'start ing={ingestion}')
+    state, deadline = load(), time.time() + hours * 3600
+    log(f'start ing={ingestion} watched={state["watched"]} pending={state["pending_request"]}')
     while time.time() < deadline:
         try:
-            chat = open(chat_file).read().strip()
+            chat = open(base + '.chat').read().strip()
             job = None
-            if watched:
-                job = call('chatgpt_task_status', {'job_id': watched})
+            if state['watched']:
+                job = call('chatgpt_task_status', {'job_id': state['watched']})
                 job = job.get('job', job)
                 moved = job.get('result_chat_url')
                 if moved and moved.rsplit('/c/', 1)[-1][:8] != chat.rsplit('/c/', 1)[-1][:8]:
-                    with open(chat_file, 'w') as f:
+                    with open(base + '.chat', 'w') as f:
                         f.write(moved)
                     chat = moved
                     log(f'chat moved -> {moved}')
                 if finished_turn(job):
-                    blocked_tries = 0
-            if decide(job, blocked_tries, time.time() - last_try) == 'continue':
-                if job is not None and not finished_turn(job):
-                    blocked_tries += 1
-                last_try = time.time()
+                    state['blocked_tries'] = 0
+            action = 'continue' if state['pending_request'] else \
+                decide(job, state['blocked_tries'], time.time() - state['last_try'])
+            if action == 'reconcile':
+                state['last_try'] = time.time()
+                save(state)
+                res = call('chatgpt_reconcile', {'job_id': state['watched'],
+                           'request_id': f'rkbimp-reconcile-{state["watched"][:8]}-{now():%Y%m%dT%H}'})
+                log(f'reconcile {state["watched"][:8]} -> {str(res)[:120]}')
+            elif action == 'continue':
+                if job is not None and not finished_turn(job) and not state['pending_request']:
+                    state['blocked_tries'] += 1
+                state['pending_request'] = state['pending_request'] or \
+                    f'rkbimp-auto-{ingestion[:8]}-{now():%Y%m%dT%H%M%S}'
+                state['last_try'] = time.time()
+                save(state)  # the key survives a lost response or restart
                 res = call('chatgpt_continue', {'chat_url': chat, 'prompt': prompt(ingestion, book),
-                           'request_id': f'rkbimp-auto-{ingestion[:8]}-{now():%Y%m%dT%H%M}'})
+                           'request_id': state['pending_request']})
                 busy = re.search(r'job ([0-9a-f-]{36})', str(res.get('error', '')))
                 if res.get('job_id'):
-                    watched = res['job_id']
-                    log(f'continue -> job {watched}')
-                elif busy and busy.group(1) != watched:
-                    watched = busy.group(1)
-                    log(f'chat busy, watching job {watched}')
+                    state.update(watched=res['job_id'], pending_request=None)
+                    log(f'continue -> job {res["job_id"]}')
+                elif busy:
+                    state.update(watched=busy.group(1), pending_request=None)
+                    log(f'chat busy, watching job {busy.group(1)}')
                 else:
+                    state['pending_request'] = None
                     log(f'continue refused: {str(res)[:160]}')
+                save(state)
             time.sleep(90)
         except Exception as exc:  # keep the single coordinator alive; the journal shows why
             log(f'error {type(exc).__name__}: {str(exc)[:160]}')
