@@ -101,7 +101,8 @@ async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,
     monkeypatch.setattr('regional_knowledge.server.backend_from_env',lambda:pytest.fail('legacy fallback'))
     server=build_server(target_startup=startup)
     registered = {tool.name: tool for tool in await server.list_tools()}
-    story_rules = registered["book_ingest"].input_schema["properties"]["story_candidates"]["description"]
+    story_field = registered["book_ingest"].input_schema["properties"]["story_candidates"]
+    story_rules = next(option["description"] for option in story_field["anyOf"] if option.get("type") == "array")
     assert server.instructions.count("Story rules: see book_ingest.story_candidates.") == 1
     assert "Story body: write" not in server.instructions
     for required in ("max 12 per stage", "attribute only opinion, estimate, legend",
