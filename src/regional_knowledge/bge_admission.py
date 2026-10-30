@@ -474,8 +474,6 @@ class SharedReadAdmission:
                             actor=None
                         authorized[doc['actor']]=actor==doc['actor']
                     if authorized[doc['actor']]:eligible.append(doc)
-            recovery=[d for d in eligible if d['kind']=='recovery_phase']
-            if recovery:eligible=recovery
             reserved={(w.dispatch_generation,w.resource.resource_id) for w,_ in self._read_work.values()}
             reads=[r for key,r in self._reads.items() if r.dispatched is None and key not in reserved] \
                 if ready and len(self._read_work)<8 else []
