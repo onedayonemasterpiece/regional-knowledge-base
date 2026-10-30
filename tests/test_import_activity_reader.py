@@ -21,6 +21,7 @@ from regional_knowledge.import_activity_reader import ImportActivityReader, PATH
 from regional_knowledge.kaggle_importer import KaggleSourceImporter
 from regional_knowledge.service_auth import new_service_token, service_scope
 from test_read_authority import auth
+from test_participants import people
 
 
 @pytest.fixture
