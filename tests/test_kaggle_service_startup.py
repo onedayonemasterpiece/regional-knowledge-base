@@ -96,6 +96,24 @@ def test_ordinary_import_requires_current_source_history_not_geo_proof():
 
 
 @pytest.mark.asyncio
+async def test_native_book_ingest_registered_description_requires_same_pass_entities(service):
+    # Launcher readers see tool descriptions, not the separate server instructions.
+    server = build_server(target_startup=service.startup)
+    registered = {tool.name: tool for tool in await server.list_tools()}
+    description = registered["book_ingest"].description
+    for required in (
+        "During the SAME page review, send a bounded book_ingest(stage).entity_candidates GraphBundle",
+        "person, organization, event, historical_thread, and poi_ref",
+        "places, toponyms, historical addresses",
+        "exact_source_spelling",
+        "In entity_candidates, evidence may use page_id, region_key and chunk_key from this stage packet.",
+        "source passage evidence using those packet keys or an already accepted chunk_id",
+        "An empty entity_candidates bundle is valid only when the reviewed page names no source-grounded entities.",
+    ):
+        assert required in description, required
+
+
+@pytest.mark.asyncio
 async def test_actual_startup_reuses_one_queue_and_closes_without_proof(service,monkeypatch):
     s=service;startup=s.startup
     monkeypatch.setattr('regional_knowledge.server.backend_from_env',lambda:pytest.fail('legacy fallback'))
