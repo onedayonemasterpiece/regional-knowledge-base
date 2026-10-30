@@ -78,7 +78,7 @@ def watcher(tmp_path, auth):
         "X-RKB-Service":"launcher-import-watch",
         "X-RKB-Service-Credential":ident,
         "X-RKB-Service-Epoch":"1"}
-    app = Starlette(routes=[Route(PATH, receiver, methods=["GET"])])
+    app = Starlette(routes=[Route(PATH, receiver.__call__, methods=["GET"])])
     return SimpleNamespace(queue=queue, importer=importer, startup=startup,
         auth=auth, ingestion=ingestion, source=source, actor=actor,
         ident=ident, token=token, receiver=receiver, headers=headers, app=app)
