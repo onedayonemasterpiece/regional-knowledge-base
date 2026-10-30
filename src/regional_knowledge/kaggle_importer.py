@@ -898,7 +898,7 @@ class KaggleSourceImporter:
                         if file is not None:
                             raise failure('file_only_supported_for_original_start_or_stage_json', status='invalid_query')
                         row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id, document_id)
-                        await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], row['person_id'])
+                        await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
                         if command == 'stage':
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
@@ -951,7 +951,7 @@ class KaggleSourceImporter:
     async def _pages(self, *, principal, ingestion_id, cursor):
         async with self._access(principal) as access:
             row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id)
-            await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], row['person_id'])
+            await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
             if await self._receipt(access, row) is None:
                 raise failure('verified_original_pending')
             batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1)
