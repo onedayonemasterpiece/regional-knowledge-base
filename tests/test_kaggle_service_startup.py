@@ -310,7 +310,7 @@ async def test_explicit_main_selects_target_without_env_loader(service,monkeypat
     assert launched[0][0] is seen[0][2]
     assert seen[0][1]['stateless_http'] and seen[0][1]['json_response']
     assert 'knowledge.example.test' in seen[0][1]['transport_security'].allowed_hosts
-    assert launched[0][1]['timeout_graceful_shutdown']==10
+    assert launched[0][1]['timeout_graceful_shutdown']==65
     with pytest.raises(RuntimeError,match='legacy backend profile'):
         build_server(target_startup=service.startup,backend_profile='legacy')
     with pytest.raises(RuntimeError,match='issuer/resource'):
