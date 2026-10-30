@@ -54,6 +54,9 @@ class RecoveryPhaseDispatch:
         binding=self._bindings.get(job['id'])
         if binding is None or not self.current(binding):
             binding=self._attachment_binding
+            if (binding is None or not self.current(binding)) and self.rebind_current is not None:
+                self.rebind_current()
+                binding=self._attachment_binding
             if binding is not None and self.current(binding):
                 try:
                     identity=json.loads(job['identity'])

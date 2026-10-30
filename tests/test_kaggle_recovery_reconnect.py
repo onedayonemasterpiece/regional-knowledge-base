@@ -2,11 +2,58 @@
 import asyncio
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 import pytest
 from regional_knowledge.kaggle_recovery_dispatch import RecoveryPhaseDispatch
-from regional_knowledge.kaggle_restore_startup import PreReadyRecoveryBinding
+from regional_knowledge.kaggle_restore_startup import PreReadyRecoveryBinding,SourceRestoreCoordinator
 from test_bge_admission import state,auth,people
 from test_kaggle_recovery_phases import database,response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('claimed',[False,True])
+async def test_reconnect_dispatches_retained_job_without_another_client_request(state,claimed):
+    s=state;db=database()
+    old=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,db.database_generation,db.writer_generation)
+    current=[old]
+    restorer=object.__new__(SourceRestoreCoordinator)
+    restorer.startup=SimpleNamespace(schema_migrations=SimpleNamespace(resume_attachment=lambda:False))
+    restorer._observe=lambda:(current[0],s.nonce)
+    bridge=RecoveryPhaseDispatch(s.q,database=db,identity=(s.run,s.nonce,'incarnation-a'),
+        binding_current=lambda b:b==current[0],
+        rebind_current=restorer.resume_attachment)
+    restorer.dispatch=bridge
+    task=asyncio.create_task(bridge.request(old,'verify',{'reference':'retained'},operation_key='only-request'))
+    try:
+        for _ in range(100):
+            with s.q.connect(write=False) as conn:
+                row=conn.execute("select id from jobs where kind='recovery_phase'").fetchone()
+            if row:break
+            await asyncio.sleep(.001)
+        else:pytest.fail('request not queued')
+        original_id=row['id']
+        if claimed:
+            work=await s.a.next_channel_work(s.run,s.token,s.generation)
+            assert work.document_payload['id']==original_id
+        s.generation=s.q.attach_channel(s.run,s.token,s.nonce,'incarnation-a')['connection_generation']
+        current[0]=replace(old,connection_generation=s.generation)
+        s.q.heartbeat(s.run,s.token,ready=True,connection_generation=s.generation)
+        await s.a.resource_state(s.run,s.token,s.generation,runtime_incarnation='incarnation-a',state='idle')
+        work=await s.a.next_channel_work(s.run,s.token,s.generation)
+        assert work is not None,'reconnect must not wait for another request or the 900-second timeout'
+        assert work.document_payload['id']==original_id
+        s.a.mark_work_sent(work)
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+            **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+        await bridge.receive(response(s,frame,{'verified':True}),run_id=s.run,token=s.token,generation=s.generation)
+        with pytest.raises(PermissionError,match='binding expired'):await task
+        with s.q.connect(write=False) as conn:
+            rows=conn.execute("select state,attempt from jobs where kind='recovery_phase'").fetchall()
+            assert len(rows)==1 and rows[0]['state']=='done' and rows[0]['attempt']==1
+    finally:
+        if not task.done():task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+        await bridge.aclose()
 
 
 @pytest.mark.asyncio
