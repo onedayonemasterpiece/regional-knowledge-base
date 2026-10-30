@@ -874,6 +874,95 @@ async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(n
 
 
 @pytest.mark.asyncio
+async def test_native_same_packet_entity_key_evidence_is_projected(native_intake, monkeypatch):
+    from regional_knowledge.kaggle_source_materializer import NativeSourceCompiler
+    from regional_knowledge.source_stage import validate_stage_payload
+    from regional_knowledge.kaggle_source_graph_read import SourceGraphReadRequest, execute_source_graph_read
+    from regional_knowledge.kaggle_domain_bindings import DOMAIN_REVISIONS
+    from test_kaggle_fact_read import Native
+    from regional_knowledge.server import build_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    from starlette.requests import Request
+
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=1)
+    page = payload["pages"][0]
+    passage = payload["chunks"][0]
+    payload["entity_candidates"] = {"entities": [{
+        "key": "synthetic-person", "kind": "person",
+        "canonical_label": "Synthetic", "exact_source_spelling": "Synthetic",
+        "evidence": {"page_id": page["page_id"], "region_key": "body",
+                     "chunk_key": passage["chunk_key"]},
+    }]}
+    monkeypatch.setattr("regional_knowledge.server._principal", lambda: s.principal)
+    request = Request({"type": "http", "method": "POST", "path": "/mcp",
+        "headers": [], "app": SimpleNamespace(state=SimpleNamespace()), "state": {}})
+    context = SimpleNamespace(request_context=SimpleNamespace(
+        request=request, request_id="entity-same-packet"))
+    try:
+        await build_server(target_startup=s.startup).call_tool("book_ingest", {
+            "command": "stage", "ingestion_id": book.ingestion_id,
+            "pages": payload["pages"], "chunks": payload["chunks"],
+            "entity_candidates": payload["entity_candidates"],
+            "source_import": options(research=True, ingestion_id=book.ingestion_id,
+                state="pending").model_dump(mode="json"),
+        }, context)
+    finally:
+        retained = request.scope.pop(_SCOPE_KEY, None)
+        if retained:
+            retained[1].release()
+    entry = await pending(s, book)
+    stored = validate_stage_payload(entry.command.payload, source_id=book.document_id)
+    proof = stored["model_payload"]["entity_candidates"]["entities"][0]["evidence"]
+    assert proof["chunk_id"] == str(uuid5(UUID(book.document_id), "chunk:1:" + passage["chunk_key"]))
+    assert proof["region_id"] == str(uuid5(UUID(page["page_id"]), "region:body"))
+    assert "chunk_key" not in proof and "region_key" not in proof
+    async def count(text):
+        return len(text.split()) + 2
+    projection, _ = await NativeSourceCompiler(count=count, current=lambda: True).compile_batch(
+        [entry.command.payload], batch_index=0, source_id=book.document_id,
+        person_id=s.principal.subject, last_batch_sha256=digest(entry.command.payload))
+    entity = projection["source_graph"]["entities"][0]
+    assert entity["key"] == "synthetic-person"
+    # The existing entity_list read adapter consumes this exact native projection.
+    reader = Native([(UUID(book.document_id), 1, 1, entity["key"], entity,
+        page["regions"][0]["source_text"], "Synthetic source")],
+        revision=(DOMAIN_REVISIONS.schema, DOMAIN_REVISIONS.function))
+    query = SourceGraphReadRequest.model_validate(dict(
+        request_id="same-packet-list", connection_generation=2, turn_generation=3,
+        action="list", source_id=book.document_id, entity_id=None, limit=3,
+        min_data_seq=0, deadline_ms=2000, compute_claim="same-packet-entity-list",
+        actor=dict(person_id=s.principal.subject, audience="personal",
+            auth_epoch=1, visibility_epoch=4)))
+    listed = await execute_source_graph_read(query, acquire=reader.acquire)
+    assert listed.status == "ok"
+    assert [item["data"]["key"] for item in listed.records] == ["synthetic-person"]
+
+
+@pytest.mark.asyncio
+async def test_native_invalid_entity_field_is_named_without_source_text(native_intake, caplog):
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=1)
+    payload["entity_candidates"] = {"entities": [{
+        "key": "person", "kind": "person", "canonical_label": "Synthetic",
+        "exact_source_spelling": "Synthetic",
+        "evidence": {"page_id": payload["pages"][0]["page_id"],
+                     "region_key": "private source contents? 123", "chunk_key": "page-0"},
+    }]}
+    with pytest.raises(ToolError) as caught:
+        await stage(s, book, payload)
+    diagnostic = json.loads(str(caught.value))
+    assert diagnostic["reason"] == "invalid_small_source_input"
+    assert diagnostic["exception_class"] == "ValidationError"
+    assert diagnostic["field_path"] == "region_key"
+    assert "private source contents" not in caplog.text
+    assert caplog.text.count("book_ingest_invalid_input exception_class=ValidationError field_path=region_key") == 1
+    assert operation_count(s) == 0
+
+
+@pytest.mark.asyncio
 async def test_status_releases_verified_upload_and_current_file_dedup_survives_other_book(native_intake):
     s=native_intake
     first=await start(s,file_id='first-upload')

@@ -711,7 +711,8 @@ class NativeSourceIntake:
             return await self.catalog_update(access,row,payload['catalog_update'])
         raw_payload=canonical(payload)
         if len(raw_payload)>1024*1024: raise _failure('stage_envelope_bound',status='invalid_query')
-        payload=json.loads(raw_payload)
+        from .kaggle_importer import resolve_stage_entity_evidence
+        payload=resolve_stage_entity_evidence(json.loads(raw_payload),row['source_id'])
         state=await asyncio.to_thread(self._state,row,create=True)
         pending=await self._entry(state['pending_operation_key'] or self._stage_key(row,state))
         if pending is not None and pending.command.route==STAGE_ROUTE and pending.outcome_state!='DURABLE':
