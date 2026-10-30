@@ -193,6 +193,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
                        "disagreement_edit(add_evidence)", "disagreement_edit(create)",
                        "UNKNOWN", "Saved"):
             assert action in guidance, action
+    assert "In entity_candidates, evidence may use page_id, region_key and chunk_key from this stage packet." in native_text
     assert "General Case discovery/search is not presently registered" not in native_text
     assert "General Case discovery/search is a separately unresolved capability gap" not in native.instructions
 
