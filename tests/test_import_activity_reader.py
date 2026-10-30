@@ -174,7 +174,7 @@ async def test_missing_foreign_remote_revoked_and_user_tokens_cannot_watch(watch
 
 
 @pytest.mark.asyncio
-async def test_timestamp_moves_on_actual_book_pages_and_book_ingest_stage(watcher):
+async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(watcher):
     w=watcher
     @asynccontextmanager
     async def access(_principal):
@@ -198,7 +198,15 @@ async def test_timestamp_moves_on_actual_book_pages_and_book_ingest_stage(watche
     w.importer._reply=reply
     w.importer.originals=SimpleNamespace(pages=pages)
     w.importer.native_intake=SimpleNamespace(stage=stage)
+    w.importer._native_status=stage
+    with w.queue.connect() as db:
+        db.execute('UPDATE rkb_source_intake_control SET last_operation_at=? WHERE ingestion_id=?',
+                   (time.time()-21*60,w.ingestion))
     before=read_timestamp(w)
+    for _ in range(2):
+        await w.importer.book_ingest(command='status',principal=object(),ingestion_id=w.ingestion)
+        assert read_timestamp(w)==before,'an observer must not restart the 20-minute reader silence clock'
+        assert time.time()-read_timestamp(w)>20*60
     await w.importer.book_pages(principal=object(),ingestion_id=w.ingestion)
     after_pages=read_timestamp(w)
     assert after_pages>before
