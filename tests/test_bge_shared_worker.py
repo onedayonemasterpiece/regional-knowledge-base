@@ -589,6 +589,31 @@ async def test_inline_read_events_survive_another_results_wire_send():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('kind',['SQL_HEALTH','PASSAGE_READ','STORY_READ','SOURCE_READ'])
+async def test_exact_read_transport_preserves_native_sidecar_and_strict_result(kind):
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from regional_knowledge.query_telemetry import ReadRuntime, bind_read_runtime
+    from test_kaggle_worker_query import pinned
+    transport=module('bge_wss_transport')
+    native=KaggleWorkerQuery(lambda:None,pinned(),telemetry=asyncio.Queue(maxsize=8))
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:None,lambda:{},
+        query_handler=native)
+    frame=dict(type=kind,request_id='exact-sidecar',connection_generation=1,turn_generation=0)
+    async def execute(frame,**kwargs):
+        return worker._unavailable(frame,'not_ready')
+    object.__setattr__(native,'_call',execute)  # Synthetic SQL outcome; actual adapter/transport.
+    with bind_read_runtime(ReadRuntime(CONFIG['run_id'],worker.incarnation)):
+        reply=await native(frame,encode=None)
+    assert len(reply['read_events'])==1
+    assert worker._validate_query_result(frame,reply) is reply
+    assert reply['reason']=='not_ready' and len(reply['read_events'])==1
+    with pytest.raises(ValueError):
+        worker._validate_query_result(frame,dict(reply,unexpected_private_field='forbidden'))
+    with pytest.raises(ValueError):
+        worker._validate_query_result(frame,dict(reply,request_id='wrong-request'))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase',['snapshot_status','capture'])
 async def test_durable_recovery_releases_compute_while_retaining_one_job(phase):
     transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event()
