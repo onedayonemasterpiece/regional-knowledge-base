@@ -22,7 +22,8 @@ from .kaggle_protocol import TrustedActorContext
 from .kaggle_public_backend import current_binding
 from .kaggle_import_tokenizer import HfImportTokenCounter
 from .kaggle_import_output import StoryEditorialOutputGate
-from .story_contracts import UpsertVariant
+from .story_contracts import UpsertVariant, NativeStoryTitle
+from .story_title_command import ROUTE as TITLE_ROUTE, resolved_native_story_title_command
 from .source_import import _text,_uuid
 from .story_editorial import ROLES,EDITORIAL_REVISIONS,resolved_story_edit_command,resolved_story_access_command
 from .kaggle_domain_bindings import DOMAIN_REVISIONS,resolved_current_story_edit_command,resolved_current_story_access_command
@@ -67,7 +68,7 @@ class KaggleStoryEditorial:
         retained=False
         try:
             context=RequestAuthority(Principal(subject=authority.person_id,client_id=authority.client_id,
-                issuer=authority.issuer,access_token=''),authority.route)
+                issuer=authority.issuer,access_token=<redacted>
             binding=await asyncio.to_thread(current_binding,self.queue)
             await self._check(authority,context,binding)
             access=dict(authority=authority,context=context,binding=binding)
@@ -175,7 +176,7 @@ class KaggleStoryEditorial:
     def _same_input(entry,request):
         c=entry.command;doc=json.loads(c.payload)
         actual=dict(story_id=c.ids['story_id'],expected_revision=int(c.expected_revisions['story_revision']),
-            operation=doc['operation'],reason=doc['reason']) if c.route=='story.edit.v1' else dict(story_id=c.ids['story_id'],
+            operation=doc['operation'],reason=doc['reason']) if c.route in ('story.edit.v1',TITLE_ROUTE) else dict(story_id=c.ids['story_id'],
             expected_revision=int(c.expected_revisions['story_revision']),grantee_user_id=doc['grantee_user_id'],capability=doc['capability'])
         if actual!=request:raise failure('idempotency_conflict','invalid_query')
 
@@ -206,16 +207,17 @@ class KaggleStoryEditorial:
             if str(UUID(story_id))!=story_id or type(expected_revision) is not int or expected_revision<1 or type(idempotency_key) is not str or not 1<=len(idempotency_key)<=160:
                 raise ValueError
             if operation is not None:
-                if type(operation) is not UpsertVariant:raise ValueError
-                operation=UpsertVariant.model_validate_json(canonical(operation.model_dump(mode='json')),strict=True)
+                if type(operation) not in (UpsertVariant,NativeStoryTitle):raise ValueError
+                operation=type(operation).model_validate_json(canonical(operation.model_dump(mode='json')),strict=True)
                 if reason is not None:_text(reason,3000)
-                _text(operation.body,4000);_text(operation.audience,500);_text(operation.language,24)
-                if operation.variant_id is not None:_uuid(operation.variant_id)
-                for block in operation.blocks:
-                    if block.assertion_id is not None:
-                        _uuid(block.assertion_id)
-                        if block.assertion_revision is None:raise ValueError
-                    elif block.assertion_revision is not None:raise ValueError
+                if type(operation) is UpsertVariant:
+                    _text(operation.body,4000);_text(operation.audience,500);_text(operation.language,24)
+                    if operation.variant_id is not None:_uuid(operation.variant_id)
+                    for block in operation.blocks:
+                        if block.assertion_id is not None:
+                            _uuid(block.assertion_id)
+                            if block.assertion_revision is None:raise ValueError
+                        elif block.assertion_revision is not None:raise ValueError
             else:
                 _uuid(grantee_user_id)
                 if capability not in ROLES:raise ValueError
@@ -233,7 +235,7 @@ class KaggleStoryEditorial:
                         r=proof['record'];needed={'editor','publisher','manager'} if operation is not None else {'manager'}
                         if r['role'] not in needed:raise PermissionError('current per-Story editor/manager required')
                         if r['revision']!=expected_revision:raise failure('revision_conflict','invalid_query')
-                        if operation is not None:
+                        if type(operation) is UpsertVariant:
                             refs={x['variant_id']:x['revision'] for x in r['variant_refs']}
                             if operation.variant_id is not None and refs.get(operation.variant_id)!=operation.expected_variant_revision:
                                 raise failure('variant_revision_conflict','invalid_query')
@@ -268,15 +270,22 @@ class KaggleStoryEditorial:
                                 if ((facts.pending and not applied_prefix) or scope['unknown']
                                         or scope['accepted_sequence']!=scope['sequence'] or sequence!=scope['accepted_sequence']):
                                     raise failure('prior_write_pending')
-                                revisions=self._revisions(access['binding'])
-                                builder=(resolved_current_story_edit_command if operation is not None else resolved_current_story_access_command) if revisions in (DOMAIN_REVISIONS,ACTIVATION_REVISIONS) else (
-                                    resolved_story_edit_command if operation is not None else resolved_story_access_command)
+                                revisions=self._revisions(access['binding'],for_title=type(operation) is NativeStoryTitle)
+                                if type(operation) is NativeStoryTitle:
+                                    if revisions!=ACTIVATION_REVISIONS:
+                                        raise failure('unsupported_editorial_schema')
+                                    builder=resolved_native_story_title_command
+                                else:
+                                    builder=(resolved_current_story_edit_command if operation is not None else resolved_current_story_access_command) if revisions in (DOMAIN_REVISIONS,ACTIVATION_REVISIONS) else (
+                                        resolved_story_edit_command if operation is not None else resolved_story_access_command)
                                 c=builder(sequence=sequence+1,operation_key=key,request_id='editorial-'+str(uuid4()),person_id=actor,
                                     logical_time=datetime.now(timezone.utc).isoformat(),source_id=r['source']['source_id'],story_id=story_id,
                                     expected_revision=expected_revision,source_revision=r['source']['content_revision'],eligibility_revision=r['source']['eligibility_revision'],
-                                    **(dict(operation=operation,reason=reason,embedding=vector,input_tokens=tokens) if operation is not None else dict(grantee_user_id=grantee_user_id,capability=capability)))
+                                    **(dict(operation=operation,reason=reason,embedding=vector,input_tokens=tokens) if type(operation) is UpsertVariant else
+                                       dict(operation=operation,reason=reason) if type(operation) is NativeStoryTitle else
+                                       dict(grantee_user_id=grantee_user_id,capability=capability)))
                                 # Only this newly resolved intent is adapted; stored entries keep their original bytes.
-                                if revisions==ACTIVATION_REVISIONS:c=new_native_command(c)
+                                if revisions==ACTIVATION_REVISIONS and type(operation) is not NativeStoryTitle:c=new_native_command(c)
                                 frozen,data,handler=self.spool._validate(c,access['binding'].database_generation)
                                 await self.spool.authorize_command(access['context'],frozen)
                                 entry=await self.spool._write(self.spool._stage,frozen,data,handler,access['binding'].database_generation)
@@ -298,12 +307,13 @@ class KaggleStoryEditorial:
         except TimeoutError:raise failure('deadline_exceeded') from None
         except (ValueError,TypeError,KeyError):raise failure('invalid_input','invalid_query') from None
 
-    def _revisions(self,binding):
+    def _revisions(self,binding,*,for_title=False):
         with self.queue.connect(write=False) as db:
             row=self.queue._runtime_row(db,binding.run_id)
             value=self.queue._runtime_expected(row)
             if (row['accepted_generation']!=binding.connection_generation
                     or value.database_generation!=binding.database_generation):raise failure('target_runtime_changed')
+        if for_title and value.schema_version<48:raise failure('unsupported_editorial_schema')
         if value.schema_version>=14:return ACTIVATION_REVISIONS
         if value.schema_version>=11:return DOMAIN_REVISIONS
         if value.schema_version>=9:return EDITORIAL_REVISIONS

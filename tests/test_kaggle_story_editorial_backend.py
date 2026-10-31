@@ -130,12 +130,12 @@ async def test_editor_can_encode_only_exact_authorized_document_then_save_accept
     response=dict(type='SOURCE_COMMAND_RESULT',protocol_version=2,connection_generation=t.generation,
         job_id=w.document_payload['id'],claim=w.document_payload['claim'],receipt=receipt_wire(native),run_id=t.run,
         launch_nonce=t.nonce,runtime_incarnation='incarnation-a',compute_claim=w.compute_claim,dispatch_generation=w.dispatch_generation)
-    assert await s.startup.source_dispatch.receive(response,run_id=t.run,token=t.token,generation=t.generation) is None
+    assert await s.startup.source_dispatch.receive(response,run_id=t.run,token=<redacted> is None
     await asyncio.wait_for(entered.wait(),2)
     assert (await s.workflow.mutate(t.principal,**args))['status']=='processing'
     finish.set()
     for _ in range(100):
-        ack=await s.startup.source_dispatch.poll_settlement(run_id=t.run,token=t.token,generation=t.generation)
+        ack=await s.startup.source_dispatch.poll_settlement(run_id=t.run,token=<redacted>
         if ack:break
         await asyncio.sleep(.01)
     assert ack['status']=='accepted'
@@ -247,7 +247,7 @@ async def test_existing_mcp_story_edit_routes_through_native_context_and_same_do
         'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
     ctx=SimpleNamespace(request_context=SimpleNamespace(request=req,request_id='story-edit-mcp-fixture'))
     from pydantic import ValidationError
-    for operations in ([dict(op='set_metadata',title='Corrected title')],
+    for operations in ([dict(op='set_metadata',title='Corrected title',summary='unsupported')],
                        [operation().model_dump(mode='json')]*2):
         with pytest.raises(ToolError) as rejected:
             await server.call_tool('story_edit',dict(story_id=STORY,expected_revision=1,

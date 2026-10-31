@@ -412,7 +412,7 @@ class ControlSpool:
             else:
                 from .geo_manifest_commands import validate_geo_manifest_command
                 validate_geo_manifest_command(command)
-        if command.route not in ('story.edit.v1','story.access.v1'):
+        if command.route not in ('story.edit.v1','story.access.v1','story.title.v1'):
             actor=await self._authorize(context)
             if actor!=command.person_id:raise SpoolDenied('command person does not authenticate its actor')
             return actor
@@ -549,7 +549,7 @@ class ControlSpool:
             if handler!=expected:raise SpoolDenied('only exact installed geographic handler supported')
             validate_geo_manifest_command(frozen)
             return frozen,data,handler
-        if frozen.route in ('story.edit.v1','story.access.v1'):
+        if frozen.route in ('story.edit.v1','story.access.v1','story.title.v1'):
             from .story_editorial import (STORY_EDIT,STORY_EDIT_DEPENDENCY,STORY_ACCESS_DEPENDENCY,
                 EDIT_PRECONDITIONS,ACCESS_PRECONDITIONS,validate_story_edit_command,validate_story_access_command,
                 editorial_handler)
@@ -671,7 +671,7 @@ class ControlSpool:
         self._active()
         async with self._lock:
             frozen,data,handler=self._validate(command,database_generation)
-            if frozen.route not in ('story.edit.v1','story.access.v1'):
+            if frozen.route not in ('story.edit.v1','story.access.v1','story.title.v1'):
                 raise SpoolDenied('editorial intake requires an exact editorial route')
             await self.authorize_command(context,frozen)
             return await self._write(self._stage,frozen,data,handler,database_generation)
@@ -681,7 +681,7 @@ class ControlSpool:
         self._active()
         async with self._lock:
             frozen,data,handler=self._validate(command,database_generation)
-            if frozen.route not in ('story.edit.v1','story.access.v1','disagreement.edit.v1',
+            if frozen.route not in ('story.edit.v1','story.access.v1','story.title.v1','disagreement.edit.v1',
                     'disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1','geo.manifest.install.v1','geo.dependencies.upgrade.v2'):
                 raise SpoolDenied('domain intake requires a fixed installed domain route')
             await self.authorize_command(context,frozen)

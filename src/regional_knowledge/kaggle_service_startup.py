@@ -160,9 +160,9 @@ class _SourceBackend(KaggleSourceBackend):
         return await self._importer().owned_row(principal, ingestion_id)
 
     async def story_edit(self,story_id,principal,*,expected_revision,operations,idempotency_key,reason=None):
-        from .story_contracts import UpsertVariant
+        from .story_contracts import UpsertVariant, NativeStoryTitle
         if self.startup.editorial is None:raise ToolError('{"status":"unavailable","reason":"target_editorial_unavailable"}')
-        if len(operations)!=1 or type(operations[0]) is not UpsertVariant:
+        if len(operations)!=1 or type(operations[0]) not in (UpsertVariant,NativeStoryTitle):
             raise ToolError('{"status":"unavailable","reason":"unsupported_target_story_operation"}')
         return await self.startup.editorial.mutate(principal,story_id=story_id,expected_revision=expected_revision,
             idempotency_key=idempotency_key,operation=operations[0],reason=reason)

@@ -9,8 +9,9 @@ from .source_activation import (ACTIVATION_REVISIONS, ACTIVATE_ROUTE, MATERIALIZ
 
 from .source_batch import ROUTE as BATCH_ROUTE,FINISH_ROUTE
 from .source_catalog_command import ROUTE as CATALOG_ROUTE, validate_catalog_command, catalog_handler
+from .story_title_command import ROUTE as TITLE_ROUTE, validate_title_command, title_handler
 
-NATIVE_ROUTES=CURRENT_ROUTES|frozenset({STAGE_ROUTE,SEAL_ROUTE,ACTIVATE_ROUTE,MATERIALIZE_ROUTE,BATCH_ROUTE,FINISH_ROUTE,CATALOG_ROUTE,'geo.resolve.v1'})
+NATIVE_ROUTES=CURRENT_ROUTES|frozenset({STAGE_ROUTE,SEAL_ROUTE,ACTIVATE_ROUTE,MATERIALIZE_ROUTE,BATCH_ROUTE,FINISH_ROUTE,CATALOG_ROUTE,TITLE_ROUTE,'geo.resolve.v1'})
 
 
 def _view(command,revisions):
@@ -31,6 +32,7 @@ def validate_native_source_command(command):
         from .source_batch import validate_command
         return validate_command(command)
     if command.route==CATALOG_ROUTE:return validate_catalog_command(command)
+    if command.route==TITLE_ROUTE:return validate_title_command(command)
     if command.route=='geo.resolve.v1':
         from .kaggle_source_geo_mvp import validate_command
         return validate_command(command)
@@ -56,6 +58,8 @@ def native_source_handler(route,*,check_sha256,apply_sha256):
         return handler(route=route,check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route==CATALOG_ROUTE:
         return catalog_handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
+    elif route==TITLE_ROUTE:
+        return title_handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
     elif route=='geo.resolve.v1':
         from .kaggle_source_geo_mvp import handler
         return handler(check_sha256=check_sha256,apply_sha256=apply_sha256)
@@ -88,5 +92,5 @@ def required_native_source_capabilities(command):
     if command.route.startswith('disagreement.'):
         from .disagreement_native import CASE_REVISIONS,required_capabilities
         return required_capabilities(_view(command,CASE_REVISIONS))
-    if command.route in ('story.edit.v1','story.access.v1'):return frozenset({'public_search'})
+    if command.route in ('story.edit.v1','story.access.v1',TITLE_ROUTE):return frozenset({'public_search'})
     return frozenset({'import'})

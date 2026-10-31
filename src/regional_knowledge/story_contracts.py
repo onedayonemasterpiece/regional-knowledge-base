@@ -1,7 +1,7 @@
 """Typed, bounded Story Registry MCP inputs. No arbitrary JSON patch or model-asserted actor."""
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, ClassVar, Literal, Union
 from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 
@@ -48,6 +48,21 @@ class SetMetadata(Strict):
     material_type: str | None = Field(default=None, max_length=80)
     tags: list[str] | None = Field(default=None, max_length=16)
     time_scope: str | None = Field(default=None, max_length=150)
+
+
+class NativeStoryTitle(SetMetadata):
+    """Native title-only view of the existing SetMetadata operation."""
+    title: Annotated[str, Field(min_length=1, max_length=250)]
+    summary: ClassVar[None] = None
+    material_type: ClassVar[None] = None
+    tags: ClassVar[None] = None
+    time_scope: ClassVar[None] = None
+
+    @model_validator(mode="after")
+    def nonblank_title(self):
+        if not self.title.strip():
+            raise ValueError("nonblank Story title required")
+        return self
 
 
 class AddGap(Strict):
@@ -398,7 +413,7 @@ class ExtractStage(Strict):
     job_id: Identifier
     expected_job_revision: int = Field(ge=1)
     batch_id: Identifier
-    lease_token: Identifier
+    lease_token: <redacted>
     source_revision: int = Field(ge=1)
     candidates: list[SeedInput] = Field(default_factory=list, max_length=10)
     grounded_candidates: list[ExtractGroundedCandidate] = Field(default_factory=list, max_length=10)
@@ -630,7 +645,7 @@ class ReconcileStage(Strict):
     run_id: Identifier
     expected_job_revision: int = Field(ge=1)
     work_id: Identifier
-    lease_token: Identifier
+    lease_token: <redacted>
     decision: ReconcileDecision
 
 

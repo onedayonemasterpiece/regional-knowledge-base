@@ -343,7 +343,7 @@ class NativeSourceIntake:
         for pending in rows:
             verified=self.spool._entry(pending)
             command=verified.command
-            allowed_editorial=editorial_prefix and command.route=='story.edit.v1'
+            allowed_editorial=editorial_prefix and command.route in ('story.edit.v1','story.title.v1')
             applied=(pending['apply_state']=='APPLIED' or
                 command.route in (STAGE_ROUTE,'source.batch.v1','source.finish.v1','source.catalog.v1') and pending['apply_state']=='REJECTED_PRECONDITION')
             if ((pending['person_id']!=row['person_id'] and not allowed_editorial)
