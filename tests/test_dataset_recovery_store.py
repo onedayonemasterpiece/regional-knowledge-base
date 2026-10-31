@@ -107,6 +107,9 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     p=prepared(tmp_path);store=p.store;key=p.prefix+'outcomes/new'
     assert await store.compare_and_swap(key,b'captured',expected_token=None,writer_generation='writer')
     captured=await store.read(key,max_bytes=100)
+    with p.q.connect() as db:
+        db.executemany('INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,1)',
+            [(store.storage_identity,p.prefix+'commands/covered-'+str(i),b'x'*16384,'token-'+str(i)) for i in range(128)])
     journal=store.export_control()
     control=encode(dict(codec='rkb.source-base-control.v1',database_generation='db',sequence=8))
     manifest=encode(dict(database_generation='db',applied_sequence=8,
@@ -129,7 +132,22 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     with pytest.raises(JournalConflict,match='native_snapshot_readback_changed'):
         store.promote(checkpoint,dict(expected,archive_sha256='0'*64),manifest_ref=ref)
     assert not store.remote_durable(key,b'captured') and store.latest_checkpoint.dataset_version==1
-    store.promote(checkpoint,expected,manifest_ref=ref)
+    valid_journal=journal
+    for invalid_item in (None,dict(key=p.prefix+'commands/one',token='native-original-token',data_b64='not base64!')):
+        document=json.loads(valid_journal);document['objects'][0]=invalid_item
+        journal=encode(document)
+        broken=replace(checkpoint,journal=DatasetFile('journal-control.json',len(journal),sha(journal)))
+        with pytest.raises((TypeError,ValueError)):
+            store.promote(broken,expected,manifest_ref=ref)
+        assert store.latest_checkpoint.dataset_version==1
+    journal=valid_journal
+    import tracemalloc
+    tracemalloc.start()
+    try:
+        store.promote(checkpoint,expected,manifest_ref=ref)
+        peak=tracemalloc.get_traced_memory()[1]
+    finally:tracemalloc.stop()
+    assert peak<len(journal)*1.5  # One journal plus a bounded item, not a second full copy.
     assert store.remote_durable(key,b'captured') and store.latest_checkpoint==checkpoint
     assert await store.compare_and_swap(key,b'after checkpoint',expected_token=captured.token,writer_generation='writer')
     store.promote(checkpoint,expected,manifest_ref=ref)  # Lost promotion ACK.

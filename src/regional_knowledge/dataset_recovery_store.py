@@ -140,7 +140,19 @@ class DatasetRecoveryStore:
         journal=self.publisher.read_control(checkpoint.journal,version=checkpoint.dataset_version).decode('utf-8')
         manifest=self.publisher.read_control(checkpoint.manifest,version=checkpoint.dataset_version)
         control=self.publisher.read_control(checkpoint.control,version=checkpoint.dataset_version)
-        parsed=json.loads(journal);m=json.loads(manifest)
+        already_covered=object()
+        with self.queue.connect(write=False) as observed:
+            def retain_pending(item):
+                if set(item)=={'key','token','data_b64'}:
+                    row=observed.execute('SELECT token,covered_version FROM rkb_dataset_recovery_objects WHERE storage=? AND key=?',
+                        (self.storage_identity,item['key'])).fetchone()
+                    if row is not None and row['covered_version'] is not None and row['token']==item['token']:
+                        self._key(item['key'])
+                        base64.b64decode(item['data_b64'],validate=True)
+                        return already_covered
+                return item
+            parsed=json.loads(journal,object_hook=retain_pending)
+        m=json.loads(manifest)
         del journal
         c=json.loads(control)
         if (parsed.get('codec')!='rkb.dataset-journal.v1'
@@ -167,6 +179,7 @@ class DatasetRecoveryStore:
             if current is not None and not current():
                 raise JournalConflict('dataset_checkpoint_writer_changed')
             for item in parsed['objects']:
+                if item is already_covered:continue
                 self._key(item['key']);raw=base64.b64decode(item['data_b64'],validate=True)
                 # New writes may have advanced after capture; only exact bytes
                 # contained in this saved version gain a persistence receipt.
