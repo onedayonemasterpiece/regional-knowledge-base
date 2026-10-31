@@ -357,7 +357,7 @@ class KaggleSourceImporter:
         # Only the existing controller's fixed, durable terminal rejection
         # can finish an unstarted intake. UNKNOWN/temporary/pending results
         # must not release the single active owner slot.
-        if status.state == 'rejected' and status.reason in TERMINAL_REJECTIONS:
+        if status.state == 'rejected' and (status.reason in TERMINAL_REJECTIONS or status.reason=='original_telegram_document_changed'):
             if row['phase'] == 'acquiring':
                 row = await asyncio.to_thread(self._save, row, phase='failed')
             return self._output(row,'failed','Native original intake rejected this source within the supported bounds',
