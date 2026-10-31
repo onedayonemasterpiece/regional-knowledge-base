@@ -1839,7 +1839,9 @@ def build_server(
             "the current native renderer may return only one page even when four are requested. "
             "Stage each reviewed page ordinarily with its exact source evidence and follow the "
             "returned page/block continuation cursors before using clipped text. "
-            "Native extraction never proves visual completeness. For irregular scans, cursor may name any physical page; the model decides printed reading order, and next_cursor is only a suggestion. Use only for an existing ingestion. "
+            "Native extraction never proves visual completeness. "
+            "native_text is a draft OCR layer: take every word, ſ/tz and other letter forms, punctuation and line breaks from the issued image, never from native_text. "
+            "For irregular scans, cursor may name any physical page; the model decides printed reading order, and next_cursor is only a suggestion. Use only for an existing ingestion. "
             + _SOURCE_TRANSCRIPTION_INSTRUCTIONS
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
