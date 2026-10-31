@@ -109,10 +109,10 @@ class RecoveryPhaseDispatch:
                     ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
                 if row is None or row['state']!='done':break
                 value=json.loads(row['result'])['value']
-                # An acquire is a read: a socket-fenced Telegram download can
+                # An acquire is a read: an unbound/fenced Telegram download can
                 # use the existing retry chain, never an archive/send phase.
                 if not (value.get('retryable') or phase=='original_acquire'
-                        and value.get('error')=='original_telegram_lease_changed') or not (value.get('error') or
+                        and value.get('error') in ('original_telegram_lease_changed','original_telegram_binding_required')) or not (value.get('error') or
                         phase=='schema_migrate' and value.get('status')=='rejected'):break
                 _LOG.info('recovery_phase_retry run_id=%s phase=%s attempt=%s',
                     self.identity[0],phase,attempt+1)

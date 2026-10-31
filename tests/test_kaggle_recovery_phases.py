@@ -297,7 +297,9 @@ async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase,error,retry',[
     ('original_acquire','original_telegram_lease_changed',True),
+    ('original_acquire','original_telegram_binding_required',True),
     ('original_archive','original_telegram_lease_changed',False),
+    ('original_archive','original_telegram_binding_required',False),
     ('original_acquire','original_telegram_scope_denied',False),
 ])
 async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_sends(state,phase,error,retry):
