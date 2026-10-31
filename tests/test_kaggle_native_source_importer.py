@@ -556,7 +556,7 @@ async def test_mixed_published_and_new_pages_require_explicit_new_packet(native_
 
 
 @pytest.mark.asyncio
-async def test_applied_page_status_needs_no_second_original_head(native_intake, monkeypatch):
+async def test_applied_page_status_needs_no_second_original_head(native_intake, monkeypatch, caplog):
     s=native_intake
     book=await start(s)
     accepted=await stage(s,book,batch(s,book,first=0,count=4))
@@ -579,6 +579,8 @@ async def test_applied_page_status_needs_no_second_original_head(native_intake, 
     with pytest.raises(ToolError,match='native_original_page_unavailable'):
         await s.importer.book_pages(principal=s.principal,ingestion_id=book.ingestion_id,cursor='4')
     assert verified_calls==[book.ingestion_id]
+    assert 'book_pages_original state=unavailable' in caplog.text
+    assert 'reason=object_storage_head_unavailable' in caplog.text
 
 
 @pytest.mark.asyncio

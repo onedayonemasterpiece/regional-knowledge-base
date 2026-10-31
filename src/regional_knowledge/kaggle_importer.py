@@ -994,7 +994,8 @@ class KaggleSourceImporter:
             _LOG.warning('book_pages_access_denied error_type=%s function=%s line=%s',
                 type(error).__name__, frame.tb_frame.f_code.co_name, frame.tb_lineno)
             raise failure('access_denied',status='denied') from None
-        except OriginalIntakeError:
+        except OriginalIntakeError as error:
+            _LOG.warning('book_pages_original state=unavailable ingestion_id=%.64s reason=%s',ingestion_id,error)
             raise failure('native_original_page_unavailable') from None
         except (ValueError,KeyError,TypeError):
             raise failure('invalid_original_page_request',status='invalid_query') from None
