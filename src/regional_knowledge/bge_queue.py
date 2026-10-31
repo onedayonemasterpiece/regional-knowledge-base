@@ -252,7 +252,7 @@ class BgeQueue:
             row=db.execute("UPDATE runs SET useful=? WHERE id=(SELECT current_run FROM control WHERE id=1) "
                 "AND status IN ('starting','ready','draining')",(self.clock(),))
             recorded=row.rowcount==1
-        _LOG.info('bge_request_activity state=recorded connect_begin_ms=%.3f transaction_ms=%.3f',
+        logging.getLogger('regional_knowledge.reads').info('bge_request_activity state=recorded connect_begin_ms=%.3f transaction_ms=%.3f',
             (acquired-started)*1000,(time.monotonic()-acquired)*1000)
         return recorded
 
