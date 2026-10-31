@@ -966,7 +966,11 @@ class KaggleSourceImporter:
             return await self._pages(principal=principal,ingestion_id=ingestion_id,cursor=cursor)
         except ToolError:
             raise
-        except PermissionError:
+        except PermissionError as error:
+            frame = error.__traceback__
+            while frame.tb_next is not None:frame = frame.tb_next
+            _LOG.warning('book_pages_access_denied error_type=%s function=%s line=%s',
+                type(error).__name__, frame.tb_frame.f_code.co_name, frame.tb_lineno)
             raise failure('access_denied',status='denied') from None
         except OriginalIntakeError:
             raise failure('native_original_page_unavailable') from None
@@ -994,4 +998,7 @@ class KaggleSourceImporter:
                 physical_page_index=batch.pages[0].physical_page_index,
                 image_bytes=sum(len(page.data) for page in batch.pages),
                 image_width=preview.get('width'),image_height=preview.get('height'))
-            return await self._reply(access, batch, render=lambda value: _book_page_tool_result(ingestion_id, value))
+            # Renew owner authorization after slow rendering, retaining the result's runtime fence.
+            async with self._access(principal) as delivery:
+                delivery.binding = access.binding
+                return await self._reply(delivery, batch, render=lambda value: _book_page_tool_result(ingestion_id, value))
