@@ -151,6 +151,36 @@ async def test_actual_loaded_handle_complete_count_offloop_and_effective_setting
 
 
 @pytest.mark.asyncio
+async def test_query_count_separates_executor_mutex_and_tokenizer_time(artifacts, monkeypatch):
+    from regional_knowledge.query_telemetry import (
+        NativeReadTelemetry, ReadRuntime, bind_read_runtime, emit_executor_stage,
+        clean_native_read_events, drain_native_read_events,
+    )
+    encoder, calls = resident(artifacts)
+    # Only this module's clock is replaced; real asyncio/thread/lock/count run.
+    ticks = iter((1., 3., 6., 10., 11.))
+    monkeypatch.setattr(boot, 'time', SimpleNamespace(monotonic=lambda: next(ticks)), raising=False)
+    request = dict(request_id='count-timing', connection_generation=1, turn_generation=1)
+    collector = asyncio.Queue(maxsize=8)
+    with bind_read_runtime(ReadRuntime('run-count', 'inc-count')):
+        with NativeReadTelemetry(collector, request) as event:
+            assert await encoder.count('512') == 512
+            emit_executor_stage(collector, SimpleNamespace(**request), {'tokenize_ms': 10000.})
+            event.finish(status='ok', reason=None)
+    records = clean_native_read_events(drain_native_read_events(collector, request),
+        **request, run_id='run-count', runtime_incarnation='inc-count')
+    for record in records:
+        assert record['stages_ms'] == {
+            'tokenize_ms': 10000., 'tokenize_executor_wait_ms': 2000.,
+            'tokenize_mutex_wait_ms': 3000., 'tokenize_work_ms': 4000.,
+            'tokenize_resume_ms': 1000.,
+            **({'adapter_ms': record['stages_ms']['adapter_ms']} if record['terminal'] else {}),
+        }
+    assert len(records) == 2 and len(calls) == 1
+    assert calls[0][2] != threading.get_ident()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_native_token_count_drains_and_serializes_resident_tokenizer(artifacts):
     encoder, _ = resident(artifacts)
     entered, finish, encoded = threading.Event(), threading.Event(), threading.Event()
