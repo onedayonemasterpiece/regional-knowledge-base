@@ -10,12 +10,13 @@ import socket
 import httpx
 import pytest
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route,WebSocketRoute
 import uvicorn
 import websockets
 
 from regional_knowledge.http_shutdown import HttpDrainingServer
+from regional_knowledge.read_issuance import ReadIssuanceMiddleware
 
 
 @pytest.mark.asyncio
@@ -47,8 +48,13 @@ async def test_migration_saved_restart_drains_search_before_worker_close_then_ac
                 value=await asyncio.wait_for(channel['pending'],2)
             except ConnectionError:return JSONResponse({'status':'unavailable'},status_code=503)
             return JSONResponse(value)
-        app=Starlette(routes=[Route('/operation',operation,methods=['POST']),
-            WebSocketRoute('/worker',worker_socket)])
+        async def listen(request):
+            async def notifications():
+                yield b': ping\r\n\r\n'
+                await asyncio.Event().wait()
+            return StreamingResponse(notifications(), media_type='text/event-stream')
+        app=ReadIssuanceMiddleware(Starlette(routes=[Route('/operation',operation,methods=['POST']),
+            Route('/mcp',listen,methods=['POST']), WebSocketRoute('/worker',worker_socket)]))
         sock=socket.socket();sock.bind(('127.0.0.1',0));sock.listen(10)
         port=sock.getsockname()[1]
         server=HttpDrainingServer(uvicorn.Config(app,log_level='error',lifespan='off',
@@ -87,6 +93,9 @@ async def test_migration_saved_restart_drains_search_before_worker_close_then_ac
     async with api()as(server,serving,client,closed):
         assert(await client.post('/operation',json={'op':'migrate'})).json()['schema']==42
         assert(await client.post('/operation',json={'op':'save'})).json()['saved_schema']==42
+        listener=await client.send(client.build_request('POST','/mcp'),stream=True)
+        notifications=listener.aiter_bytes()
+        assert await anext(notifications) == b': ping\r\n\r\n'
         searching=asyncio.create_task(client.post('/operation',json={'op':'search'}))
         await asyncio.wait_for(search_received.wait(),2)
         server.should_exit=True
@@ -97,7 +106,10 @@ async def test_migration_saved_restart_drains_search_before_worker_close_then_ac
         response=await searching
         assert not closed_before_response, 'shutdown closed the worker needed by the accepted HTTP read'
         assert response.status_code==200 and response.json()['status']=='ok'
-        await asyncio.wait_for(serving,3)
+        try:
+            await asyncio.wait_for(asyncio.shield(serving),.5)
+        finally:
+            await listener.aclose()
     async with api()as(_,_,client,_):
         response=await client.post('/operation',json={'op':'page','page':15})
         assert response.status_code==200

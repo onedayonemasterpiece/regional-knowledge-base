@@ -11,9 +11,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import asyncio
 import json
+import time
 
 _SCOPE_KEY = 'rkb.current_read_output'
 _JSON_KEY = 'rkb.trusted_json_read_output'
+NOTIFICATION_STREAM_SCOPE_KEY = 'rkb.notification_stream'
 _capture = ContextVar('rkb_read_output_capture', default=None)
 MAX_RESPONSE_BYTES = 512 * 1024
 
@@ -42,13 +44,13 @@ class GuardedOutput:
     released: bool = False
     terminal: bool = False
 
-    def complete(self, status, reason):
+    def complete(self, status, reason, http_timings=None):
         if self.terminal:
             return
         self.terminal = True
         if self.on_terminal is not None:
             try:
-                self.on_terminal(status, reason)
+                self.on_terminal(status, reason, http_timings)
             except Exception:
                 pass  # Optional lossy telemetry cannot change issued evidence.
 
@@ -160,6 +162,7 @@ class ReadIssuanceMiddleware:
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
+        http_timings = {'asgi_entered_unix': time.time()}
         buffered = bytearray()
         is_json = False
         issued = None
@@ -167,7 +170,13 @@ class ReadIssuanceMiddleware:
         async def guarded_send(message):
             nonlocal is_json, issued
             if message['type'] == 'http.response.start':
+                http_timings['response_started_unix'] = time.time()
                 headers = message.get('headers', ())
+                # Tool replies are JSON by contract. SSE is the SDK's open-ended
+                # notification listener, which has no result to drain on restart.
+                if any(k.lower() == b'content-type' and v.lower().startswith(b'text/event-stream')
+                       for k, v in headers):
+                    scope[NOTIFICATION_STREAM_SCOPE_KEY] = True
                 is_json = any(k.lower() == b'content-type' and v.lower().startswith(b'application/json')
                               for k, v in headers)
                 if is_json:
@@ -252,13 +261,13 @@ class ReadIssuanceMiddleware:
             try:
                 await send({**message, 'body': data})
             except asyncio.CancelledError:
-                issued.complete('cancelled', 'consumer_cancelled')
+                issued.complete('cancelled', 'consumer_cancelled', http_timings)
                 raise
             except Exception:
-                issued.complete('error', 'internal_error')
+                issued.complete('error', 'internal_error', http_timings)
                 raise
             else:
-                issued.complete(status, reason)
+                issued.complete(status, reason, http_timings)
 
         try:
             await self.app(scope, receive, guarded_send)

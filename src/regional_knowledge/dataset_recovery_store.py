@@ -171,7 +171,7 @@ class DatasetRecoveryStore:
                 # New writes may have advanced after capture; only exact bytes
                 # contained in this saved version gain a persistence receipt.
                 db.execute('UPDATE rkb_dataset_recovery_objects SET covered_version=? '
-                    'WHERE storage=? AND key=? AND data=? AND token=?',
+                    'WHERE storage=? AND key=? AND data=? AND token=? AND covered_version IS NULL',
                     (checkpoint.dataset_version,self.storage_identity,item['key'],raw,item['token']))
             for key,data,tag in ((manifest_ref.key,manifest,'manifest'),(m['source_control']['key'],control,'control')):
                 self._key(key)

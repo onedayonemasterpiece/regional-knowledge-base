@@ -758,3 +758,39 @@ async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,
             f'original_restore state=terminal_rebound old_run_id={e.run} run_id={state.run} reason=verified_original_restore'])
     finally:
         stop.set();await task;await state.bridge.aclose();spool.close();await n.handler.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('continued',[False,True])
+async def test_changed_telegram_document_rejects_instead_of_waiting_forever(owner,continued):
+    from test_telegram_original import locator
+    e=owner;spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=lambda b:b==binding,
+        current_binding=lambda:binding,allowed_origins=frozenset({'https://archive.invalid'}))
+    error={'error':'original_telegram_document_changed'}  # Existing native receipt has no terminal flag.
+    async def request(*args,**kwargs):
+        if continued:raise TimeoutError('lost response')
+        return error
+    controller._bridge=lambda _:SimpleNamespace(request=request)
+    try:
+        status=await controller.begin(e.auth.p.admin,operation_id='changed-document',source_id=SOURCE,
+            ingestion_id=INGEST,file=locator(),max_bytes=len(PDF))
+        if continued:
+            assert status.state=='pending'
+            row=controller._row(e.auth.p.owner.subject,INGEST)
+            args=dict(spec=json.loads(row['spec_json']),telegram_locator=locator().wire())
+            key=digest(canonical(dict(phase='original_acquire',args=args)))
+            identity=dict(phase='original_acquire',arguments=args,request_sha256='synthetic')
+            result=dict(phase='original_acquire',request_sha256='synthetic',value=error)
+            with e.q.connect() as db:
+                db.execute("INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,result) "
+                    "VALUES(?,?,?,'recovery_phase','[]',?,'done',1000,1000,?)",
+                    ('changed-document','maintenance:'+binding.run_id,'recovery:'+key,
+                        canonical(identity).decode(),canonical(result).decode()))
+            status=await controller.status(e.auth.p.admin,INGEST)
+        assert status.state=='rejected' and status.reason==error['error']
+        assert (await controller.status(e.auth.p.admin,INGEST)).state=='rejected'
+        assert controller._row(e.auth.p.owner.subject,INGEST)['failure_code']==error['error']
+    finally:spool.close()
