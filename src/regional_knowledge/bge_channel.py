@@ -568,7 +568,10 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         from .kaggle_dataset_publisher import DatasetPublicationError
                         try:
                             ticket=await recovery_dispatch.issue_upload(frame,run_id=run_id,token=token,generation=generation)
-                        except DatasetPublicationError:
+                        except DatasetPublicationError as error:
+                            logger.warning(json.dumps({'event':'snapshot_upload_ticket_failed',
+                                'run_id':run_id,'connection_generation':generation,
+                                'error_type':type(error).__name__,'error_site':_failure_site(error)}))
                             # This grant failed before delivery. End only the
                             # capture request; keep the authenticated PG/model
                             # owner available for diagnosis and recovery.
