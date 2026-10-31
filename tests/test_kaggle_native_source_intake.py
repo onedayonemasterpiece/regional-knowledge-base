@@ -261,7 +261,9 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.packet_mode();await self.stage();self.finish()
         await self.helper.status(self.access,self.row);self.finish()
         await self.helper.status(self.access,self.row);self.finish()
-        self.helper._update(self.row,phase='finalized')
+        await self.helper.finalize(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row)
+        self.assertEqual(self.state()['phase'],'finalized')
         self.tail_query_failed=True
         result=await self.helper.status(self.access,self.row)
         self.assertEqual((result.state,result.next_action),('finalized','done'))
