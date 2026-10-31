@@ -541,6 +541,24 @@ def test_exact_authenticated_stop_eligibility_old_new_and_nine_hours(tmp_path):
     assert q.stop_eligible(new,new_token,new_generation)
 
 
+def test_recent_request_activity_does_not_wait_for_a_sqlite_writer(tmp_path):
+    now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
+    queue.enqueue('actor','one',['query']);run,token=run_details(queue)
+    queue.heartbeat(run,token,ready=True)
+    now[0]+=59
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        with queue.connect() as writer:
+            # WAL readers can read the last useful timestamp while a writer
+            # holds the lock; no duplicate activity UPDATE is necessary.
+            future=pool.submit(queue.record_request_activity)
+            assert future.result(timeout=1) is True
+            assert writer.execute('SELECT useful FROM runs WHERE id=?',(run,)).fetchone()[0]==1000.
+    now[0]+=1
+    assert queue.record_request_activity()
+    with queue.connect(write=False) as db:
+        assert db.execute('SELECT useful,heartbeat FROM runs WHERE id=?',(run,)).fetchone()[:]==(1060.,1000.)
+
+
 def test_request_activity_renews_idle_but_never_worker_heartbeat(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
     queue.enqueue('actor','one',['query']);run,token=run_details(queue)
