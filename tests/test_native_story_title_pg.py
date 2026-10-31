@@ -69,6 +69,7 @@ async def test_native_title_pg_migration_body_vector_cas_history_saved_and_exact
         initial=await read(n)
         assert await(await conn.execute('SELECT rkb_v4.verify_editorial_story_origins_v2(%s::uuid[])',([initial['source']['source_id']],))).fetchone()==(True,)
         await accepted(await grant(n,2,1))
+        assert await(await conn.execute('SELECT rkb_v4.verify_editorial_story_origins_v2(%s::uuid[])',([initial['source']['source_id']],))).fetchone()==(True,)
         baseline=await read(n)
         body=baseline['body'];ref=baseline['default_variant_ref']
         original_title=baseline['title']
@@ -99,9 +100,22 @@ async def test_native_title_pg_migration_body_vector_cas_history_saved_and_exact
             (STORY,))).fetchall())==projection_before
         assert await(await conn.execute(
             'SELECT count(*) FROM rkb_v4.editorial_variant_versions WHERE story_id=%s',(STORY,))).fetchone()==(1,)
-        assert await(await conn.execute(
+        verified=await(await conn.execute(
             'SELECT rkb_v4.verify_editorial_story_origins_v2(%s::uuid[])',
-            ([baseline['source']['source_id']],))).fetchone()==(True,)
+            ([baseline['source']['source_id']],))).fetchone()
+        if verified!=(True,):
+            diagnostic=await(await conn.execute("""SELECT jsonb_build_object(
+             'title_matches_snapshot',(v.data=p.data||jsonb_build_object('title','Литаврная собака')),
+             'action',v.action,'actor_matches',v.actor_id=r.person_id,'receipt_seq',r.sequence,
+             'checksum_matches',r.command_sha256=encode(sha256(a.command_bytes),'hex'),
+             'role',rkb_v4.story_editor_role_v1(v.story_id,r.person_id),
+             'command',convert_from(a.command_bytes,'UTF8')::jsonb)
+             FROM rkb_v4.editorial_story_versions v
+             JOIN rkb_v4.editorial_story_versions p ON p.story_id=v.story_id AND p.revision=2
+             JOIN rkb_v4.editorial_story_receipts r ON r.story_id=v.story_id AND r.revision=v.revision
+             JOIN rkb_v4.applied_ops a ON a.operation_key=r.operation_key
+             WHERE v.story_id=%s AND v.revision=3""",(STORY,))).fetchone()
+            raise AssertionError(f'editorial verifier rejected title: {diagnostic!r}')
         assert await(await conn.execute(
             'SELECT rkb_v4.verify_source_story_origins_v4(%s::uuid[])',
             ([baseline['source']['source_id']],))).fetchone()==(True,)
