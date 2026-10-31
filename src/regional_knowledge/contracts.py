@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 
@@ -627,9 +627,19 @@ class TelegramOriginalInput(BaseModel):
     chat_id: int
     topic_id: int
     message_id: int
-    document_id: int | None = None
+    document_id: int | str | None = Field(default=None, description="Use a decimal string for 64-bit Telegram IDs to avoid JSON number precision loss.")
     sha256: str | None = None
     size: int | None = None
+
+    @field_validator('document_id', mode='before')
+    @classmethod
+    def exact_document_id(cls, value):
+        if type(value) is str:
+            try: number = int(value)
+            except ValueError: raise ValueError('decimal document ID required') from None
+            if str(number) != value: raise ValueError('canonical decimal document ID required')
+            return number
+        return value
 
     def locator(self):
         from .telegram_original import TelegramOriginalLocator

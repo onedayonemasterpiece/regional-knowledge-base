@@ -81,6 +81,42 @@ def issued(messages):
 
 
 @pytest.mark.asyncio
+async def test_http_boundaries_reach_existing_correlated_terminal_record(monkeypatch):
+    from regional_knowledge.read_telemetry import ReadTelemetry
+    from regional_knowledge.query_telemetry import ReadAttempt
+    from regional_knowledge import read_issuance
+
+    clock=iter((1000.0,1000.2))
+    monkeypatch.setattr(read_issuance,'time',SimpleNamespace(time=lambda:next(clock)),raising=False)
+    records=[]
+    telemetry=object.__new__(ReadTelemetry)
+    telemetry.failed=0
+    telemetry._attempt_record=records.append
+    attempt=ReadAttempt('a'*32)
+    gate=Gate()
+
+    async def app(scope,receive,send):
+        context=SimpleNamespace(request_context=SimpleNamespace(request=Request(scope),request_id='actual-http-request'))
+        def terminal(status,reason,http_timings=None):
+            telemetry.finish_attempt(attempt,status=status,reason=reason,**(http_timings or {}))
+        with capture_read_output() as calls:
+            retain_read_output(gate,SimpleNamespace(ticket=object(),result={'evidence':[]}),
+                lambda value:value,on_terminal=terminal)
+            bind_request_output(context,calls)
+        await send({'type':'http.response.start','status':200,'headers':[(b'content-type',b'application/json')]})
+        await send({'type':'http.response.body','body':response()})
+    sent=[]
+    async def send(message):sent.append(message)
+    async def receive():return {'type':'http.disconnect'}
+    await ReadIssuanceMiddleware(app)({'type':'http','method':'POST','path':'/mcp','headers':[]},receive,send)
+    assert issued(sent)['result']['structuredContent']['evidence']==[]
+    assert len(records)==1 and records[0]['event']=='read_attempt_terminal'
+    assert records[0]['trace_id']==attempt.trace_id
+    assert records[0]['asgi_entered_unix']==1000.0
+    assert records[0]['response_started_unix']==1000.2
+
+
+@pytest.mark.asyncio
 async def test_withdrawal_refresh_removes_private_text_from_both_mcp_representations():
     gate = Gate()
     messages = await run(gate)

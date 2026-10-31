@@ -61,7 +61,7 @@ from .oauth_provider import (
 from .supabase_backend import backend_from_env
 from .story_registry import StoryRegistry, StoryError
 from .story_contracts import (
-    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
+    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation, UpsertVariant,
     ReviewDecision, RegisteredSource, ExtractRequest, ReconcileRequest,
 )
 
@@ -942,7 +942,7 @@ def build_server(
                 'current per-Story editor grant is required, approvals are cleared, and original replay never reruns the model.',
             annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
         async def native_story_edit(story_id:str,expected_revision:Annotated[int,Field(ge=1)],
-                operations:Annotated[list[StoryOperation],Field(min_length=1,max_length=12)],
+                operations:Annotated[list[UpsertVariant],Field(min_length=1,max_length=1)],
                 idempotency_key:Key,reason:str|None=None)->dict[str,Any]:
             return await backend.story_edit(story_id,_principal(),expected_revision=expected_revision,operations=operations,
                 idempotency_key=idempotency_key,reason=reason)
@@ -1658,7 +1658,7 @@ def build_server(
                 "Map complete basic_variant.blocks to exact evidence_refs; preserve original-language source quotations. "
                 "Open with who/what happened, never book, author or footnote in ANY language/source, including handbooks and lexicons: no 'Согласно справочнику', 'По изложению книги', 'По данным авторов', 'По сообщению <автора>', '<Автор> сообщает/перечисляет/отмечает', 'the author writes', 'according to the book'; author, page and footnote go in evidence_refs. "
                 "State supported facts directly, including painful events; attribute only opinion, estimate, legend, recollection or dispute AFTER the claim, never first. "
-                "Keep exact source names, dates, numbers, historical places; give where/when when printed, concrete action, stakes, first, name origin or changed use, and close with known outcome or honest uncertainty. Answer How/Why titles. "
+                "Keep exact source names, dates, numbers, historical places; give where/when when printed, concrete action, stakes, first, name origin or changed use, and close with known outcome or honest uncertainty about the past itself ('his later fate is unknown', 'historians still treat this as a hypothesis'), never about the text or its author ('the text does not say', 'not established by this page', 'the book writes \"possibly\"', 'this is the author's interpretation'); when a statement is a judgement, attribute it once inside that sentence. Answer How/Why titles. "
                 "The source's 'today'/'сохранилась до наших дней' means its author's time, not 2026; never invent causes, motives, emotions, dialogue, geography, dates or present-day survival ('after' is not 'because'). "
                 "Keep the whole episode across paragraphs/pages in ONE body, not separate facts_only: fetch the next unaccepted page (up to 4) or cite accepted earlier pages without restaging. "
                 "A lone dated fact, list or uses without development stays facts/observations; a first/invention with adjacent development can be a brief body. Review whole page for episodes, with no story quota. When evidence is insufficient, OMIT basic_variant and set narrative_outcome=needs_context or facts_only; no title/summary-only body."

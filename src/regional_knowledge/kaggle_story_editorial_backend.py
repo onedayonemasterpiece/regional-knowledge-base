@@ -116,7 +116,7 @@ class KaggleStoryEditorial:
         value=self._documents.get(job_id)
         if value is None:raise PermissionError('exact retained editorial job required')
         proof=value['proof'];await self._check(proof['authority'],proof['context'],proof['binding'])
-        if not self.gate.issuance_current(proof['gated'].ticket):raise PermissionError('current Story/source proof required')
+        if not self.gate.issuance_current(proof['gated'].ticket):raise SourceGateExpired('current Story/source proof required')
         def exact_job():
             with self.queue.connect(write=False) as db:
                 row=db.execute('SELECT actor,kind,identity,texts FROM jobs WHERE id=? AND idempotency=?',(job_id,value['key'])).fetchone()
@@ -126,7 +126,7 @@ class KaggleStoryEditorial:
                 or json.loads(job['identity'])!=value['identity'] or len(json.loads(job['texts']))!=1
                 or digest(json.loads(job['texts'])[0].encode())!=value['identity']['body_sha256']):
             raise PermissionError('exact editorial document binding required')
-        if not self.gate.issuance_current(proof['gated'].ticket):raise PermissionError('Story proof changed during authorization')
+        if not self.gate.issuance_current(proof['gated'].ticket):raise SourceGateExpired('Story proof changed during authorization')
         return proof['authority'].person_id
 
     async def _tokens(self,body):
