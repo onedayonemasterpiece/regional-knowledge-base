@@ -528,12 +528,12 @@ class KaggleSourceBackend:
             token=authority_timing.set((controller_stages,prefix))
             try:return await awaitable
             finally:authority_timing.reset(token)
-        def terminal(final_status,final_reason):
+        def terminal(final_status,final_reason,http_timings=None):
             values=dict(controller_stages)
             if received_at is not None:
                 values['result_to_terminal_ms']=(time.monotonic()-received_at)*1000
             telemetry.finish_attempt(attempt,status=final_status,reason=final_reason,
-                executed_branches=branches,controller_stages_ms=values)
+                executed_branches=branches,controller_stages_ms=values,**(http_timings or {}))
         def failure(final_status,final_reason,**extra):
             return ToolError(json.dumps(dict(status=final_status,reason=final_reason,
                 read_trace=ReadTrace(**attempt.correlation(),

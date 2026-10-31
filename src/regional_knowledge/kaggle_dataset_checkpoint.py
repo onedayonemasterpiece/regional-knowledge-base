@@ -117,7 +117,8 @@ class _WorkCycleCapture(SourceDatasetSeed):
 
     async def _capture(self,physical,bridge,binding,sequence):
         from .kaggle_recovery_dispatch import WssSnapshotPhases
-        native=WssSnapshotPhases(bridge,operation_key=self.config.operation_key)
+        native=WssSnapshotPhases(bridge,
+            operation_key=sha(encode([self.config.operation_key,bridge.identity])))
         return await native.capture(binding,versions=dict(self.config.versions),expected_sequence=sequence)
 
     async def _journal_control(self):

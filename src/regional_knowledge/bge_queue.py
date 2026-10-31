@@ -19,7 +19,7 @@ import uuid
 from .bge_contract import SPACE, validate_vector
 
 IDLE_SECONDS = 1800
-ROTATE_SECONDS = 8 * 3600 + 15 * 60  # Warm the successor before the owner's nine-hour limit.
+ROTATE_SECONDS = 8 * 3600 + 15 * 60  # Drain/checkpoint before the nine-hour limit.
 MAX_LIFETIME = 11 * 3600
 HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
@@ -241,19 +241,28 @@ class BgeQueue:
             db.execute('update control set current_run=?,successor=null where id=1',(run_id,))
         else:
             run_id=current['id']
-            if (current['status']=='ready' and not self._run_expired(current,now)
-                    and now-current['started']>=ROTATE_SECONDS and not control['successor']):
-                successor=self._new_run(db,now)
-                db.execute('update control set successor=? where id=1',(successor,))
         if useful:db.execute('update runs set useful=? where id=?',(now,run_id))
         return run_id
 
     def record_request_activity(self):
         """User intent renews useful-idle time; liveness and max age stay fenced."""
+        # Useful-idle precision is one minute; ordinary reads must not queue
+        # behind a SQLite writer just to renew the same activity timestamp.
+        now=self.clock()
+        with self.connect(write=False) as db:
+            current=db.execute("SELECT useful FROM runs WHERE id=(SELECT current_run FROM control WHERE id=1) "
+                "AND status IN ('starting','ready','draining')").fetchone()
+        if current is None:return False
+        if now-current['useful']<60:return True
+        started=time.monotonic()
         with self.connect() as db:
+            acquired=time.monotonic()
             row=db.execute("UPDATE runs SET useful=? WHERE id=(SELECT current_run FROM control WHERE id=1) "
                 "AND status IN ('starting','ready','draining')",(self.clock(),))
-            return row.rowcount==1
+            recorded=row.rowcount==1
+        logging.getLogger('regional_knowledge.reads').info('bge_request_activity state=recorded connect_begin_ms=%.3f transaction_ms=%.3f',
+            (acquired-started)*1000,(time.monotonic()-acquired)*1000)
+        return recorded
 
     def request_startup(self):
         """One persisted cold demand, independent of a particular run's TTL.
@@ -1068,13 +1077,19 @@ class BgeQueue:
                 self._ensure(db,now,useful=False)
             control=db.execute('select * from control where id=1').fetchone()
             current=db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
+            from .queue_writer import pending
             if (current and current['status']=='ready' and not self._run_expired(current,now)
-                    and now-current['started']>=ROTATE_SECONDS and not control['successor']):
-                db.execute('update control set successor=? where id=1',(self._new_run(db,now),))
+                    and now-current['started']>=ROTATE_SECONDS and not control['successor']
+                    and not pending(db,current['id'])):
+                # Serial handoff: the same checkpoint/STOP path retires this
+                # run before the controller launches a new owned current.
+                db.execute("update runs set status='draining' where id=?",(current['id'],))
+                db.execute("update control set startup_state='pending' where id=1")
+                _LOG.info('bge_rotation_drain requested run_id=%s provider_version=%s',
+                          current['id'],current['provider_version'])
             # An attached drain retains its checkpoint/STOP channel. A detached
             # dispatched run retains capacity until exact provider terminal proof.
             draining=db.execute("select id from runs where status='draining' and channel_active=0 and launch_state not in ('dispatching','dispatched') and not exists(select 1 from jobs where jobs.run_id=runs.id and state='claimed')").fetchall()
-            from .queue_writer import pending
             for row in draining:
                 if not pending(db,row['id']):db.execute("update runs set status='expired' where id=?",(row['id'],))
             self._expire(db,now)

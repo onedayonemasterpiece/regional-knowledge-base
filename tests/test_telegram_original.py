@@ -221,3 +221,11 @@ async def test_native_restore_reads_registered_telegram_document_without_rewriti
     assert result['sha256']==record['sha256'] and result['parser_sha256']==record['parser_sha256']
     assert receipt.wire()==immutable and client.send_calls==client.downloads==1
     assert n.download.calls==1  # initial fixture acquisition; restore never fetched S3 or Dev
+
+
+def test_public_document_id_decimal_string_preserves_64_bits():
+    exact=5379726664597024218
+    model=TelegramOriginalInput(**dict(locator().wire(),document_id=str(exact)))
+    assert model.locator().document_id==exact
+    for bad in ('5.3e18', '05379726664597024218', ' 5379726664597024218'):
+        with pytest.raises(ValueError):TelegramOriginalInput(**dict(locator().wire(),document_id=bad))

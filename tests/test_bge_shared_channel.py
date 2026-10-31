@@ -606,3 +606,74 @@ def test_unknown_aggregate_debt_blocks_stop_until_fresh_idle(peer,monkeypatch):
         ready(second,generation,probe_nonce=challenge['probe_nonce'])
         stop=second.receive_json()
         assert stop['type']=='STOP' and stop['connection_generation']==generation
+
+
+def test_native_scheduled_rotation_serial_handoff_keeps_reads_and_wakes_without_request(auth,tmp_path):
+    """Real ASGI + shared admission; synthetic provider terminal, no PG or BGE."""
+    from regional_knowledge.bge_queue import ROTATE_SECONDS, HEARTBEAT_SECONDS
+    now=[1000.]
+    q=BgeQueue(tmp_path/'serial-rotation.sqlite',clock=lambda:now[0])
+    original=q.request_startup()['run_id']
+    token=q.launch_claim(original,provider_ref='fixture-owner/stable-slug')
+    nonce=q.prepare_channel(original)
+    q.launch_record(original,'fixture-owner/stable-slug',provider_version=7)
+    admission=q.configure_shared_reads(auth.resolver)
+    checkpoints=[]
+    async def checkpoint(run_id,generation):checkpoints.append((run_id,generation))
+    with TestClient(Starlette(routes=[channel_route(q,before_stop=checkpoint)])) as client:
+        async def resolve():
+            return await auth.resolver.resolve_oauth(auth.tokens.access_token,destination=auth.destination)
+        context=client.portal.call(resolve)
+        p=SimpleNamespace(q=q,a=admission,client=client,run=original,
+                          token=token,nonce=nonce,context=context)
+        try:
+            with connect(p) as socket:
+                generation=attach(p,socket);ready(socket,generation)
+                assert q.finish_startup(original)
+                ticket=begin(p,generation,'current-still-reads')
+                frame=receive_expected(socket,'QUERY')
+                socket.send_json(answer(frame))
+                async def delivered():return await ticket.result
+                assert client.portal.call(delivered).status=='degraded'
+                release(socket,generation,frame)
+                async def idle():
+                    async with asyncio.timeout(1):
+                        while admission.status()['state']!='idle':
+                            await asyncio.sleep(.01)
+                client.portal.call(idle)
+                with q.connect() as db:
+                    db.execute('UPDATE runs SET started=? WHERE id=?',
+                               (now[0]-ROTATE_SECONDS-1,original))
+                q.maintenance()  # Existing controller tick, not a public request.
+                with q.connect(write=False) as db:
+                    control=db.execute('SELECT current_run,successor,startup_state FROM control').fetchone()
+                    assert tuple(control)==(original,None,'pending')
+                    assert db.execute('SELECT status FROM runs WHERE id=?',(original,)).fetchone()[0]=='draining'
+                assert q.stop_eligible(original,token,generation)
+                assert socket.receive_json()['type']=='STOP'
+                assert checkpoints==[(original,generation)]
+            # Synthetic native terminal observed after checkpoint/STOP. The
+            # production controller requires sealed exact-session evidence.
+            with q.connect() as db:
+                db.execute("UPDATE runs SET launch_state='terminal',channel_active=0 WHERE id=?",(original,))
+            now[0]+=HEARTBEAT_SECONDS+1
+            q.maintenance()
+            with q.connect(write=False) as db:
+                next_run=db.execute('SELECT current_run FROM control').fetchone()[0]
+                assert next_run not in (None,original)
+                assert db.execute('SELECT successor FROM control').fetchone()[0] is None
+            new_token=q.launch_claim(next_run,provider_ref='fixture-owner/stable-slug')
+            new_nonce=q.prepare_channel(next_run)
+            q.launch_record(next_run,'fixture-owner/stable-slug',provider_version=8)
+            p.run,p.token,p.nonce=next_run,new_token,new_nonce
+            with connect(p) as successor:
+                new_generation=attach(p,successor)
+                ready(successor,new_generation)
+                assert q.finish_startup(next_run)
+                ticket=begin(p,new_generation,'successor-reads')
+                frame=receive_expected(successor,'QUERY')
+                successor.send_json(answer(frame))
+                assert client.portal.call(delivered).status=='degraded'
+                release(successor,new_generation,frame)
+        finally:
+            client.portal.call(admission.close)
