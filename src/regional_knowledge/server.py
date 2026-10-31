@@ -80,7 +80,7 @@ _SOURCE_TRANSCRIPTION_INSTRUCTIONS = (
 
 
 def _principal() -> Principal:
-    token = <redacted>
+    token = get_access_token()
     if token is None or token.subject is None:
         raise RuntimeError("authenticated user context is required")
     issuer = str((token.claims or {}).get("iss", ""))
@@ -88,7 +88,7 @@ def _principal() -> Principal:
         subject=token.subject,
         client_id=token.client_id,
         issuer=issuer,
-        access_token=<redacted>
+        access_token=token.token,
     )
 
 
@@ -825,7 +825,7 @@ def build_server(
             return JSONResponse({"error":"scope_unavailable"},status_code=503)
         from .contracts import Principal
         principal=Principal(subject=actor,client_id="street-story-poi-reader",
-                            issuer="trusted-service-grant",access_token=<redacted>
+                            issuer="trusted-service-grant",access_token="")
         try:
             poi_ref=str(request.query_params.get("poi_ref",""))[:140]
             value=await PoiRegistry(backend).context(principal,poi_ref,limit=8)
@@ -1160,7 +1160,7 @@ def build_server(
                                 "No map geometry acceptance or public source transmission.",
                     annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
                                                 destructive_hint=False,open_world_hint=False))
-                async def geo_stage(attempt_id:str,lease_token:<redacted>
+                async def geo_stage(attempt_id:str,lease_token:str,
                         lease_fence:Annotated[int,Field(ge=1)],
                         proposal:GeoProposal,
                         idempotency_key:Annotated[str,Field(min_length=8,max_length=128)]
@@ -1175,7 +1175,7 @@ def build_server(
                                 "Replay returns the previous durable receipt.",
                     annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,
                                                 destructive_hint=False,open_world_hint=False))
-                async def geo_apply(attempt_id:str,lease_token:<redacted>
+                async def geo_apply(attempt_id:str,lease_token:str,
                         lease_fence:Annotated[int,Field(ge=1)],
                         idempotency_key:Annotated[str,Field(min_length=8,max_length=128)]
                         )->dict[str,Any]:
@@ -1209,8 +1209,195 @@ def build_server(
                 description="Review up to 20 accepted source chunks and their exact printed page/region texts; "
                             "use source_regions page_id, region_id and original excerpt as proof "
                             "for grounded_candidates in story_extract(stage). No server-side model.",
-                annotations=ToolAnnotations(read_only_hint=Tru
-<response-cap-truncated>
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+            async def corpus_read(document_id: str, source_revision: Annotated[int,Field(ge=1)],
+                    cursor: str | None = None, limit: Annotated[int,Field(ge=1,le=20)]=10) -> dict[str,Any]:
+                return await story_call(registry.corpus_read, document_id, source_revision, cursor, limit)
+
+            if profile in {"full", "story_contributor", "story_editor"}:
+                @mcp.tool(name="story_create", title="Save a story seed",
+                    description="Persist an unknown-origin seed or candidate, with actor taken only from OAuth.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_create(seed: SeedInput, idempotency_key: Key,
+                        workspace_id: str | None = None,
+                        source_refs: list[SourceRef] | None = None,
+                        metadata: StoryMetadata | None = None) -> dict[str,Any]:
+                    return await story_call(registry.create, seed, metadata, workspace_id, source_refs, idempotency_key)
+
+                @mcp.tool(name="story_edit", title="Apply atomic editorial changes",
+                    description="Typed, revision-guarded changes; cannot approve a variant.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_edit(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        operations: Annotated[list[StoryOperation], Field(min_length=1,max_length=12)],
+                        idempotency_key: Key, reason: str | None = None) -> dict[str,Any]:
+                    return await story_call(registry.edit, story_id, expected_revision, operations, idempotency_key, reason)
+
+                @mcp.tool(name="story_archive", title="Archive or restore an editorial story",
+                    description="Reversible, idempotent archive/restore, no physical erasure.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_archive(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        idempotency_key: Key, action: Literal["archive","restore"]="archive") -> dict[str,Any]:
+                    return await story_call(registry.archive, story_id, expected_revision, action, idempotency_key)
+
+                @mcp.tool(name="story_source_register", title="Register immutable testimony",
+                    description="Persist external note provenance once; books are referenced by existing document IDs.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_source_register(source: RegisteredSource, idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.register_source, source, idempotency_key)
+
+                @mcp.tool(name="story_extract", title="Extract evidence-backed stories from accepted books",
+                    description="One model reads corpus_read page/region evidence and stages "
+                                "up to 10 grounded_candidates per leased source batch with exact "
+                                "page_id, region_id and original_excerpt. Server verifies all "
+                                "proof, deduplicates, and atomically saves attributed candidates "
+                                "with claim and evidence. No hidden LLM calls; legacy seed path "
+                                "remains supported. Model must continue until the job is done.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_extract(request: ExtractRequest, idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.extract, request, idempotency_key)
+
+                @mcp.tool(name="story_reconcile", title="Reconcile source-backed episodes across books",
+                    description="Durable next/start/enqueue/claim/stage/apply/cancel workflow. " +
+                                "After book_ingest finalize or story_extract, next yields the next "
+                                "accepted pending story and resumes unfinished runs without original chat history. "
+                                "The same calling model searches story_search and knowledge_search, "
+                                "compares exact original evidence via story_get evidence_page and "
+                                "corpus_read, and saves a typed proposal. Application checks exact "
+                                "story/source revisions, rights and reviewer intent before attaching "
+                                "another source or linking episodes without automatic merge. "
+                                "Never infer historical truth or independence from a mere quote match.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True,
+                                                destructive_hint=False, open_world_hint=False))
+                async def story_reconcile(request: ReconcileRequest, idempotency_key: Key) -> dict[str,Any]:
+                    from .story_reconcile import StoryReconciler
+                    return await story_call(StoryReconciler(registry).dispatch, request, idempotency_key)
+
+            if profile in {"full", "story_editor"}:
+                @mcp.tool(name="story_transition", title="Review or approve chosen story variants",
+                    description="Checks exact variant revisions, reviewer decision, source provenance and permissions.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_transition(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        target_state: Literal["candidate","researching","drafting","review","publish_ready","deferred","rejected"],
+                        idempotency_key: Key, variant_revision_ids: list[dict[str,str|int]] | None = None,
+                        review: ReviewDecision | None = None) -> dict[str,Any]:
+                    return await story_call(registry.transition, story_id, expected_revision,
+                                            target_state, variant_revision_ids, review, idempotency_key)
+
+                @mcp.tool(name="story_merge", title="Merge related story seeds",
+                    description="Explicit revision-guarded merge, preserving original story references.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_merge(target_id: str, source_ids: Annotated[list[str],Field(min_length=1,max_length=10)],
+                        expected_revisions: dict[str,int], reason: str,
+                        idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.merge, target_id, source_ids, expected_revisions, reason, idempotency_key)
+
+                @mcp.tool(name="story_access", title="Grant or revoke story capabilities",
+                    description="Only authorized story owner/manager can change per-story grants; source ACL remains independent.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_access(story_id: str, expected_revision: Annotated[int,Field(ge=1)],
+                        grantee_user_id: str, capability: Literal[
+                            "viewer","contributor","researcher","editor","publisher","manager","revoke"],
+                        idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.access, story_id, expected_revision,
+                                            grantee_user_id, capability, idempotency_key)
+
+                @mcp.tool(name="story_export", title="Export an approved story variant",
+                    description="Read-only attribution-aware package; does not send or publish.",
+                    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+                async def story_export(story_id: str, variant_revision_id: str,
+                        target: Literal["editorial","social","video","narration"]="editorial") -> dict[str,Any]:
+                    return await story_call(registry.export, story_id, variant_revision_id, target)
+
+                @mcp.tool(name="story_publication_record", title="Record a reported publication",
+                    description="Persist a separately observed publication; never sends content or self-verifies provider.",
+                    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True, destructive_hint=False, open_world_hint=False))
+                async def story_publication_record(story_id: str, variant_revision_id: str,
+                        publication: dict[str,str], idempotency_key: Key) -> dict[str,Any]:
+                    return await story_call(registry.publication_record, story_id, variant_revision_id,
+                                            publication, idempotency_key)
+
+    if profile.startswith("story_"):
+        return mcp
+
+    if selected == 'kaggle_source':
+        @mcp.tool(name='startup_status',title='Check Regional Knowledge startup',
+            description='Wait up to about 40 seconds for an existing cold start and recheck its ref. If still pending, call startup_status again in THIS turn without asking the user to repeat. Once ready, repeat the exact original search; this status never replays it.',
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+        async def startup_status(startup_ref: str) -> StartupStatus:
+            status=await backend.startup_status(startup_ref,_principal())
+            if status.status!='pending':return status
+            await asyncio.sleep(40)
+            return await backend.startup_status(startup_ref,_principal())
+
+    if selected == 'kaggle_source':
+        @mcp.tool(name='source_unit_export',title='Export a complete source article as PDF',
+            description=('Export one complete accepted source article/chapter to a real PDF with '
+                'unchanged original text and verified bibliography. Use book_find(view=units) when available '
+                'to select its source_id and article_id. Returns a standard MCP embedded PDF '
+                'resource (application/pdf) for any MCP client, not a Slack upload. '
+                'Optional annotation_ru (1–2 Russian paragraphs) and translation_ru '
+                '(full Russian translation, when original is not Russian) must be supplied '
+                'by the calling model, never generated in Kaggle. Original author text '
+                'remains first and exact. A PDF over the 256 KiB transport limit fails '
+                'with pdf_transport_limit without truncation. '
+                'An incomplete article returns unit_not_ready; continue book_ingest first.'),
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+        async def source_unit_export(source_id: str, article_id: str,
+                annotation_ru: str | None = None, translation_ru: str | None = None) -> CallToolResult:
+            return await backend.source_unit_export(source_id,article_id,_principal(),
+                annotation_ru=annotation_ru,translation_ru=translation_ru)
+
+    if profile == "live":
+        @mcp.tool(
+            name="knowledge_search",
+            title="Search regional knowledge",
+            description=(
+                "Return a bounded evidence pack from accessible regional books and journals. "
+                "When Kaggle is cold, returns MCP pending and a versioned startup ref; "
+                "stay in this turn, keep calling startup_status while pending, then rerun this exact search after ready. Do not ask the user to repeat."
+            ),
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        )
+        async def knowledge_search(
+            query: str,
+            max_evidence: Annotated[int, Field(ge=1, le=10)] = 3,
+            main_job_id: str | None = None,
+            document_ids: list[str] | None = None,
+        ) -> EvidenceSearchOutput:
+            return _require_hybrid_read(await read_telemetry.measure("knowledge_search", backend.search_evidence(
+                query.strip(),
+                _principal(),
+                max_evidence=max_evidence,
+                **({'main_job_id': main_job_id} if main_job_id else {}),
+                **({'document_ids': document_ids} if document_ids is not None else {}),
+            )))
+
+        return mcp
+
+    _search_policy = (
+        "Search/fetch checklist:\n"
+        "1. Identify subject, required parts, named book, period and ambiguity. First search in the user's language; for a named book use document_ids immediately, not a broad search.\n"
+        "2. Read inline search text, provenance, incomplete and next_id. After EACH read check all parts, identity, negations and caveats; stop when evidence is sufficient.\n"
+        "3. For ONE gap choose ONE action: fetch(id=next_id) if present, fetch using the hit's id if incomplete without next_id, or neighboring source pages for cut-off context; or separately search in source language/rephrase for missing terms. Never mix languages in one query.\n"
+        "4. For ambiguity ask a short OPEN question about time, role or book. OR combines evidence; AND needs one entity; missing hits do not prove NOT; no final XOR filter.\n"
+        "5. Stop when sufficient or after at most 6 sequential search/fetch calls (startup_status checks for the same cold start do not count). At the limit give the evidenced part and remaining question, not 'nothing in the corpus'; distinguish failed/pending reads.\n"
+        "6. Answer in 1-4 sentences in the question's language; for German questions, answer in German then immediately translate into Russian; cite ALL supporting passages (author, book, year, printed page or scan); attribute disagreements, quote only on request; do not add details absent from read passages (e.g. modern place names), and if the user requests them, explicitly label them as outside the cited sources.\n"
+    )
+
+    @mcp.tool(
+        title="Search regional knowledge",
+        description=(
+            "Search accessible regional books and journals. Results include citable IDs/URLs; "
+            "source-backed hits include bounded text, provenance, incomplete and next_id. "
+            "Search hits may include illustrations; call illustration_fetch with that id. "
+            "Use fetch(id=next_id) only when needed to continue an incomplete hit; fetch also reads neighboring pages. "
+            "If Kaggle is cold, do not finish the turn on pending: keep calling startup_status with its startup_ref until ready, then rerun this exact search and answer. Do not ask the user to repeat.\n" + _search_policy
+        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+    )
+    async def search(query: str, main_job_id: str | None = None, aliases: list[dict[str,str]] | None = None,
+                     document_ids: list[str] | None = None, top_k: Annotated[int, Field(ge=1, le=10)] = 3) -> SearchOutput:
+        options={}
         if document_ids is not None:options['document_ids']=document_ids
         if selected=='kaggle_source':options['top_k']=top_k
         elif top_k!=3:raise ToolError('{"status":"unavailable","reason":"unsupported_target_search_option"}')
@@ -1769,15 +1956,15 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             raise RuntimeError('Socket Mode requires one existing reader and no second bot credential')
         from .expert_slack_search_reply import ExpertSlackSearchReply, SlackChatSender
         from .expert_slack_socket_mode import ExpertSlackSocketMode
-        bot_token=<redacted>
+        bot_token=os.getenv('SLACK_BOT_TOKEN','')
         reply=ExpertSlackSearchReply(ingress=expert_slack_ingress,
             evidence=expert_evidence_receiver,
-            sender=SlackChatSender(token=<redacted>
+            sender=SlackChatSender(token=bot_token,app_id=expert_slack_ingress.control.app_id,
                 team_id=expert_slack_ingress.control.team_id,
                 bot_user_id=expert_slack_ingress.control.bot_user_id))
         expert_slack_ingress.bind_search_reply(reply)
         expert_slack_socket_mode=ExpertSlackSocketMode(ingress=expert_slack_ingress,
-            app_token=<redacted>
+            app_token=os.getenv('SLACK_APP_TOKEN',''),bot_token=bot_token)
     elif reply_config:
         if expert_slack_ingress is None or expert_evidence_receiver is None:
             raise RuntimeError('Slack search reply requires existing signed ingress and evidence reader')
