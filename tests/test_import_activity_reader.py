@@ -178,6 +178,24 @@ async def test_activity_199_page_journal_skips_stale_140_not_rejected_198(watche
     assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"199")
 
 @pytest.mark.asyncio
+async def test_verified_original_before_first_stage_is_ready_for_reader(watcher):
+    w=watcher
+    with w.queue.connect() as db:
+        db.execute('DELETE FROM rkb_native_source_intake_state')
+        db.execute('DELETE FROM rkb_control_operations')
+        db.execute('UPDATE rkb_source_intake_control SET research_json=NULL')
+    original=read_timestamp(w)
+    result=(await get(w)).json()
+    assert (result['state'],result['next_action'])==('staged','continue_pages')
+    assert result['accepted_pages']==0 and result['next_cursor'] is None
+    assert read_timestamp(w)==original
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_source_intake_control SET phase='acquiring'")
+    pending=(await get(w)).json()
+    assert (pending['state'],pending['next_action'])==('processing','wait')
+
+
+@pytest.mark.asyncio
 async def test_authorized_activity_is_redacted_read_only_and_cold_is_honest(watcher):
     w=watcher
     original=read_timestamp(w)

@@ -99,9 +99,9 @@ class ImportActivityReader:
             state, action = "failed", "blocker"
         elif native and native["phase"] == "finalized" or phase == "finalized":
             state, action = "finalized", "done"
-        elif phase == "acquiring" or native is None:
+        elif phase == "acquiring":
             state, action = "processing", "wait"
-        elif (native["pending_operation_key"]
+        elif native and (native["pending_operation_key"]
               or native["enriched_batch_count"] < native["batch_count"]
               or native["read_completion_requested"]):
             state, action = "processing", "wait"
