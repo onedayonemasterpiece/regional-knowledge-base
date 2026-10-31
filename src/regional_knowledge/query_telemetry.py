@@ -15,7 +15,8 @@ from uuid import uuid4
 
 from .kaggle_protocol import ReadIdentity
 
-_STAGES = frozenset({'tokenize_ms', 'acquire_ms', 'encode_ms', 'lexical_ms', 'dense_ms',
+_STAGES = frozenset({'tokenize_ms', 'tokenize_executor_wait_ms', 'tokenize_mutex_wait_ms',
+                     'tokenize_work_ms', 'tokenize_resume_ms', 'acquire_ms', 'encode_ms', 'lexical_ms', 'dense_ms',
                      'hydrate_ms', 'search_ms', 'serialize_ms', 'total_ms', 'adapter_ms',
                      'admission_ms', 'transport_ms', 'output_gate_ms'})
 _STATUSES = frozenset({'ok', 'degraded', 'pending', 'unavailable', 'cancelled', 'invalid_query', 'denied', 'error'})
@@ -269,10 +270,19 @@ class NativeReadTelemetry:
             'timing_semantics': 'overlapping_do_not_sum'})
 
 
+def record_tokenizer_timing(submitted, started, acquired, finished, resumed):
+    scope = _NATIVE.get()
+    if scope is not None:
+        scope.stages.update(tokenize_executor_wait_ms=(started-submitted)*1000,
+            tokenize_mutex_wait_ms=(acquired-started)*1000,
+            tokenize_work_ms=(finished-acquired)*1000,
+            tokenize_resume_ms=(resumed-finished)*1000)
+
+
 def emit_executor_stage(collector, query, values):
     """Stage observations are explicitly not the adapter's final outcome."""
     scope = _NATIVE.get()
-    clean = stages_ms(values)
+    clean = stages_ms({**(scope.stages if scope is not None else {}), **values})
     if scope is not None:
         scope.stages = clean
         fields = scope.fields()

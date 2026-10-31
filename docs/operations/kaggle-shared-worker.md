@@ -145,6 +145,10 @@ Its nonblocking `count` uses `to_thread` with complete special-token-inclusive,
 no-truncation/no-padding token IDs. The same resident encoder remains the only
 model; this unit does not load a model in tests or on DevCoveer.
 Counting and inference serialize access to the same mutable fast tokenizer.
+Existing native read stages split successful query counts into
+`tokenize_executor_wait_ms`, `tokenize_mutex_wait_ms`, `tokenize_work_ms` and
+`tokenize_resume_ms`. These partition count wall time; they are included in
+`tokenize_ms`, not additional latency to sum with it. No source text is logged.
 Cancellation drains any started native count, including repeated cancellation,
 before handler cleanup may relinquish the worker resource.
 

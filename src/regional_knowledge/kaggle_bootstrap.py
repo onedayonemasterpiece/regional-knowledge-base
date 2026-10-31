@@ -19,6 +19,7 @@ import re
 import stat
 import sys
 import threading
+import time
 from types import MappingProxyType
 
 from .bge_contract import REVISION, SPACE, TOKENIZER_SHA256
@@ -278,11 +279,16 @@ class ResidentEncoder:
             return self.encode(text)
 
     async def count(self, text):
+        submitted = time.monotonic()
+        marks = []
         def exact():
+            marks.append(time.monotonic())
             with self._tokenizer_lock:
+                marks.append(time.monotonic())
                 ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=False, padding=False)
                 if not isinstance(ids, list) or any(type(token) is not int for token in ids):
                     raise BootstrapUnavailable('tokenizer_count_invalid')
+                marks.append(time.monotonic())
                 return len(ids)
         task = asyncio.create_task(asyncio.to_thread(exact))
         cancelled = False
@@ -297,7 +303,10 @@ class ResidentEncoder:
             if not task.cancelled():
                 task.exception()
             raise asyncio.CancelledError
-        return task.result()
+        result = task.result()
+        from .query_telemetry import record_tokenizer_timing
+        record_tokenizer_timing(submitted, *marks, time.monotonic())
+        return result
 
 
 @dataclass(frozen=True)
