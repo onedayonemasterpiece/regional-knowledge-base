@@ -109,11 +109,17 @@ def test_repeated_cursor_has_a_bounded_pending_result():
     assert len([c for c in api.calls if c[0]=='files'])==2
 
 
-def test_private_observation_failure_is_not_echoed_or_treated_as_readiness():
+def test_public_input_is_ready_but_saved_publisher_still_requires_private():
+    from regional_knowledge.kaggle_dataset_publisher import KaggleDatasetPublisher,DatasetPublicationError
     api=Api();api.private=False
+    def owner_only(ref):raise AssertionError('Public input must not call owner-only processing status')
+    api.dataset_status=owner_only
     result=probe_stage0_datasets(api,plan())
-    assert not result.ready and result.reason=='dataset_observation_unavailable'
-    assert len(api.calls)==1
+    assert result.ready and result.reason=='ready'
+    api.versions=[7]
+    publisher=KaggleDatasetPublisher(api,provider_ref='fixture-owner/rkb-bootstrap',owner='fixture-owner')
+    with pytest.raises(DatasetPublicationError,match='dataset_private_version_unproven'):
+        publisher.observe()
 
 
 def test_same_source_name_with_conflicting_pins_is_refused_before_provider_read():

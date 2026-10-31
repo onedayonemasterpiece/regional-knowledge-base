@@ -1,6 +1,6 @@
 """One read-only controller preflight for versioned Stage0 Dataset inputs.
 
-Uses the existing authenticated client/publisher. No sleeps, credentials,
+Uses the existing authenticated client. No sleeps, credentials,
 uploads, launch claims or notebook effects. Call from a bounded controller tick
 before claiming a launch; an unready result leaves the launch pending.
 """
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .kaggle_dataset_publisher import KaggleDatasetPublisher
 from .kaggle_stage0 import Stage0Spec, _dataset_locator
 
 
@@ -22,6 +21,24 @@ class Stage0DatasetReadiness:
 
 def _field(value,name,default=None):
     return value.get(name,default) if isinstance(value,dict) else getattr(value,name,default)
+
+
+def _observation(api,owner,slug):
+    from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetRequest
+    # Input dependencies may be public. Saved publication keeps its separate
+    # private-Dataset invariant in KaggleDatasetPublisher.observe.
+    request=ApiGetDatasetRequest();request.owner_slug,request.dataset_slug=owner,slug
+    try:
+        with api.build_kaggle_client() as client:
+            value=client.datasets.dataset_api_client.get_dataset(request)
+    except Exception as exc:
+        if (getattr(exc,'status_code',None) or getattr(getattr(exc,'response',None),'status_code',None))==404:return None
+        raise
+    version=_field(value,'current_version_number')
+    if type(version) is not int or version<1:raise ValueError('dataset_version_unproven')
+    # A public published version is available to readers; the processing
+    # status endpoint is owner-only (404 for a readable public dependency).
+    return version,_field(value,'is_private') is True
 
 
 def _file_readiness(api,ref,version,files):
@@ -71,21 +88,20 @@ def probe_stage0_datasets(api,stage0):
     def result(ready,reason):return Stage0DatasetReadiness(ready,reason,count,file_count)
     for (owner,slug,version),files in sorted(required.items()):
         ref=owner+'/'+slug
-        publisher=KaggleDatasetPublisher(api,provider_ref=ref,owner=owner)
         try:
-            before=publisher.observe()
-            if before is None or before<version:
+            before=_observation(api,owner,slug)
+            if before is None or before[0]<version:
                 return result(False,'dataset_version_pending')
-            if api.dataset_status(ref)!='ready':
+            if before[1] and api.dataset_status(ref)!='ready':
                 return result(False,'dataset_warming')
-            for candidate in dict.fromkeys((version,before)):
+            for candidate in dict.fromkeys((version,before[0])):
                 reason=_file_readiness(api,ref,candidate,files)
                 if reason:
                     if candidate!=version:reason='dataset_mount_'+reason.removeprefix('dataset_')
                     return result(False,reason)
             # A concurrent version transition is a reason to try on a later
             # tick, never to make a launch claim while still warming.
-            if publisher.observe()!=before or api.dataset_status(ref)!='ready':
+            if _observation(api,owner,slug)!=before or before[1] and api.dataset_status(ref)!='ready':
                 return result(False,'dataset_changed_during_probe')
         except Exception:
             # SDK errors may contain signed URLs, private refs or credentials.
