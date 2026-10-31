@@ -704,9 +704,7 @@ class NativeSourceIntake:
             _LOG.warning('source_tail_query state=unavailable ingestion_id=%s error_type=%s reason=%s',
                 row['ingestion_id'],type(error).__name__,str(error) if isinstance(error,SpoolConflict) else 'unavailable')
             await self._check(access,row)
-            return self.importer._output(row,'staged','Source tail hint unavailable; continue reading from next_cursor.',
-                'continue_pages',next_cursor=await self.applied_page_cursor(access,row),
-                source_archive_status='verified',warnings=['source_tail_coverage_unavailable'])
+            return None
         await self._check(access,row)
         if refs:
             _LOG.info('source_tail_query state=pending ingestion_id=%s tails=%s has_more=%s',

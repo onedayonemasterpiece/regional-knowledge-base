@@ -6,11 +6,10 @@ wakes the next component without another client status call. An accepted stage
 reply permits reading the next cursor from its frozen page packet while
 publication remains processing; retain unfinished passages and current tail
 context. Once current packet progress permits the existing native tail query,
-known tails retain their exact `continue_tail` response and refs. If the tail
-hint query fails, return `continue_pages` with the existing applied-page cursor
-and `source_tail_coverage_unavailable`; an unavailable hint does not ask the
-reader to repeat status indefinitely or claim complete coverage. Log the fixed
-`SpoolConflict` reason, never arbitrary provider exception text. Acceptance
+known tails retain their exact `continue_tail` response and refs. A failed tail
+hint query supplies no hint: status and finalize follow their ordinary paths,
+including `finalized/done` for a completed book. Log the fixed `SpoolConflict`
+reason, never arbitrary provider exception text. Acceptance
 does not assert complete coverage, APPLIED or Dataset Saved. An internal proof
 binds the accepted stage hash, person, source, ingestion, batch and current
 runtime; each new component rechecks canonical owner/import rights and existing
