@@ -139,13 +139,18 @@ class ReadTelemetry:
             'turn_generation': turn_generation, 'diagnostic_state': 'observed'})
         return True
 
-    def finish_attempt(self, attempt, *, status, reason=None, executed_branches=(), stages_ms=None, controller_stages_ms=None):
+    def finish_attempt(self, attempt, *, status, reason=None, executed_branches=(), stages_ms=None, controller_stages_ms=None,
+                       asgi_entered_unix=None,response_started_unix=None):
         """Emit one terminal observation, including refusal/cancel before dispatch."""
         if type(attempt) is not ReadAttempt:
             raise TypeError('server-minted ReadAttempt required')
         record = attempt.terminal(status, reason, executed_branches, stages_ms or {})
         if record is None:
             return False
+        if asgi_entered_unix is not None:
+            record['asgi_entered_unix']=asgi_entered_unix
+        if response_started_unix is not None:
+            record['response_started_unix']=response_started_unix
         if isinstance(controller_stages_ms,dict):
             record['controller_stages_ms']={key:value for key,value in controller_stages_ms.items()
                 if key in _CONTROLLER_STAGES and type(value) in (int,float)
