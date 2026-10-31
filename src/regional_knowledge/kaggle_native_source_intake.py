@@ -20,6 +20,7 @@ from functools import wraps
 from uuid import UUID, uuid5
 
 from .bge_contract import TOKEN_REJECTION_PATTERN
+from .control_spool import SpoolConflict
 from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH, SOURCE_COVERAGE_REJECTION_PATTERN,
     canonical, digest, encode_issued_image, validate_stage_payload)
 
@@ -700,11 +701,12 @@ class NativeSourceIntake:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            _LOG.warning('source_tail_query state=unavailable ingestion_id=%s error_type=%s',
-                row['ingestion_id'],type(error).__name__)
+            _LOG.warning('source_tail_query state=unavailable ingestion_id=%s error_type=%s reason=%s',
+                row['ingestion_id'],type(error).__name__,str(error) if isinstance(error,SpoolConflict) else 'unavailable')
             await self._check(access,row)
-            return self.importer._output(row,'processing','Source tail coverage unavailable; resume status',
-                'wait',source_archive_status='verified',warnings=['source_tail_coverage_unavailable'])
+            return self.importer._output(row,'staged','Source tail hint unavailable; continue reading from next_cursor.',
+                'continue_pages',next_cursor=await self.applied_page_cursor(access,row),
+                source_archive_status='verified',warnings=['source_tail_coverage_unavailable'])
         await self._check(access,row)
         if refs:
             _LOG.info('source_tail_query state=pending ingestion_id=%s tails=%s has_more=%s',

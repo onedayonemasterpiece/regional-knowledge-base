@@ -229,14 +229,26 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.next_action,'continue_pages')
         self.assertEqual(len(calls),1)
 
-    async def test_unknown_tail_query_never_claims_complete_coverage(self):
+    async def test_failed_tail_hint_continues_from_applied_cursor_with_warning(self):
         self.packet_mode();await self.stage();self.finish()
         await self.helper.status(self.access,self.row);self.finish()
         await self.helper.status(self.access,self.row);self.finish()
-        self.tail_query_failed=True
-        result=await self.helper.status(self.access,self.row)
-        self.assertEqual(result.next_action,'wait')
-        self.assertEqual(result.warnings,['source_tail_coverage_unavailable'])
+        async def applied_cursor(*args, **kwargs): return '190'
+        self.helper.applied_page_cursor=applied_cursor
+        from regional_knowledge.kaggle_native_source_intake import SpoolConflict
+        for error in (SpoolConflict('native source history observation unavailable'),
+                      TimeoutError('private provider detail')):
+            async def failed_tails(*args): raise error
+            self.importer.startup.history.source_tail_refs=failed_tails
+            with self.assertLogs('regional_knowledge.kaggle_native_source_intake',level='WARNING') as logs:
+                result=await self.helper.status(self.access,self.row)
+            self.assertEqual(result.state,'staged')
+            self.assertEqual(result.next_action,'continue_pages')
+            self.assertEqual(result.next_cursor,'190')
+            self.assertEqual(result.warnings,['source_tail_coverage_unavailable'])
+            self.assertIn('reason='+('native source history observation unavailable'
+                if isinstance(error,SpoolConflict) else 'unavailable'),' '.join(logs.output))
+            self.assertNotIn('private provider detail',' '.join(logs.output))
 
     async def test_tail_query_failure_still_rechecks_revoked_actor(self):
         self.packet_mode();await self.stage();self.finish()
