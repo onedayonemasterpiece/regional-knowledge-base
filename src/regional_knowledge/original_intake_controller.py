@@ -111,7 +111,7 @@ class OriginalIntakeController:
         if type(value) is not dict:raise OriginalIntakeError('original_native_receipt_invalid')
         if 'error' in value:
             code=value.get('error')
-            if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
+            if (value.get('terminal') is True or code=='original_telegram_document_changed') and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
             if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required','original_telegram_send_unknown'):
                 raise OriginalIntakeError(code)
             raise OriginalIntakeError('original_native_receipt_unavailable')
@@ -314,12 +314,14 @@ class OriginalIntakeController:
                             else 'original_acquisition_pending')
                     return OriginalIntakeStatus(ingestion_id,'pending',reason=reason)
                 identity=json.loads(job['identity']);result=json.loads(job['result'])
-                if (result.get('value',{}).get('terminal') is True
+                if (identity['phase']!='original_acquire' or identity['arguments']!=args
+                        or result['request_sha256']!=identity['request_sha256'] or result['phase']!='original_acquire'):
+                    raise OriginalIntakeError('original_acquisition_receipt_unavailable')
+                if ((result.get('value',{}).get('terminal') is True
+                        or result.get('value',{}).get('error')=='original_telegram_document_changed')
                         and result['value'].get('error') in TERMINAL_REJECTIONS):
                     return self._reject(ingestion_id,result['value']['error'])
-                if (identity['phase']!='original_acquire' or identity['arguments']!=args
-                        or result['request_sha256']!=identity['request_sha256'] or result['phase']!='original_acquire'
-                        or result['value'].get('spec')!=spec):
+                if result['value'].get('spec')!=spec:
                     raise OriginalIntakeError('original_acquisition_receipt_unavailable')
                 record=result['value']
                 with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET acquisition_json=? WHERE ingestion_id=?',
