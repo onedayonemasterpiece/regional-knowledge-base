@@ -246,6 +246,14 @@ class BgeQueue:
 
     def record_request_activity(self):
         """User intent renews useful-idle time; liveness and max age stay fenced."""
+        # Useful-idle precision is one minute; ordinary reads must not queue
+        # behind a SQLite writer just to renew the same activity timestamp.
+        now=self.clock()
+        with self.connect(write=False) as db:
+            current=db.execute("SELECT useful FROM runs WHERE id=(SELECT current_run FROM control WHERE id=1) "
+                "AND status IN ('starting','ready','draining')").fetchone()
+        if current is None:return False
+        if now-current['useful']<60:return True
         started=time.monotonic()
         with self.connect() as db:
             acquired=time.monotonic()
