@@ -188,7 +188,7 @@ async def _source_units(request, cursor, execute):
     return records, (), next_ordinal
 
 
-async def execute_source_read(request, *, acquire):
+async def execute_source_read(request, *, acquire, illustration_page=None):
     if type(request) is not SourceReadRequest:
         raise TypeError('fixed native source read required')
     loop = asyncio.get_running_loop()
@@ -270,10 +270,12 @@ async def execute_source_read(request, *, acquire):
                     try:
                         pdf = await render_accepted_source_pdf(acquire=acquire,
                             source_id=request.source_id,article_id=request.article_id,
-                            annotation_ru=request.annotation_ru,translation_ru=request.translation_ru)
+                            annotation_ru=request.annotation_ru,translation_ru=request.translation_ru,
+                            illustration_page=illustration_page)
                     except SourceUnitPdfError as exc:
                         reason=str(exc)
-                        return failed('unit_not_found' if reason.startswith('unit_not_found') else
+                        return failed('pdf_transport_limit' if reason.startswith('pdf_transport_limit') else
+                            'unit_not_found' if reason.startswith('unit_not_found') else
                             'unit_not_ready' if reason.startswith('unit_not_ready') else 'pdf_render_unsupported')
                     blob = base64.b64encode(pdf).decode('ascii')
                     if len(blob) > RESULT_MAX_BYTES - 4096:

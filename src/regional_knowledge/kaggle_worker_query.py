@@ -82,6 +82,7 @@ class KaggleWorkerQuery:
     telemetry: asyncio.Queue | None = None
     source_provenance: bool = False
     public_illustrations: bool = False
+    illustration_page: object = None
 
     def __post_init__(self):
         if not callable(self.acquire):
@@ -175,7 +176,8 @@ class KaggleWorkerQuery:
                 result=await execute_geo_read(query,acquire=self.acquire)
             elif source:
                 from .kaggle_source_read import execute_source_read
-                result=await execute_source_read(query,acquire=self.acquire)
+                result=await execute_source_read(query,acquire=self.acquire,
+                    illustration_page=self.illustration_page)
             elif fact:
                 from .kaggle_fact_read import execute_fact_read
                 result=await execute_fact_read(query,acquire=self.acquire)

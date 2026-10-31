@@ -123,7 +123,7 @@ def test_internal_newlines_and_html_are_literal_author_text():
         assert len(doc[1].get_text().splitlines())>=4
 
 
-@pytest.mark.parametrize('kind',['footnote','table','marginalia','caption','figure'])
+@pytest.mark.parametrize('kind',['footnote','table','marginalia'])
 def test_significant_unsupported_structure_is_explicit_failure(kind):
     with pytest.raises(SourceUnitPdfError,match='unsupported_structure:'+kind):
         render_source_unit_pdf(**inputs([(kind,'Точный важный авторский элемент')]))

@@ -91,6 +91,8 @@ class Cursor:
                 publication_year=1902)) for p in self.pages]
         elif "read_source_unit_pages_v1" in sql:
             self.rows=[(p["physical_page_index"],projection(p),max(p["physical_page_index"] for p in self.pages)+1,False) for p in self.pages]
+        else:
+            self.rows=[]  # Existing no-media fixture still has no accepted images.
     async def fetchall(self):
         return self.rows
     async def __aenter__(self):
@@ -215,3 +217,63 @@ async def test_pdf_v2_optional_text_crosses_native_mcp_and_oversize_is_explicit(
     denied=await execute_source_read(request,acquire=acquire)
     assert denied.status=='unavailable' and denied.reason=='pdf_transport_limit'
     assert denied.records==()  # Never a truncated/partial PDF.
+
+
+@pytest.mark.asyncio
+async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels():
+    from io import BytesIO
+    from PIL import Image,ImageDraw
+    from regional_knowledge.source_unit_export import _unit_figures
+    from regional_knowledge.source_unit_export import complete_unit
+    pages=fixture_pages(complete=True,order=(0,1))
+    first=pages[0]
+    for region in first['regions']:
+        if region['reading_order']>=10:region['reading_order']+=1
+    first['regions'].append(dict(region_key='fig-1',kind='figure',reading_order=10,
+        source_text='',bbox=dict(left=100,top=100,right=800,bottom=800)))
+    # A different figure after the accepted END marker on the final page must
+    # never leak into this article just because it shares a source page.
+    pages[1]['regions'].append(dict(region_key='fig-outside',kind='figure',
+        reading_order=20,source_text='',bbox=dict(left=0,top=0,right=400,bottom=400)))
+
+    def data(page,key,bbox,caption):
+        return dict(page_id=page['page_id'],source_region_id=str(uuid5(
+            UUID(page['page_id']),'region:'+key)),bbox=bbox,
+            display_rotation_degrees=0,caption_text=caption,
+            caption_region_ids=[],crop_binding=dict(original_sha256='a'*64))
+    rows=[
+        (data(pages[0],'fig-1',dict(left=100,top=100,right=800,bottom=800),
+             'Принятая подпись Huldigung'),0,'import-accepted'),
+        (data(pages[1],'fig-outside',dict(left=0,top=0,right=400,bottom=400),
+             'Чужая подпись'),1,'import-accepted')]
+    unit=complete_unit([projection(p) for p in pages],source_id=SOURCE,
+        page_count=2,read_complete=False,article_id='albinus-unit')
+    selected=_unit_figures(unit,pages,rows)
+    assert len(selected)==1 and selected[0]['caption_text']=='Принятая подпись Huldigung'
+
+    class MediaCursor(Cursor):
+        async def execute(self,sql,params=None):
+            if 'FROM rkb_v4.source_illustrations i' in sql:
+                assert params[:2]==(SOURCE,[0,1])
+                self.rows=rows
+            else:await super().execute(sql,params)
+    connection=Connection(pages)
+    connection.cursor_value=MediaCursor(pages)
+    @asynccontextmanager
+    async def acquire():yield connection
+    image=Image.new('RGB',(600,600),'white')
+    ImageDraw.Draw(image).rectangle((60,60,480,480),fill='darkgreen')
+    page_bytes=BytesIO();image.save(page_bytes,format='JPEG',quality=75)
+    observed=[]
+    async def native_page(figure):
+        observed.append(figure['caption_text'])
+        return page_bytes.getvalue()
+    pdf=await render_accepted_source_pdf(acquire=acquire,source_id=SOURCE,
+        article_id='albinus-unit',illustration_page=native_page)
+    assert observed==['Принятая подпись Huldigung']
+    with pymupdf.open(stream=pdf,filetype='pdf') as doc:
+        assert sum(len(page.get_images()) for page in doc)==1
+        text=''.join(page.get_text() for page in list(doc)[1:])
+        assert text.index('Abschnitt 9')<text.index('Принятая подпись Huldigung')<text.index('Abschnitt 10')
+        assert 'Исходная страница: 61' in text
+        assert 'Чужая подпись' not in text

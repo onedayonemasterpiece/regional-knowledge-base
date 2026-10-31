@@ -508,6 +508,30 @@ class NativeOriginalIntake:
             return artifact['chunks'][key]
         raise OriginalIntakeError('original_phase_unsupported')
 
+    async def accepted_illustration_page(self, figure):
+        """Already verified original/page renderer; no new archive or byte proxy."""
+        from .source_unit_pdf import SourceUnitPdfError
+        if (self.closed or self.generation is None or
+                not self.current((self.identity[0],self.identity[2],self.generation))):
+            raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+        async with self._lock:
+            matches=[record for record in self._records.values()
+                if record['spec']['source_id']==figure['source_id']
+                and record['spec']['ingestion_id']==figure['ingestion_id']
+                and record['sha256']==figure['original_sha256']
+                and record.get('verified') is not None]
+            if len(matches)!=1:
+                raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+            record=matches[0]
+            index=figure['physical_page_index']
+            if not 0<=index<record['page_count']:
+                raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+            if index in record['pages']:
+                return await _blocking(record['pages'][index]['path'].read_bytes)
+            rendered=await self._parse_selected(record['path'],'page',index,
+                parser_sha256=record['parser_sha256'])
+            return base64.b64decode(rendered['image_b64'],validate=True)
+
     async def aclose(self):
         if self.telegram_channel is not None:await self.telegram_channel.aclose()
         self.closed=True
