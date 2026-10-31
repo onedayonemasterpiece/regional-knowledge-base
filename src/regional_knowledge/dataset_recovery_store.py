@@ -135,17 +135,30 @@ class DatasetRecoveryStore:
                 or checkpoint.database_generation!=old.database_generation
                 or (checkpoint.owner_slug,checkpoint.dataset_slug)!=(old.owner_slug,old.dataset_slug)):
             raise JournalConflict('dataset_checkpoint_promotion_predecessor')
-        # Decode our UTF-8 export before parsing so bytes and text do not both
-        # survive alongside the complete parsed journal.
-        journal=self.publisher.read_control(checkpoint.journal,version=checkpoint.dataset_version).decode('utf-8')
+        journal=self.publisher.read_control(checkpoint.journal,version=checkpoint.dataset_version)
         manifest=self.publisher.read_control(checkpoint.manifest,version=checkpoint.dataset_version)
         control=self.publisher.read_control(checkpoint.control,version=checkpoint.dataset_version)
-        parsed=json.loads(journal);m=json.loads(manifest)
+        # Both v1 producers emit this canonical envelope and flat string fields.
+        # Quotes inside a field are escaped, so this separator cannot occur there.
+        prefix=b'{"codec":"rkb.dataset-journal.v1","objects":['
+        if not journal.startswith(prefix) or not journal.endswith(b']}'):
+            raise JournalConflict('dataset_checkpoint_control_mismatch')
+        objects=[];start=len(prefix);end=len(journal)-2
+        with self.queue.connect(write=False) as observed:
+            while start<end:
+                boundary=journal.find(b'},{"data_b64":',start)
+                stop=end if boundary<0 else boundary+1
+                item=json.loads(journal[start:stop]);start=stop+1
+                self._key(item['key'])
+                row=observed.execute('SELECT token,covered_version FROM rkb_dataset_recovery_objects WHERE storage=? AND key=?',
+                    (self.storage_identity,item['key'])).fetchone()
+                if row is not None and row['covered_version'] is not None and row['token']==item['token']:
+                    base64.b64decode(item['data_b64'],validate=True)
+                else:objects.append(item)
+        m=json.loads(manifest)
         del journal
         c=json.loads(control)
-        if (parsed.get('codec')!='rkb.dataset-journal.v1'
-                or type(parsed.get('objects')) is not list
-                or (manifest_ref.sha256,manifest_ref.length,manifest_ref.last_sequence)!=(
+        if ((manifest_ref.sha256,manifest_ref.length,manifest_ref.last_sequence)!=(
                     checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence)
                 or (m.get('database_generation'),m.get('applied_sequence'))!=(
                     checkpoint.database_generation,checkpoint.base_sequence)
@@ -166,7 +179,7 @@ class DatasetRecoveryStore:
                 raise JournalConflict('dataset_checkpoint_promotion_predecessor')
             if current is not None and not current():
                 raise JournalConflict('dataset_checkpoint_writer_changed')
-            for item in parsed['objects']:
+            for item in objects:
                 self._key(item['key']);raw=base64.b64decode(item['data_b64'],validate=True)
                 # New writes may have advanced after capture; only exact bytes
                 # contained in this saved version gain a persistence receipt.
