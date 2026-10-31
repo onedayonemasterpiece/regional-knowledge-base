@@ -296,29 +296,6 @@ class BgeWssTransport:
         read['task'] = asyncio.create_task(consume())
         read['task'].add_done_callback(lambda _: (self._maybe_release(), self.changed.set()))
 
-    async def _export_read_events(self, frame):
-        """Consume optional native observations after the wire result, never in writer.
-
-        The notebook does not bundle product_telemetry. The native collector's
-        own bounded buffer accounts for dropped observations; this off-loop
-        best-effort drain cannot change QUERY_RESULT or resource permits.
-        """
-        drain = getattr(self.prepared_runtime, 'read_event_drain', None)
-        if drain is None:
-            return
-        try:
-            await asyncio.to_thread(drain, frame)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass  # Optional diagnostics are not a worker failure.
-
-    @staticmethod
-    def _observe_diagnostic(task):
-        # A finished diagnostic Task must never leave an unhandled exception.
-        if not task.cancelled():
-            task.exception()
-
     async def _load(self):
         self.encoder = await asyncio.to_thread(self.load_encoder)
         self.forward_lock=getattr(self.encoder,'forward_lock',self.forward_lock)
@@ -478,19 +455,6 @@ class BgeWssTransport:
                 if frame.get('type') == 'QUERY_RESULT' and frame.get('connection_generation') != generation:
                     continue
                 await send(frame)
-                if frame.get('type') == 'QUERY_RESULT':
-                    # Maintain one bounded off-loop native drain. No optional
-                    # product_telemetry import/emit belongs in this writer Task.
-                    drain = getattr(self.prepared_runtime, 'read_event_drain', None)
-                    if drain is not None:
-                        previous = getattr(self, '_read_telemetry_export', None)
-                        if previous is None or previous.done():
-                            if previous is not None and not previous.cancelled():
-                                previous.exception()
-                            self._read_telemetry_export = asyncio.create_task(
-                                self._export_read_events(frame))
-                            self._read_telemetry_export.add_done_callback(
-                                self._observe_diagnostic)
 
         async def queue_read_result():
             for read in tuple(self.reads.values()):

@@ -515,9 +515,7 @@ class TargetRuntime:
                 original_handler.telegram_channel=NativeRkb1Channel(intake=original_handler,
                     dependency_current=lambda:self.prepared is not None and not self.closed)
 
-        from .query_telemetry import drain_native_read_events
-        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler,
-            read_event_drain=lambda frame:drain_native_read_events(read_events,frame))
+        self.prepared = PreparedRuntime(invoke,readiness,source_handler,observation,history_handler,original_handler)
         self._bind_read_handler_maintenance()
         return self.prepared
 

@@ -520,39 +520,72 @@ async def test_each_idle_probe_replays_unacknowledged_release_before_nonce_proof
 
 
 @pytest.mark.asyncio
-async def test_native_diagnostics_only_after_wire_send_and_blocked_drain_does_not_hold_reply():
+async def test_inline_read_events_survive_another_results_wire_send():
     from regional_knowledge.kaggle_bootstrap import PreparedRuntime
+    from regional_knowledge.query_telemetry import (
+        NativeReadTelemetry, ReadRuntime, bind_read_runtime, drain_native_read_events,
+        telemetry_counts,
+    )
     from test_kaggle_target_runtime import candidate
     transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event()
-    entered,release=threading.Event(),threading.Event()
-    calls=[]
-    async def handler(frame,*,encode):return result(frame)
-    def drain(frame):
-        calls.append(frame['request_id'])
-        entered.set()
-        release.wait(5)  # Broken optional collector must not hold either read.
-        return []
-    async def prepare(*args,**kwargs):return PreparedRuntime(handler,candidate(),read_event_drain=drain)
-    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:lambda text:[1.]+[0.]*1023,lambda:{},
-        prepare_runtime=prepare,connector=peer.connect,heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
+    events=asyncio.Queue(maxsize=64)
+    second=query(request='second-diagnostics',turn=2,claim='second-claim')
+    async def read(frame,*,encode):
+        if frame['request_id']!='second-diagnostics':
+            with bind_read_runtime(ReadRuntime(CONFIG['run_id'],worker.incarnation)):
+                with NativeReadTelemetry(events,frame) as diagnostic:
+                    diagnostic.finish(status='degraded',reason='bounded_retrieval')
+            sidecar=drain_native_read_events(events,frame)
+            # Another read finishes after this result's inline drain but before
+            # its writer sends. Its observations belong to its own result.
+            with bind_read_runtime(ReadRuntime(CONFIG['run_id'],worker.incarnation)):
+                with NativeReadTelemetry(events,second) as diagnostic:
+                    diagnostic.finish(status='degraded',reason='bounded_retrieval')
+        else:
+            sidecar=drain_native_read_events(events,frame)
+        return dict(result(frame),read_events=sidecar)
+    async def prepare(*args,**kwargs):
+        prepared=PreparedRuntime(read,candidate())
+        # Supply the former prepared-runtime callback to expose any transport
+        # consumer left behind; the handler already owns the inline sidecar.
+        prepared.read_event_drain=lambda frame:drain_native_read_events(events,frame)
+        return prepared
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),
+        lambda:lambda _:[1.]+[0.]*1023,lambda:{},prepare_runtime=prepare,
+        connector=peer.connect,heartbeat_seconds=.01,maximum_seconds=3,stop=stop)
     task=asyncio.create_task(worker.run())
     try:
-        await peer.wait('READY');await peer.put(query(request='native-event-query'))
-        value=await asyncio.wait_for(peer.wait('QUERY_RESULT'),1)
-        assert value['status']=='degraded' and 'read_events' not in value
-        assert len(json.dumps(value).encode())<=262144
-        assert await asyncio.to_thread(entered.wait,1)
-        assert calls==['native-event-query']
-        # A second authorized read is still delivered while the first
-        # diagnostic drain is blocked. Do not create another background drain.
-        await peer.put(query(request='native-event-query-2',turn=2,claim='native-claim-2'))
-        second=await asyncio.wait_for(peer.wait('QUERY_RESULT',
-            predicate=lambda f:f['request_id']=='native-event-query-2'),1)
-        assert second['status']=='degraded' and 'read_events' not in second
-        assert not worker._read_telemetry_export.done()
-        assert calls==['native-event-query']
+        await peer.wait('READY');await peer.put(query())
+        first=await peer.wait('QUERY_RESULT')
+        assert len(first['read_events'])==1
+        await asyncio.sleep(.05)  # Let any post-send collector run.
+        await peer.put(second)
+        value=await peer.wait('QUERY_RESULT',predicate=lambda f:f['request_id']=='second-diagnostics')
+        assert len(value['read_events'])==1,'first writer discarded another request diagnostics'
+        assert telemetry_counts(events)['dropped']==0
+        assert peer.sessions==1
     finally:
-        release.set();stop.set();await task
+        stop.set();await task
+
+    # Non-search reads use the same collector. Their completed observations
+    # must leave with their own response, not fill its 64-entry budget at idle.
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from regional_knowledge.kaggle_query import PinnedTokenizer
+    from regional_knowledge.bge_contract import REVISION,TOKENIZER_SHA256
+    async def count(_):return 1
+    native=KaggleWorkerQuery(lambda:None,
+        PinnedTokenizer(count,REVISION,TOKENIZER_SHA256,SPACE),telemetry=events)
+    async def health(frame,**kwargs):
+        return dict(type='SQL_HEALTH_RESULT',status='ok',
+            **{k:frame[k] for k in ('request_id','connection_generation','turn_generation')})
+    object.__setattr__(native,'_call',health)  # Synthetic PG outcome; real telemetry wrapper.
+    with bind_read_runtime(ReadRuntime(CONFIG['run_id'],worker.incarnation)):
+        for index in range(65):
+            frame=dict(type='SQL_HEALTH',request_id=f'health-{index}',
+                connection_generation=1,turn_generation=0)
+            reply=await native(frame,encode=None)
+            assert len(reply.get('read_events',[]))==1
+    assert events.empty() and telemetry_counts(events)['dropped']==0
 
 
 @pytest.mark.asyncio

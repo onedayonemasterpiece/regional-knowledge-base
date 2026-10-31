@@ -108,8 +108,7 @@ class KaggleWorkerQuery:
             diagnostics.finish(result)
             # The controller already accepts this fixed, bounded sidecar.
             # No optional drain/export callback runs before the read reply.
-            if (result.get('type') == 'QUERY_RESULT' and diagnostics.runtime is not None
-                    and self.telemetry is not None):
+            if diagnostics.runtime is not None and self.telemetry is not None:
                 from .query_telemetry import drain_native_read_events
                 try:
                     events = drain_native_read_events(self.telemetry, result)

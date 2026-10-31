@@ -289,7 +289,6 @@ async def test_runtime_opens_once_keeps_loop_and_closes_pool_before_owned_pg(tmp
     assert loaded['loaded_sha256']==digest and loaded['generation']==1
     assert await prepared.query_handler({},encode=None)=={'version':'new','frame':{}}
     assert events.count('owned')==1 and events.count('open')==1
-    assert prepared.read_event_drain({'request_id':'none','connection_generation':1,'turn_generation':0})==[]
     await runtime.aclose();await runtime.aclose()
     assert events==['owned','pool','open','pool-close','pg-close']
 

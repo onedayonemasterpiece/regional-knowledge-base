@@ -174,7 +174,9 @@ neither constructs a PG process/pool nor updates a readiness frontier. Existing
 ordered recovery/apply/prepare-frontier contracts remain the only mutation path.
 The helper creates the existing PinnedTokenizer and KaggleWorkerQuery only after
 artifact and native probe checks pass, forwarding the existing finite telemetry
-queue unchanged. The caller owns pool shutdown and actual probe completeness.
+queue unchanged. Each read returns its own bounded diagnostic sidecar, including
+SQL health reads; the transport writer does not drain that collector again after
+sending. The caller owns pool shutdown and actual probe completeness.
 
 Physical placement remains thin SQLite control/short operation journal and rights
 on DevCoveer; corpus, indexes, pool and complete hybrid retrieval remain in Kaggle
