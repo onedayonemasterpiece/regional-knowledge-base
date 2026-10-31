@@ -413,7 +413,7 @@ class ExtractStage(Strict):
     job_id: Identifier
     expected_job_revision: int = Field(ge=1)
     batch_id: Identifier
-    lease_token: <redacted>
+    lease_token: Identifier
     source_revision: int = Field(ge=1)
     candidates: list[SeedInput] = Field(default_factory=list, max_length=10)
     grounded_candidates: list[ExtractGroundedCandidate] = Field(default_factory=list, max_length=10)
@@ -645,7 +645,7 @@ class ReconcileStage(Strict):
     run_id: Identifier
     expected_job_revision: int = Field(ge=1)
     work_id: Identifier
-    lease_token: <redacted>
+    lease_token: Identifier
     decision: ReconcileDecision
 
 

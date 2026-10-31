@@ -401,7 +401,7 @@ class NativeSourceHistoryVerifier:
         j=self.spool.journal
         value=await j._read(j.head_key,4096)
         if head is None:return value is None
-        if value is None or value.token!=head.token:<redacted> False
+        if value is None or value.token!=head.token:return False
         pointer=json.loads(value.data)
         return (pointer.get('codec')=='rkb.head.v1' and pointer.get('stream')==j.stream
             and j._parse_ref(pointer.get('manifest'))==head.reference)
@@ -543,7 +543,7 @@ class NativeSourceHistoryVerifier:
                                     raise SpoolConflict('genesis contains unclassified local intake')
                                 existing=await j._read(checkpoint_key,8192)
                                 if existing is None:
-                                    await j._fenced_exact(checkpoint_key,checkpoint,expected_token=<redacted>
+                                    await j._fenced_exact(checkpoint_key,checkpoint,expected_token=None,
                                         writer_generation=self.writer_generation)
                                 else:
                                     self._verify_genesis(existing.data,key[3])

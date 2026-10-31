@@ -68,7 +68,7 @@ class KaggleStoryEditorial:
         retained=False
         try:
             context=RequestAuthority(Principal(subject=authority.person_id,client_id=authority.client_id,
-                issuer=authority.issuer,access_token=<redacted>
+                issuer=authority.issuer,access_token=''),authority.route)
             binding=await asyncio.to_thread(current_binding,self.queue)
             await self._check(authority,context,binding)
             access=dict(authority=authority,context=context,binding=binding)

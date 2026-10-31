@@ -130,12 +130,12 @@ async def test_editor_can_encode_only_exact_authorized_document_then_save_accept
     response=dict(type='SOURCE_COMMAND_RESULT',protocol_version=2,connection_generation=t.generation,
         job_id=w.document_payload['id'],claim=w.document_payload['claim'],receipt=receipt_wire(native),run_id=t.run,
         launch_nonce=t.nonce,runtime_incarnation='incarnation-a',compute_claim=w.compute_claim,dispatch_generation=w.dispatch_generation)
-    assert await s.startup.source_dispatch.receive(response,run_id=t.run,token=<redacted> is None
+    assert await s.startup.source_dispatch.receive(response,run_id=t.run,token=t.token,generation=t.generation) is None
     await asyncio.wait_for(entered.wait(),2)
     assert (await s.workflow.mutate(t.principal,**args))['status']=='processing'
     finish.set()
     for _ in range(100):
-        ack=await s.startup.source_dispatch.poll_settlement(run_id=t.run,token=<redacted>
+        ack=await s.startup.source_dispatch.poll_settlement(run_id=t.run,token=t.token,generation=t.generation)
         if ack:break
         await asyncio.sleep(.01)
     assert ack['status']=='accepted'
