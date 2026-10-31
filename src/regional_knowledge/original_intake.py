@@ -17,7 +17,7 @@ class OriginalIntakeError(ValueError):pass
 
 TERMINAL_REJECTIONS=frozenset({'original_djvu_pinned_parser_required','original_djvu_invalid','original_format_unsupported',
     'original_expected_bytes_mismatch','original_page_count_limit','original_pdf_invalid',
-    'original_page_geometry_invalid','original_render_byte_bound','original_telegram_document_changed'})
+    'original_page_geometry_invalid','original_render_byte_bound'})
 
 class OriginalIntakeRejected(OriginalIntakeError):
     def __init__(self,code):

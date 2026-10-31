@@ -111,8 +111,8 @@ class OriginalIntakeController:
         if type(value) is not dict:raise OriginalIntakeError('original_native_receipt_invalid')
         if 'error' in value:
             code=value.get('error')
-            if (value.get('terminal') is True or code=='original_telegram_document_changed') and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
-            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required','original_telegram_send_unknown'):
+            if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
+            if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required','original_telegram_send_unknown','original_telegram_document_changed'):
                 raise OriginalIntakeError(code)
             raise OriginalIntakeError('original_native_receipt_unavailable')
         return value
@@ -250,6 +250,7 @@ class OriginalIntakeController:
             except asyncio.CancelledError:raise
             except OriginalIntakeRejected as exc:return self._reject(ingestion_id,exc.code)
             except OriginalIntakeError as exc:
+                if str(exc)=='original_telegram_document_changed':return self._reject(ingestion_id,str(exc))
                 if str(exc)=='original_telegram_binding_required':
                     return OriginalIntakeStatus(ingestion_id,'pending',reason=str(exc))
                 return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
@@ -258,7 +259,7 @@ class OriginalIntakeController:
                 return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
 
     def _reject(self,ingestion_id,code):
-        if code not in TERMINAL_REJECTIONS:raise OriginalIntakeError('original_rejection_invalid')
+        if code not in TERMINAL_REJECTIONS and code!='original_telegram_document_changed':raise OriginalIntakeError('original_rejection_invalid')
         with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET failure_code=? WHERE ingestion_id=?',(code,ingestion_id))
         return OriginalIntakeStatus(ingestion_id,'rejected',reason=code)
 
@@ -318,8 +319,8 @@ class OriginalIntakeController:
                         or result['request_sha256']!=identity['request_sha256'] or result['phase']!='original_acquire'):
                     raise OriginalIntakeError('original_acquisition_receipt_unavailable')
                 if ((result.get('value',{}).get('terminal') is True
-                        or result.get('value',{}).get('error')=='original_telegram_document_changed')
-                        and result['value'].get('error') in TERMINAL_REJECTIONS):
+                        and result['value'].get('error') in TERMINAL_REJECTIONS)
+                        or result.get('value',{}).get('error')=='original_telegram_document_changed'):
                     return self._reject(ingestion_id,result['value']['error'])
                 if result['value'].get('spec')!=spec:
                     raise OriginalIntakeError('original_acquisition_receipt_unavailable')

@@ -231,7 +231,8 @@ async def test_original_mime_metadata_does_not_preempt_verified_intake(native_in
 
 
 @pytest.mark.asyncio
-async def test_empty_mime_unsupported_bytes_reject_without_stranding_importer(native_intake, native):
+@pytest.mark.parametrize('reason',['original_format_unsupported','original_telegram_document_changed'])
+async def test_empty_mime_unsupported_bytes_reject_without_stranding_importer(native_intake, native,reason):
     s=native_intake
     s.store.client=SimpleNamespace(meta=SimpleNamespace(endpoint_url='https://archive.invalid'))
     s.store.bucket='synthetic-originals'
@@ -244,6 +245,7 @@ async def test_empty_mime_unsupported_bytes_reject_without_stranding_importer(na
     async def transport(bound,phase,args,*,operation_key):
         assert bound==binding and phase=='original_acquire'
         phases.append(phase)
+        if reason=='original_telegram_document_changed':return {'error':reason}
         reply=await native.handler(native_frame(phase,args,key=operation_key,
             private=controller._private[operation_key]))
         return reply['value']
@@ -258,10 +260,10 @@ async def test_empty_mime_unsupported_bytes_reject_without_stranding_importer(na
     try:
         for file_id in ('unsupported-first','unsupported-next'):
             result=await start(s,file_id=file_id,mime_type='')
-            assert result.state=='failed' and result.warnings==['original_format_unsupported']
+            assert result.state=='failed' and result.warnings==[reason]
             assert s.importer._row(s.principal.subject,result.ingestion_id)['phase']=='failed'
             row=controller._row(s.t.auth.p.owner.subject,result.ingestion_id)
-            assert row['failure_code']=='original_format_unsupported'
+            assert row['failure_code']==reason
             assert row['acquisition_json'] is None and row['receipt_json'] is None
         assert phases==['original_acquire','original_acquire']
         assert not native.parser and not native.transfer.calls
