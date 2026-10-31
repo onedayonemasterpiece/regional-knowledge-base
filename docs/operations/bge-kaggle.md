@@ -85,7 +85,7 @@ While the source restore coordinator is incomplete, an import status or finalize
 
 ### Planned API shutdown
 
-The API finishes HTTP calls already accepted at the shutdown boundary before Uvicorn closes the outbound-worker WebSocket. Its 65-second graceful timeout covers a 60-second book call and response completion; systemd must allow at least that budget (currently 90 seconds). Forced exit remains available. Incoming calls during listener/process startup and typed target-warming responses are measured separately from an interrupted accepted read. The native notebook, model and saved source cursor remain owned by the existing controller.
+The API finishes HTTP calls already accepted at the shutdown boundary before Uvicorn closes the outbound-worker WebSocket. Open-ended MCP notification streams close at shutdown admission: tool replies use JSON, so these SSE listeners have no pending tool result to drain. Its 65-second graceful timeout covers a 60-second book call and response completion; systemd must allow at least that budget (currently 90 seconds). Forced exit remains available. Incoming calls during listener/process startup and typed target-warming responses are measured separately from an interrupted accepted read. The native notebook, model and saved source cursor remain owned by the existing controller.
 
 The official Slack Socket Mode client uses at most one second for its WebSocket closing handshake during API shutdown, preserving a shorter existing limit. Reconnect is disabled by the SDK before disconnect. This bounds transport closure after accepted HTTP calls have drained; it does not replace the durable event receipt/ACK path or cancel the native notebook. Logs distinguish `rkb_socket_close` start/completion and elapsed time.
 

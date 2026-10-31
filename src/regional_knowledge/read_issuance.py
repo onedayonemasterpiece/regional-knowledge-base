@@ -14,6 +14,7 @@ import json
 
 _SCOPE_KEY = 'rkb.current_read_output'
 _JSON_KEY = 'rkb.trusted_json_read_output'
+NOTIFICATION_STREAM_SCOPE_KEY = 'rkb.notification_stream'
 _capture = ContextVar('rkb_read_output_capture', default=None)
 MAX_RESPONSE_BYTES = 512 * 1024
 
@@ -168,6 +169,11 @@ class ReadIssuanceMiddleware:
             nonlocal is_json, issued
             if message['type'] == 'http.response.start':
                 headers = message.get('headers', ())
+                # Tool replies are JSON by contract. SSE is the SDK's open-ended
+                # notification listener, which has no result to drain on restart.
+                if any(k.lower() == b'content-type' and v.lower().startswith(b'text/event-stream')
+                       for k, v in headers):
+                    scope[NOTIFICATION_STREAM_SCOPE_KEY] = True
                 is_json = any(k.lower() == b'content-type' and v.lower().startswith(b'application/json')
                               for k, v in headers)
                 if is_json:
