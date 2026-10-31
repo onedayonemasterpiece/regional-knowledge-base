@@ -12,7 +12,7 @@ from regional_knowledge.kaggle_import_tokenizer import HfImportTokenCounter
 from regional_knowledge.kaggle_story_editorial_backend import KaggleStoryEditorial,canonical,digest
 from regional_knowledge.control_spool import ControlSpool
 from regional_knowledge.recovery_journal import RecoveryJournal
-from regional_knowledge.source_read_gate import SourceReadGate
+from regional_knowledge.source_read_gate import SourceReadGate,SourceGateExpired
 from regional_knowledge.kaggle_public_backend import current_binding
 from regional_knowledge.kaggle_source_commands import AcceptedSourceDispatch
 from regional_knowledge.kaggle_editorial_contracts import EditorialReadRequest,EditorialReadResult
@@ -216,7 +216,7 @@ async def test_expired_source_proof_cannot_dispatch_retained_story_document(edit
         idempotency_key='expire-before-document',operation=operation())))
     job=next(iter(s.workflow._documents))
     s.spool.invalidate_source_history()
-    with pytest.raises(PermissionError):await s.workflow.authorize_document(job)
+    with pytest.raises(SourceGateExpired):await s.workflow.authorize_document(job)
     assert await s.t.queue.next_channel_work(s.t.run,s.t.token,s.t.generation) is None
     s.workflow._release_document(job)
     assert not s.workflow._documents and job not in s.t.admission._editorial_documents
