@@ -227,10 +227,13 @@ def test_queries_precede_documents_and_lost_worker_result_is_fenced(tmp_path):
     with pytest.raises(PermissionError):queue.complete(run,token,doc,document['claim'],SPACE,[[1]+[0]*1023],{})
     assert queue.result('actor',doc)['state']=='pending'
 
-def test_rotation_allows_one_serving_one_warming_then_drains(tmp_path):
+def test_scheduled_rotation_drains_before_launching_a_new_owner(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
-    queue.enqueue('actor','q',['query']);run,token=run_details(queue);queue.heartbeat(run,token,ready=True)
-    # Owner policy starts warming by 8:30, leaving at least 30 minutes before nine hours.
+    queue.enqueue('actor','q',['query']);run,token=run_details(queue)
+    queue.launch_claim(run,provider_ref='fixture/stable')
+    queue.launch_record(run,'fixture/stable',provider_version=7)
+    queue.heartbeat(run,token,ready=True)
+    # Drain before nine hours; the new owner must await terminal proof.
     assert 8 * 3600 <= ROTATE_SECONDS <= 8 * 3600 + 30 * 60
     # Model continuous useful demand without skipping liveness or idle expiry.
     for step in range(1,ROTATE_SECONDS//60+1):
@@ -239,12 +242,16 @@ def test_rotation_allows_one_serving_one_warming_then_drains(tmp_path):
         queue.enqueue('actor',str(step),['query'])
         job=queue.claim(run,token)
         if job:queue.complete(run,token,job['id'],job['claim'],SPACE,[[1]+[0]*1023],{})
-    queue.maintenance();successor,new_token=run_details(queue);assert successor!=run
-    with queue.connect() as db:assert db.execute("select count(*) from runs where status in ('ready','starting')").fetchone()[0]==2
-    queue.heartbeat(successor,new_token,ready=True)
-    assert queue.claim(run,token) is None
     queue.maintenance()
-    with pytest.raises(PermissionError):queue.claim(run,token)
+    with queue.connect(write=False) as db:
+        control=db.execute('SELECT current_run,successor,startup_state FROM control').fetchone()
+        assert tuple(control)==(run,None,'pending')
+        assert db.execute('SELECT status FROM runs WHERE id=?',(run,)).fetchone()[0]=='draining'
+        assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==1
+    assert queue.claim(run,token) is None
+    queue.maintenance()  # No second run without native terminal proof.
+    with queue.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==1
 
 def test_bge_1024_normalized_space_is_not_e5_or_legacy():
     assert len(validate_vector([1]+[0]*1023))==1024
