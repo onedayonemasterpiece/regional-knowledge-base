@@ -5,6 +5,7 @@ encoder load and forward survive reconnect; only an unacknowledged exact result
 is resent. This is not accepted/Saved or exact provider termination evidence.
 """
 import asyncio
+import hashlib
 import inspect
 import json
 import math
@@ -229,9 +230,11 @@ class BgeWssTransport:
             raise ValueError('shared QUERY contract')
 
     def _validate_query_result(self, frame, result):
+        # Diagnostics travel beside the strict result, as on the controller.
+        envelope={key:value for key,value in result.items() if key!='read_events'}
         if frame.get('type')=='SQL_HEALTH':
             from regional_knowledge.kaggle_protocol import decode_envelope,SqlHealthResult
-            typed=decode_envelope(json.dumps(result,allow_nan=False).encode())
+            typed=decode_envelope(json.dumps(envelope,allow_nan=False).encode())
             if type(typed) is not SqlHealthResult or self._read_identity(result)!=self._read_identity(frame):
                 raise ValueError('SQL health result identity/type mismatch')
             return result
@@ -244,7 +247,7 @@ class BgeWssTransport:
             from regional_knowledge.kaggle_source_graph_read import SourceGraphReadResult
             from regional_knowledge.kaggle_acceptance_contracts import AcceptanceReadResult
             from regional_knowledge.kaggle_geo_contracts import GeoReadResult
-            typed=decode_envelope(json.dumps(result,allow_nan=False).encode())
+            typed=decode_envelope(json.dumps(envelope,allow_nan=False).encode())
             if type(typed) is not (AcceptanceReadResult if frame.get('type')=='ACCEPTANCE_READ' else SourceGraphReadResult if frame.get('type')=='SOURCE_GRAPH_READ' else EditorialReadResult if frame.get('type')=='EDITORIAL_READ' else CaseReadResult if frame.get('type')=='CASE_READ' else GeoReadResult if frame.get('type')=='GEO_READ' else SourceReadResult if frame.get('type')=='SOURCE_READ' else FactReadResult if frame.get('type')=='FACT_READ' else StoryReadResult if frame.get('type')=='STORY_READ' else PassageReadResult) or self._read_identity(result)!=self._read_identity(frame):
                 raise ValueError('exact read result identity/type mismatch')
             return result
@@ -286,8 +289,11 @@ class BgeWssTransport:
                 result = self._validate_query_result(frame, result)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as error:
                 reason = 'deadline_exceeded' if asyncio.get_running_loop().time() >= deadline else 'internal_error'
+                print(json.dumps({'event':'native_read_failed','run_id':self.config['run_id'],
+                    'request_ref':hashlib.sha256(frame['request_id'].encode()).hexdigest(),
+                    'read_type':frame['type'],'error_class':type(error).__name__,'reason':reason}),flush=True)
                 result = self._unavailable(frame, reason)
             # Read completion only publishes the bounded protocol result.
             if not read['discard']:
