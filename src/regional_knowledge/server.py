@@ -61,7 +61,7 @@ from .oauth_provider import (
 from .supabase_backend import backend_from_env
 from .story_registry import StoryRegistry, StoryError
 from .story_contracts import (
-    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
+    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation, UpsertVariant,
     ReviewDecision, RegisteredSource, ExtractRequest, ReconcileRequest,
 )
 
@@ -942,7 +942,7 @@ def build_server(
                 'current per-Story editor grant is required, approvals are cleared, and original replay never reruns the model.',
             annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
         async def native_story_edit(story_id:str,expected_revision:Annotated[int,Field(ge=1)],
-                operations:Annotated[list[StoryOperation],Field(min_length=1,max_length=12)],
+                operations:Annotated[list[UpsertVariant],Field(min_length=1,max_length=1)],
                 idempotency_key:Key,reason:str|None=None)->dict[str,Any]:
             return await backend.story_edit(story_id,_principal(),expected_revision=expected_revision,operations=operations,
                 idempotency_key=idempotency_key,reason=reason)

@@ -246,6 +246,13 @@ async def test_existing_mcp_story_edit_routes_through_native_context_and_same_do
     req=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
         'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
     ctx=SimpleNamespace(request_context=SimpleNamespace(request=req,request_id='story-edit-mcp-fixture'))
+    from pydantic import ValidationError
+    for operations in ([dict(op='set_metadata',title='Corrected title')],
+                       [operation().model_dump(mode='json')]*2):
+        with pytest.raises(ToolError) as rejected:
+            await server.call_tool('story_edit',dict(story_id=STORY,expected_revision=1,
+                operations=operations,idempotency_key='unsupported-mcp-story-edit'),ctx)
+        assert isinstance(rejected.value.__cause__,ValidationError), 'unsupported native input must fail SDK validation before dispatch'
     task=asyncio.create_task(server.call_tool('story_edit',dict(story_id=STORY,expected_revision=1,
         operations=[operation().model_dump(mode='json')],idempotency_key='actual-mcp-story-edit'),ctx))
     output=await context(s,task)
