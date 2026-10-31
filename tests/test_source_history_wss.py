@@ -88,6 +88,24 @@ async def test_source_tail_query_reuses_authenticated_phase_without_history_sess
 
 
 @pytest.mark.asyncio
+async def test_native_tail_failure_logs_class_and_sqlstate_without_private_detail(env,monkeypatch,caplog):
+    from psycopg.errors import QueryCanceled
+    from test_source_stage import SOURCE,INGESTION
+    p=pair(env)
+    async def failed(*args):raise QueryCanceled('private book text or provider detail')
+    monkeypatch.setattr(p.n,'_observe',failed)
+    try:
+        with caplog.at_level('WARNING',logger='regional_knowledge.kaggle_source_history_native'):
+            with pytest.raises(SpoolConflict,match='native_history_observation_unavailable'):
+                await p.v.source_tail_refs(p.b,SOURCE,INGESTION)
+        assert 'error_type=QueryCanceled sqlstate=57014' in caplog.text
+        assert 'run_id=run' in caplog.text
+        assert 'private book text or provider detail' not in caplog.text
+        assert not p.n._sessions
+    finally:await p.n.aclose()
+
+
+@pytest.mark.asyncio
 async def test_native_empty_genesis_then_exact_delta_and_cheap_renewal(env):
     p=pair(env)
     try:

@@ -10,17 +10,21 @@ import asyncio
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import secrets
 import time
 from pathlib import Path
 from uuid import UUID
 
+from psycopg import Error as PgError
 from psycopg.rows import tuple_row
 from psycopg.pq import TransactionStatus
 
 from .kaggle_database_probe import native_probe_for_schema
 from .kaggle_source_acl import inspect_acl,NativeHistoryError
 from .kaggle_domain_schema import TABLES_13,TABLES_14
+
+_LOG=logging.getLogger(__name__)
 
 
 def canonical(v):return json.dumps(v,sort_keys=True,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode()
@@ -93,7 +97,9 @@ class NativeSourceHistoryObserver:
                 return await self._observe(frame,args,binding)
         except NativeHistoryError as exc:
             return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':{'error':str(exc)}}
-        except Exception:
+        except Exception as exc:
+            _LOG.warning('native_history_observation state=unavailable run_id=%s generation=%s error_type=%s sqlstate=%s',
+                self.identity[0],self.generation,type(exc).__name__,exc.sqlstate if isinstance(exc,PgError) else None)
             return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':{'error':'native_history_observation_unavailable'}}
 
     async def _observe(self,frame,args,binding):
