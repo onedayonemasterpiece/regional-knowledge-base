@@ -101,7 +101,8 @@ async def test_dataset_transport_requires_exact_archive_pin(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent(tmp_path):
+@pytest.mark.parametrize('producer',['export_control','legacy_seed'])
+async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent(tmp_path,producer):
     from dataclasses import replace
     from regional_knowledge.recovery_journal import JournalConflict
     p=prepared(tmp_path);store=p.store;key=p.prefix+'outcomes/new'
@@ -112,7 +113,22 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
             [(store.storage_identity,p.prefix+'commands/covered-'+str(i),b'x'*16384,'token-'+str(i)) for i in range(128)])
     escaped=p.prefix+'commands/escaped-},{"data_b64":\\'
     assert await store.put_if_absent(escaped,b'pending escaped key')
-    journal=store.export_control()
+    if producer=='export_control':
+        journal=store.export_control()
+    else:
+        from regional_knowledge.kaggle_dataset_seed import SourceDatasetSeed
+        class LegacyStore:
+            bucket='fixture';prefix=p.prefix
+            def __init__(self):self.client=self
+            def list_objects_v2(self,**kwargs):
+                with p.q.connect(write=False) as db:
+                    rows=db.execute('SELECT key,length(data) size FROM rkb_dataset_recovery_objects WHERE storage=? ORDER BY key',
+                        (store.storage_identity,)).fetchall()
+                return dict(Contents=[dict(Key=r['key'],Size=r['size']) for r in rows],IsTruncated=False)
+            async def read(self,key,**kwargs):return await store.read(key,**kwargs)
+        seed=SourceDatasetSeed.__new__(SourceDatasetSeed)
+        seed.startup=NS(config=NS(spool=NS(journal=NS(store=LegacyStore()))))
+        journal=await seed._journal_control()
     control=encode(dict(codec='rkb.source-base-control.v1',database_generation='db',sequence=8))
     manifest=encode(dict(database_generation='db',applied_sequence=8,
         blob=dict(size=p.checkpoint.archive.size,sha256=p.checkpoint.archive.sha256),
