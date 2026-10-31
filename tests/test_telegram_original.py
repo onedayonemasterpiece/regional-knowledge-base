@@ -300,3 +300,11 @@ async def test_caption_foreign_lease_and_invalid_marker_cannot_edit(native):
     expired=(await native.handler(frame('original_caption',args,key='lease')))['value']
     assert expired['error']=='original_telegram_lease_changed'
     assert client.edit_calls==client.send_calls==client.downloads==0
+
+
+def test_public_document_id_decimal_string_preserves_64_bits():
+    exact=5379726664597024218
+    model=TelegramOriginalInput(**dict(locator().wire(),document_id=str(exact)))
+    assert model.locator().document_id==exact
+    for bad in ('5.3e18', '05379726664597024218', ' 5379726664597024218'):
+        with pytest.raises(ValueError):TelegramOriginalInput(**dict(locator().wire(),document_id=bad))

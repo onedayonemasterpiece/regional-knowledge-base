@@ -105,10 +105,44 @@ async def test_existing_geo_journal_window_excludes_archive_and_fits_control_bud
     assert len(json.loads(raw)['objects'])==len(read)==43
 
 
+def test_control_upload_keeps_progress_past_one_socket_timeout(monkeypatch):
+    import hashlib
+    import http.client
+    import io
+    from regional_knowledge.kaggle_dataset_seed import _put_control
+    data=b'x'*(2*1024*1024+17)
+    digest=hashlib.sha256();sizes=[];headers=[]
+    class SlowSocket:
+        closed=False
+        def sendall(self,part):
+            if not headers:
+                headers.append(bytes(part));return
+            # A progressing link takes 20 seconds per MiB. A single 2 MiB
+            # sendall exceeds 30 seconds, but bounded writes keep progressing.
+            if len(part)/(1024*1024/20)>30:raise TimeoutError('whole-body send deadline')
+            digest.update(part);sizes.append(len(part))
+        def makefile(self,*args,**kwargs):
+            return io.BytesIO(b'HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n')
+        def close(self):self.closed=True
+    socket=SlowSocket();result=http.client.HTTPSConnection('storage.googleapis.com',timeout=30)
+    result.sock=socket
+    def connection(host,*,timeout):
+        assert host=='storage.googleapis.com' and timeout==30
+        return result
+    monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed.http.client.HTTPSConnection',connection)
+    grant=NS(size=len(data),sha256=sha(data),url='https://storage.googleapis.com/checkpoint')
+    _put_control(grant,data)
+    assert sum(sizes)==len(data) and digest.hexdigest()==grant.sha256
+    assert sum(sizes)/(1024*1024/20)>30 and socket.closed
+    assert b'Content-Length: '+str(len(data)).encode() in headers[0]
+    assert b'Transfer-Encoding' not in headers[0]
+
+
 @pytest.mark.asyncio
 async def test_seed_large_journal_paginates_beyond_10000_and_uploads_exact_bytes(monkeypatch):
     """All S3 entries and HTTPS transfer are synthetic; only source code runs."""
     import base64
+    import hashlib
     import json
     from regional_knowledge.recovery_journal import StoredObject
     from regional_knowledge.kaggle_dataset_seed import _put_control
@@ -161,7 +195,11 @@ async def test_seed_large_journal_paginates_beyond_10000_and_uploads_exact_bytes
     class Connection:
         def request(self, method, path, *, body, headers):
             assert method == 'PUT' and headers['Content-Length'] == str(len(journal))
-            observed['body'] = body
+            digest=hashlib.sha256();size=0
+            for part in body:
+                assert 0<len(part)<=1024*1024
+                digest.update(part);size+=len(part)
+            observed.update(sha256=digest.hexdigest(),size=size)
 
         def getresponse(self):
             return NS(status=201)
@@ -174,4 +212,4 @@ async def test_seed_large_journal_paginates_beyond_10000_and_uploads_exact_bytes
     grant = NS(name='journal-control.json', size=len(journal),
         sha256=sha(journal), url='https://storage.googleapis.com/checkpoint')
     _put_control(grant, journal)
-    assert observed['body'] == journal
+    assert observed==dict(sha256=sha(journal),size=len(journal))

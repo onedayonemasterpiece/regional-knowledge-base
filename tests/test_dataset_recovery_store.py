@@ -129,8 +129,16 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     with pytest.raises(JournalConflict,match='native_snapshot_readback_changed'):
         store.promote(checkpoint,dict(expected,archive_sha256='0'*64),manifest_ref=ref)
     assert not store.remote_durable(key,b'captured') and store.latest_checkpoint.dataset_version==1
+    with p.q.connect() as db:
+        db.execute('CREATE TABLE redundant_coverage_writes(key TEXT)')
+        db.execute('''CREATE TRIGGER record_covered_rewrite AFTER UPDATE ON rkb_dataset_recovery_objects
+            WHEN OLD.covered_version IS NOT NULL BEGIN
+            INSERT INTO redundant_coverage_writes VALUES(OLD.key); END''')
     store.promote(checkpoint,expected,manifest_ref=ref)
     assert store.remote_durable(key,b'captured') and store.latest_checkpoint==checkpoint
+    with p.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM redundant_coverage_writes').fetchone()[0]==0
+    assert store.remote_durable(p.prefix+'commands/one',b'original accepted command')
     assert await store.compare_and_swap(key,b'after checkpoint',expected_token=captured.token,writer_generation='writer')
     store.promote(checkpoint,expected,manifest_ref=ref)  # Lost promotion ACK.
     assert not store.remote_durable(key,b'after checkpoint')

@@ -12,6 +12,7 @@ from uuid import UUID
 from starlette.responses import JSONResponse
 
 from .projects_hub_reader import PrivateInput
+from .source_page_progress import published_pages,next_unaccepted
 
 PATH = "/internal/import/activity"
 SERVICE_ID = "launcher-import-watch"
@@ -56,7 +57,7 @@ class ImportActivityReader:
         # commands and start Kaggle work. Only bounded local SQLite reads.
         with self.importer.queue.connect(write=False) as db:
             row = db.execute(
-                "SELECT source_id,person_id,phase,last_operation_at,research_json "
+                "SELECT ingestion_id,source_id,person_id,phase,last_operation_at,research_json "
                 "FROM rkb_source_intake_control WHERE ingestion_id=? AND person_id=?",
                 (ingestion_id, owner_person_id),
             ).fetchone()
@@ -72,7 +73,7 @@ class ImportActivityReader:
                 "WHERE ingestion_id=? AND source_id=? AND person_id=?",
                 (ingestion_id, row["source_id"], row["person_id"]),
             ).fetchone()
-            accepted = set()
+            accepted = published_pages(db,row) if native and native['packet_mode'] else set()
             last_stage = None
             # Stage commands are already in the existing local journal. Batch
             # count is NOT page count (a reviewed batch can contain four pages).
@@ -92,9 +93,7 @@ class ImportActivityReader:
                     pages = stage.get("model_payload", {}).get("pages", [])
                     if last_stage is None:
                         last_stage = (stage, pages)
-                    if (type(stage.get("batch_index")) is int
-                            and stage["batch_index"] < native["published_batch_count"]):
-                        accepted.update(page["physical_page_index"] for page in pages)
+                    # Stage APPLIED without matching source.packet TEXT APPLIED is not publication.
         phase = row["phase"]
         if phase == "failed" or native and native["phase"] == "failed":
             state, action = "failed", "blocker"
@@ -125,6 +124,8 @@ class ImportActivityReader:
                 cursor = None
             if type(cursor) is not str or not cursor.isdecimal() or len(cursor) > 4 or int(cursor) > 2499:
                 cursor = None
+            else:
+                cursor = next_unaccepted(cursor,accepted)
         timestamp = row["last_operation_at"]
         return dict(state=state, next_action=action,
                     last_operation_at=(datetime.fromtimestamp(timestamp, timezone.utc).isoformat()

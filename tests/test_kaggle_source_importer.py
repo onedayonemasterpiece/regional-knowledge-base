@@ -271,6 +271,50 @@ async def test_revoked_oauth_withholds_private_preview_at_final_output(intake):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['none', 'revoke', 'reconnect'])
+async def test_cold_page_reauthorizes_after_short_read_context_expires(intake, change):
+    s = intake
+    result = await start(s)
+    resolver = s.importer.read_authority
+    resolver.clock = lambda: s.t.auth.now[0]
+    original_pages = s.originals.pages
+
+    async def slow_pages(context, ingestion_id, cursor=None, batch_size=1):
+        batch = await original_pages(context, ingestion_id, cursor, batch_size)
+        s.t.auth.now[0] += resolver.ttl_seconds + 1
+        if change == 'revoke':
+            await s.t.auth.provider.revoke_token(
+                await s.t.auth.provider.load_access_token(s.principal.access_token))
+        elif change == 'reconnect':
+            with s.t.queue.connect(write=False) as db:
+                observed = json.loads(db.execute(
+                    'SELECT observed_json FROM bge_runtime_expectations WHERE run_id=?', (s.t.run,)
+                ).fetchone()[0])
+            generation = s.t.queue.attach_channel(s.t.run, s.t.token, s.t.nonce,
+                'incarnation-a')['connection_generation']
+            assert s.t.queue.accept_search_runtime(s.t.run, s.t.token, generation, observed).ok
+            s.t.queue.heartbeat(s.t.run, s.t.token, ready=True, connection_generation=generation)
+            await s.t.admission.resource_state(s.t.run, s.t.token, generation,
+                runtime_incarnation='incarnation-a', state='idle')
+        return batch
+
+    s.originals.pages = slow_pages
+    with capture_read_output() as outputs:
+        if change != 'none':
+            with pytest.raises(ToolError, match='access_denied|target_runtime_changed'):
+                await s.importer.book_pages(principal=s.principal, ingestion_id=result.ingestion_id)
+            assert not outputs
+        else:
+            batch = await s.importer.book_pages(principal=s.principal, ingestion_id=result.ingestion_id)
+            assert batch.pages[0].data == b'synthetic-jpeg'
+            assert len(outputs) == 1
+            retained = outputs[0]
+            assert retained.gate.issuance_current(retained.gated.ticket)
+            retained.release()
+    assert not resolver._contexts
+
+
+@pytest.mark.asyncio
 async def test_embeddings_bind_exact_native_receipt_graph_and_document_text(intake):
     s=intake;result=await staged(s)
     await s.importer.book_ingest(command='validate',principal=s.principal,ingestion_id=result.ingestion_id)
@@ -303,6 +347,7 @@ async def test_existing_mcp_fileparams_and_stage_json_use_target_owned_workflow(
     tools={tool.name:tool for tool in server._tool_manager.list_tools()}
     assert tools['book_ingest'].meta['openai/fileParams']==['file']
     assert 'source_import' in tools['book_ingest'].parameters['properties']
+    assert 'Each body must stand alone for a listener who has read neither the book nor any other story' in json.dumps(tools['book_ingest'].parameters, ensure_ascii=False)
     async def call(name, arguments):
         request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
             'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})

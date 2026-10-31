@@ -3,6 +3,7 @@ import asyncio
 import logging
 
 import uvicorn
+from .read_issuance import NOTIFICATION_STREAM_SCOPE_KEY
 
 _LOG = logging.getLogger('uvicorn.error')
 
@@ -19,6 +20,10 @@ class HttpDrainingServer(uvicorn.Server):
         for connection in list(self.server_state.connections):
             if hasattr(connection, 'cycle'):
                 cycle = connection.cycle
+                if cycle is not None and cycle.scope.get(NOTIFICATION_STREAM_SCOPE_KEY):
+                    connection.transport.close()
+                    _LOG.info('api_http_drain state=notification_closed')
+                    continue
                 connection.shutdown()  # Disables keepalive without aborting a response.
                 if cycle is not None and not cycle.response_complete:
                     cycles.append(cycle)

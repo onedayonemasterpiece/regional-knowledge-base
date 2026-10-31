@@ -61,7 +61,7 @@ from .oauth_provider import (
 from .supabase_backend import backend_from_env
 from .story_registry import StoryRegistry, StoryError
 from .story_contracts import (
-    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation,
+    StageStoryCandidateInput, Key, SeedInput, SourceRef, StoryMetadata, StoryOperation, UpsertVariant,
     ReviewDecision, RegisteredSource, ExtractRequest, ReconcileRequest,
 )
 
@@ -942,7 +942,7 @@ def build_server(
                 'current per-Story editor grant is required, approvals are cleared, and original replay never reruns the model.',
             annotations=ToolAnnotations(read_only_hint=False,idempotent_hint=True,destructive_hint=False,open_world_hint=False))
         async def native_story_edit(story_id:str,expected_revision:Annotated[int,Field(ge=1)],
-                operations:Annotated[list[StoryOperation],Field(min_length=1,max_length=12)],
+                operations:Annotated[list[UpsertVariant],Field(min_length=1,max_length=1)],
                 idempotency_key:Key,reason:str|None=None)->dict[str,Any]:
             return await backend.story_edit(story_id,_principal(),expected_revision=expected_revision,operations=operations,
                 idempotency_key=idempotency_key,reason=reason)
@@ -1653,10 +1653,12 @@ def build_server(
         story_candidates: Annotated[list[StageStoryCandidateInput], Field(max_length=12,
             description=(
                 "Model-authored source-grounded story candidates (max 12 per stage; when more episodes, stage fewer pages). "
-                "Each basic_variant.body is one complete person/place/event episode for a reader or visitor, normally 2-6 connected Russian sentences; the saved body is read, voiced and posted. Map complete basic_variant.blocks to exact evidence_refs; preserve original-language source quotations. "
+                "Each basic_variant.body is one complete person/place/event episode for a reader or visitor, normally 2-6 connected Russian sentences; the saved body is read, voiced and posted. "
+                "Each body must stand alone for a listener who has read neither the book nor any other story: on first mention give each person, office, institution, term or earlier event the one clause the book itself supplies (who the person was or became, what the office or law meant, which crisis), and never point to the book or its layout ('figure 5', 'on the next page', 'as said above'); if the book gives no such context, keep it as facts_only rather than guessing. "
+                "Map complete basic_variant.blocks to exact evidence_refs; preserve original-language source quotations. "
                 "Open with who/what happened, never book, author or footnote in ANY language/source, including handbooks and lexicons: no 'Согласно справочнику', 'По изложению книги', 'По данным авторов', 'По сообщению <автора>', '<Автор> сообщает/перечисляет/отмечает', 'the author writes', 'according to the book'; author, page and footnote go in evidence_refs. "
                 "State supported facts directly, including painful events; attribute only opinion, estimate, legend, recollection or dispute AFTER the claim, never first. "
-                "Keep exact source names, dates, numbers, historical places; give where/when when printed, concrete action, stakes, first, name origin or changed use, and close with known outcome or honest uncertainty. Answer How/Why titles. "
+                "Keep exact source names, dates, numbers, historical places; give where/when when printed, concrete action, stakes, first, name origin or changed use, and close with known outcome or honest uncertainty about the past itself ('his later fate is unknown', 'historians still treat this as a hypothesis'), never about the text or its author ('the text does not say', 'not established by this page', 'the book writes \"possibly\"', 'this is the author's interpretation'); when a statement is a judgement, attribute it once inside that sentence. Answer How/Why titles. "
                 "The source's 'today'/'сохранилась до наших дней' means its author's time, not 2026; never invent causes, motives, emotions, dialogue, geography, dates or present-day survival ('after' is not 'because'). "
                 "Keep the whole episode across paragraphs/pages in ONE body, not separate facts_only: fetch the next unaccepted page (up to 4) or cite accepted earlier pages without restaging. "
                 "A lone dated fact, list or uses without development stays facts/observations; a first/invention with adjacent development can be a brief body. Review whole page for episodes, with no story quota. When evidence is insufficient, OMIT basic_variant and set narrative_outcome=needs_context or facts_only; no title/summary-only body."
@@ -1837,7 +1839,9 @@ def build_server(
             "the current native renderer may return only one page even when four are requested. "
             "Stage each reviewed page ordinarily with its exact source evidence and follow the "
             "returned page/block continuation cursors before using clipped text. "
-            "Native extraction never proves visual completeness. For irregular scans, cursor may name any physical page; the model decides printed reading order, and next_cursor is only a suggestion. Use only for an existing ingestion. "
+            "Native extraction never proves visual completeness. "
+            "native_text is a draft OCR layer: take every word, ſ/tz and other letter forms, punctuation and line breaks from the issued image, never from native_text. "
+            "For irregular scans, cursor may name any physical page; the model decides printed reading order, and next_cursor is only a suggestion. Use only for an existing ingestion. "
             + _SOURCE_TRANSCRIPTION_INSTRUCTIONS
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),

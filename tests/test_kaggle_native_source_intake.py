@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from regional_knowledge.source_stage import canonical,digest,STAGE_ROUTE,SEAL_ROUTE
 from regional_knowledge.kaggle_native_source_intake import NativeSourceIntake
+from regional_knowledge.source_page_progress import next_unaccepted
 from test_source_stage import SOURCE,INGESTION,REQUEST,batch,original
 
 ACTIVATE='source.activate.v1'; MATERIALIZE='source.materialize.v1'; VERSIONS=('synthetic','schema14','unit-seam')
@@ -140,10 +141,14 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             'regional_knowledge.kaggle_importer':NS(failure=lambda reason,**kw:IntakeFailure(reason)),
             'regional_knowledge.control_spool':NS(SpoolError=SpoolError,SpoolUnknown=SpoolUnknown),
             'regional_knowledge.recovery_journal':NS(JournalUnknown=JournalUnknown),
+            'regional_knowledge.source_page_progress':NS(
+                publication_progress=lambda *_:(set(),set()),next_unaccepted=next_unaccepted),
         }
         self.mock=patch.dict(sys.modules,modules); self.mock.start(); self.addCleanup(self.mock.stop)
         self.helper=NativeSourceIntake(self.importer)
-        # This lightweight spool has no SQL applied-operation ledger; integration tests use the real helper.
+        # This lightweight spool has no SQL applied-operation ledger; its
+        # publication/cursor boundary is stubbed above. Integration tests use
+        # the actual ControlSpool and publication helper together.
         async def applied_cursor(*args, **kwargs): return None
         self.helper.applied_page_cursor=applied_cursor
         # Existing fixtures exercise historical, already-created seal intents.
@@ -264,7 +269,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw)))
         result=await self.helper.status(self.access,self.row)
         self.assertEqual(result.warnings,[reason])
-        self.assertIn('Correct and retry this packet under the same ingestion.',result.message)
+        self.assertIn('retry unpublished rejected pages',result.message)
         self.assertEqual(self.state()['phase'],'staging')
         changed=json.loads(canonical(self.payload));changed['pages'][0]['source_review_note']='Explicit model correction.'
         await self.stage(changed)

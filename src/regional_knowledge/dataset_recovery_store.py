@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from io import BytesIO
 import json
 import secrets
 
@@ -90,7 +91,8 @@ class DatasetRecoveryStore:
 
     def export_control(self):
         # One SQLite read snapshot, read in bounded pages and key order.
-        raw=bytearray(b'{"codec":"rkb.dataset-journal.v1","objects":[')
+        raw=BytesIO()
+        raw.write(b'{"codec":"rkb.dataset-journal.v1","objects":[')
         count=0
         with self.queue.connect(write=False) as db:
             rows=db.execute('SELECT key,data,token FROM rkb_dataset_recovery_objects WHERE storage=? '
@@ -101,10 +103,10 @@ class DatasetRecoveryStore:
                     if len(row['data'])>1024*1024:raise JournalLimit('dataset_control_object_budget')
                     record=json.dumps(dict(key=row['key'],token=row['token'],
                         data_b64=base64.b64encode(row['data']).decode()),sort_keys=True,separators=(',',':')).encode()
-                    if count:raw.extend(b',')
-                    raw.extend(record);count+=1
-        raw.extend(b']}')
-        return bytes(raw)
+                    if count:raw.write(b',')
+                    raw.write(record);count+=1
+        raw.write(b']}')
+        return raw.getvalue()
 
     def pending_control(self):
         """Exact pending control revision for the existing grouped owner.
@@ -133,10 +135,13 @@ class DatasetRecoveryStore:
                 or checkpoint.database_generation!=old.database_generation
                 or (checkpoint.owner_slug,checkpoint.dataset_slug)!=(old.owner_slug,old.dataset_slug)):
             raise JournalConflict('dataset_checkpoint_promotion_predecessor')
-        journal=self.publisher.read_control(checkpoint.journal,version=checkpoint.dataset_version)
+        # Decode our UTF-8 export before parsing so bytes and text do not both
+        # survive alongside the complete parsed journal.
+        journal=self.publisher.read_control(checkpoint.journal,version=checkpoint.dataset_version).decode('utf-8')
         manifest=self.publisher.read_control(checkpoint.manifest,version=checkpoint.dataset_version)
         control=self.publisher.read_control(checkpoint.control,version=checkpoint.dataset_version)
         parsed=json.loads(journal);m=json.loads(manifest)
+        del journal
         c=json.loads(control)
         if (parsed.get('codec')!='rkb.dataset-journal.v1'
                 or type(parsed.get('objects')) is not list
@@ -166,7 +171,7 @@ class DatasetRecoveryStore:
                 # New writes may have advanced after capture; only exact bytes
                 # contained in this saved version gain a persistence receipt.
                 db.execute('UPDATE rkb_dataset_recovery_objects SET covered_version=? '
-                    'WHERE storage=? AND key=? AND data=? AND token=?',
+                    'WHERE storage=? AND key=? AND data=? AND token=? AND covered_version IS NULL',
                     (checkpoint.dataset_version,self.storage_identity,item['key'],raw,item['token']))
             for key,data,tag in ((manifest_ref.key,manifest,'manifest'),(m['source_control']['key'],control,'control')):
                 self._key(key)
