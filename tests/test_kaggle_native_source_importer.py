@@ -58,6 +58,7 @@ async def native_intake(target, tmp_path):
     originals = object.__new__(OriginalIntakeController)
     originals.queue, originals.spool, originals.participants = t.queue, spool, t.auth.p.registry
     originals.calls, originals.receipts, originals.issued, originals.selections = [], {}, {}, []
+    originals.captions, originals.caption_failure = [], False
 
     async def begin(self, context, *, operation_id, source_id, ingestion_id, file, max_bytes):
         assert context.route == 'owner' and context.principal.subject == t.auth.p.owner.subject
@@ -74,6 +75,11 @@ async def native_intake(target, tmp_path):
     async def status(self, context, ingestion_id):
         return OriginalIntakeStatus(ingestion_id,'verified',self.receipts[ingestion_id])
 
+    async def caption(self,context,ingestion_id,*,caption=None):
+        if self.caption_failure:raise OriginalIntakeError('synthetic caption unavailable')
+        self.captions.append(caption)
+        return dict(owned=True,updated=True)
+
     async def selected_image_receipts(self, context, ingestion_id, selections):
         assert context.route == 'owner' and context.principal.subject == t.auth.p.owner.subject
         assert 1 <= len(selections) <= 8
@@ -89,7 +95,7 @@ async def native_intake(target, tmp_path):
     async def native_pages(self, *args, **kwargs):
         pytest.fail('native14 must not auto-fetch the whole original/native-text proof')
 
-    for function in (begin,verified,status,selected_image_receipts,native_pages):
+    for function in (begin,verified,status,caption,selected_image_receipts,native_pages):
         setattr(originals,function.__name__,MethodType(function,originals))
     tokenizer = HfImportTokenCounter(tmp_path/'unloaded-tokenizer')
     token_calls = []
@@ -129,6 +135,50 @@ async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu'):
             publication_year=1901,language='de',catalog={'kind':'book','publisher':'Synthetic publisher'}),
         source_import=options())
 
+
+
+@pytest.mark.asyncio
+async def test_start_updates_caption_without_blocking_verified_import(native_intake):
+    s=native_intake
+    book=await start(s)
+    assert book.state=='staged' and book.source_archive_status=='verified'
+    assert s.originals.captions==[
+        ('Synthetic author — Synthetic 174-page scanned source (1901)\nRKB-original '+book.ingestion_id)]
+    s.originals.caption_failure=True
+    replay=await start(s)
+    assert replay.ingestion_id==book.ingestion_id and replay.source_archive_status=='verified'
+    assert replay.state=='staged'
+    s.originals.caption_failure=False
+    no_author=await s.importer.book_ingest(command='start',principal=s.principal,
+        file=ChatFile(file_id='another-book',download_url='https://files.example.test/other.djvu',
+            mime_type='image/vnd.djvu',file_name='other.djvu'),
+        payload=dict(title='Book without credited author',authors=[],language='de',catalog={'kind':'book'}),
+        source_import=options())
+    assert no_author.state=='staged'
+    assert s.originals.captions[-1]==('Book without credited author\nRKB-original '+no_author.ingestion_id)
+
+
+@pytest.mark.asyncio
+async def test_delayed_original_sets_caption_when_status_finishes_start(native_intake,monkeypatch):
+    s=native_intake;verified=s.originals.verified;ready=False
+    async def delayed(*args,**kwargs):return await verified(*args,**kwargs) if ready else None
+    monkeypatch.setattr(s.originals,'verified',delayed)
+    book=await start(s)
+    assert book.state=='processing' and not s.originals.captions
+    ready=True
+    assert (await call(s,book,'status')).state=='staged'
+    assert len(s.originals.captions)==1
+    await call(s,book,'status')
+    assert len(s.originals.captions)==1
+
+
+@pytest.mark.asyncio
+async def test_optional_caption_wait_cannot_block_verified_start(native_intake,monkeypatch):
+    s=native_intake
+    async def pending(*args,**kwargs):await asyncio.Event().wait()
+    monkeypatch.setattr(s.originals,'caption',pending)
+    result=await asyncio.wait_for(start(s),3)
+    assert result.state=='staged' and result.source_archive_status=='verified'
 
 def batch(s, result, *, first=0, count=4):
     """Model-authored typed selected pages, not text certified by native OCR."""

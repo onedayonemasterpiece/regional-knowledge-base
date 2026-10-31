@@ -379,6 +379,27 @@ class NativeOriginalIntake:
                 return value
             finally:
                 if not acquired:await _blocking(shutil.rmtree,folder)
+        if phase=='original_caption':
+            if (type(args) is not dict or set(args) not in (
+                    {'telegram_locator','ingestion_id'},
+                    {'telegram_locator','ingestion_id','caption'})
+                    or private is not None):
+                raise OriginalIntakeError('original_caption_contract')
+            from .telegram_original import TelegramOriginalLocator
+            from .original_intake import uuid_value
+            uuid_value(args['ingestion_id'])
+            caption=args.get('caption')
+            if caption is not None and (type(caption) is not str
+                    or len(caption.encode('utf-16-le'))>2048
+                    or not caption.endswith('\nRKB-original '+args['ingestion_id'])):
+                raise OriginalIntakeError('original_caption_contract')
+            if self.telegram_downloader is None:
+                raise OriginalIntakeError('original_telegram_binding_required')
+            locator=TelegramOriginalLocator.from_wire(args['telegram_locator'])
+            return await self.telegram_downloader.caption(locator,caption=caption,
+                current=lambda:not self.closed and self.generation==frame['connection_generation']
+                    and self.current((frame['run_id'],frame['runtime_incarnation'],frame['connection_generation']))
+            )
         record=self._record(args)
         if phase in ('original_archive','original_verify') and private is None and set(args)=={'handle','original_sha256'}:
             if self.telegram_downloader is None:

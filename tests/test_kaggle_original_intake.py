@@ -48,9 +48,13 @@ def native(tmp_path,monkeypatch):
     import regional_knowledge.kaggle_original_native as module
     monkeypatch.setitem(sys.modules,'telethon.tl.types',SimpleNamespace(
         DocumentAttributeFilename=lambda file_name:SimpleNamespace(file_name=file_name)))
+    monkeypatch.setitem(sys.modules,'telethon.tl.functions.messages',SimpleNamespace(
+        GetMessageEditDataRequest=lambda peer,id:SimpleNamespace(peer=peer,id=id)))
     root=tmp_path/'native';root.mkdir(mode=0o700)
     monkeypatch.setattr(module,'PRIVATE_ROOT',tmp_path)
     monkeypatch.setattr(module.importlib.metadata,'version',lambda name:'pinned-version')
+    monkeypatch.setattr(module.importlib.metadata,'distribution',
+        lambda _:SimpleNamespace(locate_file=lambda _:tmp_path))
     download=Downloader();transfer=Transfer();parser_calls=[]
     async def parser(path,action,index=0,*,cursor=None):
         assert path.read_bytes()==PDF;parser_calls.append(action)

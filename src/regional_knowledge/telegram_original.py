@@ -105,6 +105,40 @@ class NativeTelegramOriginalDownloader:
             raise OriginalIntakeError('original_telegram_document_changed')
         return message
 
+    async def caption(self, locator, *, caption=None, current):
+        """Inspect sender before any in-place edit; never send or download a document."""
+        message = await self.presence(locator, current=current)
+        try:
+            me = await self._client.get_me()
+        except Exception:
+            raise OriginalIntakeError('original_telegram_sender_unknown') from None
+        self._check(locator, current)
+        sender, self_id = getattr(message, 'sender_id', None), getattr(me, 'id', None)
+        owned = type(self_id) is int and sender == self_id
+        observed = dict(sender_id=sender, self_id=self_id, owned=owned, editable=False,
+                        caption=getattr(message, 'message', None) or '', updated=False)
+        if not owned:return observed
+        try:
+            from telethon.tl.functions.messages import GetMessageEditDataRequest
+            observed['editable']=bool((await self._client(
+                GetMessageEditDataRequest(self._chat_id,locator.message_id))).caption)
+        except Exception:
+            raise OriginalIntakeError('original_telegram_editability_unknown') from None
+        self._check(locator,current)
+        if caption is None or not observed['editable'] or observed['caption'] == caption:
+            return observed
+        self._check(locator, current)
+        try:
+            await self._client.edit_message(self._chat_id, locator.message_id, text=caption,parse_mode=None)
+        except Exception:
+            # A lost edit ACK (including MESSAGE_NOT_MODIFIED) requires readback.
+            pass
+        confirmed = await self.presence(locator, current=current)
+        if (getattr(confirmed, 'sender_id', None) != self_id
+                or getattr(confirmed, 'message', None) != caption):
+            raise OriginalIntakeError('original_telegram_caption_unknown')
+        return dict(observed, caption=caption, updated=True)
+
     async def find_archive(self, *, sha256, size, ingestion_id, current):
         """One bounded metadata observation; absence never authorizes a send."""
         if not callable(current) or type(ingestion_id) is not str:
@@ -115,7 +149,8 @@ class NativeTelegramOriginalDownloader:
         try:
             # Exact caption reconciliation precedes provider send after lost ACK.
             async for candidate in self._client.iter_messages(self._chat_id, search=caption, limit=10):
-                if getattr(candidate, 'message', None) != caption:
+                observed = getattr(candidate, 'message', None)
+                if observed != caption and (type(observed) is not str or not observed.endswith('\n'+caption)):
                     continue
                 reply = getattr(candidate, 'reply_to', None)
                 if (getattr(reply, 'reply_to_top_id', None) or getattr(reply, 'reply_to_msg_id', None)) != self._topic_id:

@@ -33,6 +33,15 @@ download original bytes to Dev. No repair command, script, forged Principal or
 standalone runtime access is required. Archive failures are logged and leave
 the existing verified original usable; the immutable old receipt is retained.
 Existing sidecars avoid S3 HEAD checks.
+After verified intake, an optional `original_caption` phase uses the same
+Kaggle client and lease to label the existing message with catalog author,
+title and publication year. It first observes the current sender and Telegram
+caption editability; foreign or non-editable messages remain unchanged.
+The exact `RKB-original <ingestion_id>` marker stays on the last line, and
+unknown-send reconciliation accepts both the old marker-only caption and this
+labelled form. Caption work does not download or resend the document, and its
+bounded API wait does not delay otherwise verified import beyond two seconds.
+This requires a reviewed native executor rollout, not an API-only update.
 Repeated status calls reuse the restored handle for the same immutable
 receipt. If an unresolved send also loses native bytes, the archive remains
 unresolved without a fresh restore/upload; the verified original stays usable. Existing
