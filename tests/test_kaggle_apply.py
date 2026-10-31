@@ -405,9 +405,11 @@ def test_static_registry_rejects_sql_identifier_injection_and_is_immutable():
 
 @PG
 @pytest.mark.asyncio
-async def test_native_token_rejection_is_retained_without_applying_effect(env):
+@pytest.mark.parametrize('reason',[
+    'complete_native_input_exceeds_512_tokens:chunk_key=Page-0.body:tokens=513',
+    'native_source_packet_requires_review'])
+async def test_native_source_rejection_is_retained_without_applying_effect(env,reason):
     import base64
-    reason='complete_native_input_exceeds_512_tokens:chunk_key=Page-0.body:tokens=513'
     cmd=item()
     seal=await accepted(env,cmd)
     receipt=await apply(env,cmd,seal,reject_reason=reason)
@@ -416,6 +418,6 @@ async def test_native_token_rejection_is_retained_without_applying_effect(env):
     assert json.loads(base64.b64decode(outcome['result_b64']))=={'reason':reason}
     assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
     assert (await apply(env,cmd,seal,reject_reason=reason)).outcome==receipt.outcome
-    for unsafe in (reason+':private text',reason.replace('Page-0.body','bad/key')):
+    for unsafe in {reason+':private text',reason.replace('Page-0.body','bad/key')}-{reason}:
         with pytest.raises(ValueError,match='fixed internal source rejection reason'):
             await apply(env,cmd,seal,reject_reason=unsafe)
