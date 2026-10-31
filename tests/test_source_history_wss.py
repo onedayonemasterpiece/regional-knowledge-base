@@ -92,14 +92,16 @@ async def test_native_tail_failure_logs_class_and_sqlstate_without_private_detai
     from psycopg.errors import QueryCanceled
     from test_source_stage import SOURCE,INGESTION
     p=pair(env)
-    async def failed(*args):raise QueryCanceled('private book text or provider detail')
+    async def failed(*args):
+        p.n.detached(1)
+        raise QueryCanceled('private book text or provider detail')
     monkeypatch.setattr(p.n,'_observe',failed)
     try:
         with caplog.at_level('WARNING',logger='regional_knowledge.kaggle_source_history_native'):
             with pytest.raises(SpoolConflict,match='native_history_observation_unavailable'):
                 await p.v.source_tail_refs(p.b,SOURCE,INGESTION)
         assert 'error_type=QueryCanceled sqlstate=57014' in caplog.text
-        assert 'run_id=run' in caplog.text
+        assert 'run_id=run generation=1' in caplog.text
         assert 'private book text or provider detail' not in caplog.text
         assert not p.n._sessions
     finally:await p.n.aclose()

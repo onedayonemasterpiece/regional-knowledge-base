@@ -99,7 +99,7 @@ class NativeSourceHistoryObserver:
             return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':{'error':str(exc)}}
         except Exception as exc:
             _LOG.warning('native_history_observation state=unavailable run_id=%s generation=%s error_type=%s sqlstate=%s',
-                self.identity[0],self.generation,type(exc).__name__,exc.sqlstate if isinstance(exc,PgError) else None)
+                self.identity[0],frame['connection_generation'],type(exc).__name__,exc.sqlstate if isinstance(exc,PgError) else None)
             return {'phase':'source_history','request_sha256':frame['request_sha256'],'value':{'error':'native_history_observation_unavailable'}}
 
     async def _observe(self,frame,args,binding):
