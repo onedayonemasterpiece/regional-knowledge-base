@@ -66,6 +66,35 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 
 @pytest.mark.asyncio
+async def test_operation_status_returns_durable_rejection_with_native_empty_result(env,auth,monkeypatch):
+    import hashlib
+    from regional_knowledge.kaggle_apply import ApplyReceipt
+    from regional_knowledge.kaggle_case_contracts import canonical
+    value,principal,binding=await backend(env,auth,monkeypatch)
+    with capture_read_output() as outputs:
+        accepted=await value.disagreement_edit('create','rejected-empty-result',principal,command=create())
+        outputs[0].release()
+    entry=await env.spool.get(accepted['operation_key']);c=entry.command
+    body=canonical(dict(command_sha256=entry.command_sha256,person_id=c.person_id,
+        status='rejected_precondition',result_b64=''))
+    await env.spool.mark_apply_sent(c.operation_key)
+    await env.spool.record_apply(c.operation_key,ApplyReceipt(entry.database_generation,c.operation_key,
+        c.sequence,entry.command_sha256,'rejected_precondition',body,hashlib.sha256(body).hexdigest(),False))
+    await env.spool.publish_outcome(c.operation_key,writer_generation='writer-1')
+    with capture_read_output() as outputs:
+        rejected=await value.disagreement_edit('operation_status',c.operation_key,principal,case_id=c.ids['case_id'])
+        assert rejected['status']=='rejected' and rejected['saved'] is False and rejected['result'] is None
+        assert rejected['outcome_durability']=='DURABLE' and rejected['sequence']==c.sequence
+        await outputs[0].gate.refresh(outputs[0].gated)
+        assert outputs[0].gate.issuance_current(outputs[0].gated.ticket)
+        outputs[0].release()
+    assert (await env.spool.get(c.operation_key)).apply_receipt.outcome==body
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==1
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('native_status',['applied','rejected_precondition'])
 async def test_verified_case_terminal_requests_early_dataset_saved_after_native_receipt(
         env,auth,monkeypatch,native_status):
