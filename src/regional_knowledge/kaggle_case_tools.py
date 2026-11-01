@@ -10,8 +10,8 @@ from .disagreement_contracts import (CaseCreate,CaseRevise,CaseState,CaseGrant,E
 def register_case_tools(mcp,backend,principal):
     @mcp.tool(name='disagreement_search',title='Find existing research cases by subject',
         description='Find actor-authorized existing research Cases by question, place or source; '
-            'Empty query lists all available Cases by case_id, paged using after_case_id/next_after_case. '
             'bounded lexical candidates only, not an automatic finding of contradiction. '
+            'Empty query lists all available Cases by case_id, paged using after_case_id/next_after_case. '
             'Inspect candidate Case with disagreement_get before adding evidence or creating a new case. '
             'One page of results is not exhaustive; use next_after_case while has_more. '
             'No matching result or pending read is not proof of absence. '
