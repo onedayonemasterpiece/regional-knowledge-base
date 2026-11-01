@@ -1,5 +1,6 @@
 """Synthetic SQL leases and real typed worker/admission; no provider or PG."""
 import base64
+import asyncio
 import json
 import time
 
@@ -29,7 +30,6 @@ class Connection(FixtureConnection):
                 return (12,12,3,'synthetic-db')
             return (12,12,3,True,False,'synthetic-db')
         if 'SELECT max(version)' in self.statement:return (10,)
-        if 'verify_disagreement_origins_v1' in self.statement:return (True,)
         return (self.record,)
 
 
@@ -62,6 +62,32 @@ async def test_case_denial_is_private_content_free():
     handler=KaggleWorkerQuery(Lease(Connection(None)).acquire,pinned())
     result=decode_envelope(json.dumps(await handler(json.loads(encode_envelope(request())),encode=forbidden_encode)).encode())
     assert result.status=='denied' and result.reason=='access_denied' and result.record is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('section',['search','case'])
+async def test_current_case_reads_finish_while_historical_reconstruction_is_busy(section):
+    from test_case_subject_search_20261023 import SearchConnection,search_request
+    record=dict(case_id=CASE,case_revision=1,acl_revision=1,event_seq=1,
+        source_dependencies=[],section='case')
+    db=(SearchConnection([(CASE,1,1,1,'open','Current question','Current context',[])])
+        if section=='search' else Connection(record))
+    execute=db.execute
+    historical_work=asyncio.Event()
+    async def current_sql(statement,params=()):
+        if 'verify_disagreement_origins_v1' in statement:
+            await historical_work.wait()
+        return await execute(statement,params)
+    db.execute=current_sql
+    q=(search_request() if section=='search' else request()).model_copy(update={'deadline_ms':100})
+    lease=Lease(db)
+    handler=KaggleWorkerQuery(lease.acquire,pinned(forbidden_encode))
+    result=decode_envelope(json.dumps(await handler(json.loads(encode_envelope(q)),
+        encode=forbidden_encode)).encode())
+    assert result.status=='ok'
+    assert (result.record['items'][0]['case_id'] if section=='search'
+        else result.record['case_id'])==CASE
+    assert lease.entered==lease.exited==1
 
 
 @pytest.mark.asyncio
