@@ -541,3 +541,30 @@ async def test_native_handshake_timeout_and_failure_stages_do_not_log_secrets(mo
         'wss_connect_start','dns_start','dns_complete','wss_connect_failed']
     assert events[-1]['error_type']=='WSServerHandshakeError'and events[-1]['http_status']==503
     assert all(e['timestamp']>0 and e['run_id']==CONFIG['run_id']for e in events)
+
+@pytest.mark.asyncio
+async def test_fatal_shutdown_cancels_async_prepare_after_encoder_is_loaded():
+    transport=module('bge_wss_transport')
+    entered=asyncio.Event();release=asyncio.Event();closed=[]
+    async def waiting_for_restore():
+        await release.wait()
+    @asynccontextmanager
+    async def connect():
+        entered.set()
+        raise ValueError('synthetic fatal transport failure')
+        yield
+    async def close():closed.append(True)
+    worker=transport.BgeWssTransport(CONFIG,lambda:None,lambda:{},
+        connector=connect,close_runtime=close)
+    worker.encoder=object()  # Native model load already completed; only restore is waiting.
+    worker.loading=asyncio.create_task(waiting_for_restore())
+    running=asyncio.create_task(worker.run())
+    try:
+        await asyncio.wait_for(entered.wait(),1)
+        with pytest.raises(ValueError,match='synthetic fatal'):
+            await asyncio.wait_for(asyncio.shield(running),1)
+        assert worker.loading.cancelled() and closed==[True]
+    finally:
+        release.set()
+        try:await running
+        except ValueError:pass
