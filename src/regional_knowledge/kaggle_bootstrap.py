@@ -251,6 +251,7 @@ class ResidentEncoder:
     model_directory: Path
     model_load_count: int
     tokenizer_fingerprint: str = field(init=False)
+    _counter: object = field(init=False, repr=False, compare=False)
     forward_lock: object = field(default_factory=asyncio.Lock, init=False, repr=False, compare=False)
     _tokenizer_lock: object = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
@@ -269,14 +270,13 @@ class ResidentEncoder:
             reference = _load_tokenizer_reference(self.artifacts, model_directory)
             fingerprint = _verify_tokenizer_reference(self.tokenizer, reference)
             object.__setattr__(self, 'tokenizer_fingerprint', fingerprint)
+            object.__setattr__(self, '_counter', reference)
         except Exception:
             raise BootstrapUnavailable('loaded_tokenizer_settings_mismatch') from None
 
     def __call__(self, text):
-        # Fast tokenizer calls can change backend padding/truncation settings.
-        # Count and actual inference use the same resident handle serially.
-        with self._tokenizer_lock:
-            return self.encode(text)
+        # Transport and source materialization share forward_lock.
+        return self.encode(text)
 
     async def count(self, text):
         submitted = time.monotonic()
@@ -285,7 +285,7 @@ class ResidentEncoder:
             marks.append(time.monotonic())
             with self._tokenizer_lock:
                 marks.append(time.monotonic())
-                ids = self.tokenizer.encode(text, add_special_tokens=True, truncation=False, padding=False)
+                ids = self._counter.encode(text, add_special_tokens=True, truncation=False, padding=False)
                 if not isinstance(ids, list) or any(type(token) is not int for token in ids):
                     raise BootstrapUnavailable('tokenizer_count_invalid')
                 marks.append(time.monotonic())

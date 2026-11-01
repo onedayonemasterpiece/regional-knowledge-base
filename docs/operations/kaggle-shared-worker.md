@@ -144,7 +144,10 @@ Stage0 check. The tokenizer settings document is bounded to64MiB.
 Its nonblocking `count` uses `to_thread` with complete special-token-inclusive,
 no-truncation/no-padding token IDs. The same resident encoder remains the only
 model; this unit does not load a model in tests or on DevCoveer.
-Counting and inference serialize access to the same mutable fast tokenizer.
+Counts retain the independent tokenizer reference verified against the model
+tokenizer and serialize under the existing tokenizer mutex. Transport and source
+materialization serialize full model forwards through the shared `forward_lock`;
+counting does not wait for a document forward.
 Existing native read stages split successful query counts into
 `tokenize_executor_wait_ms`, `tokenize_mutex_wait_ms`, `tokenize_work_ms` and
 `tokenize_resume_ms`. These partition count wall time; they are included in

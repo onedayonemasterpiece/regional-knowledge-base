@@ -76,7 +76,8 @@ def resident(a):
     calls = []
     encoder = boot.ResidentEncoder(lambda _: [1.]+[0.]*1023, SyntheticTokenizer(a, calls), verify(a), a.model, 1)
     calls.clear()
-    return encoder, calls
+    encoder._counter.calls.clear()
+    return encoder, encoder._counter.calls
 
 
 def test_exact_declared_inventory_bytes_and_model_coverage(artifacts):
@@ -134,7 +135,7 @@ def test_inventory_rejects_traversal_duplicates_and_incomplete_roles(artifacts):
 
 
 @pytest.mark.asyncio
-async def test_actual_loaded_handle_complete_count_offloop_and_effective_settings(artifacts):
+async def test_verified_reference_complete_count_offloop_and_effective_settings(artifacts):
     encoder, calls = resident(artifacts)
     thread = threading.get_ident()
     assert await encoder.count('512') == 512 and await encoder.count('513') == 513
@@ -181,7 +182,7 @@ async def test_query_count_separates_executor_mutex_and_tokenizer_time(artifacts
 
 
 @pytest.mark.asyncio
-async def test_cancelled_native_token_count_drains_and_serializes_resident_tokenizer(artifacts):
+async def test_cancelled_native_token_count_drains_and_serializes_counter(artifacts):
     encoder, _ = resident(artifacts)
     entered, finish, encoded = threading.Event(), threading.Event(), threading.Event()
     def count(*args, **kwargs):
@@ -189,7 +190,7 @@ async def test_cancelled_native_token_count_drains_and_serializes_resident_token
         assert finish.wait(2)
         return [1, 2, 3]
     encoder = replace(encoder, encode=lambda _: encoded.set())
-    encoder.tokenizer.encode = count
+    encoder._counter.encode = count
     task = asyncio.create_task(encoder.count('synthetic'))
     forward = None
     try:
@@ -199,9 +200,11 @@ async def test_cancelled_native_token_count_drains_and_serializes_resident_token
         task.cancel()
         await asyncio.sleep(.01)
         assert not task.done(), 'native token count must finish before handler cleanup'
-        forward = asyncio.create_task(asyncio.to_thread(encoder, 'next document'))
+        forward = asyncio.create_task(encoder.count('next count'))
         await asyncio.sleep(.01)
-        assert not encoded.is_set(), 'same tokenizer cannot count and encode concurrently'
+        assert not forward.done(), 'the same counter cannot count concurrently'
+        await asyncio.to_thread(encoder, 'next document')
+        assert encoded.is_set()
     finally:
         finish.set()
         with pytest.raises(asyncio.CancelledError):
@@ -430,3 +433,47 @@ async def test_source_document_and_query_share_resident_fifo_forward_and_drain_c
     finally:
         finish.set()
         if source is not None:await asyncio.gather(source,return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_transport_count_proceeds_during_document_forward_but_next_forward_waits(artifacts):
+    from test_bge_shared_worker import running
+    from regional_knowledge.bge_contract import SPACE
+    encoder, _ = resident(artifacts)
+    entered, finish = threading.Event(), threading.Event()
+    counted = asyncio.Event()
+    calls = []
+    active = peak = 0
+    def native(text):
+        nonlocal active, peak
+        active += 1; peak = max(peak, active); calls.append(text)
+        try:
+            if text == 'document':
+                entered.set()
+                assert finish.wait(3)
+            return [1.] + [0.] * 1023
+        finally:
+            active -= 1
+    encoder = replace(encoder, encode=native)
+    async def handler(frame, *, encode):
+        assert await encoder.count(frame['query']) == 512
+        counted.set()
+        assert await encode(frame['query']) == [1.] + [0.] * 1023
+        return result(frame)
+    async with running(handler, encoder) as (peer, _, loads):
+        try:
+            await peer.put(dict(type='DISPATCH', id='count-doc', claim='doc-claim', kind='document',
+                texts=['document'], space=SPACE, compute_claim='count-doc-compute', dispatch_generation=1))
+            assert await asyncio.to_thread(entered.wait, 1)
+            await peer.put(query(text='512'))
+            await asyncio.wait_for(counted.wait(), .5)
+            await asyncio.sleep(0)
+            assert calls == ['document'] and peak == 1
+            assert encoder.forward_lock.locked()
+            finish.set()
+            await peer.wait('QUERY_RESULT')
+            await peer.wait('RESULT')
+            assert calls == ['document', '512'] and peak == 1 and loads == ['loaded']
+            await peer.put(dict(type='RESULT_ACK', job_id='count-doc', claim='doc-claim', status='accepted'))
+        finally:
+            finish.set()
