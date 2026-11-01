@@ -155,3 +155,16 @@ async def test_archive_auth_confirmation_is_separate_and_rechecks_after_lease_aw
     source.lease.current=changed
     assert not await source.confirm_archive_auth(RUN_A,INC_A,2,True)
     assert not source.archive_auth_confirmed(RUN_A,INC_A,2)
+
+
+@pytest.mark.asyncio
+async def test_disconnected_retained_client_rebinds_in_same_socket_generation(native):
+    channel,client,created=bind_channel(native)
+    await channel.receive(grant())
+    assert channel.current()
+    await client.disconnect()
+    assert not channel.current()  # Existing transport heartbeat requests a retained-client grant.
+    assert channel.failed_generation is None
+    await channel.receive(grant(retained=True))
+    assert channel.current() and client.connects==2 and len(created)==1
+    assert (await native.handler(acquire_frame()))['value']['sha256']==locator().sha256

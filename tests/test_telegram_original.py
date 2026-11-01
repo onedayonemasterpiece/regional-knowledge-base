@@ -164,9 +164,9 @@ async def test_native_acquire_uses_bound_locator_without_url_or_proxy(native):
 async def test_native_binding_missing_and_mixed_transport_refused(native):
     loc=locator();s=spec(file_id=loc.file_id,expected_sha256=loc.sha256,expected_size=loc.size)
     f=frame('original_acquire',dict(spec=s.wire(),telegram_locator=loc.wire()))
-    assert (await native.handler(f))['value']=={'error':'original_telegram_binding_required'}
+    assert (await native.handler(f))['value']=={'error':'original_telegram_binding_required','retryable':True}
     mixed=frame('original_acquire',f['arguments'],key='mixed',private={'download_url':'https://attachment.invalid/private'})
-    assert (await native.handler(mixed))['value']=={'error':'original_acquire_contract'}
+    assert (await native.handler(mixed))['value']=={'error':'original_acquire_contract','retryable':True}
     assert native.download.calls==0 and not list(native.handler.root.iterdir())
 
 

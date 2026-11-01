@@ -94,7 +94,8 @@ class NativeRkb1Channel:
             and (not identity or identity==(i.identity[0],i.identity[2])))
 
     def current(self,*identity):
-        return (self.authorized_generation is not None
+        return (self.client is not None and self.client.is_connected()
+            and self.authorized_generation is not None
             and self.authorized_generation==self.granted_generation
             and self._lease_current(*identity))
 

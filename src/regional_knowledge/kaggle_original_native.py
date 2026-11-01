@@ -220,7 +220,10 @@ class NativeOriginalIntake:
     def _receipt(self,frame,value):
         key=frame['operation_key']
         result=dict(phase=frame['phase'],request_sha256=frame['request_sha256'],value=value)
-        if (value.get('error')=='original_telegram_binding_required'
+        if value.get('error') and frame['phase'] in ('original_acquire','original_pages','original_verify'):
+            value['retryable']=True
+            self._prebinding_retry.add(key)
+        elif (value.get('error')=='original_telegram_binding_required'
                 or frame['phase']=='original_archive' and value.get('error')=='original_telegram_presence_unknown'):
             self._prebinding_retry.add(key)  # No native effect occurred.
             if frame['phase']=='original_archive':value['retryable']=True

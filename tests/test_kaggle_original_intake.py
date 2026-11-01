@@ -146,7 +146,7 @@ async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_
     artifact=n.handler._records[handle]['pages'][index]
     assert artifact['sha256']==digest(artifact['path'].read_bytes())==result['image_sha256']
     bad=frame('original_pages',dict(args,cursor=dict(block=1,offset=0,text=0)))
-    assert await resolved(bad)=={'error':'original_page_cursor_invalid'}
+    assert await resolved(bad)==dict(error='original_page_cursor_invalid',**({} if background else {'retryable':True}))
     if background:await n.handler.snapshot_io.aclose()
 
 
@@ -192,7 +192,7 @@ async def test_djvu_dispatch_without_verified_decoder_does_not_use_ambient_tools
         page_count=inventory.page_count,pages={},verified={'retained':True},
         parser_sha256=n.handler.parser_sha256,spec=spec(max_bytes=len(source)).wire())
     result=await n.handler(frame('original_pages',dict(handle=handle,original_sha256=digest(source),index=0)))
-    assert result['value']=={'error':'original_djvu_decoder_required'}
+    assert result['value']=={'error':'original_djvu_decoder_required','retryable':True}
     assert n.handler._records[handle]['pages']=={} and n.parser==[]
 
 
@@ -228,7 +228,7 @@ async def test_unsupported_bytes_are_rejected_independently_of_mime(native, monk
     import sys
     monkeypatch.setattr(sys.modules[__name__], 'PDF', b'<html>not a PDF or DjVu original</html>')
     _, result = await acquire(native, spec(mime_type=mime_type))
-    assert result == {'error': 'original_format_unsupported', 'terminal': True}
+    assert result == {'error': 'original_format_unsupported', 'terminal': True, 'retryable': True}
     assert native.download.calls == 1
     assert not native.parser and not native.transfer.calls
 
@@ -240,7 +240,7 @@ async def test_expected_hash_and_page_bound_fail_before_archive(native):
     async def too_many(*a):return dict(format='pdf',page_count=33)
     native.handler.parser=too_many
     f=frame('original_acquire',{'spec':spec(max_pages=32).wire()},key='over-page-bound',private={'download_url':'https://attachment.invalid/private'})
-    assert (await native.handler(f))['value']=={'error':'original_page_count_limit','terminal':True}
+    assert (await native.handler(f))['value']=={'error':'original_page_count_limit','terminal':True,'retryable':True}
     assert not native.transfer.calls
 
 
@@ -312,3 +312,20 @@ async def test_prepared_intake_uses_actual_transport_document_resource_and_repla
         assert [c for c in calls if c[0]=='acquire']==[('acquire','actual-document-slot')]
         await peer.put(dict(type='RESULT_ACK',job_id='original',claim='claim',status='accepted'),generation=2)
     finally:stop.set();await task
+
+
+@pytest.mark.parametrize('phase,retryable',[
+    ('original_acquire',True),('original_pages',True),('original_verify',True),
+    ('original_archive',False),('original_caption',False),
+])
+def test_unfamiliar_read_error_reexecutes_but_write_error_stays_retained(native,phase,retryable):
+    f=frame(phase,{},key='unfamiliar-error')
+    owner=native.handler
+    assert owner._remember_request(f['operation_key'],f['request_sha256']) is None
+    result=owner._receipt(f,{'error':'unfamiliar_original_read_error'})
+    assert bool(result['value'].get('retryable')) is retryable
+    if retryable:
+        assert f['operation_key'] not in owner._results
+        assert owner._remember_request(f['operation_key'],f['request_sha256']) is None
+    else:
+        assert owner._remember_request(f['operation_key'],f['request_sha256'])==result
