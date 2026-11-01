@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from types import SimpleNamespace as NS
 
@@ -43,8 +44,17 @@ async def test_nonempty_native_checkpoint_publishes_archive_without_dev_proxy(tm
         binding_current=lambda b:b is binding, coverage=proof,
         restorer=NS(complete=True, physical=physical, dispatch=bridge))
     seed = SourceDatasetSeed(startup, config, publisher)
-    async def journal_control():return encode(dict(codec='rkb.dataset-journal.v1',objects=[]))
+    journal=encode(dict(codec='rkb.dataset-journal.v1',objects=[]))
+    async def journal_control():return journal
     seed._journal_control=journal_control
+    loop=asyncio.get_running_loop()
+    def responsive_hash(data):
+        if data==journal:
+            responsive=threading.Event()
+            loop.call_soon_threadsafe(responsive.set)
+            assert responsive.wait(1), 'journal hashing blocked the API event loop'
+        return sha(data)
+    monkeypatch.setattr('regional_knowledge.kaggle_dataset_seed.sha',responsive_hash)
     controls = []
     def put(grant, data):
         assert grant.size < 2048 and grant.name in ('base-manifest.json', 'source-control.json','journal-control.json')

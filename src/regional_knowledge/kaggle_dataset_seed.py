@@ -189,8 +189,8 @@ class SourceDatasetSeed:
                     async with self.startup.config.writer_owner(self.startup.config.writer_generation):
                         if not self.binding_current(binding):
                             raise DatasetPublicationError('dataset_capture_writer_changed')
-                        grant=await asyncio.to_thread(self.publisher.reserve,
-                            name=name,size=len(data),sha256=sha(data),now=self.tickets.clock())
+                        grant=await asyncio.to_thread(lambda:self.publisher.reserve(
+                            name=name,size=len(data),sha256=sha(data),now=self.tickets.clock()))
                         if not self.binding_current(binding):
                             raise DatasetPublicationError('dataset_capture_writer_changed')
                     await asyncio.to_thread(_put_control, grant, data)
