@@ -81,9 +81,9 @@ class Client:
             raise TimeoutError(self.edit_error)
         return target
 
-    def iter_download(self,document,*,request_size,chunk_size):
+    def iter_download(self,document,*,request_size=524288,chunk_size):
         assert document in (self.message.document, getattr(self.sent,'document',None))
-        assert request_size==chunk_size==65536
+        assert request_size==524288 and chunk_size==65536
         self.downloads+=1;self.iterator=Iterator(self.chunks);return self.iterator
 
 

@@ -210,7 +210,7 @@ class NativeTelegramOriginalDownloader:
                 expected_size = message.document.size
                 if expected_size > max_bytes:
                     raise OriginalIntakeError('original_telegram_byte_bound')
-                iterator = self._client.iter_download(message.document, request_size=65536, chunk_size=65536)
+                iterator = self._client.iter_download(message.document, chunk_size=65536)
                 size = 0
                 sha = hashlib.sha256()
                 with path.open('xb') as output:
