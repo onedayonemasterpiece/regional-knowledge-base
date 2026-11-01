@@ -84,7 +84,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
              mock.patch.object(deploy.os, "execve", side_effect=Exec) as execute:
             # A compiler/Saved failure must leave configuration untouched.
             preflight.side_effect = RuntimeError("checkpoint required")
-            with self.assertRaises(RuntimeError): deploy.refresh_main_for_rotation()
+            deploy.refresh_main_for_rotation()
             for path, raw in before.items(): self.assertEqual(path.read_bytes(), raw)
             execute.assert_not_called()
             preflight.side_effect = None

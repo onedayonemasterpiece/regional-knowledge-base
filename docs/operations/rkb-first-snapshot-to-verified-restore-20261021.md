@@ -24,8 +24,10 @@ expected. Before claiming a new provider launch, the installed controller fetche
 controller reuses the deployment materializer and compiler/Saved preflight,
 requires both running service releases to be ancestors, retargets the existing
 API/controller systemd pins, and execs the new controller. The API then picks
-that same release through the graceful rotation above. Git/preflight failures
-remain in the existing pending-launch loop; no provider submission occurs.
+that same release through the graceful rotation above. Git/preflight failures log one deferred update and retain the current release
+for this launch. The next normal rotation tries main again; Saved can therefore
+continue advancing on the current runner. Configuration-write failures reuse
+the deployment rollback before returning to the existing launch loop.
 There is no separate updater, timer or merge polling in reads. An already warm
 notebook is not stopped for a commit; main advances on the next normal launch.
 The initial installation of this controller change is a deployment; this
