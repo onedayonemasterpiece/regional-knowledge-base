@@ -50,6 +50,41 @@ async def test_completed_native_search_returns_ok_and_existing_stages_in_same_re
 
 
 @pytest.mark.asyncio
+async def test_resident_forward_wait_and_work_timings_cross_existing_native_result(monkeypatch):
+    from types import SimpleNamespace
+    from test_bge_wss_worker import CONFIG,module
+    from regional_knowledge.query_telemetry import clean_native_read_events
+
+    transport=module('bge_wss_transport')
+    handler=KaggleWorkerQuery(acquire=Lease().acquire,tokenizer=pinned(),telemetry=asyncio.Queue(maxsize=8))
+    worker=transport.BgeWssTransport(dict(CONFIG,shared_reads=True),lambda:None,lambda:{},query_handler=handler)
+    threads=[]
+    def native(text):
+        threads.append(threading.get_ident())
+        return VECTOR
+    worker.encoder=native
+    resource=object()
+    worker.reads['timed']=dict(resource=resource,released=False,task=asyncio.current_task(),pending=None,discard=False)
+    # Real transport lock, actual thread and query adapter; only its clock is synthetic.
+    ticks=iter((1.,3.,6.,10.,11.))
+    monkeypatch.setattr(transport,'time',SimpleNamespace(monotonic=lambda:next(ticks)))
+    async def encode(text):return await worker._forward(text,resource)
+    request=frame()
+    with bind_read_runtime(ReadRuntime('timed-run','timed-incarnation')):
+        response=await handler(request,encode=encode)
+    assert response['status']=='ok'
+    events=clean_native_read_events(response.pop('read_events'),request_id=request['request_id'],
+        run_id='timed-run',runtime_incarnation='timed-incarnation',connection_generation=4,turn_generation=9)
+    expected=dict(encode_mutex_wait_ms=2000.,encode_executor_wait_ms=3000.,
+        encode_work_ms=4000.,encode_resume_ms=1000.)
+    assert len(events)==2
+    for event in events:
+        assert {k:event['stages_ms'].get(k) for k in expected}==expected
+    assert threads and threads[0]!=threading.get_ident() and not worker.forwards
+    assert request['query'] not in json.dumps(events)
+
+
+@pytest.mark.asyncio
 async def test_concurrent_identical_queries_join_public_attempts_to_exact_native_runtime():
     sink, public = collector()
     native = asyncio.Queue(maxsize=16)

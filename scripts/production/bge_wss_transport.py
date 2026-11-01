@@ -171,8 +171,18 @@ class BgeWssTransport:
         if resource is not None and not any(r['resource'] is resource and not r['released'] for r in self.reads.values()):
             raise ValueError('encode consumer no longer owns resource')
         async def actual():
+            submitted=time.monotonic();marks=[]
             async with self.forward_lock:
-                return await asyncio.to_thread(self.encoder, text)
+                acquired=time.monotonic()
+                def exact():
+                    marks.append(time.monotonic())
+                    try:return self.encoder(text)
+                    finally:marks.append(time.monotonic())
+                value=await asyncio.to_thread(exact)
+                if resource is not None:
+                    from regional_knowledge.query_telemetry import record_encoder_timing
+                    record_encoder_timing(submitted,acquired,*marks,time.monotonic())
+                return value
         # The Task, not its consumer, owns the lock until the real sync forward
         # returns. No consumer/session cancellation is passed to this Task.
         task = asyncio.create_task(actual())
