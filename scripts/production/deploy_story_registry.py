@@ -405,12 +405,13 @@ def refresh_main_for_rotation():
         os.chdir(source)
         os.execve(sys.executable, [sys.executable,
                   str(source / "scripts/production/bge_kaggle_controller.py")], env)
-    except Exception:
+    except Exception as error:
         # Reuse deployment rollback; a failed update must not leave mixed pins.
         restore_configuration(plan, changed)
         cmd("systemctl", "--user", "daemon-reload")
         os.chdir(current)
-        raise
+        logging.warning("main_rotation state=rolled_back error_type=%s", type(error).__name__)
+        return
 
 
 def run(sha, apply, *, with_indexer=False, with_graph_worker=False):

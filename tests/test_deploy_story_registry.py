@@ -88,6 +88,14 @@ class ReleaseConfigurationTests(unittest.TestCase):
             for path, raw in before.items(): self.assertEqual(path.read_bytes(), raw)
             execute.assert_not_called()
             preflight.side_effect = None
+            write = deploy.atomically
+            def fail_controller(path, *args, **kwargs):
+                if path == ctrl_drop: raise OSError("synthetic write failure")
+                return write(path, *args, **kwargs)
+            with mock.patch.object(deploy, "atomically", side_effect=fail_controller):
+                deploy.refresh_main_for_rotation()
+            for path, raw in before.items(): self.assertEqual(path.read_bytes(), raw)
+            execute.assert_not_called()
             with self.assertRaises(Exec): deploy.refresh_main_for_rotation()
         self.assertIn(str(self.source), api_drop.read_text())
         self.assertIn(str(self.source / "scripts/production/bge_kaggle_controller.py"), ctrl_drop.read_text())
@@ -99,7 +107,7 @@ class ReleaseConfigurationTests(unittest.TestCase):
         for sha in ("a" * 40, "b" * 40):
             self.assertIn(("git", "-C", deploy.ROOT, "merge-base", "--is-ancestor", sha, self.sha), commands)
         self.assertEqual([c for c in commands if c[0] == "systemctl"],
-                         [("systemctl", "--user", "daemon-reload")])
+                         [("systemctl", "--user", "daemon-reload")] * 2)
 
     def test_both_existing_late_pins_and_envfiles_follow_one_candidate(self):
         before = {p: p.read_bytes() for p in [deploy.ENV, deploy.OVERRIDE_ENV, deploy.ARCHIVE_ENV, *self.late]}
