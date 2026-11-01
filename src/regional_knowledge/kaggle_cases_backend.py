@@ -370,7 +370,7 @@ class KaggleCasesBackend:
             if (outcome['command_sha256']!=entry.command_sha256 or outcome['person_id']!=command.person_id
                     or outcome['status']!=applied.status):raise ValueError('exact Case outcome differs')
             result.update(status='saved' if applied.status=='applied' else 'rejected',reason=None,
-                saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)))
+                saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)) if applied.status=='applied' else None)
         return result
 
     @staticmethod
@@ -586,7 +586,6 @@ class KaggleCasesBackend:
         # Model interprets Case identity; this returns only bounded
         # actor-authorized question/place/source candidate records.
         if (type(query) is not str or len(query)>120
-                or not any((query.strip(),place,source_id))
                 or type(limit) is not int or not 1<=limit<=8):
             raise failure('invalid_input','invalid_query')
         return await self._read(principal,case_id='00000000-0000-0000-0000-000000000000',

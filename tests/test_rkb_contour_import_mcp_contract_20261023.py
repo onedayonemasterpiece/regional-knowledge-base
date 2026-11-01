@@ -110,7 +110,14 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "On the first stage set source_import.research" in native_text
     assert "pending with the exact owned book_pages continuation" in native_text
     assert "On first stage supply source_import.research" in native.instructions
-    assert "When disagreement_search is registered" in native_text
+    assert native_text.startswith("If a reviewed page contradicts itself")
+    assert "do not search Cases on pages without such a contradiction" in native_text[:500]
+    assert "8. If a reviewed page contradicts itself" in native.instructions[:2000]
+    assert "Do not search for Cases on every page without such a contradiction" in native.instructions[:2000]
+    assert "When disagreement_search is registered" not in native_text
+    assert "When disagreement_search is registered" not in native.instructions
+    assert len(native.instructions) <= 10503  # measured on origin/main b23c0154
+    assert len(native_text) <= 6153  # measured on origin/main b23c0154
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions

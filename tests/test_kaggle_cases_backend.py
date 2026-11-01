@@ -117,6 +117,35 @@ async def test_staged_case_racing_remote_acceptance_returns_pending_and_reuses_s
 
 
 @pytest.mark.asyncio
+async def test_operation_status_returns_durable_rejection_with_native_empty_result(env,auth,monkeypatch):
+    import hashlib
+    from regional_knowledge.kaggle_apply import ApplyReceipt
+    from regional_knowledge.kaggle_case_contracts import canonical
+    value,principal,binding=await backend(env,auth,monkeypatch)
+    with capture_read_output() as outputs:
+        accepted=await value.disagreement_edit('create','rejected-empty-result',principal,command=create())
+        outputs[0].release()
+    entry=await env.spool.get(accepted['operation_key']);c=entry.command
+    body=canonical(dict(command_sha256=entry.command_sha256,person_id=c.person_id,
+        status='rejected_precondition',result_b64=''))
+    await env.spool.mark_apply_sent(c.operation_key)
+    await env.spool.record_apply(c.operation_key,ApplyReceipt(entry.database_generation,c.operation_key,
+        c.sequence,entry.command_sha256,'rejected_precondition',body,hashlib.sha256(body).hexdigest(),False))
+    await env.spool.publish_outcome(c.operation_key,writer_generation='writer-1')
+    with capture_read_output() as outputs:
+        rejected=await value.disagreement_edit('operation_status',c.operation_key,principal,case_id=c.ids['case_id'])
+        assert rejected['status']=='rejected' and rejected['saved'] is False and rejected['result'] is None
+        assert rejected['outcome_durability']=='DURABLE' and rejected['sequence']==c.sequence
+        await outputs[0].gate.refresh(outputs[0].gated)
+        assert outputs[0].gate.issuance_current(outputs[0].gated.ticket)
+        outputs[0].release()
+    assert (await env.spool.get(c.operation_key)).apply_receipt.outcome==body
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==1
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('native_status',['applied','rejected_precondition'])
 async def test_verified_case_terminal_requests_early_dataset_saved_after_native_receipt(
         env,auth,monkeypatch,native_status):
@@ -491,6 +520,7 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         assert {'disagreement_search','disagreement_get','disagreement_edit',
                 'disagreement_contribute','disagreement_conclusion'}<=tools.keys()
         assert tools['disagreement_search'].annotations.read_only_hint
+        assert 'Empty query lists all available Cases by case_id' in tools['disagreement_search'].description
         assert tools['disagreement_get'].annotations.read_only_hint
         def request_context(identity):
             request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
@@ -514,18 +544,20 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         # CASE_READ transport and actor authority, not a separate endpoint.
         request,context=request_context('case-mcp-search')
         task=asyncio.create_task(server.call_tool('disagreement_search',
-            {'query':'Who founded the harbour?','place':'old town','limit':5},context))
+            {'limit':1},context))
         dispatched=await work(s)
         assert type(dispatched.query) is CaseReadRequest
         assert dispatched.query.section=='search'
         assert dispatched.query.actor.person_id==s.auth.p.other.subject
-        assert dispatched.query.search_query=='Who founded the harbour?'
+        assert dispatched.query.search_query is None
+        assert dispatched.query.place is None and dispatched.query.source_id is None
+        assert dispatched.query.limit==1
         import base64
         from regional_knowledge.kaggle_case_contracts import canonical
         case_record=dict(section='search',items=[dict(case_id=CASE,question='Who founded the harbour?',
             context='Exact attributed dispute',state='open',case_revision=1,acl_revision=1,event_seq=1,
             source_dependencies=[])],
-            has_more=False,next_after_case=CASE)
+            has_more=True,next_after_case=CASE)
         native=CaseReadResult(request_id=dispatched.query.request_id,
             connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
             status='ok',record_b64=base64.b64encode(canonical(case_record)).decode(),
@@ -534,6 +566,7 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         assert await s.admission.finish_read(s.run,s.token,s.generation,native)
         output=await task
         assert 'Who founded the harbour?' in str(output) and CASE in str(output)
+        assert 'has_more' in str(output) and 'next_after_case' in str(output)
         issued=request.scope[_SCOPE_KEY][1]
         assert issued.gate is startup.case_gate and issued.gate.issuance_current(issued.gated.ticket)
         issued.release();await release(s,dispatched)

@@ -262,7 +262,10 @@ class WorkerSourceExecutor:
                     reject_reason=reason
                     cause=error.__context__ or error
                     frames=traceback.extract_tb(cause.__traceback__)[-2:]
-                    origin=','.join(f'{frame.name}:{frame.lineno}' for frame in frames)
+                    sql_frames=re.findall(r'(?:^|\n)PL/pgSQL function ([a-z_][a-z0-9_.]*)\([^\n]*\) line ([0-9]+) at ',
+                        cause.diag.context or '') if isinstance(cause,psycopg.Error) else []
+                    origin=','.join([f'{frame.name}:{frame.lineno}' for frame in frames]+
+                        [f'{name}:{line}' for name,line in sql_frames])
                     _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s error_type=%s validator=%s',
                         command.route,command.sequence,reason,type(cause).__name__,origin)
                     break

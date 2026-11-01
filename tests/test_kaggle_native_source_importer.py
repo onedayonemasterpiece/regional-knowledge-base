@@ -1292,7 +1292,8 @@ async def test_unpublished_rejected_page_four_stays_retry_cursor(native_intake):
 
 
 @pytest.mark.asyncio
-async def test_masked_packet_rejection_logs_origin_without_changing_receipt(native_intake,monkeypatch,caplog):
+@pytest.mark.parametrize('postgres',[False,True])
+async def test_masked_packet_rejection_logs_origin_without_changing_receipt(native_intake,monkeypatch,caplog,postgres):
     from contextlib import asynccontextmanager
     import logging
     import regional_knowledge.kaggle_apply as apply_module
@@ -1315,10 +1316,16 @@ async def test_masked_packet_rejection_logs_origin_without_changing_receipt(nati
     async def trusted_catalog(*args,**kwargs):pass  # Synthetic verified SQL catalog only.
     monkeypatch.setattr(apply_module,'_function_contract',trusted_catalog)
     private='SYNTHETIC PRIVATE FIELD VALUE https://private.invalid/?token=secret'
-    def invalid_model_field():raise ValueError(private)
+    import psycopg
+    class RejectedSql(psycopg.errors.InvalidParameterValue):
+        @property
+        def diag(self):
+            return SimpleNamespace(context=f'SQL statement "SELECT {private}"\n'
+                'PL/pgSQL function rkb_v4.prepare_source_batch_v1(bytea,bytea,jsonb,text,text) line 57 at RAISE')
+    def invalid_model_field():raise RejectedSql(private) if postgres else ValueError(private)
     async def materialize(*args,**kwargs):
         try:invalid_model_field()
-        except ValueError:raise SourceMaterializationRejected('native_source_packet_input_invalid') from None
+        except (ValueError,RejectedSql):raise SourceMaterializationRejected('native_source_packet_input_invalid') from None
     worker=WorkerSourceExecutor(acquire=acquire,registry=s.spool.registry,
         database=SimpleNamespace(database_generation=entry.database_generation,writer_generation='writer-1'),
         run_id=s.t.run,launch_nonce=s.t.nonce,runtime_incarnation='incarnation-a',materializer=materialize)
@@ -1332,8 +1339,11 @@ async def test_masked_packet_rejection_logs_origin_without_changing_receipt(nati
         receipt,_=decode_receipt(await worker(frame))
     body=json.loads(base64.b64decode(json.loads(receipt.outcome)['result_b64']))
     assert body=={'reason':'native_source_sql_rolled_back'}  # Historical canonical receipt stays exact.
-    assert 'error_type=ValueError' in caplog.text and 'invalid_model_field:' in caplog.text
+    assert ('error_type=RejectedSql' if postgres else 'error_type=ValueError') in caplog.text
+    assert 'invalid_model_field:' in caplog.text
+    if postgres:assert 'rkb_v4.prepare_source_batch_v1:57' in caplog.text
     assert private not in caplog.text and 'private.invalid' not in caplog.text
+    assert 'SELECT' not in caplog.text and '(bytea,bytea,jsonb,text,text)' not in caplog.text
     assert private not in receipt.outcome.decode()
 
 
