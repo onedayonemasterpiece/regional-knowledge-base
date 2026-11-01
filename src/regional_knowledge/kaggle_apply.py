@@ -361,8 +361,10 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
     """
     _text(database_generation)
     _text(writer_generation)
+    # Retain fixed compiler failures instead of reporting a false SQL rollback.
     if reject_reason not in (None,'native_source_sql_rolled_back',
-                             'native_source_stage_requires_review','native_source_packet_requires_review') and not (
+                             'native_source_stage_requires_review','native_source_packet_requires_review',
+                             'native_source_packet_input_invalid','native_source_component_activation_unavailable') and not (
             type(reject_reason) is str and (re.fullmatch(TOKEN_REJECTION_PATTERN,reject_reason)
                 or re.fullmatch(SOURCE_COVERAGE_REJECTION_PATTERN,reject_reason))):
         raise ValueError('fixed internal source rejection reason required')
