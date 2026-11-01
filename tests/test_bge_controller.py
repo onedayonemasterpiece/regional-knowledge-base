@@ -107,6 +107,27 @@ def sqlite_failure(code=None,name=None):
     return error
 
 
+def test_installed_rotation_refreshes_main_before_any_provider_claim(monkeypatch,tmp_path):
+    import sys
+    from types import SimpleNamespace
+    module,queue=maintenance_main_fixture(monkeypatch,tmp_path)
+    queue.request_startup()
+    source=tmp_path/'installed';scripts=source/'scripts/production';scripts.mkdir(parents=True)
+    (source/'.rkb-release-sha').write_text('a'*40)
+    (scripts/'bge_kaggle_worker.py').write_text('# fixture')
+    monkeypatch.setattr(module,'__file__',str(scripts/'bge_kaggle_controller.py'))
+    monkeypatch.setenv('KAGGLE_USERNAME','fixture-owner')
+    class Exec(BaseException):pass
+    calls=[]
+    def refresh():
+        calls.append('refresh')
+        raise Exec
+    monkeypatch.setitem(sys.modules,'deploy_story_registry',SimpleNamespace(refresh_main_for_rotation=refresh))
+    monkeypatch.setattr(queue,'launch_claim',lambda *a,**kw:pytest.fail('claim before release refresh'))
+    with pytest.raises(Exec):module.main()
+    assert calls==['refresh']
+
+
 def assert_maintenance_log(caplog,tmp_path,*,retry):
     events=[json.loads(record.message) for record in caplog.records
         if 'bge_controller_maintenance_failed' in record.message]

@@ -325,6 +325,10 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
             preparation_step='not_started'  # Fixed, low-cardinality diagnostic only.
             try:
                 if run['status']=='starting' and run['launch_state']=='pending':
+                    if (Path(__file__).resolve().parents[2]/'.rkb-release-sha').is_file() and (
+                            dataset_probe_at is None or time.monotonic()-dataset_probe_at>=30):
+                        from deploy_story_registry import refresh_main_for_rotation
+                        refresh_main_for_rotation()
                     if target_spec is not None and target_spec.dataset_checkpoint is not None:
                         from regional_knowledge.kaggle_launch_config import successor_target
                         target_spec=successor_target(queue,target_spec.wire(),run_id)

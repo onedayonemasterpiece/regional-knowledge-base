@@ -91,6 +91,11 @@ The official Slack Socket Mode client uses at most one second for its WebSocket 
 
 The HTTP runner preserves Uvicorn’s SIGINT handling: after graceful shutdown, control returns to `main`. A requested source rotation then exits with code 75 so the existing `Restart=on-failure` policy restarts the API. Ordinary Ctrl+C remains a clean stop.
 
+At the existing pending-launch boundary, installed controllers advance to merged
+`origin/main` through the existing deployment helpers and systemd source pins.
+The next source rotation restarts the API on that same release. Details and the
+initial-installation distinction are in [Dataset rotations](rkb-first-snapshot-to-verified-restore-20261021.md#dataset-rotations-after-the-initial-verified-restore-2026-10-24).
+
 Successful guarded HTTP reads include `asgi_entered_unix` and `response_started_unix` in the existing correlated `read_attempt_terminal` log. These server-generated Unix seconds locate middleware entry and response headers beside the existing controller timings; they are diagnostic timestamps, not a new public result field. Compare the same trace with caller elapsed time before attributing an unaccounted interval to OAuth, serialization or transport.
 
 ### Book tool argument errors

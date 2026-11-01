@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -338,10 +339,14 @@ def verify_pid(source, sha, unit=SERVICE):
     return pid
 
 
+def running_source(unit):
+    pid = cmd("systemctl", "--user", "show", unit, "--value", "-p", "MainPID")
+    return (Path("/proc") / pid / "cwd").resolve(strict=True)
+
+
 def compiler_checkpoint_preflight(source):
     """A changed compiler needs the accepted prefix saved before rollout."""
-    pid = cmd("systemctl", "--user", "show", SERVICE, "--value", "-p", "MainPID")
-    current = (Path("/proc") / pid / "cwd").resolve(strict=True)
+    current = running_source(SERVICE)
     statement = "from regional_knowledge.kaggle_source_materializer import materializer_fingerprint; print(materializer_fingerprint())"
     pins = [cmd("env", "PYTHONPATH=" + str(path / "src"), sys.executable, "-c", statement) for path in (current, source)]
     if pins[0] == pins[1]: return
@@ -352,6 +357,50 @@ def compiler_checkpoint_preflight(source):
         saved = json.loads(latest or base)["base_sequence"]
     if saved < accepted:
         raise RuntimeError("compiler changed: wait for the accepted prefix checkpoint before rollout")
+
+
+def refresh_main_for_rotation():
+    """Advance the installed services at the existing pre-launch boundary."""
+    current = Path(__file__).resolve().parents[2]
+    marker = current / ".rkb-release-sha"
+    if not marker.is_file(): return  # Development checkouts are not installations.
+    controller = "regional-knowledge-bge-controller.service"
+    api_drop = UNIT_DIR / (SERVICE + ".d/zzzzzzzzzzzzzzz-kaggle-source-acceptance.conf")
+    controller_drop = UNIT_DIR / (controller + ".d/90-kaggle-bootstrap.conf")
+    cmd("git", "-C", ROOT, "fetch", "--no-tags", "origin", "main", timeout=120)
+    sha = cmd("git", "-C", ROOT, "rev-parse", "origin/main")
+    current_sha = marker.read_text().strip()
+    if sha == current_sha: return
+    running = {}
+    for unit in (SERVICE, controller):
+        path = running_source(unit)
+        previous = (path / ".rkb-release-sha").read_text().strip()
+        cmd("git", "-C", ROOT, "merge-base", "--is-ancestor", previous, sha)
+        running[unit] = path
+    source = materialize(sha)
+    compiler_checkpoint_preflight(source)
+    api_raw, controller_raw = snapshot(api_drop), snapshot(controller_drop)
+    old_env = Path([line.split("=", 1)[1] for line in api_raw.decode().splitlines()
+                    if line.startswith("EnvironmentFile=")][-1])
+    env_raw = snapshot(old_env)
+    environment = release_environment(env_raw, source, sha)
+    api_text = api_raw.decode().replace(str(running[SERVICE]), str(source))
+    controller_text = controller_raw.decode().replace(str(current), str(source)).replace(
+        "Environment=RKB_RELEASE_SHA=" + current_sha, "Environment=RKB_RELEASE_SHA=" + sha)
+    if str(source) not in api_text or str(source) not in controller_text:
+        raise RuntimeError("installed release pins do not match running services")
+    # From this point failures stay in the existing pending-launch loop. Never
+    # submit an old worker after partially changing the configured API release.
+    atomically(old_env, environment, 0o600, expected=env_raw)
+    atomically(api_drop, api_text, api_drop.stat().st_mode & 0o777, expected=api_raw)
+    atomically(controller_drop, controller_text, controller_drop.stat().st_mode & 0o777,
+               expected=controller_raw)
+    cmd("systemctl", "--user", "daemon-reload")
+    logging.info("main_rotation state=controller_exec release=%s", sha)
+    env = dict(os.environ, PYTHONPATH=str(source / "src"), RKB_RELEASE_SHA=sha)
+    os.chdir(source)
+    os.execve(sys.executable, [sys.executable,
+              str(source / "scripts/production/bge_kaggle_controller.py")], env)
 
 
 def run(sha, apply, *, with_indexer=False, with_graph_worker=False):
