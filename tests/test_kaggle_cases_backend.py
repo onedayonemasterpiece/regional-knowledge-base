@@ -440,6 +440,7 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         assert {'disagreement_search','disagreement_get','disagreement_edit',
                 'disagreement_contribute','disagreement_conclusion'}<=tools.keys()
         assert tools['disagreement_search'].annotations.read_only_hint
+        assert 'Empty query lists all available Cases by case_id' in tools['disagreement_search'].description
         assert tools['disagreement_get'].annotations.read_only_hint
         def request_context(identity):
             request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
@@ -463,18 +464,20 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         # CASE_READ transport and actor authority, not a separate endpoint.
         request,context=request_context('case-mcp-search')
         task=asyncio.create_task(server.call_tool('disagreement_search',
-            {'query':'Who founded the harbour?','place':'old town','limit':5},context))
+            {'limit':1},context))
         dispatched=await work(s)
         assert type(dispatched.query) is CaseReadRequest
         assert dispatched.query.section=='search'
         assert dispatched.query.actor.person_id==s.auth.p.other.subject
-        assert dispatched.query.search_query=='Who founded the harbour?'
+        assert dispatched.query.search_query is None
+        assert dispatched.query.place is None and dispatched.query.source_id is None
+        assert dispatched.query.limit==1
         import base64
         from regional_knowledge.kaggle_case_contracts import canonical
         case_record=dict(section='search',items=[dict(case_id=CASE,question='Who founded the harbour?',
             context='Exact attributed dispute',state='open',case_revision=1,acl_revision=1,event_seq=1,
             source_dependencies=[])],
-            has_more=False,next_after_case=CASE)
+            has_more=True,next_after_case=CASE)
         native=CaseReadResult(request_id=dispatched.query.request_id,
             connection_generation=s.generation,turn_generation=dispatched.query.turn_generation,
             status='ok',record_b64=base64.b64encode(canonical(case_record)).decode(),
@@ -483,6 +486,7 @@ async def test_normal_mcp_case_tools_use_typed_shared_read_and_accepted_dispatch
         assert await s.admission.finish_read(s.run,s.token,s.generation,native)
         output=await task
         assert 'Who founded the harbour?' in str(output) and CASE in str(output)
+        assert 'has_more' in str(output) and 'next_after_case' in str(output)
         issued=request.scope[_SCOPE_KEY][1]
         assert issued.gate is startup.case_gate and issued.gate.issuance_current(issued.gated.ticket)
         issued.release();await release(s,dispatched)
