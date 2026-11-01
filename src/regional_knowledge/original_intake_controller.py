@@ -115,6 +115,7 @@ class OriginalIntakeController:
             if value.get('terminal') is True and code in TERMINAL_REJECTIONS:raise OriginalIntakeRejected(code)
             if code in ('original_retained_bytes_unavailable','original_djvu_decoder_required','original_telegram_binding_required','original_telegram_send_unknown','original_telegram_caption_unknown','original_telegram_sender_unknown','original_telegram_editability_unknown','original_telegram_document_changed'):
                 raise OriginalIntakeError(code)
+            _LOG.warning('original_phase_error phase=%s code=%.80r',phase,code)
             raise OriginalIntakeError('original_native_receipt_unavailable')
         return value
 
