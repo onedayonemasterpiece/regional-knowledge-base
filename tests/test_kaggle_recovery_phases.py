@@ -295,14 +295,17 @@ async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase,error,retry',[
-    ('original_acquire','original_telegram_lease_changed',True),
-    ('original_acquire','original_telegram_binding_required',True),
-    ('original_archive','original_telegram_lease_changed',False),
-    ('original_archive','original_telegram_binding_required',False),
-    ('original_acquire','original_telegram_scope_denied',False),
+@pytest.mark.parametrize('phase,value,retry',[
+    ('original_acquire',{'error':'original_telegram_lease_changed'},True),
+    ('original_acquire',{'error':'original_telegram_binding_required'},True),
+    ('original_archive',{'error':'original_telegram_lease_changed'},False),
+    ('original_archive',{'error':'original_telegram_binding_required'},False),
+    ('original_acquire',{'error':'original_telegram_scope_denied'},False),
+    pytest.param('original_acquire',{'error':'original_intake_unavailable','error_class':'TimeoutError'},True,id='settled-acquire-timeout'),
+    ('original_archive',{'error':'original_intake_unavailable','error_class':'TimeoutError'},False),
+    ('original_acquire',{'error':'original_intake_unavailable','error_class':'ValueError'},False),
 ])
-async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_sends(state,phase,error,retry):
+async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_sends(state,phase,value,retry):
     s=state;dbspec=database();key='restore-original';args={'telegram_locator':{'fixture':True}}
     bridge=RecoveryPhaseDispatch(s.q,database=dbspec,identity=(s.run,s.nonce,'incarnation-a'),
         binding_current=lambda b:b is s)
@@ -313,7 +316,7 @@ async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_
         database_generation=dbspec.database_generation,writer_generation=dbspec.writer_generation,
         run_id=s.run,launch_nonce=s.nonce,runtime_incarnation='incarnation-a')
     job,_=bridge._enqueue(identity)
-    receipt=dict(phase=phase,request_sha256=request_hash,value={'error':error})
+    receipt=dict(phase=phase,request_sha256=request_hash,value=value)
     with s.q.connect() as db:
         db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.run,))
         db.execute("UPDATE jobs SET state='done',result=? WHERE id=?",(json.dumps(receipt),job))
@@ -322,12 +325,12 @@ async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_
             task,work,frame=await work_for(s,bridge,phase,args,key)
             assert frame['operation_key']==key+':retry:1'
             assert frame['arguments']==args and frame['id']!=job
-            value={'handle':'restored-original'}
-            await bridge.receive(response(s,frame,value),run_id=s.run,token=s.token,generation=s.generation)
-            assert await task==value
-            assert await bridge.request(s,phase,args,operation_key=key)==value
+            restored={'handle':'restored-original'}
+            await bridge.receive(response(s,frame,restored),run_id=s.run,token=s.token,generation=s.generation)
+            assert await task==restored
+            assert await bridge.request(s,phase,args,operation_key=key)==restored
         else:
-            assert await bridge.request(s,phase,args,operation_key=key)=={'error':error}
+            assert await bridge.request(s,phase,args,operation_key=key)==value
         with s.q.connect(write=False) as db:
             assert db.execute('SELECT result FROM jobs WHERE id=?',(job,)).fetchone()[0]==json.dumps(receipt)
             assert db.execute('SELECT count(*) FROM jobs WHERE actor=?',('maintenance:'+s.run,)).fetchone()[0]==(2 if retry else 1)
