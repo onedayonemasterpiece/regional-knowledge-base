@@ -1292,6 +1292,52 @@ async def test_unpublished_rejected_page_four_stays_retry_cursor(native_intake):
 
 
 @pytest.mark.asyncio
+async def test_masked_packet_rejection_logs_origin_without_changing_receipt(native_intake,monkeypatch,caplog):
+    from contextlib import asynccontextmanager
+    import logging
+    import regional_knowledge.kaggle_apply as apply_module
+    from regional_knowledge.kaggle_source_commands import WorkerSourceExecutor,decode_receipt,seal_wire
+    from regional_knowledge.kaggle_source_materializer import SourceMaterializationRejected
+    from test_kaggle_pg_search import FixtureConnection
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,first=17,count=1))
+    await finish(s,book)
+    await call(s,book,'status')
+    entry=await pending(s,book);command=entry.command
+    assert command.route=='source.batch.v1'
+    class NativeConnection(FixtureConnection):
+        async def execute(self,statement,params=()):
+            await super().execute(statement,params)
+            return self
+        async def fetchone(self):return (entry.database_generation,'writer-1',command.sequence-1)
+    @asynccontextmanager
+    async def acquire():yield NativeConnection()
+    async def trusted_catalog(*args,**kwargs):pass  # Synthetic verified SQL catalog only.
+    monkeypatch.setattr(apply_module,'_function_contract',trusted_catalog)
+    private='SYNTHETIC PRIVATE FIELD VALUE https://private.invalid/?token=secret'
+    def invalid_model_field():raise ValueError(private)
+    async def materialize(*args,**kwargs):
+        try:invalid_model_field()
+        except ValueError:raise SourceMaterializationRejected('native_source_packet_input_invalid') from None
+    worker=WorkerSourceExecutor(acquire=acquire,registry=s.spool.registry,
+        database=SimpleNamespace(database_generation=entry.database_generation,writer_generation='writer-1'),
+        run_id=s.t.run,launch_nonce=s.t.nonce,runtime_incarnation='incarnation-a',materializer=materialize)
+    frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.t.generation,id='synthetic-job',
+        claim='synthetic-claim',kind='source_command',run_id=s.t.run,launch_nonce=s.t.nonce,
+        runtime_incarnation='incarnation-a',database_generation=entry.database_generation,writer_generation='writer-1',
+        command_sha256=entry.command_sha256,handler_sha256=entry.handler_sha256,
+        command_b64=base64.b64encode(command.encode()).decode(),accepted=seal_wire(entry.accepted),
+        compute_claim='synthetic-compute',dispatch_generation=s.t.generation)
+    with caplog.at_level(logging.WARNING,logger='regional_knowledge.kaggle_source_commands'):
+        receipt,_=decode_receipt(await worker(frame))
+    body=json.loads(base64.b64decode(json.loads(receipt.outcome)['result_b64']))
+    assert body=={'reason':'native_source_sql_rolled_back'}  # Historical canonical receipt stays exact.
+    assert 'error_type=ValueError' in caplog.text and 'invalid_model_field:' in caplog.text
+    assert private not in caplog.text and 'private.invalid' not in caplog.text
+    assert private not in receipt.outcome.decode()
+
+
+@pytest.mark.asyncio
 async def test_missing_region_diagnostic_crosses_native_receipt_to_status(native_intake,monkeypatch):
     from contextlib import asynccontextmanager
     import regional_knowledge.kaggle_apply as apply_module
