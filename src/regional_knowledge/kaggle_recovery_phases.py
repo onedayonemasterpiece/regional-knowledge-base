@@ -334,10 +334,11 @@ class WorkerRecoveryPhases:
             return await self.read_handler_control(phase,args,key,frame)
         expected={'capture':{'versions','expected_sequence'},
             'prepare':{'manifest_b64','manifest_ref','blob','control_b64','expected_versions','database','identity','restore_operation'},
-            'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer'},
+            'apply':{'handle','command_b64','accepted','handler_sha256','original_pg_writer','replay_rejected_outcome_b64'},
             'finish':{'handle','expected_tail','final_head','control_b64','expected_schema_version'},
             'verify':{'reference'}}[phase]
-        if set(args)!=expected:raise SnapshotError('recovery_phase_arguments')
+        if set(args)!=expected and not (phase=='apply' and set(args)==expected-{'replay_rejected_outcome_b64'}):
+            raise SnapshotError('recovery_phase_arguments')
         if phase=='capture':
             if self.snapshot_io is not None:
                 return self.snapshot_io.capture(key,binding,workspace=self.workspace(key,'capture'),**args)
@@ -405,6 +406,8 @@ class WorkerRecoveryPhases:
                 'run_id','launch_nonce','runtime_incarnation','database_generation','compute_claim','dispatch_generation')}
             inner.update(kind='source_command',writer_generation=args['original_pg_writer'],
                 command_b64=b64(command),command_sha256=sha(command),accepted=args['accepted'],handler_sha256=args['handler_sha256'])
+            if args.get('replay_rejected_outcome_b64') is not None:
+                inner['replay_rejected_outcome_b64']=args['replay_rejected_outcome_b64']
             return await self.factory.apply(session,inner)
         if phase=='finish':
             session=self._session(args,binding)

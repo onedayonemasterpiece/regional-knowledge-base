@@ -205,7 +205,9 @@ class WorkerSourceExecutor:
         self.identity=(run_id,launch_nonce,runtime_incarnation)
 
     async def __call__(self,frame):
-        if (set(frame)!={'type','protocol_version','connection_generation','id','claim','kind','run_id',
+        replay_field='replay_rejected_outcome_b64'
+        historical_b64=frame.get(replay_field)
+        if (set(frame)-({replay_field} if historical_b64 is not None else set())!={'type','protocol_version','connection_generation','id','claim','kind','run_id',
                 'launch_nonce','runtime_incarnation','database_generation','writer_generation','command_sha256',
                 'handler_sha256','command_b64','accepted','compute_claim','dispatch_generation'}
                 or frame.get('kind')!='source_command' or frame.get('type')!='DISPATCH'
@@ -225,8 +227,13 @@ class WorkerSourceExecutor:
         handler=self.registry.resolve(command)
         if frame.get('handler_sha256')!=handler.fingerprint:
             raise PermissionError('source registry binding mismatch')
+        historical=None
+        if historical_b64 is not None:
+            if not isinstance(historical_b64,str) or len(historical_b64)>22000:
+                raise ValueError('bounded restore rejection required')
+            historical=base64.b64decode(historical_b64,validate=True)
         reject_reason=None
-        if command.schema_revision=='rkb-v4-sql001-014-v1' and command.route in ('source.materialize.v1','source.stage.seal.v1','source.batch.v1'):
+        if historical is None and command.schema_revision=='rkb-v4-sql001-014-v1' and command.route in ('source.materialize.v1','source.stage.seal.v1','source.batch.v1'):
             if self.materializer is None:raise ValueError('native source materializer unavailable')
             # Verify this captured authenticated accepted intent BEFORE private
             # candidate effects, then apply canonical outcome in its own tx.
@@ -294,10 +301,12 @@ class WorkerSourceExecutor:
                         registry=self.registry,max_outcome_bytes=8192)
                     try:
                         receipt=await apply_accepted(connection,**options,
-                            **({'reject_reason':reject_reason} if reject_reason is not None else {}))
+                            **({'replay_rejected_outcome':historical} if historical is not None else
+                               {'reject_reason':reject_reason} if reject_reason is not None else {}))
                     except (ApplyUnknown, PermissionError, StaleWriter):
                         raise
                     except Exception:
+                        if historical is not None:raise
                         # The failed call has unwound. Existing committed outcomes
                         # win before an unapplied command receives a real rejection.
                         reject_reason='native_source_sql_rolled_back'

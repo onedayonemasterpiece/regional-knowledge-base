@@ -6,6 +6,7 @@ a second dispatcher, a provider client on the notebook or a Dev shadow corpus.
 """
 from __future__ import annotations
 from dataclasses import dataclass, asdict
+import base64
 import json
 import logging
 from .kaggle_pg_snapshot_native import SnapshotError, SnapshotLimits, BlobRef, encode, sha, validate_versions, _hash
@@ -169,11 +170,36 @@ class PhysicalSnapshotRecovery:
                     raise SnapshotError('snapshot_replay_scope_unsupported')
                 if await self.journal.verify_accepted(seal,command)!=sha(command.encode()):
                     raise SnapshotError('snapshot_exact_acceptance_changed')
-                # Adapter reuses the existing claimed accepted-command DISPATCH;
-                # the worker receives this exact proof, never cloud credentials.
+                # Durable historical rejections are authoritative. Their exact
+                # bytes must not be recompiled using a newer source validator.
+                historical_b64=None
+                stored=await self.journal.remote_outcome(command.operation_key)
+                if stored is not None:
+                    try:
+                        outer=json.loads(stored.data)
+                        raw=base64.b64decode(outer['outcome_b64'],validate=True)
+                        inner=json.loads(raw)
+                        if (encode(outer)!=stored.data or encode(inner)!=raw
+                                or outer['codec']!='rkb.outcome.v1' or outer['stream']!=self.journal.stream
+                                or outer['database_generation']!=database.database_generation
+                                or outer['operation_key']!=command.operation_key or outer['sequence']!=command.sequence
+                                or outer['command_sha256']!=sha(command.encode())
+                                or outer['outcome_length']!=len(raw) or outer['outcome_sha256']!=sha(raw)):
+                            raise ValueError
+                        if inner['status']=='rejected_precondition':
+                            from .kaggle_apply import ApplyReceipt
+                            from .kaggle_source_commands import verify_historical_receipt
+                            receipt=ApplyReceipt(database.database_generation,command.operation_key,
+                                command.sequence,sha(command.encode()),'rejected_precondition',raw,sha(raw),False)
+                            if not verify_historical_receipt(command,handler.fingerprint,receipt):raise ValueError
+                            historical_b64=base64.b64encode(raw).decode()
+                    except (ValueError,KeyError,TypeError,UnicodeError):
+                        raise SnapshotError('snapshot_historical_outcome_invalid') from None
+                # Adapter reuses existing accepted dispatch and PG receipts.
                 wire=await self.native.apply(binding,handle,command_bytes=command.encode(),
                     accepted={'manifest':seal.manifest.wire(),'command_hashes':list(seal.command_hashes)},
-                    handler_sha256=handler.fingerprint,original_pg_writer=manifest['writer_generation'])
+                    handler_sha256=handler.fingerprint,original_pg_writer=manifest['writer_generation'],
+                    **({'replay_rejected_outcome_b64':historical_b64} if historical_b64 is not None else {}))
                 from .kaggle_source_commands import decode_receipt
                 receipt,_=decode_receipt(wire)
                 if ((receipt.database_generation,receipt.operation_key,receipt.sequence,receipt.command_sha256)

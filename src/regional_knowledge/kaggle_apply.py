@@ -352,7 +352,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                          writer_generation: str, registry: HandlerRegistry,
                          max_command_bytes: int = 1048576,
                          max_outcome_bytes: int = 1048576,
-                         reject_reason: str | None = None) -> ApplyReceipt:
+                         reject_reason: str | None = None,
+                         replay_rejected_outcome: bytes | None = None) -> ApplyReceipt:
     """Verify remote acceptance before TX, then atomically apply a trusted PG handler.
 
     Functions and registry are trusted deployment artifacts. Both functions must
@@ -371,6 +372,27 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
     if type(max_outcome_bytes) is not int or not 1 <= max_outcome_bytes <= 1048576:
         raise ValueError("outcome cap must be 1..1048576 bytes")
     command, encoded = _snapshot(command, max_command_bytes)
+    if replay_rejected_outcome is not None:
+        if reject_reason is not None or not isinstance(replay_rejected_outcome, bytes) or len(replay_rejected_outcome)>max_outcome_bytes:
+            raise ValueError('bounded historical rejection required')
+        try:
+            historical=json.loads(replay_rejected_outcome)
+            result=base64.b64decode(historical['result_b64'],validate=True)
+            audit=[command.schema_revision,command.function_revision,command.executor_revision]
+            handler=registry.resolve(command)
+            if (_json(historical)!=replay_rejected_outcome or historical['codec']!='rkb.applied-outcome.v1'
+                    or historical['status']!='rejected_precondition' or historical['operation_key']!=command.operation_key
+                    or historical['cursor']!=command.sequence or historical['command_sha256']!=_hash(encoded)
+                    or historical['ids']!=dict(command.ids) or historical['route']!=command.route
+                    or historical['person_id']!=command.person_id or historical['request_id']!=command.request_id
+                    or historical['logical_time']!=command.logical_time or historical['before']!=audit
+                    or historical['after']!=audit or historical['handler_sha256']!=handler.fingerprint
+                    or _hash(result)!=historical['result_sha256']
+                    or set(historical)!={'codec','status','operation_key','cursor','command_sha256','ids',
+                      'route','person_id','request_id','logical_time','before','after','handler_sha256',
+                      'result_b64','result_sha256'}):raise ValueError
+        except (ValueError,KeyError,TypeError,UnicodeError):
+            raise ValueError('historical rejection identity invalid') from None
     async with _exclusive(connection):
         # Provider I/O happens with an idle connection and no PostgreSQL lock.
         command_hash = await journal.verify_accepted(seal, command)
@@ -419,7 +441,7 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     # Only the trusted native source executor supplies this
                     # after content rejection or a confirmed rollback. Verify acceptance,
                     # writer, exact sequence and duplicate outcomes above.
-                    checked = ((False,) if reject_reason is not None else
+                    checked = ((False,) if reject_reason is not None or replay_rejected_outcome is not None else
                         await (await connection.execute(sql.SQL("SELECT ") + _call(handler.check), args)).fetchone())
                     if checked is None or type(checked[0]) is not bool:
                         raise ApplyConflict("precondition function must return one boolean")
@@ -440,6 +462,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         "route": command.route, "logical_time": command.logical_time,
                         "before": before, "after": after, "handler_sha256": handler.fingerprint,
                         "result_b64": base64.b64encode(result).decode(), "result_sha256": _hash(result)})
+                    if replay_rejected_outcome is not None:
+                        outcome=replay_rejected_outcome
                     if len(outcome) > max_outcome_bytes:
                         raise ApplyLimit("canonical outcome exceeds byte budget")
                     digest = _hash(outcome)

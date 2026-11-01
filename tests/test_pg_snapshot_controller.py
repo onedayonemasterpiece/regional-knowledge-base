@@ -70,6 +70,53 @@ def decoder(wire):
     return ApplyReceipt(**value,outcome=outcome),{}
 
 
+
+@pytest.mark.asyncio
+async def test_restore_uses_exact_historical_rejection_instead_of_new_compiler(env,monkeypatch):
+    pg=Pg();b=binding();history=verifier(env,pg,b,monkeypatch)
+    await history.establish_genesis(b)
+    blob=BlobRef(env.journal.prefix+'/snapshots/blobs/'+'a'*64,123,'a'*64,'"native-version-1"')
+    class HistoricalNative(Native):
+        async def apply(self,binding,handle,**kwargs):
+            assert kwargs['replay_rejected_outcome_b64']==base64.b64encode(previous).decode()
+            assert kwargs['command_bytes']==self.e.cmd.encode()
+            self.events.append('apply')
+            return dict(database_generation='db-source',operation_key=self.e.cmd.operation_key,
+                sequence=self.e.cmd.sequence,command_sha256=sha(self.e.cmd.encode()),
+                status='rejected_precondition',outcome_sha256=sha(previous),
+                duplicate=False,outcome_b64=base64.b64encode(previous).decode())
+    native=HistoricalNative(env,blob)
+    controller=PhysicalSnapshotRecovery(env.journal,Transport(blob),native,registry=env.registry,
+        history_verifier=history,maintenance_guard=guard,current=lambda value:value is b,
+        private_storage_current=lambda:True)
+    base=await controller.create_base(b,versions=versions(),writer_generation='writer-1')
+    await accept(env)
+    cmd=env.cmd
+    result=encode({'reason':'native_source_sql_rolled_back'})
+    audit=[cmd.schema_revision,cmd.function_revision,cmd.executor_revision]
+    previous=encode(dict(codec='rkb.applied-outcome.v1',operation_key=cmd.operation_key,
+        command_sha256=sha(cmd.encode()),cursor=cmd.sequence,status='rejected_precondition',
+        ids=dict(cmd.ids),request_id=cmd.request_id,person_id=cmd.person_id,route=cmd.route,
+        logical_time=cmd.logical_time,before=audit,after=audit,
+        handler_sha256=env.registry.resolve(cmd).fingerprint,
+        result_b64=base64.b64encode(result).decode(),result_sha256=sha(result)))
+    seal=(await env.spool.get(cmd.operation_key)).accepted
+    await env.journal.record_outcome(seal,command=cmd,database_generation='db-source',
+        outcome=previous,writer_generation='writer-1')
+    env.store.writer='writer-2'
+    await env.spool.mark_apply_sent(cmd.operation_key)
+    from regional_knowledge.kaggle_source_commands import verify_historical_receipt
+    monkeypatch.setitem(sys.modules,'regional_knowledge.kaggle_source_commands',
+        SimpleNamespace(decode_receipt=decoder,verify_historical_receipt=verify_historical_receipt))
+    database=OwnedDatabase('VERIFIED_INITIALIZED','db-source','writer-2',
+        '/kaggle/temp/restore/socket','rkb',ownership_evidence='synthetic-owned-restore')
+    proof=await controller.recover(base,b,database=database,expected_versions=versions(),
+        identity=('run','nonce','inc'),operation_key='recovery-historical')
+    assert proof.applied_sequence==1
+    assert native.events==['capture','prepare','apply','rollover-and-readiness']
+    saved=await env.journal.remote_outcome(cmd.operation_key)
+    assert base64.b64decode(json.loads(saved.data)['outcome_b64'])==previous
+
 @pytest.mark.asyncio
 async def test_snapshot_manifest_tail_remote_outcome_rollover_pointer_order(env,monkeypatch):
     pg=Pg();b=binding();history=verifier(env,pg,b,monkeypatch)

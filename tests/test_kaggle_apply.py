@@ -403,6 +403,33 @@ def test_static_registry_rejects_sql_identifier_injection_and_is_immutable():
         registry.handlers = {}
 
 
+
+@PG
+@pytest.mark.asyncio
+async def test_replay_canonical_rejection_survives_changed_compiler_without_effect(env):
+    import base64
+    first=item()
+    seal=await accepted(env,first)
+    old=await apply(env,first,seal,reject_reason='native_source_sql_rolled_back')
+    assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
+    # Synthetic snapshot at cursor zero, not a production receipt rewrite.
+    async with env['connection'].transaction():
+        await env['connection'].execute('DELETE FROM rkb_v4.applied_ops')
+        await env['connection'].execute('UPDATE rkb_v4.recovery_state SET applied_seq=0 WHERE singleton')
+    replay=await apply(env,first,seal,replay_rejected_outcome=old.outcome)
+    assert replay.outcome==old.outcome and replay.outcome_sha256==old.outcome_sha256
+    assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
+    with pytest.raises(ValueError,match='historical rejection identity invalid'):
+        wrong=json.loads(old.outcome)
+        wrong['result_sha256']='0'*64
+        await apply(env,first,seal,replay_rejected_outcome=canonical(wrong))
+    second=item(2)
+    second_seal=await accepted(env,second)
+    fresh=await apply(env,second,second_seal,reject_reason='native_source_packet_input_invalid')
+    assert json.loads(base64.b64decode(json.loads(fresh.outcome)['result_b64']))=={
+        'reason':'native_source_packet_input_invalid'}
+    assert await facts(env['connection'])==((2,'s1','f1','e1'),2,0,[])
+
 @PG
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason',[
