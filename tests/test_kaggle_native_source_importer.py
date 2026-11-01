@@ -744,13 +744,17 @@ async def test_packet_progress_and_reading_completion_keep_exact_durability_rece
     await finish(s,result)
     assert (await call(s,result,'status')).state=='staged'
     assert state(s,result)['published_batch_count']==1
+    research=s.importer._row(s.principal.subject,result.ingestion_id)['research_json']
+    assert json.loads(research)['state']=='pending'
     assert (await call(s,result,'finalize')).state=='processing'
     completion=await pending(s,result)
     assert completion.command.route=='source.finish.v1'
     await finish(s,result,publish=False)
     # A native APPLIED reading completion is immediately usable; the cloud
     # Dataset receipt remains separately pending and never becomes fake Saved.
-    assert (await call(s,result,'status')).state == 'finalized'
+    completed=await call(s,result,'status')
+    assert (completed.state,completed.next_action)==('finalized','done')
+    assert s.importer._row(s.principal.subject,result.ingestion_id)['research_json']==research
     unpersisted=await s.spool.get(completion.command.operation_key)
     assert unpersisted.outcome_state == 'NOT_SENT' and unpersisted.remote_outcome is None
     await s.spool.publish_outcome(completion.command.operation_key,writer_generation='writer-1')

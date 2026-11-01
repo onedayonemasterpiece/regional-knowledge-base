@@ -400,8 +400,7 @@ class KaggleSourceImporter:
 
     async def _native_status(self, access, row):
         output=await self.native_intake.status(access,row)
-        if (output.state=='finalized' or output.state=='staged'
-                and output.next_action=='continue_pages' and not output.warnings):
+        if output.state=='staged' and output.next_action=='continue_pages' and not output.warnings:
             output=await self._native_research_status(access,row,output)
         return output
 
