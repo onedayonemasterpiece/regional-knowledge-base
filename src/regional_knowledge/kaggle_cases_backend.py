@@ -370,7 +370,7 @@ class KaggleCasesBackend:
             if (outcome['command_sha256']!=entry.command_sha256 or outcome['person_id']!=command.person_id
                     or outcome['status']!=applied.status):raise ValueError('exact Case outcome differs')
             result.update(status='saved' if applied.status=='applied' else 'rejected',reason=None,
-                saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)))
+                saved=applied.status=='applied',result=json.loads(base64.b64decode(outcome['result_b64'],validate=True)) if applied.status=='applied' else None)
         return result
 
     @staticmethod
