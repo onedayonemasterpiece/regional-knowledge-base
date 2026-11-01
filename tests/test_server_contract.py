@@ -198,3 +198,19 @@ async def test_search_k_ten_is_declared_in_full_and_live_mcp_without_default_cha
         assert (field["minimum"], field["maximum"], field["default"]) == (1, 10, 3)
         if profile == "full":
             assert "For overview questions, top_k can be increased up to 10." not in tool.description
+
+
+@pytest.mark.asyncio
+async def test_book_find_structured_content_matches_declared_output_schema(monkeypatch):
+    from types import SimpleNamespace
+    from regional_knowledge import server as server_module
+    from regional_knowledge.contracts import BookFindOutput
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    monkeypatch.setattr(server_module, "_principal", lambda: None)
+    async def book_find(query, principal, *, limit):
+        return BookFindOutput(query=query)
+    server = build_server(SimpleNamespace(book_find=book_find))
+    find = next(t for t in server._tool_manager.list_tools() if t.name == "book_find")
+    assert "result" not in (find.output_schema.get("required") or [])
+    result = await server.call_tool("book_find", {"query": "Albinus", "limit": 1})
+    assert result.structured_content == {"query": "Albinus", "results": []}

@@ -33,7 +33,6 @@ from .backend import KnowledgeBackend
 from .kaggle_import_contracts import TargetSourceImportInput
 from .contracts import TelegramOriginalInput
 from .contracts import (
-    BookFindOutput,
     BookIngestOutput,
     StoryExtractionStatus,
     ChatFile,
@@ -1518,7 +1517,7 @@ def build_server(
                         view: Literal['catalog','units'] = 'catalog',
                         source_id: str | None = None,
                         after_ordinal: Annotated[int, Field(ge=0)] | None = None
-                        ) -> BookFindOutput | dict[str, Any]:
+                        ) -> dict[str, Any]:
         if view == 'units':
             if (selected != 'kaggle_source' or source_id is None or query.strip()):
                 raise ToolError('unit_view_requires_exact_native_source_without_query')
@@ -1526,11 +1525,13 @@ def build_server(
                 after_ordinal=after_ordinal,limit=limit)
         if source_id is not None or after_ordinal is not None:
             raise ToolError('catalogue_search_cannot_mix_with_unit_selector')
-        return await backend.book_find(
+        found = await backend.book_find(
             query.strip(),
             _principal(),
             limit=max(1, min(int(limit), 8)),
         )
+        # A union return type makes MCP wrap the schema in {"result": ...}.
+        return found.model_dump(mode='json')
 
     IngestCommand = (Literal['start', 'stage', 'validate', 'finalize', 'status']
         if selected == 'kaggle_source' else
