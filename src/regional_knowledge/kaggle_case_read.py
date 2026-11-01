@@ -87,7 +87,6 @@ async def execute_case_read(request,*,acquire):
                                 event_seq=row[3],state=row[4],question=row[5],context=row[6],
                                 source_dependencies=row[7])
                                 for row in selected]
-                            # Origin/provenance check limited to actual returned IDs.
                             record=dict(section='search',items=candidates,has_more=len(rows)>request.limit,
                                 next_after_case=candidates[-1]['case_id'] if candidates else None)
                             result=CaseReadResult(**_identity(request),status='ok',
