@@ -127,6 +127,39 @@ async def test_actual_case_read_wire_and_pg_lease_use_actor_scoped_bounded_sql()
 
 
 @pytest.mark.asyncio
+async def test_empty_query_lists_authorized_cases_by_case_id_with_pagination():
+    # The same Case SQL and case_role_v1 ACL are used for an unfiltered listing.
+    base=search_request().model_dump(mode="json")
+    base.update(search_query=None,place=None,source_id=None,limit=1)
+    pages=(
+        (None,[(CASE,1,2,3,"open","First case","Context",[]),
+               (OTHER_CASE,1,2,4,"open","Second case","Context",[])],CASE,True),
+        (CASE,[(OTHER_CASE,1,2,4,"open","Second case","Context",[])],OTHER_CASE,False),
+    )
+    async def no_encode(_):
+        raise AssertionError("Case listing does not require BGE")
+    for index,(after,rows,expected,has_more) in enumerate(pages):
+        wire=dict(base,request_id=f"case-list-{index}",after_case_id=after)
+        query=CaseReadRequest.model_validate(wire)
+        db=SearchConnection(rows)
+        lease=Lease(db)
+        handler=KaggleWorkerQuery(lease.acquire,pinned(no_encode))
+        reply=decode_envelope(json.dumps(await handler(json.loads(encode_envelope(query)),
+                                                       encode=forbidden_encode)).encode())
+        record=reply.record
+        assert [item["case_id"] for item in record["items"]]==[expected]
+        assert record["has_more"] is has_more and record["next_after_case"]==expected
+        assert validate_case_record(query,record)==record
+        statement,params=next((s,p) for s,p in db.statements
+                              if "rkb_v4.disagreement_cases c" in s)
+        assert "case_role_v1" in statement and "case_sources_v1" in statement
+        assert "ORDER BY c.case_id LIMIT" in statement
+        assert params[:2]==(ACTOR,after or EMPTY_CASE)
+        assert params[2:6]==("","","","") and params[6:8]==(None,None)
+        assert params[-1]==2 and lease.entered==lease.exited==1
+
+
+@pytest.mark.asyncio
 async def test_pending_next_page_is_not_a_case_subject_read_gate(env,auth):
     from test_case_read_gate import setup
     from regional_knowledge.kaggle_case_contracts import CaseReadResult,canonical

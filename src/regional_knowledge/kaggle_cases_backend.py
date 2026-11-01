@@ -584,7 +584,6 @@ class KaggleCasesBackend:
         # Model interprets Case identity; this returns only bounded
         # actor-authorized question/place/source candidate records.
         if (type(query) is not str or len(query)>120
-                or not any((query.strip(),place,source_id))
                 or type(limit) is not int or not 1<=limit<=8):
             raise failure('invalid_input','invalid_query')
         return await self._read(principal,case_id='00000000-0000-0000-0000-000000000000',

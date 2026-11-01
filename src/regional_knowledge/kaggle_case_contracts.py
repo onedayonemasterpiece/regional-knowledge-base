@@ -51,7 +51,6 @@ class CaseReadRequest(ReadIdentity):
             if value is not None:exact_uuid(value)
         if self.section=='search':
             if (self.case_id!='00000000-0000-0000-0000-000000000000'
-                    or not any((self.search_query,self.place,self.source_id))
                     or any(value is not None for value in (self.candidate_source_id,self.draft_id,
                         self.draft_version,self.after_draft,self.revision,self.operation_key))
                     or self.after_seq or not 1<=self.limit<=8):
