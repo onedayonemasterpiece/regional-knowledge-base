@@ -176,9 +176,12 @@ async def test_no_unknown_decoder_fallback_and_unread_native_layer(bundle,archiv
     foreign=deepcopy(inv)
     from dataclasses import replace
     foreign=replace(foreign,pages=(replace(foreign.pages[0],text_chunks=1),foreign.pages[1]))
-    with pytest.raises(pixels.DjvuPixelsUnavailable,match="embedded_text"):
-        await pixels.render_verified_djvu_page(bundle=bundle,original_path=path,
-            original_bytes=path.stat().st_size,inventory=foreign,index=0)
+    # An OCR'd DjVu page still renders for visual transcription; the unread
+    # layer is reported instead of being called absent.
+    page=await pixels.render_verified_djvu_page(bundle=bundle,original_path=path,
+        original_bytes=path.stat().st_size,inventory=foreign,index=0)
+    assert page["native_text"]=="" and page["native_text_info"]["requires_visual_review"]
+    assert page["native_text_info"]["encoding_notice"]=="djvu_native_layer_unread"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('boundary', ['decoder_verification', 'final_verification'])

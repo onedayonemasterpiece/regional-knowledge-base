@@ -189,9 +189,6 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
             or not 0<=index<inventory.page_count or len(inventory.pages)!=inventory.page_count
             or inventory.pages[index].index!=index):
         raise DjvuPixelsUnavailable('djvu_page_identity_invalid')
-    if inventory.pages[index].text_chunks:
-        # An unread embedded native layer may not be silently called complete.
-        raise DjvuPixelsUnavailable('djvu_embedded_text_layer_requires_decoder')
     # INFO orientation changes the meaning of the normalized source bbox.
     # Until the renderer owns and verifies the complete transform, never hand
     # callers an unrotated geometry/scale as though it were the source page.
@@ -234,7 +231,9 @@ async def render_verified_djvu_page(*, bundle: VerifiedNativeBundle,
         native_text='',native_blocks=[],
         native_text_info=dict(original_length=0,offset=0,end=0,truncated=False,complete=True,
             native_text_sha256=_sha(b''),native_blocks_sha256=_sha(_json([])),
-            requires_visual_review=True,encoding_notice='image_only_djvu_no_native_layer',
+            requires_visual_review=True,
+            # An embedded OCR layer is not read; the model transcribes the image.
+            encoding_notice='djvu_native_layer_unread' if page.text_chunks else 'image_only_djvu_no_native_layer',
             block_count=0,blocks_truncated=False,preview_render=render),
         preview_render=render,image_b64=base64.b64encode(jpeg).decode('ascii'),
         image_sha256=_sha(jpeg))
