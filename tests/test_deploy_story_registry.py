@@ -54,6 +54,61 @@ class ReleaseConfigurationTests(unittest.TestCase):
     def plan(self):
         return deploy.configuration_plan(self.source, self.sha, with_indexer=True)
 
+    def test_rotation_updates_both_existing_pins_before_exec_without_stopping_runtime(self):
+        controller = "regional-knowledge-bge-controller.service"
+        current = self.root / "installed/source"
+        old_api = self.root / "older-api/source"
+        for source, sha in ((current, "a" * 40), (old_api, "b" * 40)):
+            self.write(source / ".rkb-release-sha", sha, 0o600)
+        api_drop = deploy.UNIT_DIR / (deploy.SERVICE + ".d/zzzzzzzzzzzzzzz-kaggle-source-acceptance.conf")
+        ctrl_drop = deploy.UNIT_DIR / (controller + ".d/90-kaggle-bootstrap.conf")
+        self.write(api_drop, "[Service]\nWorkingDirectory=" + str(old_api)
+                   + "\nEnvironmentFile=" + str(deploy.OVERRIDE_ENV) + "\n", 0o600)
+        self.write(ctrl_drop, "[Service]\nWorkingDirectory=" + str(current)
+                   + "\nEnvironment=PYTHONPATH=" + str(current / "src")
+                   + "\nEnvironment=RKB_RELEASE_SHA=" + "a" * 40
+                   + "\nExecStart=/usr/bin/python3 " + str(current / "scripts/production/bge_kaggle_controller.py")
+                   + "\nEnvironmentFile=private-template.env\n", 0o600)
+        before = {p: p.read_bytes() for p in (api_drop, ctrl_drop, deploy.OVERRIDE_ENV)}
+        class Exec(BaseException): pass
+        commands = []
+        def command(*args, **kwargs):
+            commands.append(args)
+            return self.sha if "rev-parse" in args else ""
+        with mock.patch.object(deploy, "__file__", str(current / "scripts/production/deploy_story_registry.py")), \
+             mock.patch.object(deploy, "running_source", side_effect=lambda unit: old_api if unit == deploy.SERVICE else current), \
+             mock.patch.object(deploy, "cmd", side_effect=command), \
+             mock.patch.object(deploy, "materialize", return_value=self.source), \
+             mock.patch.object(deploy, "compiler_checkpoint_preflight") as preflight, \
+             mock.patch.object(deploy.os, "chdir"), \
+             mock.patch.object(deploy.os, "execve", side_effect=Exec) as execute:
+            # A compiler/Saved failure must leave configuration untouched.
+            preflight.side_effect = RuntimeError("checkpoint required")
+            deploy.refresh_main_for_rotation()
+            for path, raw in before.items(): self.assertEqual(path.read_bytes(), raw)
+            execute.assert_not_called()
+            preflight.side_effect = None
+            write = deploy.atomically
+            def fail_controller(path, *args, **kwargs):
+                if path == ctrl_drop: raise OSError("synthetic write failure")
+                return write(path, *args, **kwargs)
+            with mock.patch.object(deploy, "atomically", side_effect=fail_controller):
+                deploy.refresh_main_for_rotation()
+            for path, raw in before.items(): self.assertEqual(path.read_bytes(), raw)
+            execute.assert_not_called()
+            with self.assertRaises(Exec): deploy.refresh_main_for_rotation()
+        self.assertIn(str(self.source), api_drop.read_text())
+        self.assertIn(str(self.source / "scripts/production/bge_kaggle_controller.py"), ctrl_drop.read_text())
+        self.assertIn("EnvironmentFile=private-template.env", ctrl_drop.read_text())
+        self.assertIn("Environment=RKB_RELEASE_SHA=" + self.sha, ctrl_drop.read_text())
+        self.assertIn("OTHER=keep", deploy.OVERRIDE_ENV.read_text())
+        self.assertEqual(deploy.OVERRIDE_ENV.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(execute.call_args.args[2]["RKB_RELEASE_SHA"], self.sha)
+        for sha in ("a" * 40, "b" * 40):
+            self.assertIn(("git", "-C", deploy.ROOT, "merge-base", "--is-ancestor", sha, self.sha), commands)
+        self.assertEqual([c for c in commands if c[0] == "systemctl"],
+                         [("systemctl", "--user", "daemon-reload")] * 2)
+
     def test_both_existing_late_pins_and_envfiles_follow_one_candidate(self):
         before = {p: p.read_bytes() for p in [deploy.ENV, deploy.OVERRIDE_ENV, deploy.ARCHIVE_ENV, *self.late]}
         plan = self.plan()

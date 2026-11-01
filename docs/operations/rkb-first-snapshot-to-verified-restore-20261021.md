@@ -19,8 +19,19 @@ activation and readiness; no live objects are rebound.
 
 Ordinary rotations require no manual `mint_restore_successor`, configuration
 installation or operator stop/start. A short API reconnect during rotation is
-expected. Installing a new main release remains a separate deployment; this
-description does not claim a live rotation passed.
+expected. Before claiming a new provider launch, the installed controller fetches
+`origin/main` on the existing dataset-preflight cadence. When it advances, the
+controller reuses the deployment materializer and compiler/Saved preflight,
+requires both running service releases to be ancestors, retargets the existing
+API/controller systemd pins, and execs the new controller. The API then picks
+that same release through the graceful rotation above. Git/preflight failures log one deferred update and retain the current release
+for this launch. The next normal rotation tries main again; Saved can therefore
+continue advancing on the current runner. Configuration-write failures reuse
+the deployment rollback before returning to the existing launch loop.
+There is no separate updater, timer or merge polling in reads. An already warm
+notebook is not stopped for a commit; main advances on the next normal launch.
+The initial installation of this controller change is a deployment; this
+description does not claim live verification of automatic release advancement.
 The dated first-transition evidence and original genesis requirements follow.
 
 Status 2026-10-21: **actual installed prelaunch failure confirmed by authorized
