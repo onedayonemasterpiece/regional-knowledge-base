@@ -109,10 +109,11 @@ class RecoveryPhaseDispatch:
                     ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
                 if row is None or row['state']!='done':break
                 value=json.loads(row['result'])['value']
-                # An acquire is a read: an unbound/fenced Telegram download can
-                # use the existing retry chain, never an archive/send phase.
+                # An acquire is a read: binding failures and settled download
+                # timeouts use the existing retry chain, never archive/send.
                 if not (value.get('retryable') or phase=='original_acquire'
-                        and value.get('error') in ('original_telegram_lease_changed','original_telegram_binding_required')) or not (value.get('error') or
+                        and (value.get('error') in ('original_telegram_lease_changed','original_telegram_binding_required')
+                            or (value.get('error'),value.get('error_class'))==('original_intake_unavailable','TimeoutError'))) or not (value.get('error') or
                         phase=='schema_migrate' and value.get('status')=='rejected'):break
                 _LOG.info('recovery_phase_retry run_id=%s phase=%s attempt=%s',
                     self.identity[0],phase,attempt+1)
