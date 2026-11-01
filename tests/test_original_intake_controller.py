@@ -794,3 +794,33 @@ async def test_changed_telegram_document_rejects_instead_of_waiting_forever(owne
         assert (await controller.status(e.auth.p.admin,INGEST)).state=='rejected'
         assert controller._row(e.auth.p.owner.subject,INGEST)['failure_code']==error['error']
     finally:spool.close()
+
+@pytest.mark.asyncio
+async def test_admitted_original_transfer_finishes_under_drain_maintenance_binding(owner):
+    from regional_knowledge.kaggle_public_backend import TargetUnavailable
+    e=owner
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    def current(actual,*,draining=False):
+        try:
+            return (current_binding(e.q,allow_draining=draining)==actual
+                and e.w.current(database_generation='synthetic-db',writer_generation='writer-1'))
+        except TargetUnavailable:return False
+    with e.q.connect(write=False) as db:
+        run=db.execute('SELECT * FROM runs WHERE id=?',(e.run,)).fetchone()
+    bridge=RecoveryPhaseDispatch(e.q,
+        database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1'),
+        identity=(e.run,run['launch_nonce'],binding.runtime_incarnation),
+        binding_current=lambda b:current(b,draining=True))
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
+        current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+    try:
+        with e.q.connect() as db:db.execute("UPDATE runs SET status='draining' WHERE id=?",(e.run,))
+        assert not current(binding) and bridge.current(binding)
+        assert await controller.dispatch_transfer({'phase':'original_pages'},binding)=={}
+        with e.q.connect() as db:db.execute("UPDATE runs SET status='expired' WHERE id=?",(e.run,))
+        with pytest.raises((PermissionError,OriginalIntakeError)):
+            await controller.dispatch_transfer({'phase':'original_pages'},binding)
+    finally:
+        await bridge.aclose();spool.close()

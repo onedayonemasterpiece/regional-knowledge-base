@@ -90,7 +90,8 @@ class OriginalIntakeController:
         return bridge
 
     async def dispatch_transfer(self,identity,binding):
-        if identity['phase'] not in PHASES or not self.binding_current(binding):raise PermissionError('original transfer binding unavailable')
+        if identity['phase'] not in PHASES:raise PermissionError('original transfer binding unavailable')
+        self._bridge(binding)
         if identity['phase']=='original_caption':return None
         if identity['phase']=='original_pages':return {}
         if (identity['phase'] in ('original_archive','original_verify') and 'page_index' not in identity['arguments']
