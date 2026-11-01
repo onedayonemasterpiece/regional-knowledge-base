@@ -87,11 +87,6 @@ async def execute_case_read(request,*,acquire):
                                 event_seq=row[3],state=row[4],question=row[5],context=row[6],
                                 source_dependencies=row[7])
                                 for row in selected]
-                            # Origin/provenance check limited to actual returned IDs.
-                            if candidates:
-                                await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',
-                                    ([item['case_id'] for item in candidates],))
-                                if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
                             record=dict(section='search',items=candidates,has_more=len(rows)>request.limit,
                                 next_after_case=candidates[-1]['case_id'] if candidates else None)
                             result=CaseReadResult(**_identity(request),status='ok',
@@ -101,8 +96,6 @@ async def execute_case_read(request,*,acquire):
                                 observed_database_generation=observed['database'])
                             if loop.time()>=deadline:raise TimeoutError
                             return result
-                        await execute('SELECT rkb_v4.verify_disagreement_origins_v1(%s::uuid[])',([request.case_id],))
-                        if await cursor.fetchone()!=(True,):raise ReadUnavailable('not_ready')
                         if request.section=='operation':
                             await execute('SELECT rkb_v4.read_disagreement_operation_v1(%s::uuid,%s::uuid,%s)',
                                 (request.case_id,request.actor.person_id,request.operation_key))
