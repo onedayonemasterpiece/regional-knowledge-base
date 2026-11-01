@@ -850,11 +850,14 @@ class BgeWssTransport:
                     try:
                         await asyncio.shield(task)
                     except asyncio.CancelledError:
-                        cancelled = True
+                        cancelled = cancelled or asyncio.current_task().cancelling()>0
                     except Exception:
                         break
                 if not task.cancelled():
                     task.exception()
+            if (self.encoder is not None and self.prepared_runtime is None and self.loading is not None
+                    and not asyncio.current_task().cancelling()):
+                self.loading.cancel()
             for task in (self.loading, self.encoding, *(r['task'] for r in self.reads.values())):
                 await drain(task)
             # A read's cancellation/cleanup can create its final tracked native
