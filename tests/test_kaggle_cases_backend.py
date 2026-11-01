@@ -66,6 +66,57 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 
 @pytest.mark.asyncio
+async def test_staged_case_racing_remote_acceptance_returns_pending_and_reuses_same_intent(env,auth,monkeypatch):
+    import base64
+    import hashlib
+    from regional_knowledge.kaggle_apply import ApplyReceipt
+    from regional_knowledge.kaggle_case_contracts import canonical
+
+    value,principal,b=await backend(env,auth,monkeypatch)
+    key=value._key(auth.p.other.subject,'case-acceptance-race')
+    check=value._check;head=env.journal.head
+    current={}
+    async def capture_context(authority,context,*args,**kwargs):
+        current['context']=context
+        return await check(authority,context,*args,**kwargs)
+    async def accept_between_stage_and_head():
+        predecessor=await head()
+        entry=await value._entry(key)
+        if entry is not None and entry.accepted is None and not current.get('sealing'):
+            current['sealing']=True
+            await env.spool.seal(current['context'],key,writer_generation='writer-1',predecessor=predecessor)
+        return await head()
+    monkeypatch.setattr(value,'_check',capture_context)
+    monkeypatch.setattr(env.journal,'head',accept_between_stage_and_head)
+    with capture_read_output() as outputs:
+        first=await value.disagreement_edit('create','case-acceptance-race',principal,command=create())
+        assert first['status']=='pending' and not first['saved'] and first['operation_key']==key
+        assert len(outputs)==1
+        await outputs[0].gate.refresh(outputs[0].gated)
+        assert outputs[0].gate.issuance_current(outputs[0].gated.ticket)
+        outputs[0].release()
+    with capture_read_output() as outputs:
+        again=await value.disagreement_edit('create','case-acceptance-race',principal,command=create())
+        assert again['intent_remote_accepted'] and again['command_sha256']==first['command_sha256']
+        outputs[0].release()
+    entry=await env.spool.get(key);command=entry.command
+    raw=canonical(dict(case_id=command.ids['case_id']))
+    outcome=canonical(dict(command_sha256=entry.command_sha256,person_id=command.person_id,
+        status='applied',result_b64=base64.b64encode(raw).decode()))
+    receipt=ApplyReceipt(entry.database_generation,key,command.sequence,entry.command_sha256,
+        'applied',outcome,hashlib.sha256(outcome).hexdigest(),False)
+    await env.spool.record_apply(key,receipt)
+    await env.spool.publish_outcome(key,writer_generation='writer-1')
+    with capture_read_output() as outputs:
+        saved=await value.disagreement_edit('operation_status','case-acceptance-race',principal,case_id=first['case_id'])
+        assert saved['status']=='saved' and saved['saved'] and saved['sequence']==first['sequence']
+        outputs[0].release()
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]==1
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('native_status',['applied','rejected_precondition'])
 async def test_verified_case_terminal_requests_early_dataset_saved_after_native_receipt(
         env,auth,monkeypatch,native_status):

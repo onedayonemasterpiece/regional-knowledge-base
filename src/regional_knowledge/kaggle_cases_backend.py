@@ -563,7 +563,9 @@ class KaggleCasesBackend:
                 else:
                     head=await self.spool.journal.head()
                     if (head.reference.last_sequence if head else 0)!=entry.command.sequence-1:
-                        raise failure('prior_write_pending')
+                        result=self._reply(entry)
+                        await self.output_gate.retain(result,authority,context,binding,entry.command)
+                        retained=True;return result
                     await self.spool.seal(context,key,writer_generation=self.startup.config.writer_generation,predecessor=head)
                 entry=await self.spool.get(key)
             if entry.outcome_state!='DURABLE':
