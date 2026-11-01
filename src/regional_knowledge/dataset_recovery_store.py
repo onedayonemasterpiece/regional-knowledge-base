@@ -30,6 +30,8 @@ class DatasetRecoveryStore:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_dataset_recovery_objects(
                 storage TEXT NOT NULL,key TEXT NOT NULL,data BLOB NOT NULL,token TEXT NOT NULL,
                 covered_version INTEGER,PRIMARY KEY(storage,key))''')
+            db.execute('CREATE INDEX IF NOT EXISTS rkb_dataset_recovery_pending '
+                'ON rkb_dataset_recovery_objects(storage) WHERE covered_version IS NULL')
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_dataset_recovery_store(
                 storage TEXT PRIMARY KEY,origin_storage TEXT NOT NULL,checkpoint_json TEXT NOT NULL,latest_json TEXT)''')
             columns={r[1] for r in db.execute('PRAGMA table_info(rkb_dataset_recovery_store)')}
