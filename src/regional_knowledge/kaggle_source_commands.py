@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+import traceback
 from uuid import UUID
 
 import psycopg
@@ -259,8 +260,11 @@ class WorkerSourceExecutor:
                             or re.fullmatch(SOURCE_COVERAGE_REJECTION_PATTERN,reason)):
                         reason='invalid_model_input'
                     reject_reason=reason
-                    _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s',
-                        command.route,command.sequence,reason)
+                    cause=error.__context__ or error
+                    frames=traceback.extract_tb(cause.__traceback__)[-2:]
+                    origin=','.join(f'{frame.name}:{frame.lineno}' for frame in frames)
+                    _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s error_type=%s validator=%s',
+                        command.route,command.sequence,reason,type(cause).__name__,origin)
                     break
                 except psycopg.errors.QueryCanceled as error:
                     if (command.route=='source.batch.v1' and error.sqlstate=='57014'
