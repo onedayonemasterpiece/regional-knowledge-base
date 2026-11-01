@@ -16,6 +16,7 @@ from uuid import uuid4
 from .kaggle_protocol import ReadIdentity
 
 _STAGES = frozenset({'tokenize_ms', 'tokenize_executor_wait_ms', 'tokenize_mutex_wait_ms',
+                     'encode_mutex_wait_ms', 'encode_executor_wait_ms', 'encode_work_ms', 'encode_resume_ms',
                      'tokenize_work_ms', 'tokenize_resume_ms', 'acquire_ms', 'encode_ms', 'lexical_ms', 'dense_ms',
                      'hydrate_ms', 'search_ms', 'serialize_ms', 'total_ms', 'adapter_ms',
                      'admission_ms', 'transport_ms', 'output_gate_ms'})
@@ -268,6 +269,14 @@ class NativeReadTelemetry:
             'executed_branches': branches(name for name in ('lexical', 'dense') if name + '_ms' in self.stages),
             'stages_ms': {**self.stages, 'adapter_ms': (time.monotonic() - self.started) * 1000},
             'timing_semantics': 'overlapping_do_not_sum'})
+
+
+def record_encoder_timing(submitted, acquired, started, finished, resumed):
+    scope = _NATIVE.get()
+    if scope is not None:
+        scope.stages.update(encode_mutex_wait_ms=(acquired-submitted)*1000,
+            encode_executor_wait_ms=(started-acquired)*1000,
+            encode_work_ms=(finished-started)*1000, encode_resume_ms=(resumed-finished)*1000)
 
 
 def record_tokenizer_timing(submitted, started, acquired, finished, resumed):
