@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import re
 import struct
 from uuid import UUID, uuid4, uuid5
 
@@ -980,7 +981,9 @@ class KaggleSourceImporter:
                     for part in loc[:8]) or 'payload'
             _LOG.warning('book_ingest_invalid_input exception_class=%s field_path=%s',
                 type(error).__name__, field_path)
-            raise failure('invalid_small_source_input', status='invalid_query',
+            catalog_reason = str(error) if (type(error) is ValueError
+                and re.fullmatch(r'catalog_update_[a-z0-9_]{1,80}', str(error))) else None
+            raise failure(catalog_reason or 'invalid_small_source_input', status='invalid_query',
                 exception_class=type(error).__name__, field_path=field_path) from None
 
     async def book_pages(self, *, principal, ingestion_id, cursor=None, batch_size=1):

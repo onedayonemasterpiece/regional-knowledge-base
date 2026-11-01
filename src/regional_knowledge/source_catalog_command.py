@@ -37,9 +37,9 @@ def validate_catalog_payload(payload):
         raise ValueError('catalog correction object required')
     patch = CatalogUpdateInput.model_validate(value['catalog_update'])
     if patch.expected_revision != 1 or patch.model_dump(mode='json', exclude_unset=True) != value['catalog_update']:
-        raise ValueError('native source revision 1 catalog correction required')
+        raise ValueError('catalog_update_expected_revision_1_required')
     if patch.catalog is not None and 'kind' in patch.catalog.model_fields_set:
-        raise ValueError('catalog kind requires separate reviewed registration')
+        raise ValueError('catalog_update_catalog_kind_requires_registration')
     return value
 
 

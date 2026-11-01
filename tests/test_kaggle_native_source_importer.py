@@ -1104,6 +1104,31 @@ async def test_native_same_packet_entity_key_evidence_is_projected(native_intake
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('correction,reason',[
+    ({'expected_revision':2,'title':'Private synthetic catalog correction'},
+     'catalog_update_expected_revision_1_required'),
+    ({'expected_revision':1,'title':'Private synthetic catalog correction',
+      'catalog':{'kind':'book','cover_page':0,'cover_kind':'cover'}},
+     'catalog_update_catalog_kind_requires_registration'),
+])
+async def test_mcp_catalog_correction_keeps_controlled_cause_without_private_input(
+        native_intake,monkeypatch,correction,reason):
+    from regional_knowledge.server import build_server
+    s=native_intake
+    book=await start(s)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    server=build_server(target_startup=s.startup)
+    with pytest.raises(ToolError) as caught:
+        await server._tool_manager.call_tool('book_ingest',dict(command='stage',
+            ingestion_id=book.ingestion_id,metadata={'catalog_update':correction}),None)
+    diagnostic=json.loads(str(caught.value).removeprefix('Error executing tool book_ingest: '))
+    assert diagnostic['status']=='invalid_query' and diagnostic['reason']==reason
+    assert diagnostic['error_class']=='domain'
+    assert 'Private synthetic catalog correction' not in str(caught.value)
+    assert operation_count(s)==0
+
+
+@pytest.mark.asyncio
 async def test_native_invalid_entity_field_is_named_without_source_text(native_intake, caplog):
     s = native_intake
     book = await start(s)
