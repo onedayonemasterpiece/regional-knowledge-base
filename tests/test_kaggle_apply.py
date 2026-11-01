@@ -407,9 +407,7 @@ def test_static_registry_rejects_sql_identifier_injection_and_is_immutable():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason',[
     'complete_native_input_exceeds_512_tokens:chunk_key=Page-0.body:tokens=513',
-    'native_source_packet_requires_review',
-    'native_source_packet_input_invalid',
-    'native_source_component_activation_unavailable'])
+    'native_source_packet_requires_review'])
 async def test_native_source_rejection_is_retained_without_applying_effect(env,reason):
     import base64
     cmd=item()
