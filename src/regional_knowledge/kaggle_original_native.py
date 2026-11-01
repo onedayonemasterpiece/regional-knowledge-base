@@ -245,7 +245,9 @@ class NativeOriginalIntake:
                 async with self._lock:
                     _LOG.info('native_original_page stage=lock_acquired run_id=%s job_id=%s wait_ms=%.3f',
                         self.identity[0],frame['id'],(time.monotonic()-queued)*1000)
-                    return await self._execute_logged(frame)
+                    value=await self._execute_logged(frame)
+                    if value.get('error'):value['retryable']=True
+                    return value
             from .kaggle_pg_snapshot_native import SnapshotError
             try:
                 value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],

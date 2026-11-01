@@ -905,3 +905,44 @@ def test_dataset_archive_ticket_uses_its_own_get_etag_not_the_upload_version():
         2e9,'https://storage.googleapis.com/x',(('If-Match',get_etag),)),pinned)
     # Same-store recovery tickets keep the exact upload-version If-Match.
     assert _download_ticket_matches(blob,ticket('CLvthNDhzpADEAE='))
+
+
+@pytest.mark.asyncio
+async def test_completed_background_page_error_uses_existing_retry_chain(state):
+    s=state;dbspec=database();key='background-original';args={'handle':'retained-original'}
+    bridge=RecoveryPhaseDispatch(s.q,database=dbspec,identity=(s.run,s.nonce,'incarnation-a'),binding_current=lambda b:b is s)
+    async def transfer(identity,binding):return None
+    bridge.original_intake=SimpleNamespace(dispatch_transfer=transfer)
+    request_hash=sha(encode(dict(phase='original_pages',arguments=args)))
+    identity=dict(phase='original_pages',arguments=args,operation_key=key,request_sha256=request_hash,
+        database_generation=dbspec.database_generation,writer_generation=dbspec.writer_generation,
+        run_id=s.run,launch_nonce=s.nonce,runtime_incarnation='incarnation-a')
+    job,_=bridge._enqueue(identity)
+    receipt=dict(phase='original_pages',request_sha256=request_hash,value=dict(status='pending',handle='native-page-io'))
+    with s.q.connect() as db:
+        db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.run,))
+        db.execute("UPDATE jobs SET state='done',result=? WHERE id=?",(json.dumps(receipt),job))
+    task,work,frame=await work_for(s,bridge,'original_pages',args,key)
+    assert frame['phase']=='snapshot_status'
+    await bridge.receive(response(s,frame,dict(status='complete',value={'error':'unfamiliar_read_error','retryable':True})),
+        run_id=s.run,token=s.token,generation=s.generation)
+    r=work.resource
+    await s.a.resource_released(s.run,s.token,s.generation,runtime_incarnation=r.runtime_incarnation,
+        resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    try:
+        async with asyncio.timeout(2):
+            while True:
+                work=await s.a.next_channel_work(s.run,s.token,s.generation)
+                if work is not None:break
+                await s.a.wait_channel_work()
+        s.a.mark_work_sent(work)
+        frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
+            **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+        assert frame['phase']=='original_pages' and frame['operation_key']==key+':retry:1'
+        assert frame['arguments']==args
+        await bridge.receive(response(s,frame,dict(physical_page_index=0)),run_id=s.run,token=s.token,generation=s.generation)
+        assert await task==dict(physical_page_index=0)
+        with s.q.connect(write=False) as db:
+            assert db.execute('SELECT result FROM jobs WHERE id=?',(job,)).fetchone()[0]==json.dumps(receipt)
+    finally:
+        task.cancel();await asyncio.gather(task,return_exceptions=True);await bridge.aclose()
