@@ -296,21 +296,11 @@ async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase,value,retry',[
-    ('original_acquire',{'error':'original_telegram_lease_changed'},True),
-    ('original_acquire',{'error':'original_telegram_binding_required'},True),
-    ('original_acquire',{'error':'original_telegram_presence_unknown'},True),
-    ('original_archive',{'error':'original_telegram_lease_changed'},False),
-    ('original_archive',{'error':'original_telegram_binding_required'},False),
-    ('original_archive',{'error':'original_telegram_presence_unknown'},False),
-    ('original_acquire',{'error':'original_telegram_scope_denied'},True),
-    pytest.param('original_acquire',{'error':'unfamiliar_original_read_error'},True,id='unknown-original-read'),
+    ('original_acquire',{'error':'unfamiliar_original_read_error','retryable':True},True),
+    ('original_pages',{'error':'unfamiliar_original_read_error','retryable':True},True),
+    ('original_verify',{'error':'unfamiliar_original_read_error','retryable':True},True),
     ('original_archive',{'error':'unfamiliar_original_read_error'},False),
-    ('original_acquire',{'error':'original_pdf_invalid','terminal':True},False),
-    ('original_acquire',{'error':'original_pdf_invalid','terminal':True,'retryable':True},False),
     ('original_acquire',{'handle':'already-acquired'},False),
-    pytest.param('original_acquire',{'error':'original_intake_unavailable','error_class':'TimeoutError'},True,id='settled-acquire-timeout'),
-    ('original_archive',{'error':'original_intake_unavailable','error_class':'TimeoutError'},False),
-    ('original_acquire',{'error':'original_intake_unavailable','error_class':'ValueError'},True),
 ])
 async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_sends(state,phase,value,retry):
     s=state;dbspec=database();key='restore-original';args={'telegram_locator':{'fixture':True}}

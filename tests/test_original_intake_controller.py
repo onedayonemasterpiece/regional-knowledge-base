@@ -659,7 +659,7 @@ async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,
         if case=='old_success':
             assert value['restored_from_receipt_sha256']==status.receipt.receipt_sha256
             monkeypatch.setattr(controller,'_phase',phase)
-        else:assert value=={'error':'original_parser_unavailable'}
+        else:assert value=={'error':'original_parser_unavailable','retryable':True}
         stop.set();await task
         await state.bridge.aclose();await e.w.retire('writer-1')
         with e.q.connect(write=False) as db:old_run=dict(db.execute('SELECT * FROM runs WHERE id=?',(state.run,)).fetchone())

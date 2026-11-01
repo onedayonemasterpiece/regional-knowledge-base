@@ -14,7 +14,6 @@ import uuid
 from .bge_queue import StaleClaim
 from .kaggle_recovery_phases import PHASES,b64,bounded,MAX_PHASE_RESULT_BYTES
 from .kaggle_pg_snapshot_native import SnapshotError,encode,sha
-from .original_intake import TERMINAL_REJECTIONS
 
 _LOG=logging.getLogger(__name__)
 
@@ -110,11 +109,7 @@ class RecoveryPhaseDispatch:
                     ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
                 if row is None or row['state']!='done':break
                 value=json.loads(row['result'])['value']
-                # Acquires are reads; only fixed terminal rejections are retained.
-                # Every other phase keeps its explicit retryable contract.
-                retryable=(value.get('error') not in TERMINAL_REJECTIONS
-                    if phase=='original_acquire' else value.get('retryable'))
-                if not retryable or not (value.get('error') or
+                if not value.get('retryable') or not (value.get('error') or
                         phase=='schema_migrate' and value.get('status')=='rejected'):break
                 _LOG.info('recovery_phase_retry run_id=%s phase=%s attempt=%s',
                     self.identity[0],phase,attempt+1)
