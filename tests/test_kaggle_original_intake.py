@@ -146,7 +146,7 @@ async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_
     artifact=n.handler._records[handle]['pages'][index]
     assert artifact['sha256']==digest(artifact['path'].read_bytes())==result['image_sha256']
     bad=frame('original_pages',dict(args,cursor=dict(block=1,offset=0,text=0)))
-    assert await resolved(bad)==dict(error='original_page_cursor_invalid',**({} if background else {'retryable':True}))
+    assert await resolved(bad)=={'error':'original_page_cursor_invalid','retryable':True}
     if background:await n.handler.snapshot_io.aclose()
 
 
