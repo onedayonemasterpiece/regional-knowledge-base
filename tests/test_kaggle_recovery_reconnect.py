@@ -29,9 +29,15 @@ async def test_attachment_refresh_uses_serving_binding_for_ready_original_transf
     if ready:
         assert type(seen[0]) is TargetReadBinding
         originals=object.__new__(OriginalIntakeController)
+        originals.queue=t.queue
         originals.binding_current=lambda value:value==current_binding(t.queue)
         originals._private={}
-        assert await originals.dispatch_transfer(dict(phase='original_archive',arguments={},operation_key='retained'),seen[0]) is None
+        bridge=RecoveryPhaseDispatch(t.queue,database=database(),
+            identity=(t.run,t.nonce,serving.runtime_incarnation),
+            binding_current=originals.binding_current)
+        try:
+            assert await originals.dispatch_transfer(dict(phase='original_archive',arguments={},operation_key='retained'),seen[0]) is None
+        finally:await bridge.aclose()
     else:assert seen==[pre]
 
 
