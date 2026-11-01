@@ -911,8 +911,8 @@ class ControlSpool:
                 remote_outcome_durable=covered is None),sort_keys=True)
             settled=[]
             for job in db.execute("select * from jobs where kind='source_command' and json_extract(identity,'$.operation_key')=?",(key,)).fetchall():
-                if covered is not None and (job['state']!='pending' or job['attempt']<1 or job['result'] is not None):
-                    continue  # A fresh/in-flight/unknown claim is never settled by a restored receipt.
+                if covered is not None and (job['state']!='pending' or job['result'] is not None):
+                    continue  # An in-flight or already settled claim retains its original result.
                 identity=json.loads(job['identity'])
                 if (job['actor']!=row['person_id'] or identity.get('command_sha256')!=row['command_sha256']
                         or identity.get('database_generation')!=row['database_generation']

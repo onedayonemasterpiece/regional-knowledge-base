@@ -394,7 +394,7 @@ class TargetServiceStartup:
             recovered=db.execute(
                 "SELECT o.operation_key FROM jobs j INDEXED BY bge_pending "
                 "JOIN rkb_control_operations o ON o.operation_key=json_extract(j.identity,'$.operation_key') "
-                "WHERE j.state='pending' AND j.kind='source_command' AND j.attempt>=1 AND j.result IS NULL "
+                "WHERE j.state='pending' AND j.kind='source_command' AND j.result IS NULL "
                 "AND j.actor=o.person_id AND j.idempotency='source-command:'||o.operation_key "
                 "AND json_extract(j.identity,'$.command_sha256')=o.command_sha256 "
                 "AND json_extract(j.identity,'$.database_generation')=o.database_generation "

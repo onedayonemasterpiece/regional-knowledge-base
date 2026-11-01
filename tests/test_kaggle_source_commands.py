@@ -525,10 +525,10 @@ def test_native_apply_diagnostic_keeps_sqlstate_and_excludes_private_message(cap
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase',['applied','rejected_precondition','unknown','fresh','identity_mismatch'])
+@pytest.mark.parametrize('phase',['applied','rejected_precondition','unknown','replayed_unclaimed','identity_mismatch'])
 async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblocks_next_accepted(
         accepted,phase,caplog):
-    """Real auth/queue/spool/journal: old attempted job may complete without false Saved.
+    """Real auth/queue/spool/journal: exact native-applied job may complete without false Saved.
 
     No provider, PG or native effect is invoked. Subsequent remote publication
     uses the existing outcome/settlement contract independently.
@@ -537,12 +537,16 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
     from test_source_import import resolved
 
     e=accepted;s=e.s
-    first,work,frame=await dispatch(e)
-    await release(e,work)
-    with s.q.connect() as db:
-        # Exercise the real queue lease-expiry transition, never a manual live reset.
-        db.execute('UPDATE jobs SET lease_until=? WHERE id=?',(s.q.clock()-1,first))
-        s.q._expire(db,s.q.clock())
+    frame=None
+    if phase=='replayed_unclaimed':
+        first=await e.bridge.enqueue(s.auth.p.admin,e.command.operation_key,writer_generation='writer-1')
+    else:
+        first,work,frame=await dispatch(e)
+        await release(e,work)
+        with s.q.connect() as db:
+            # Exercise the real queue lease-expiry transition, never a manual live reset.
+            db.execute('UPDATE jobs SET lease_until=? WHERE id=?',(s.q.clock()-1,first))
+            s.q._expire(db,s.q.clock())
     assert s.q.result(s.auth.p.owner.subject,first)['state']=='pending'
 
     if phase!='unknown':
@@ -558,9 +562,6 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
         await e.spool.record_apply(e.command.operation_key,native)
     else:
         await e.spool.mark_apply_sent(e.command.operation_key)
-    if phase=='fresh':
-        with s.q.connect() as db:
-            db.execute('UPDATE jobs SET attempt=0 WHERE id=?',(first,))
     if phase=='identity_mismatch':
         with s.q.connect() as db:
             db.execute("UPDATE jobs SET identity=json_set(identity,'$.command_sha256',?) WHERE id=?",
@@ -589,11 +590,11 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
     observed=[record.getMessage() for record in caplog.records
         if record.name=='regional_knowledge.kaggle_service_startup'
         and record.message.startswith('source_recovered_queue_settled')]
-    assert len(observed)==int(phase in ('applied','rejected_precondition'))
+    assert len(observed)==int(phase in ('applied','rejected_precondition','replayed_unclaimed'))
     if observed:
         assert 'remote_outcome_durable=false' in observed[0] and 'count=1' in observed[0]
         assert 'operation_key' not in observed[0] and 'command_b64' not in observed[0]
-    if phase in ('applied','rejected_precondition'):
+    if phase in ('applied','rejected_precondition','replayed_unclaimed'):
         assert settled==(first,)
         old=s.q.result(s.auth.p.owner.subject,first)
         assert old['state']=='done'
@@ -604,7 +605,7 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
         next_work=await s.a.next_channel_work(s.run,s.token,s.generation)
         assert next_work is not None and next_work.document_payload['id']==second
         assert next_work.document_payload['command_sha256']==digest(successor.encode())
-        assert next_work.document_payload['claim']!=frame['claim']
+        assert frame is None or next_work.document_payload['claim']!=frame['claim']
         s.a.discard_unsent(next_work)
         # Only the real existing remote outcome path can promote NOT_SENT.
         await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
