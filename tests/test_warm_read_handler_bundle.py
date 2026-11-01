@@ -106,3 +106,32 @@ async def test_warm_exact_fetch_uses_reviewed_executor_without_replacing_residen
     assert lease.entered == lease.exited == 1
     assert handler.acquire is lease.acquire or handler.acquire == lease.acquire
     assert handler.tokenizer is tokenizer and resident.execute_passage_read is forbidden
+
+
+@pytest.mark.asyncio
+async def test_warm_case_uses_reviewed_reader_and_resident_wire_types_without_module_replacement(monkeypatch):
+    from regional_knowledge import kaggle_case_read as resident
+    from test_kaggle_case_read import Connection,request
+    from test_kaggle_worker_query import Lease,pinned,forbidden_encode
+    from test_disagreement_native import CASE
+
+    async def forbidden(*args,**kwargs):
+        raise AssertionError('Case read must use the isolated reviewed reader')
+
+    monkeypatch.setattr(resident,'execute_case_read',forbidden)
+    worker,graph=sources()
+    case=(ROOT/'src/regional_knowledge/kaggle_case_read.py').read_text()
+    source=builder.bundle(worker,graph,graph,case_source=case)
+    module=types.ModuleType('regional_knowledge._warm_case_bundle_test')
+    module.__package__='regional_knowledge';module.__file__='<warm-case-handler>'
+    monkeypatch.setitem(sys.modules,module.__name__,module)
+    exec(compile(source,module.__file__,'exec'),module.__dict__)
+    record=dict(case_id=CASE,case_revision=1,acl_revision=1,event_seq=1,
+        source_dependencies=[],section='case')
+    lease=Lease(Connection(record));tokenizer=pinned(forbidden)
+    handler=module.KaggleWorkerQuery(acquire=lease.acquire,tokenizer=tokenizer)
+    result=await handler(request().model_dump(mode='json'),encode=forbidden_encode)
+    assert result['status']=='ok'
+    assert lease.entered==lease.exited==1
+    assert handler.acquire==lease.acquire and handler.tokenizer is tokenizer
+    assert resident.execute_case_read is forbidden

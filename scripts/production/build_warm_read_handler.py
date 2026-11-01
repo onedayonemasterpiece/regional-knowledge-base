@@ -1,4 +1,4 @@
-"""Build one stateless warm handler with an isolated updated graph implementation."""
+"""Build one stateless warm handler with isolated reviewed read implementations."""
 from __future__ import annotations
 import argparse
 import ast
@@ -11,7 +11,7 @@ WIRE_CLASSES=('SourceGraphReadRequest','SourceGraphReadResult')
 MAX_BYTES=512*1024
 
 
-def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,baseline_executor_source=None):
+def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,baseline_executor_source=None,*,case_source=None):
     graph=ast.parse(graph_source);baseline=ast.parse(baseline_graph_source)
     def wire(tree):
         return {node.name:ast.dump(node,include_attributes=False) for node in tree.body
@@ -35,11 +35,18 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
             '_warm_query = dict(__name__=__name__, __package__=__package__, '
             '__file__=__file__, PinnedTokenizer=PinnedTokenizer)\n'
             f"exec(compile({ast.unparse(executor)!r}, '<warm-query>', 'exec'), _warm_query)\n")
+    case_prefix=(
+        '_warm_case = dict(__name__=__name__, __package__=__package__, __file__=__file__)\n'
+        f"exec(compile({case_source!r}, '<warm-case>', 'exec'), _warm_case)\n"
+        if case_source is not None else '')
     query=ast.parse(query_source)
     replaced=0
     class IsolateGraph(ast.NodeTransformer):
         def visit_ImportFrom(self,node):
             nonlocal replaced
+            if case_source is not None and node.level==1 and node.module=='kaggle_case_read':
+                return ast.copy_location(ast.parse(
+                    "execute_case_read = _warm_case['execute_case_read']").body[0],node)
             if executor_source is not None and node.level==1 and node.module=='kaggle_query':
                 executors=[item for item in node.names if item.name in ('execute_query','execute_passage_read')]
                 if not executors:return node
@@ -59,7 +66,7 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
     if replaced!=1:raise ValueError('warm_graph_import_missing')
     query.body=[node for node in query.body if not isinstance(node,ast.ImportFrom) or node.module!='__future__']
     source=("from __future__ import annotations\n"
-        +executor_prefix+
+        +executor_prefix+case_prefix+
         "from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult\n"
         "_warm_graph = dict(__name__=__name__, __package__=__package__, __file__=__file__, "
         "SourceGraphReadRequest=SourceGraphReadRequest, SourceGraphReadResult=SourceGraphReadResult)\n"
@@ -83,7 +90,8 @@ def main():
     root='src/regional_knowledge/'
     def read(ref,name):return git('show',ref+':'+root+name+'.py')
     source=bundle(read(commit,'kaggle_worker_query'),read(commit,'kaggle_source_graph_read'),
-        read(baseline,'kaggle_source_graph_read'),read(commit,'kaggle_query'),read(baseline,'kaggle_query'))
+        read(baseline,'kaggle_source_graph_read'),read(commit,'kaggle_query'),read(baseline,'kaggle_query'),
+        case_source=read(commit,'kaggle_case_read'))
     output=args.output_dir.resolve()
     if not (output/'.artifact.json').is_file():raise ValueError('managed_artifact_directory_required')
     content=source.encode();digest=hashlib.sha256(content).hexdigest()
