@@ -196,7 +196,7 @@ async def test_verified_original_before_first_stage_is_ready_for_reader(watcher)
 
 
 @pytest.mark.asyncio
-async def test_authorized_activity_is_redacted_read_only_and_cold_is_honest(watcher):
+async def test_authorized_activity_is_redacted_read_only_and_cold_ready_book_resumes(watcher):
     w=watcher
     original=read_timestamp(w)
     response=await get(w)
@@ -212,9 +212,33 @@ async def test_authorized_activity_is_redacted_read_only_and_cold_is_honest(watc
     w.startup.reads_current=lambda:False
     cold=(await get(w))
     assert cold.status_code==200
-    assert (cold.json()["state"],cold.json()["next_action"])==("processing","wait")
+    assert (cold.json()["state"],cold.json()["next_action"])==("staged","continue_pages")
+    assert cold.json()["next_cursor"]=="9"
     assert cold.json()["last_operation_at"]==result["last_operation_at"]
     assert cold.json()["accepted_pages"]==2 and read_timestamp(w)==original
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_native_source_intake_state SET pending_operation_key='synthetic-pending'")
+    pending=(await get(w)).json()
+    assert (pending["state"],pending["next_action"])==("processing","wait")
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_native_source_intake_state SET pending_operation_key=NULL,"
+                   "enriched_batch_count=0")
+    pending=(await get(w)).json()
+    assert (pending["state"],pending["next_action"])==("processing","wait")
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_native_source_intake_state SET enriched_batch_count=1")
+        db.execute("UPDATE rkb_source_intake_control SET phase='acquiring'")
+    pending=(await get(w)).json()
+    assert (pending["state"],pending["next_action"])==("processing","wait")
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_source_intake_control SET phase='finalized'")
+    finalized=(await get(w)).json()
+    assert (finalized["state"],finalized["next_action"])==("finalized","done")
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_source_intake_control SET phase='failed'")
+    failed=(await get(w)).json()
+    assert (failed["state"],failed["next_action"])==("failed","blocker")
+    assert read_timestamp(w)==original
 
 
 @pytest.mark.asyncio
