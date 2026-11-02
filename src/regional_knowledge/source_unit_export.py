@@ -75,14 +75,14 @@ def _unit_figures(unit, pages, rows):
     start, end=anchor(unit['start_anchor']),anchor(unit['end_anchor'])
     unit_spans=unit['source_spans']
     def belongs(passage):
-        if passage.get('article_id',unit['article_id'])!=unit['article_id']:
-            return False
         spans=passage.get('source_spans') or []
-        return bool(spans) and all(any(
+        body=[span for span in spans if
+            positions.get(span['region_id'],(None,None,{}))[2].get('kind')=='body']
+        return bool(body) and all(any(
             span['region_id']==owned['region_id']
             and owned['start']<=span['start']<span['end']<=owned['end']
-            for owned in unit_spans) for span in spans) and any(
-            positions.get(span['region_id'],(None,None,{}))[2].get('kind')=='body'
+            for owned in unit_spans) for span in body) and all(
+            span in body or span['region_id'] in passage['caption_region_ids']
             for span in spans)
     figures=[]
     for data,physical,ingestion,passages in rows:
@@ -152,11 +152,21 @@ async def render_accepted_source_pdf(*, acquire, source_id, article_id,
                     raise SourceUnitPdfError("unit_not_ready: accepted page order differs")
                 edition = material[0][1]
                 await cursor.execute("""SELECT i.data,p.physical_page_index,s.ingestion_id::text,
-                    (SELECT coalesce(jsonb_agg(link.data),'[]'::jsonb)
-                     FROM rkb_v4.source_passage_provenance link
-                     WHERE link.source_id=i.source_id AND link.source_revision=1
-                       AND link.data->'illustration_ids' @>
-                           jsonb_build_array(i.illustration_id::text))
+                    (SELECT coalesce(jsonb_agg(provenance.data ||
+                        jsonb_build_object('caption_region_ids',i.data->'caption_region_ids')),'[]'::jsonb)
+                     FROM rkb_v4.source_batch_publications publication
+                     CROSS JOIN LATERAL jsonb_array_elements(publication.media->'passage_links') link
+                     JOIN rkb_v4.source_passage_provenance provenance
+                       ON provenance.source_id=publication.source_id
+                       AND provenance.source_revision=1
+                       AND provenance.passage_id=(link->>'passage_id')::uuid
+                     WHERE publication.source_id=i.source_id AND publication.component='semantic'
+                       AND publication.figure_ids @> ARRAY[i.illustration_id]
+                       AND publication.batch_index=(
+                         SELECT max(b.batch_index) FROM rkb_v4.source_batch_publications b
+                         WHERE b.source_id=i.source_id AND b.component='semantic'
+                           AND b.figure_ids @> ARRAY[i.illustration_id])
+                       AND link->'illustration_ids' @> jsonb_build_array(i.illustration_id::text))
                     FROM rkb_v4.source_illustrations i
                     JOIN rkb_v4.source_stage_pages p ON p.source_id=i.source_id
                         AND p.page_id=(i.data->>'page_id')::uuid
