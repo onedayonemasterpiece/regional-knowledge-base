@@ -61,7 +61,7 @@ def render_accepted_unit(*, unit, pages, edition, annotation_ru=None, translatio
 
 
 def _unit_figures(unit, pages, rows):
-    """Accepted figures strictly inside the complete unit's model reading anchors."""
+    """In-anchor figures, plus explicitly body-linked accepted figures outside."""
     rank={page['physical_page_index']:i for i,page in enumerate(pages)}
     positions={}
     for page in pages:
@@ -73,12 +73,23 @@ def _unit_figures(unit, pages, rows):
         if location is None:raise SourceUnitPdfError('exact_source_region_required')
         return (*location[:2],item['offset'])
     start, end=anchor(unit['start_anchor']),anchor(unit['end_anchor'])
+    unit_spans=unit['source_spans']
+    def belongs(passage):
+        if passage.get('article_id',unit['article_id'])!=unit['article_id']:
+            return False
+        spans=passage.get('source_spans') or []
+        return bool(spans) and all(any(
+            span['region_id']==owned['region_id']
+            and owned['start']<=span['start']<span['end']<=owned['end']
+            for owned in unit_spans) for span in spans) and any(
+            positions.get(span['region_id'],(None,None,{}))[2].get('kind')=='body'
+            for span in spans)
     figures=[]
-    for data,physical,ingestion in rows:
+    for data,physical,ingestion,passages in rows:
         location=positions.get(data['source_region_id'])
         if location is None or physical not in rank or location[0]!=rank[physical]:
             raise SourceUnitPdfError('accepted_illustration_region_unavailable')
-        if not start <= (*location[:2],0) < end:
+        if not start <= (*location[:2],0) < end and not any(belongs(p) for p in passages):
             continue
         if location[2]['kind']!='figure' or location[2]['bbox']!=data['bbox']:
             raise SourceUnitPdfError('accepted_illustration_geometry_changed')
@@ -140,7 +151,12 @@ async def render_accepted_source_pdf(*, acquire, source_id, article_id,
                 if [p["physical_page_index"] for p in pages] != selected:
                     raise SourceUnitPdfError("unit_not_ready: accepted page order differs")
                 edition = material[0][1]
-                await cursor.execute("""SELECT i.data,p.physical_page_index,s.ingestion_id::text
+                await cursor.execute("""SELECT i.data,p.physical_page_index,s.ingestion_id::text,
+                    (SELECT coalesce(jsonb_agg(link.data),'[]'::jsonb)
+                     FROM rkb_v4.source_passage_provenance link
+                     WHERE link.source_id=i.source_id AND link.source_revision=1
+                       AND link.data->'illustration_ids' @>
+                           jsonb_build_array(i.illustration_id::text))
                     FROM rkb_v4.source_illustrations i
                     JOIN rkb_v4.source_stage_pages p ON p.source_id=i.source_id
                         AND p.page_id=(i.data->>'page_id')::uuid
