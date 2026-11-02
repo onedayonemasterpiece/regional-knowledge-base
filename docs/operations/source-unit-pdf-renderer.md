@@ -16,7 +16,7 @@ resources. The MCP protocol permits the content type but cannot guarantee
 client UI/download integration. No ResourceLink-only result is passed off as a
 working attachment. Spec: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
 
-**Bytes and authorization:** Kaggle's existing PG read gets the *complete*
+**Bytes and authorization:<redacted> Kaggle's existing PG read gets the *complete*
 `source_unit_boundaries` projection and only accepted original regions from
 SQL046 (not search chunks or the 16-span public preview), then renders the PDF.
 Export selects the exact ordered unique pages from the complete unit's source
@@ -118,3 +118,21 @@ short-block/heading pagination, 30+ pages, sparse metadata, deterministic bytes,
 revision metadata, invalid/read-incomplete inputs and unsupported structures.
 These tests do not establish actual source retrieval, live Kaggle performance,
 current ACL behavior or usable MCP/Slack PDF delivery.
+### Warm rollout of a reviewed PDF-only helper
+
+Use the **existing** `scripts/production/build_warm_read_handler.py` with the
+merged reviewed commit, currently loaded baseline commit, and an existing
+managed artifact directory. Alongside query, graph and Case, the compiled
+stateless read handler isolates reviewed `kaggle_source_read`,
+`source_unit_export` and `source_unit_pdf` code, replacing only their exact
+helper imports. `SourceReadRequest`/`SourceReadResult` and `SourceUnitPdfError`
+remain resident types; AST comparison against the loaded baseline rejects
+any class-contract drift. The 512 KiB bound, existing warm activation/rollback
+and source/actor/output gates remain unchanged.
+
+Before activation, root checks the reviewed/baseline hashes and focused
+warm `SOURCE_READ` → MCP PDF regression. After warm activation, verify
+the complete `albinus.huldigung` export includes accepted printed `135` in
+reading order, separately from the service PDF page number. A merged source
+file alone does **not** refresh the cached resident PDF helper. This path
+does not install new PR634 native callbacks or change cold-start requirements.
