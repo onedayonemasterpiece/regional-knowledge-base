@@ -28,9 +28,9 @@ reading of book text, participant lookup or mutation happens on GET.** The
 service credential pins one existing ingestion owner; the row's stored
 `person_id` must match that scope **before** native state or stage data is read.
 New books from the same assigned owner remain eligible without changing scope.
-If Kaggle
-is cold/unverified, any otherwise runnable ingestion reports
-`processing / wait` rather than a false ready state or HTTP 500. The
+Locally ready ingestions report `staged / continue_pages` even if Kaggle is
+cold; true pending/acquiring (or unfinished enrichment) stays `processing / wait`.
+GET never starts Kaggle; a resumed reader's `book_ingest(status)` triggers startup. The
 last reader operation timestamp is updated on the existing ingestion control
 row after authorized `book_pages` and `book_ingest` operations (all supported
 commands, including status and stage). Background packet processing does not
@@ -84,9 +84,10 @@ bodies are fixed, without book text, URLs, user identifiers or credentials.
    credentials. Operator can revoke by credential ID and epoch
    using the existing `service revoke` command.
 4. Poll only the known ingestion ID. An idle timer uses `last_operation_at`;
-   **do not** treat `processing/wait` during cold Kaggle as a failed import,
-   and never restart an ingestion from a watcher. Unknown outcome remains
-   unknown. The correct ingestion is always resumed by its existing reader.
+   A cold `staged / continue_pages` is resumable; true pending/acquiring stays
+   `processing / wait`. Watcher GET never starts runtime or a new ingestion;
+   the existing reader's `book_ingest(status)` triggers normal startup.
+   Unknown outcomes remain unknown.
 
 ## Boundary and acceptance
 
