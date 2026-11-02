@@ -135,7 +135,7 @@ async def test_lost_receipt_after_worker_promotion_reconciles_before_ready_then_
         await admission.resource_released(ident,token,generation,runtime_incarnation='incarnation',
             resource_kind='document',resource_id=resource.resource_id,compute_claim=resource.compute_claim,
             dispatch_generation=resource.dispatch_generation)
-        with pytest.raises(PermissionError,match='binding expired'):await producer
+        assert await producer is False  # durable receipt retained; checkpoint waits for current READY
         assert queue.accept_search_runtime(ident,token,generation,migrated).ok
         queue.heartbeat(ident,token,ready=True,connection_generation=generation)
         # The old READY was invalidated during the lost receipt. Simulate the
@@ -207,7 +207,7 @@ def test_retained_result_beats_startup_refresh_through_actual_channel(peer,monke
             send(socket,generation,'RESOURCE_RELEASED',**held);held.clear()
             if not any(m['status']=='ready' and m['connection_generation']==generation for m in ready_seen):
                 assert receive(socket,generation,'READY_ACK')['status']=='ready'
-            with pytest.raises(PermissionError,match='binding expired'):producer.result(timeout=3)
+            assert producer.result(timeout=3) is False
             assert p.client.portal.call(state.owner.advance,current_binding(p.q))
             assert state.owner.pending() is None and len(state.effects)==len(state.checkpoints)==1
             with p.q.connect(write=False) as conn:

@@ -301,8 +301,11 @@ async def test_cold_page_reauthorizes_after_short_read_context_expires(intake, c
     s.originals.pages = slow_pages
     with capture_read_output() as outputs:
         if change != 'none':
-            with pytest.raises(ToolError, match='access_denied|target_runtime_changed'):
+            with pytest.raises(ToolError) as caught:
                 await s.importer.book_pages(principal=s.principal, ingestion_id=result.ingestion_id)
+            error = json.loads(str(caught.value))
+            assert error['reason'] == ('access_denied' if change == 'revoke' else 'target_runtime_changed')
+            assert error['status'] == ('denied' if change == 'revoke' else 'unavailable')
             assert not outputs
         else:
             batch = await s.importer.book_pages(principal=s.principal, ingestion_id=result.ingestion_id)

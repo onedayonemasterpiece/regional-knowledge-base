@@ -43,20 +43,36 @@ async def test_attachment_refresh_uses_serving_binding_for_ready_original_transf
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('claimed',[False,True])
-async def test_reconnect_dispatches_retained_job_without_another_client_request(state,claimed):
+@pytest.mark.parametrize('after',['valid','revoked','different_run'])
+async def test_reconnect_dispatches_retained_job_without_another_client_request(state,claimed,after,monkeypatch):
     s=state;db=database()
     old=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,db.database_generation,db.writer_generation)
-    current=[old]
+    current=[old];revoked=[False]
     restorer=object.__new__(SourceRestoreCoordinator)
     restorer.queue=s.q
     restorer.startup=SimpleNamespace(schema_migrations=SimpleNamespace(resume_attachment=lambda:False))
     restorer._observe=lambda:(current[0],s.nonce)
     bridge=RecoveryPhaseDispatch(s.q,database=db,identity=(s.run,s.nonce,'incarnation-a'),
         binding_current=lambda b:b==current[0],
-        rebind_current=restorer.resume_attachment)
+        rebind_current=lambda: False if revoked[0] else restorer.resume_attachment())
     restorer.dispatch=bridge
-    task=asyncio.create_task(bridge.request(old,'verify',{'reference':'retained'},operation_key='only-request'))
+    subscribed=asyncio.Event();received=asyncio.Event();release=asyncio.Event()
+    arrivals=resolved=0
+    original_wait=s.q.wait_result
+    async def held_wait(*args):
+        nonlocal arrivals,resolved
+        arrivals+=1
+        if arrivals==2:subscribed.set()
+        value=await original_wait(*args)
+        resolved+=1
+        if resolved==2:received.set()
+        await release.wait()
+        return value
+    monkeypatch.setattr(s.q,'wait_result',held_wait)
+    tasks=[asyncio.create_task(bridge.request(old,'verify',{'reference':'retained'},operation_key='only-request'))
+           for _ in range(2)]
     try:
+        await asyncio.wait_for(subscribed.wait(),2)
         for _ in range(100):
             with s.q.connect(write=False) as conn:
                 row=conn.execute("select id from jobs where kind='recovery_phase'").fetchone()
@@ -78,13 +94,27 @@ async def test_reconnect_dispatches_retained_job_without_another_client_request(
         frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
             **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
         await bridge.receive(response(s,frame,{'verified':True}),run_id=s.run,token=s.token,generation=s.generation)
-        with pytest.raises(PermissionError,match='binding expired'):await task
+        await asyncio.wait_for(received.wait(),2)
+        if after!='valid':
+            revoked[0]=True
+            current[0]=(None if after=='revoked' else replace(old,run_id='different-run',
+                                                               connection_generation=s.generation))
+        release.set()
+        results=await asyncio.gather(*tasks,return_exceptions=True)
+        if after=='valid':
+            assert results==[{'verified':True}]*2
+        else:
+            assert all(isinstance(item,PermissionError) and 'binding expired' in str(item)
+                       for item in results)
+        assert not bridge._bindings
         with s.q.connect(write=False) as conn:
             rows=conn.execute("select state,attempt from jobs where kind='recovery_phase'").fetchall()
             assert len(rows)==1 and rows[0]['state']=='done' and rows[0]['attempt']==1
     finally:
-        if not task.done():task.cancel()
-        await asyncio.gather(task,return_exceptions=True)
+        release.set()
+        for task in tasks:
+            if not task.done():task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
         await bridge.aclose()
 
 
@@ -133,7 +163,10 @@ async def test_claimed_unsent_maintenance_survives_generation_rebind(state,resta
         frame=dict(type='DISPATCH',protocol_version=2,connection_generation=s.generation,
             **dict(resumed.document_payload),compute_claim=resumed.compute_claim,dispatch_generation=resumed.dispatch_generation)
         await bridge.receive(response(s,frame,{'verified':True}),run_id=s.run,token=s.token,generation=s.generation)
-        with pytest.raises(PermissionError,match='binding expired'):await tasks[0]
+        if restart_owner:
+            with pytest.raises(PermissionError,match='binding expired'):await tasks[0]
+        else:
+            assert await tasks[0]=={'verified':True}
         with s.q.connect(write=False) as conn:
             job=conn.execute('select state,attempt,claim from jobs where id=?',(original_id,)).fetchone()
             assert job['state']=='done' and job['attempt']==1 and job['claim']==original_claim
