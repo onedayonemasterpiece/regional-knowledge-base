@@ -176,8 +176,9 @@ class BgeWssTransport:
                 acquired=time.monotonic()
                 def exact():
                     marks.append(time.monotonic())
+                    cpu=time.process_time()
                     try:return self.encoder(text)
-                    finally:marks.append(time.monotonic())
+                    finally:marks.extend((time.monotonic(),(time.process_time()-cpu)*1000))
                 value=await asyncio.to_thread(exact)
                 if resource is not None:
                     from regional_knowledge.query_telemetry import record_encoder_timing

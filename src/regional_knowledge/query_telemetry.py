@@ -16,7 +16,7 @@ from uuid import uuid4
 from .kaggle_protocol import ReadIdentity
 
 _STAGES = frozenset({'tokenize_ms', 'tokenize_executor_wait_ms', 'tokenize_mutex_wait_ms',
-                     'encode_mutex_wait_ms', 'encode_executor_wait_ms', 'encode_work_ms', 'encode_resume_ms',
+                     'encode_mutex_wait_ms', 'encode_executor_wait_ms', 'encode_work_ms', 'encode_resume_ms', 'encode_process_cpu_ms',
                      'tokenize_work_ms', 'tokenize_resume_ms', 'acquire_ms', 'encode_ms', 'lexical_ms', 'dense_ms',
                      'hydrate_ms', 'search_ms', 'serialize_ms', 'total_ms', 'adapter_ms',
                      'admission_ms', 'transport_ms', 'output_gate_ms'})
@@ -271,12 +271,14 @@ class NativeReadTelemetry:
             'timing_semantics': 'overlapping_do_not_sum'})
 
 
-def record_encoder_timing(submitted, acquired, started, finished, resumed):
+def record_encoder_timing(submitted, acquired, started, finished, process_cpu_ms, resumed):
     scope = _NATIVE.get()
     if scope is not None:
         scope.stages.update(encode_mutex_wait_ms=(acquired-submitted)*1000,
             encode_executor_wait_ms=(started-acquired)*1000,
-            encode_work_ms=(finished-started)*1000, encode_resume_ms=(resumed-finished)*1000)
+            # All worker-process threads during the forward window; not exclusive model CPU.
+            encode_work_ms=(finished-started)*1000, encode_resume_ms=(resumed-finished)*1000,
+            encode_process_cpu_ms=process_cpu_ms)
 
 
 def record_tokenizer_timing(submitted, started, acquired, finished, resumed):
