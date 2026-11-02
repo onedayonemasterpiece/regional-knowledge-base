@@ -594,6 +594,28 @@ class OriginalIntakeController:
                 raise OriginalIntakeError('original_telegram_migration_conflict')
         return locator
 
+    async def prepare_pdf_original(self,source_id,binding):
+        """Restore only after a source-gated native PDF read identified a figure.
+
+        No page data or private original inventory is returned to the read caller.
+        """
+        async def current():
+            if not self.binding_current(binding):
+                raise OriginalIntakeError('original_current_binding_required')
+        await current()
+        with self.queue.connect(write=False) as db:
+            rows=db.execute('''SELECT * FROM rkb_original_intakes
+                WHERE json_extract(spec_json,'$.source_id')=?
+                AND receipt_json IS NOT NULL AND storage_sha256=?''',
+                (source_id,self._storage)).fetchall()
+        if len(rows)!=1:raise OriginalIntakeError('original_verified_receipt_required')
+        row=rows[0]
+        receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
+        if receipt.source_id!=source_id or row['acquisition_json'] is None:
+            raise OriginalIntakeError('original_verified_receipt_required')
+        await self._restore_handle(None,row['actor'],binding,receipt,
+            json.loads(row['acquisition_json']),recheck=current)
+
     async def illustration_page(self,figure,binding):
         """Internal page renderer for the already authorized accepted-figure read.
 
