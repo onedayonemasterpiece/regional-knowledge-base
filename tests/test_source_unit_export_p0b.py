@@ -236,6 +236,9 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
         source_text='',bbox=dict(left=100,top=100,right=800,bottom=800)))
     # A different figure after the accepted END marker on the final page must
     # never leak into this article just because it shares a source page.
+    pages[1]['regions'].append(dict(region_key='neighbor-body',kind='body',
+        reading_order=19,source_text='Following article body.',
+        bbox=dict(left=0,top=0,right=100,bottom=100)))
     pages[1]['regions'].append(dict(region_key='fig-outside',kind='figure',
         reading_order=20,source_text='',bbox=dict(left=0,top=0,right=400,bottom=400)))
 
@@ -249,8 +252,8 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
         end=len(pages[1]['regions'][15]['source_text']))],
         illustration_ids=[],article_id='albinus-unit')
     neighbor_link=dict(source_spans=[dict(region_id=str(uuid5(
-        UUID(pages[1]['page_id']),'region:fig-outside')),start=0,end=1)],
-        article_id='neighboring-article')
+        UUID(pages[1]['page_id']),'region:neighbor-body')),start=0,
+        end=len('Following article body.'))],article_id='neighboring-article')
     rows=[
         (data(pages[0],'fig-1',dict(left=100,top=100,right=800,bottom=800),
              'Принятая подпись Huldigung'),0,'import-accepted',[]),
@@ -295,3 +298,12 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
         assert text.index('Abschnitt 9')<text.index('Принятая подпись Huldigung')<text.index('Abschnitt 10')
         assert 'Исходная страница: 61' in text
         assert 'Чужая подпись' not in text
+    # Same PDF path: only an exact accepted body passage permits the
+    # post-anchor image; its own caption, page and crop remain present.
+    rows[:]=linked_rows
+    pdf_linked=await render_accepted_source_pdf(acquire=acquire,source_id=SOURCE,
+        article_id='albinus-unit',illustration_page=native_page)
+    with pymupdf.open(stream=pdf_linked,filetype='pdf') as doc:
+        assert sum(len(page.get_images()) for page in doc)==2
+        text=''.join(page.get_text() for page in list(doc)[1:])
+        assert 'Чужая подпись' in text and 'Исходная страница: 62' in text
