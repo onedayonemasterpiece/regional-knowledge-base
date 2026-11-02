@@ -145,6 +145,8 @@ class SourceSchemaMigrations:
                 raise SnapshotError(result['reason'])
             if result['schema_version']!=plan['target_schema_version']:
                 raise SnapshotError('migration_target_version_changed')
+            # A reconnected result must not checkpoint through its former generation.
+            if not startup.binding_current(binding):return False
             await startup.dataset_checkpoints.checkpoint_schema(binding,schema_version=result['schema_version'],
                 operation_key=key+':checkpoint',expected_sequence=sequence)
             with self.queue.connect() as db:

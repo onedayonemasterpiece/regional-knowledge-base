@@ -131,9 +131,17 @@ class RecoveryPhaseDispatch:
         if result is None:
             _LOG.warning('recovery_phase_timeout run_id=%s phase=%s operation_hash=%s',self.identity[0],phase,sha(operation_key.encode()))
             raise TimeoutError('recovery phase result timeout')
-        # The durable result owns replay after completion. Only outstanding
-        # work needs its attachment retained for transfer/dispatch authority.
+        # Results no longer need their dispatch binding. A newer attachment
+        # is valid only through the existing immutable eligible-job check.
         self._bindings.pop(job,None)
+        if not self.current(binding):
+            with self.queue.connect(write=False) as db:
+                row=db.execute('SELECT * FROM jobs WHERE id=? AND actor=?',(job,actor)).fetchone()
+                run=db.execute('SELECT * FROM runs WHERE id=?',(self.identity[0],)).fetchone()
+            if row is None or run is None or not self.eligible(
+                    row,run,getattr(self._attachment_binding,'connection_generation',None)):
+                raise PermissionError('recovery binding expired before delivery')
+            binding=self._bindings.pop(job,None)
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
         value=result['result']['value']
         if phase in ('capture','dataset_verify','original_pages') and isinstance(value,dict) and value.get('status')=='pending':
