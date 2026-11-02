@@ -8,6 +8,12 @@ import hashlib
 import json
 
 
+def read_publication_progress(queue, row):
+    """Open SQLite in the calling worker; connections never cross threads."""
+    with queue.connect(write=False) as db:
+        return publication_progress(db, row)
+
+
 def publication_progress(db, row):
     ingestion=row['ingestion_id']
     stages={}
