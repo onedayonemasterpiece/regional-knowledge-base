@@ -369,6 +369,7 @@ class KaggleSourceBackend:
             return EvidenceSearchOutput(evidence=[FetchOutput(id=fetch_id(item),
                 title=_evidence_title(item), text=item.text, url=locator(item),
                 metadata={'citation': item.metadata.citation, 'locator': item.metadata.locator,
+                    'source_provenance': item.metadata.source_provenance,
                     'text_form': item.text_form, 'continuation': item.continuation,
                     'source_continuation': item.source_continuation.model_dump(mode='json')
                         if item.source_continuation else None,
