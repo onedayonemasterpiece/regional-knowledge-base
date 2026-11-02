@@ -16,7 +16,7 @@ resources. The MCP protocol permits the content type but cannot guarantee
 client UI/download integration. No ResourceLink-only result is passed off as a
 working attachment. Spec: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
 
-**Bytes and authorization:<redacted> Kaggle's existing PG read gets the *complete*
+**Bytes and authorization:** Kaggle's existing PG read gets the *complete*
 `source_unit_boundaries` projection and only accepted original regions from
 SQL046 (not search chunks or the 16-span public preview), then renders the PDF.
 Export selects the exact ordered unique pages from the complete unit's source
