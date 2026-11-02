@@ -236,6 +236,9 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
         source_text='',bbox=dict(left=100,top=100,right=800,bottom=800)))
     # A different figure after the accepted END marker on the final page must
     # never leak into this article just because it shares a source page.
+    pages[1]['regions'].append(dict(region_key='caption-out',kind='caption',
+        reading_order=18,source_text='Printed caption outside article.',
+        bbox=dict(left=100,top=0,right=400,bottom=100)))
     pages[1]['regions'].append(dict(region_key='neighbor-body',kind='body',
         reading_order=19,source_text='Following article body.',
         bbox=dict(left=0,top=0,right=100,bottom=100)))
@@ -247,13 +250,16 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
             UUID(page['page_id']),'region:'+key)),bbox=bbox,
             display_rotation_degrees=0,caption_text=caption,
             caption_region_ids=[],crop_binding=dict(original_sha256='a'*64))
+    caption_id=str(uuid5(UUID(pages[1]['page_id']),'region:caption-out'))
     body_link=dict(source_spans=[dict(region_id=str(uuid5(
         UUID(pages[1]['page_id']),'region:r-15')),start=0,
-        end=len(pages[1]['regions'][15]['source_text']))],
-        illustration_ids=[],article_id='albinus-unit')
+        end=len(pages[1]['regions'][15]['source_text'])),
+        dict(region_id=caption_id,start=0,end=len('Printed caption outside article.'))],
+        region_ids=[],footnote_region_ids=[],page_ids=[],passage_id=str(uuid5(UUID(SOURCE),'passage:body')))
     neighbor_link=dict(source_spans=[dict(region_id=str(uuid5(
         UUID(pages[1]['page_id']),'region:neighbor-body')),start=0,
-        end=len('Following article body.'))],article_id='neighboring-article')
+        end=len('Following article body.'))],
+        region_ids=[],footnote_region_ids=[],page_ids=[],passage_id=str(uuid5(UUID(SOURCE),'passage:neighbor')))
     rows=[
         (data(pages[0],'fig-1',dict(left=100,top=100,right=800,bottom=800),
              'Принятая подпись Huldigung'),0,'import-accepted',[]),
@@ -265,7 +271,7 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
     assert len(selected)==1 and selected[0]['caption_text']=='Принятая подпись Huldigung'
     # RED on old anchor-only filter: the explicit accepted body link is
     # the sole authority for this post-anchor figure, not page proximity.
-    linked=dict(body_link,illustration_ids=[rows[1][0]['source_region_id']])
+    linked=dict(body_link,caption_region_ids=[caption_id])
     linked_rows=[rows[0],(*rows[1][:3],[linked])]
     assert [f['caption_text'] for f in _unit_figures(unit,pages,linked_rows)] == [
         'Принятая подпись Huldigung','Чужая подпись']
