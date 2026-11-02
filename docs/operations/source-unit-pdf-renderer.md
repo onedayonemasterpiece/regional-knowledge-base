@@ -66,8 +66,11 @@ These checks do not prove current actor/source/revision eligibility. The
 existing source/actor gate must run before retrieval and again before delivery;
 withdrawn sources and stale revisions must remain fenced by that caller.
 
-One supplied source span is one explicit author block. Heading/body regions are
-supported, including literal internal newlines and long block flow. No paragraph,
+One supplied source span is one explicit accepted block. Heading/body regions are
+supported, including literal internal newlines and long block flow. Accepted
+`page_number` spans retain their exact printed text as small centered source
+furniture, independently of the generated PDF folio; they do not block a
+cross-page article export. No paragraph,
 list hierarchy, table cells or footnote callouts are inferred from plain text.
 Footnote, table, marginalia, caption, figure and other unsupported significant
 region kinds fail explicitly with `unsupported_structure:<kind>`. They are never

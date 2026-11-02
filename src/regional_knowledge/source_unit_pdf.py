@@ -83,7 +83,7 @@ def _blocks(unit, regions, accepted_revision):
             raise SourceUnitPdfError('source_review_required')
         # No footnote callout/cell/list semantics are inferred from plain text.
         # These significant structures need their actual accepted structure.
-        if region.kind not in (RegionKind.BODY, RegionKind.HEADING):
+        if region.kind not in (RegionKind.BODY, RegionKind.HEADING, RegionKind.PAGE_NUMBER):
             raise SourceUnitPdfError('unsupported_structure:' + region.kind.value)
         text = region.source_text[start:end]
         if not text.strip() or any(ord(c) < 32 and c not in '\n\t\r' for c in text):
@@ -181,12 +181,12 @@ def render_source_unit_pdf(*, unit, regions, accepted_revision, edition, origina
         # in selectable text; preserve original literal Unicode ligatures.
         escaped = escaped.replace('f', '<span>f</span>')
         size = {'cover-title': 20, 'source-title': 17, 'heading': 13,
-                'translation-title': 14, 'label': 10, 'running': 8, 'folio': 9}.get(kind, _FONT_SIZE)
+                'translation-title': 14, 'label': 10, 'running': 8, 'folio': 9, 'page_number': 8}.get(kind, _FONT_SIZE)
         leading = size * 1.3
         indent = '14pt' if kind in ('body', 'translation', 'annotation') else '0'
         weight = 'bold' if kind in ('cover-title', 'source-title', 'heading',
                                     'translation-title', 'label') else 'normal'
-        align = 'center' if kind == 'folio' else 'left'
+        align = 'center' if kind in ('folio', 'page_number') else 'left'
         css = (f'body {{font-family:serif;font-size:{size}pt;line-height:1.3;margin:0}}'
                f'p {{margin:0;text-indent:{indent};font-weight:{weight};text-align:{align}}}')
         check()
