@@ -615,9 +615,9 @@ class NativeSourceIntake:
         if entry is None:return None
         doc=json.loads(entry.command.payload)
         pages=doc['model_payload']['pages']
-        from .source_page_progress import publication_progress,next_unaccepted
-        with self.queue.connect(write=False) as db:
-            published,_=publication_progress(db,row)
+        from .source_page_progress import read_publication_progress,next_unaccepted
+        published,_=await asyncio.to_thread(read_publication_progress,self.queue,row)
+        await self._check(access,row)
         if retry:
             first=str(pages[0]['physical_page_index'])
             return next_unaccepted(first,published) if all(p['physical_page_index'] in published for p in pages) else first
@@ -806,9 +806,9 @@ class NativeSourceIntake:
         limit=4
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
-        from .source_page_progress import publication_progress,next_unaccepted
-        with self.queue.connect(write=False) as db:
-            published,text_batches=publication_progress(db,row)
+        from .source_page_progress import read_publication_progress,next_unaccepted
+        published,text_batches=await asyncio.to_thread(read_publication_progress,self.queue,row)
+        await self._check(access,row)
         retry_semantic=state.get('rejected_batch_index') in text_batches
         selected={page['physical_page_index'] for page in payload['pages']}
         if selected and selected<=published and not retry_semantic:

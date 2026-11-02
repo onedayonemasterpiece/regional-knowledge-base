@@ -7,6 +7,7 @@ import asyncio
 import base64
 import copy
 import json
+import threading
 from types import MethodType, SimpleNamespace
 from uuid import UUID, uuid5
 
@@ -472,6 +473,59 @@ async def test_status_after_pause_returns_next_unaccepted_physical_page(native_i
     row=s.importer._row(s.principal.subject,book.ingestion_id)
     assert row['stage_json'] is None  # no second model payload table
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['stage', 'duplicate', 'status'])
+@pytest.mark.parametrize('revoked', [False, True])
+async def test_publication_scan_keeps_other_api_work_running(native_intake, monkeypatch, operation, revoked):
+    import regional_knowledge.source_page_progress as progress
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=1)
+    await stage(s, book, payload)
+    for _ in range(3):
+        await finish(s, book)
+        await call(s, book, 'status')
+    before = operation_count(s)
+    original = progress.publication_progress
+    loop = asyncio.get_running_loop()
+    observed = []
+
+    async def revoke():
+        token = await s.t.auth.provider.load_access_token(s.principal.access_token)
+        await s.t.auth.provider.revoke_token(token)
+
+    def scan(db, row):
+        # Model slow SQLite/JSON work while another API callback needs the loop.
+        # An event handshake avoids relying on machine-speed timing thresholds.
+        other_request = threading.Event()
+        loop.call_soon_threadsafe(other_request.set)
+        assert other_request.wait(1), 'publication scan blocked other API callbacks'
+        observed.append(True)
+        if revoked:
+            asyncio.run_coroutine_threadsafe(revoke(), loop).result(3)
+        return original(db, row)
+
+    monkeypatch.setattr(progress, 'publication_progress', scan)
+    async def request():
+        if operation == 'status':
+            return await call(s, book, 'status')
+        return await stage(s, book, payload if operation == 'duplicate' else batch(s, book, first=1, count=1))
+
+    if revoked:
+        with pytest.raises(ToolError) as error:
+            await request()
+        assert json.loads(str(error.value))['reason'] == 'access_denied'
+        assert operation_count(s) == before and observed
+        return
+    result = await request()
+    assert observed
+    if operation == 'stage':
+        assert result.state == 'processing' and operation_count(s) == before + 1
+    else:
+        assert result.state == 'staged' and result.next_cursor == '1'
+        assert operation_count(s) == before
+
 @pytest.mark.asyncio
 async def test_published_text_overrules_stale_authored_cursor_and_rejects_changed_duplicate(native_intake):
     """The model once wrote cursor=0 even though pages 0–3 were TEXT APPLIED."""
@@ -594,7 +648,8 @@ async def test_resume_cursor_ignores_newer_stage_not_yet_applied(native_intake):
     assert (await call(s,book,'status')).next_cursor=='4'
     assert (await stage(s,book,batch(s,book,first=4,count=2))).state=='processing'
     row=s.importer._row(s.principal.subject,book.ingestion_id)
-    assert await s.importer.native_intake.applied_page_cursor(None,row)=='4'
+    async with s.importer._access(s.principal) as access:
+        assert await s.importer.native_intake.applied_page_cursor(access,row)=='4'
     assert (await call(s,book,'status')).next_action=='wait'
 
 
