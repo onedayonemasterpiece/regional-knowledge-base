@@ -14,7 +14,10 @@ import uuid
 from .bge_queue import StaleClaim
 from .kaggle_recovery_phases import PHASES,b64,bounded,MAX_PHASE_RESULT_BYTES
 from .kaggle_pg_snapshot_native import SnapshotError,encode,sha
+from .original_intake import TERMINAL_REJECTIONS
 
+_RETRYABLE_TELEGRAM_ACQUIRE=frozenset(('original_telegram_presence_unknown','original_telegram_binding_required',
+    'original_telegram_lease_changed','original_telegram_download_unavailable','original_intake_unavailable'))
 _LOG=logging.getLogger(__name__)
 
 
@@ -112,7 +115,11 @@ class RecoveryPhaseDispatch:
             if phase=='original_pages' and value.get('status')=='pending':
                 status=await self.request(binding,'snapshot_status',dict(handle=value['handle']),operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
                 if status.get('status')=='complete':value=status['value']
-            if not value.get('retryable') or not (value.get('error') or
+            if phase=='original_acquire' and (value.get('terminal') is True or value.get('error') in TERMINAL_REJECTIONS
+                    or value.get('error') in ('original_telegram_scope_denied','original_telegram_document_changed',
+                        'original_restore_receipt_mismatch','original_acquire_contract','original_telegram_spec_changed')):break
+            retryable=value.get('retryable',phase=='original_acquire' and value.get('error') in _RETRYABLE_TELEGRAM_ACQUIRE)
+            if not retryable or not (value.get('error') or
                     phase=='schema_migrate' and value.get('status')=='rejected'):break
             _LOG.info('recovery_phase_retry run_id=%s phase=%s attempt=%s',
                 self.identity[0],phase,attempt+1)
