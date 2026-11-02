@@ -244,15 +244,30 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
             UUID(page['page_id']),'region:'+key)),bbox=bbox,
             display_rotation_degrees=0,caption_text=caption,
             caption_region_ids=[],crop_binding=dict(original_sha256='a'*64))
+    body_link=dict(source_spans=[dict(region_id=str(uuid5(
+        UUID(pages[1]['page_id']),'region:r-15')),start=0,
+        end=len(pages[1]['regions'][15]['source_text']))],
+        illustration_ids=[],article_id='albinus-unit')
+    neighbor_link=dict(source_spans=[dict(region_id=str(uuid5(
+        UUID(pages[1]['page_id']),'region:fig-outside')),start=0,end=1)],
+        article_id='neighboring-article')
     rows=[
         (data(pages[0],'fig-1',dict(left=100,top=100,right=800,bottom=800),
-             'Принятая подпись Huldigung'),0,'import-accepted'),
+             'Принятая подпись Huldigung'),0,'import-accepted',[]),
         (data(pages[1],'fig-outside',dict(left=0,top=0,right=400,bottom=400),
-             'Чужая подпись'),1,'import-accepted')]
+             'Чужая подпись'),1,'import-accepted',[neighbor_link])]
     unit=complete_unit([projection(p) for p in pages],source_id=SOURCE,
         page_count=2,read_complete=False,article_id='albinus-unit')
     selected=_unit_figures(unit,pages,rows)
     assert len(selected)==1 and selected[0]['caption_text']=='Принятая подпись Huldigung'
+    # RED on old anchor-only filter: the explicit accepted body link is
+    # the sole authority for this post-anchor figure, not page proximity.
+    linked=dict(body_link,illustration_ids=[rows[1][0]['source_region_id']])
+    linked_rows=[rows[0],(*rows[1][:3],[linked])]
+    assert [f['caption_text'] for f in _unit_figures(unit,pages,linked_rows)] == [
+        'Принятая подпись Huldigung','Чужая подпись']
+    assert [f['caption_text'] for f in _unit_figures(unit,pages,rows)] == [
+        'Принятая подпись Huldigung']
 
     class MediaCursor(Cursor):
         async def execute(self,sql,params=None):
