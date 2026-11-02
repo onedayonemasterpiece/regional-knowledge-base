@@ -115,3 +115,45 @@ short-block/heading pagination, 30+ pages, sparse metadata, deterministic bytes,
 revision metadata, invalid/read-incomplete inputs and unsupported structures.
 These tests do not establish actual source retrieval, live Kaggle performance,
 current ACL behavior or usable MCP/Slack PDF delivery.
+
+
+## Accepted illustrations (P0 extension, owner decision 29 October)
+
+Figure metadata is read inside Kaggle from the existing accepted
+`source_illustrations` projection for the *exact selected unit pages*. The
+model's immutable source-unit start/end anchors and source-region reading order
+place each accepted figure precisely between author blocks, excluding adjacent
+pictures after the unit boundary. Captions are the accepted `caption_text`,
+not generated descriptions. Captions already present in an accepted source
+region are not repeated; the PDF also identifies the original printed page.
+The figure crop/orientation shares `accepted_figure_crop` with the existing
+`illustration_fetch` source-original page rendering path. It reuses the
+verified Kaggle original's retained page renderer and does not stage a second
+image store, load a model or send full-page pixels to Dev.
+
+A retained verified original/page is required to render its accepted figure.
+If the current Kaggle session does not retain that source, **no text-only
+"success" is substituted**: `pdf_render_unsupported` is reported. Cold-source
+archive restoration in the existing importer remains an operational boundary,
+not a newly implemented export queue or a claim of cold-run acceptance.
+
+The fixed SOURCE_READ envelope is **256 KiB**, including base64 and JSON:
+the existing `RESULT_MAX_BYTES - 4096` bound leaves approximately
+**189 KiB of raw PDF bytes**. The JPEG figure budget reserves
+`floor(((256 KiB − 4096) × 3/4) / (N+1))` bytes per image: about
+**94.5 KiB for one** or **63 KiB each for two**, leaving equivalent space for
+the document's cover, embedded fonts, text and source captions. The actual PDF
+may be smaller, or exceed the envelope due to other content; in the latter
+case the existing `pdf_transport_limit` returns **no partial PDF**. Crops
+max out at 1200 pixels per edge, JPEG quality 85→55 and do not shrink below
+a 640-pixel long edge to meet budget. A figure that cannot remain legible at
+that budget fails rather than being silently omitted or reduced to a thumbnail.
+These are byte-budget calculations, **not live measurement** or a guarantee for
+every illustrated article.
+
+**After merge/install:** verify Albinus `Huldigung` (physical 123,
+"Huldigung im Schloßhof") or the Wilhelm I coronation (physical 102) in a
+real ChatGPT MCP PDF, including original caption, image placement, page
+reference and whether the current original is retained. None of this PR
+touches a live Kaggle worker or imports sources.
+
