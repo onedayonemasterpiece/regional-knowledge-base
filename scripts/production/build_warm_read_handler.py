@@ -11,12 +11,14 @@ WIRE_CLASSES=('SourceGraphReadRequest','SourceGraphReadResult')
 MAX_BYTES=512*1024
 
 
-def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,baseline_executor_source=None,*,case_source=None):
+def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,baseline_executor_source=None,*,
+           case_source=None,source_read_source=None,baseline_source_read_source=None,
+           source_export_source=None,source_pdf_source=None,baseline_source_pdf_source=None):
     graph=ast.parse(graph_source);baseline=ast.parse(baseline_graph_source)
-    def wire(tree):
+    def wire(tree,names):
         return {node.name:ast.dump(node,include_attributes=False) for node in tree.body
-            if isinstance(node,ast.ClassDef) and node.name in WIRE_CLASSES}
-    if set(wire(graph))!=set(WIRE_CLASSES) or wire(graph)!=wire(baseline):
+            if isinstance(node,ast.ClassDef) and node.name in names}
+    if set(wire(graph,WIRE_CLASSES))!=set(WIRE_CLASSES) or wire(graph,WIRE_CLASSES)!=wire(baseline,WIRE_CLASSES):
         raise ValueError('warm_graph_wire_abi_changed')
     graph.body=[node for node in graph.body if not isinstance(node,ast.ClassDef) or node.name not in WIRE_CLASSES]
     executor_prefix=''
@@ -39,7 +41,63 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
         '_warm_case = dict(__name__=__name__, __package__=__package__, __file__=__file__)\n'
         f"exec(compile({case_source!r}, '<warm-case>', 'exec'), _warm_case)\n"
         if case_source is not None else '')
+
+    source_prefix=''
+    source_inputs=(source_read_source,baseline_source_read_source,source_export_source,
+                   source_pdf_source,baseline_source_pdf_source)
+    if any(value is not None for value in source_inputs):
+        if any(value is None for value in source_inputs):
+            raise ValueError('warm_source_inputs_missing')
+        read=ast.parse(source_read_source);read_baseline=ast.parse(baseline_source_read_source)
+        pdf=ast.parse(source_pdf_source);pdf_baseline=ast.parse(baseline_source_pdf_source)
+        for current,original,names,reason in (
+            (read,read_baseline,('SourceReadRequest','SourceReadResult'),'warm_source_wire_abi_changed'),
+            (pdf,pdf_baseline,('SourceUnitPdfError',),'warm_pdf_error_abi_changed')):
+            if set(wire(current,names))!=set(names) or wire(current,names)!=wire(original,names):
+                raise ValueError(reason)
+            current.body=[node for node in current.body
+                if not isinstance(node,ast.ClassDef) or node.name not in names]
+
+        # Same in-module AST import replacement used for graph/query/Case.
+        # Only named helpers are redirected; resident modules stay intact.
+        def rebind(tree,module,name,owner):
+            count=0
+            class Replace(ast.NodeTransformer):
+                def visit_ImportFrom(self,node):
+                    nonlocal count
+                    if node.level!=1 or node.module!=module:return node
+                    selected=[item for item in node.names if item.name==name]
+                    if not selected:return node
+                    if len(selected)!=1 or selected[0].asname is not None:
+                        raise ValueError('warm_source_import_changed')
+                    count+=1
+                    node.names.remove(selected[0])
+                    replacement=ast.copy_location(ast.parse(
+                        f"{name} = {owner}[{name!r}]").body[0],node)
+                    return ([node] if node.names else [])+[replacement]
+            tree=Replace().visit(tree)
+            if count!=1:raise ValueError('warm_source_import_missing')
+            return ast.fix_missing_locations(tree)
+
+        export=rebind(ast.parse(source_export_source),'source_unit_pdf',
+            'render_source_unit_pdf','_warm_source_pdf')
+        read=rebind(read,'source_unit_export','render_accepted_source_pdf','_warm_source_export')
+        source_prefix=(
+            'from .source_unit_pdf import SourceUnitPdfError\n'
+            '_warm_source_pdf = dict(__name__=__name__, __package__=__package__, '
+            '__file__=__file__, SourceUnitPdfError=SourceUnitPdfError)\n'
+            f"exec(compile({ast.unparse(pdf)!r}, '<warm-source-pdf>', 'exec'), _warm_source_pdf)\n"
+            '_warm_source_export = dict(__name__=__name__, __package__=__package__, '
+            '__file__=__file__, _warm_source_pdf=_warm_source_pdf)\n'
+            f"exec(compile({ast.unparse(export)!r}, '<warm-source-export>', 'exec'), _warm_source_export)\n"
+            'from .kaggle_source_read import SourceReadRequest, SourceReadResult\n'
+            '_warm_source_read = dict(__name__=__name__, __package__=__package__, '
+            '__file__=__file__, SourceReadRequest=SourceReadRequest, '
+            'SourceReadResult=SourceReadResult, _warm_source_export=_warm_source_export)\n'
+            f"exec(compile({ast.unparse(read)!r}, '<warm-source-read>', 'exec'), _warm_source_read)\n")
     query=ast.parse(query_source)
+    if source_prefix:
+        query=rebind(query,'kaggle_source_read','execute_source_read','_warm_source_read')
     replaced=0
     class IsolateGraph(ast.NodeTransformer):
         def visit_ImportFrom(self,node):
@@ -66,7 +124,7 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
     if replaced!=1:raise ValueError('warm_graph_import_missing')
     query.body=[node for node in query.body if not isinstance(node,ast.ImportFrom) or node.module!='__future__']
     source=("from __future__ import annotations\n"
-        +executor_prefix+case_prefix+
+        +executor_prefix+case_prefix+source_prefix+
         "from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult\n"
         "_warm_graph = dict(__name__=__name__, __package__=__package__, __file__=__file__, "
         "SourceGraphReadRequest=SourceGraphReadRequest, SourceGraphReadResult=SourceGraphReadResult)\n"
@@ -91,7 +149,12 @@ def main():
     def read(ref,name):return git('show',ref+':'+root+name+'.py')
     source=bundle(read(commit,'kaggle_worker_query'),read(commit,'kaggle_source_graph_read'),
         read(baseline,'kaggle_source_graph_read'),read(commit,'kaggle_query'),read(baseline,'kaggle_query'),
-        case_source=read(commit,'kaggle_case_read'))
+        case_source=read(commit,'kaggle_case_read'),
+        source_read_source=read(commit,'kaggle_source_read'),
+        baseline_source_read_source=read(baseline,'kaggle_source_read'),
+        source_export_source=read(commit,'source_unit_export'),
+        source_pdf_source=read(commit,'source_unit_pdf'),
+        baseline_source_pdf_source=read(baseline,'source_unit_pdf'))
     output=args.output_dir.resolve()
     if not (output/'.artifact.json').is_file():raise ValueError('managed_artifact_directory_required')
     content=source.encode();digest=hashlib.sha256(content).hexdigest()
