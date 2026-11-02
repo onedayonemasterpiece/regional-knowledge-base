@@ -1,5 +1,5 @@
 import base64
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager,contextmanager
 import hashlib
 import json
 from types import SimpleNamespace as NS
@@ -51,6 +51,41 @@ def prepared(tmp_path):
             json.dumps(dict(manifest_sha256=sha(manifest),database_generation='db',base_sequence=7)),1))
     store=DatasetRecoveryStore(queue,checkpoint=checkpoint,manifest_ref=mref,publisher=Publisher(),writer_guard=guard,stream='stream')
     return NS(store=store,q=queue,guard=guard,prefix=prefix,checkpoint=checkpoint,ref=mref,reads=reads,publisher=Publisher())
+
+
+@pytest.mark.asyncio
+async def test_pending_write_work_does_not_scale_with_saved_journal_history(tmp_path,monkeypatch):
+    p=prepared(tmp_path);key=p.prefix+'outcomes/pending'
+    assert await p.store.compare_and_swap(key,b'pending',expected_token=None,writer_generation='writer')
+    connect=p.q.connect
+    async def measured_write():
+        old=await p.store.read(key,max_bytes=100);steps=0
+        def progress():
+            nonlocal steps
+            steps+=1
+            return 0
+        @contextmanager
+        def measured_connect(write=True):
+            with connect(write=write) as db:
+                db.set_progress_handler(progress,1)
+                try:yield db
+                finally:db.set_progress_handler(None,0)
+        with monkeypatch.context() as patch:
+            patch.setattr(p.q,'connect',measured_connect)
+            assert await p.store.compare_and_swap(key,b'pending',expected_token=old.token,
+                writer_generation='writer')
+        return steps
+    small=await measured_write()
+    with connect() as db:
+        db.executemany('INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,1)',
+            [(p.store.storage_identity,p.prefix+'commands/saved-'+str(i),b'covered history',str(i))
+                for i in range(4096)])
+    large=await measured_write()
+    assert large<=small*2  # Fixed pending work, independent of thousands of covered objects.
+    pending=await p.store.read(key,max_bytes=100)
+    assert pending.data==b'pending' and not p.store.remote_durable(key,pending.data)
+    old=await p.store.read(p.prefix+'commands/saved-0',max_bytes=100)
+    assert old.data==b'covered history' and p.store.remote_durable(p.prefix+'commands/saved-0',old.data)
 
 
 @pytest.mark.asyncio
