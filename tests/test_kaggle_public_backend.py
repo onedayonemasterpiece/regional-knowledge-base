@@ -836,3 +836,62 @@ async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_a
     assert len(calls)==1
     calls[0].release()
     await release(s,second)
+
+
+@pytest.mark.asyncio
+async def test_pdf_withdrawal_during_original_restore_never_dispatches_second_read(target):
+    """An accepted first read cannot reissue PDF bytes after source withdrawal during restore."""
+    from regional_knowledge.kaggle_source_read import SourceReadRequest, SourceReadResult
+    s=target
+    source='31111111-2222-4333-8444-555555555555'
+    entered, resume=asyncio.Event(), asyncio.Event()
+    withdrawn=False
+    restored=[]
+    outputs=[]
+
+    async def prepare(source_id, binding):
+        assert source_id==source and binding==current_binding(s.queue)
+        restored.append(source_id)
+        entered.set()
+        await resume.wait()
+
+    s.backend.startup=SimpleNamespace(config=SimpleNamespace(import_originals=
+        SimpleNamespace(prepare_pdf_original=prepare)))
+    s.gate._restricted_sources=lambda sources: frozenset(sources) if withdrawn else frozenset()
+
+    async def export():
+        with capture_read_output() as calls:
+            try:
+                return await s.backend.source_unit_export(source,'albinus.huldigung',s.principal)
+            finally:
+                outputs.extend(calls)
+
+    task=asyncio.create_task(export())
+    try:
+        first=await work(s)
+        assert isinstance(first.query,SourceReadRequest)
+        failed=SourceReadResult(request_id=first.query.request_id,
+            connection_generation=s.generation,
+            turn_generation=first.query.turn_generation,operation='source_unit_pdf',
+            status='unavailable',reason='pdf_original_restore_required',
+            records=(),evidence=(),observed_data_seq=5,
+            observed_projection_seq=5,observed_visibility_epoch=4,
+            observed_database_generation='db-source')
+        assert await s.admission.finish_read(s.run,s.token,s.generation,failed)
+        await release(s,first)
+        await asyncio.wait_for(entered.wait(),3)
+        assert not task.done() and restored==[source]
+        withdrawn=True  # The source is revoked specifically *inside* the awaited restore.
+        resume.set()
+        with pytest.raises(ToolError,match='access_denied'):
+            await task
+        assert len(s.gate.permits)==1  # No second SOURCE_READ reached the read gate.
+        assert len(s.gate.released)==1  # The first failure ticket was released.
+        assert s.admission.status()['pending_reads']==0
+        assert not outputs  # No embedded PDF, source text or pixel bytes issued.
+    finally:
+        resume.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

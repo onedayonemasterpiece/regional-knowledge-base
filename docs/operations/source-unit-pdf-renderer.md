@@ -168,3 +168,40 @@ explicitly and use a different unit with a proven in-bound figure for the
 live illustrated-PDF acceptance. Verify original caption, image pixels,
 printed page label, final current-source permission and cold restore. None of this PR
 touches a live Kaggle worker or imports sources.
+
+### Warm rollout of a reviewed PDF-only helper
+
+Use the **existing** `scripts/production/build_warm_read_handler.py` with the
+merged reviewed commit, currently loaded baseline commit, and an existing
+managed artifact directory. Alongside query, graph and Case, the compiled
+stateless read handler isolates reviewed `kaggle_source_read`,
+`source_unit_export` and `source_unit_pdf` code, replacing only their exact
+helper imports. `SourceReadRequest`/`SourceReadResult` and `SourceUnitPdfError`
+remain resident types; AST comparison against the loaded baseline rejects
+any class-contract drift. The 512 KiB bound, existing warm activation/rollback
+and source/actor/output gates remain unchanged.
+
+Before activation, root checks the reviewed/baseline hashes and focused
+warm `SOURCE_READ` → MCP PDF regression. After warm activation, verify
+the complete `albinus.huldigung` export includes accepted printed `135` in
+reading order, separately from the service PDF page number. A merged source
+file alone does **not** refresh the cached resident PDF helper. This path
+does not install new PR634 native callbacks or change cold-start requirements.
+
+### Cold context required for illustrated PDF
+
+The new accepted-illustration restoration path changes the resident
+`SourceReadResult.reason` wire AST and adds `KaggleWorkerQuery.illustration_page`
+plus `kaggle_illustration_preview.accepted_figure_crop`. It **requires the
+normal cold install/restore** from merged main to establish a compatible native
+callback and helper bundle. The existing PR737 warm-builder must keep its
+`warm_source_wire_abi_changed` protection; it cannot install these new
+resident dependencies into native229/21e by a stateless warm patch. The warm
+PDF-only `PAGE_NUMBER` support and the separate cold illustrated PDF are
+different release boundaries.
+
+In the existing `albinus.huldigung` accepted-unit preview, a figure linked
+to a semantic passage is not automatically within the unit's exact end
+anchor. Do not claim Huldigung illustrated-PDF acceptance from that link
+without accepted `chunk.article_id` and span evidence. Do not select images
+by physical-page proximity or alter accepted source anchors.

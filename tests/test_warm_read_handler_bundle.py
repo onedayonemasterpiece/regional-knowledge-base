@@ -135,3 +135,103 @@ async def test_warm_case_uses_reviewed_reader_and_resident_wire_types_without_mo
     assert lease.entered==lease.exited==1
     assert handler.acquire==lease.acquire and handler.tokenizer is tokenizer
     assert resident.execute_case_read is forbidden
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('order', [(0, 1), (64, 126, 125)])
+async def test_warm_source_pdf_uses_reviewed_folio_with_old_resident_renderer(monkeypatch, order):
+    """One compiled warm handler: old resident rejects 135; reviewed chain returns exact MCP PDF."""
+    import base64
+    import re
+    from regional_knowledge import (kaggle_source_read as resident_read,
+        source_unit_export as resident_export, source_unit_pdf as resident_pdf,
+        kaggle_worker_query as resident_worker)
+    from regional_knowledge.contracts import RegionKind
+    from regional_knowledge.kaggle_public_backend import source_unit_pdf_result
+    from test_kaggle_worker_query import Lease, pinned, forbidden_encode
+    from test_source_unit_export_p0b import Connection, fixture_pages, SOURCE
+
+    pymupdf = pytest.importorskip('pymupdf')
+    folder = ROOT / 'src/regional_knowledge'
+    read = lambda name: (folder / (name + '.py')).read_text()
+    worker, graph = sources()
+    common = (worker, graph, graph, read('kaggle_query'), read('kaggle_query'))
+    case = read('kaggle_case_read')
+
+    def old_renderer(**kwargs):
+        if any(region.kind == RegionKind.PAGE_NUMBER for region in kwargs['regions']):
+            raise resident_pdf.SourceUnitPdfError('unsupported_structure:page_number')
+        return resident_pdf.render_source_unit_pdf(**kwargs)
+
+    monkeypatch.setattr(resident_export, 'render_source_unit_pdf', old_renderer)
+    pages = fixture_pages(complete=True, order=order)
+    pages[0]['regions'][-1].update(kind='page_number', source_text='135')
+
+    async def frontier(cursor, execute, request, observed, require_dense=False):
+        observed.update(data=1, projection=1, visibility=1, database='gen1')
+
+    from regional_knowledge.kaggle_source_read import SourceReadRequest
+    request = SourceReadRequest(request_id='warm-pdf-135',
+        connection_generation=1, turn_generation=0, operation='source_unit_pdf',
+        source_id=SOURCE, article_id='albinus-unit', limit=1, min_data_seq=0,
+        deadline_ms=2000, compute_claim='same-resident-session',
+        actor=dict(person_id='reader', audience='personal', auth_epoch=1,
+            visibility_epoch=0, context_ref='test-reader'))
+
+    def compiled(source):
+        # Keep sys.modules and the existing resident module untouched.
+        module = types.ModuleType(resident_worker.__name__)
+        module.__package__ = 'regional_knowledge'
+        module.__file__ = '<warm-pdf-handler>'
+        exec(compile(source, module.__file__, 'exec'), module.__dict__)
+        return module
+
+    async def run(module):
+        connection = Connection(pages)
+        connection.cleaned = True  # Existing Lease fixture requires this synthetic cleanup marker.
+        lease = Lease(connection)
+        handler = module.KaggleWorkerQuery(acquire=lease.acquire, tokenizer=pinned(forbidden_encode))
+        result = await handler(request.model_dump(mode='json'), encode=forbidden_encode)
+        assert lease.entered == lease.exited == 2
+        return result
+
+    monkeypatch.setattr(resident_read, '_frontier', frontier)
+    old = compiled(builder.bundle(*common, case_source=case))
+    # The older installed renderer is still resident even when reviewed sources are current.
+    old_result = await run(old)
+    assert old_result['status'] == 'unavailable'
+    assert old_result['reason'] == 'pdf_render_unsupported'
+
+    reviewed = compiled(builder.bundle(*common, case_source=case,
+        source_read_source=read('kaggle_source_read'),
+        baseline_source_read_source=read('kaggle_source_read'),
+        source_export_source=read('source_unit_export'),
+        source_pdf_source=read('source_unit_pdf'),
+        baseline_source_pdf_source=read('source_unit_pdf')))
+    assert reviewed._warm_source_read['SourceReadRequest'] is resident_read.SourceReadRequest
+    assert reviewed._warm_source_read['SourceReadResult'] is resident_read.SourceReadResult
+    assert reviewed._warm_source_pdf['SourceUnitPdfError'] is resident_pdf.SourceUnitPdfError
+    assert reviewed._warm_source_read['execute_source_read'] is not resident_read.execute_source_read
+    assert reviewed._warm_source_export['render_accepted_source_pdf'] is not resident_export.render_accepted_source_pdf
+    assert reviewed._warm_source_export['render_source_unit_pdf'] is reviewed._warm_source_pdf['render_source_unit_pdf']
+    reviewed._warm_source_read['_frontier'] = frontier
+    updated = await run(reviewed)
+    assert updated['status'] == 'ok' and len(updated['records']) == 1
+    result = source_unit_pdf_result(updated['records'][0])
+    resource = result.content[1].resource
+    assert resource.mime_type == 'application/pdf'
+    with pymupdf.open(stream=base64.b64decode(resource.blob), filetype='pdf') as pdf:
+        authored = ''.join(block[4] for page in list(pdf)[1:]
+            for block in page.get_text('blocks')
+            if block[6] == 0 and 49 <= block[1] < page.rect.height - 43)
+        authored = authored.removeprefix('Немецкая статья / Eintrag\n')
+        expected = ''.join(region['source_text'] for page in pages for region in page['regions'])
+        assert re.sub(r'\s+', '', authored) == re.sub(r'\s+', '', expected)
+        assert sum(word[4] == '135' for page in pdf for word in page.get_text('words')) == 1
+        assert pdf[-1].get_text().endswith(str(len(pdf)) + '\n')
+    # The isolated renderer raises the resident exception type, so the existing
+    # native SOURCE_READ catch still returns a coarse, payload-free failure.
+    pages[0]['regions'][0]['kind'] = 'footnote'
+    unsupported = await run(reviewed)
+    assert unsupported['status'] == 'unavailable' and unsupported['reason'] == 'pdf_render_unsupported'
+    assert not unsupported['records']
+    assert resident_export.render_source_unit_pdf is old_renderer
