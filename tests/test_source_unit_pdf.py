@@ -123,6 +123,18 @@ def test_internal_newlines_and_html_are_literal_author_text():
         assert len(doc[1].get_text().splitlines())>=4
 
 
+def test_printed_page_number_does_not_block_complete_article_pdf():
+    values = inputs([('body', 'Anfang des unveränderten Artikels.'),
+                     ('page_number', '135'),
+                     ('body', 'Fortsetzung desselben Artikels.')])
+    before = copy.deepcopy(values)
+    with render(values) as doc:
+        assert flatten(author_text(doc)) == flatten(''.join(r.source_text for r in values['regions']))
+        number = next(word for word in doc[1].get_text('words') if word[4] == '135')
+        assert number[0] > 200  # Source folio is centered furniture, not a body paragraph.
+    assert values == before
+
+
 @pytest.mark.parametrize('kind',['footnote','table','marginalia','caption','figure'])
 def test_significant_unsupported_structure_is_explicit_failure(kind):
     with pytest.raises(SourceUnitPdfError,match='unsupported_structure:'+kind):

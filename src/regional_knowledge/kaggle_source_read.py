@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -13,6 +14,8 @@ from psycopg.rows import tuple_row
 from .kaggle_protocol import ReadIdentity, TrustedActorContext, Nonnegative, Identifier
 from .kaggle_protocol import EvidenceItem, EvidenceMetadata, ItemDependencies, SourceDependency
 from .kaggle_query import ReadUnavailable, _frontier, _identity
+
+_LOG = logging.getLogger(__name__)
 
 
 class SourceReadRequest(ReadIdentity):
@@ -272,6 +275,7 @@ async def execute_source_read(request, *, acquire):
                             source_id=request.source_id,article_id=request.article_id,
                             annotation_ru=request.annotation_ru,translation_ru=request.translation_ru)
                     except SourceUnitPdfError as exc:
+                        _LOG.info('source_unit_pdf_failed request_id=%s reason=%s', request.request_id, str(exc))
                         reason=str(exc)
                         return failed('unit_not_found' if reason.startswith('unit_not_found') else
                             'unit_not_ready' if reason.startswith('unit_not_ready') else 'pdf_render_unsupported')

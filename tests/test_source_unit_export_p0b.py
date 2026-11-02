@@ -117,8 +117,11 @@ class Connection:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('order',[(0,1),(64,126,125)])
-async def test_complete_all_span_model_order_mcp_pdf_and_incomplete_is_actionable(monkeypatch,order):
+@pytest.mark.parametrize('printed_folio',[False,True])
+async def test_complete_all_span_model_order_mcp_pdf_and_incomplete_is_actionable(monkeypatch,order,printed_folio):
     pages=fixture_pages(complete=True,order=order)
+    if printed_folio:
+        pages[0]['regions'][-1].update(kind='page_number',source_text='135')
     connection=Connection(pages)
     @asynccontextmanager
     async def acquire():
