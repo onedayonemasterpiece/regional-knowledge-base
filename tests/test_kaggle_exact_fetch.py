@@ -90,6 +90,7 @@ def test_search_evidence_and_exact_fetch_share_catalog_title_without_changing_lo
     assert thin.incomplete is False and thin.next_id is None
     assert thin.metadata['continuation_complete'] is True
     assert thin.metadata['source_provenance'] == row.metadata.source_provenance
+    assert evidence.metadata.get('source_provenance') == row.metadata.source_provenance
     assert thin.metadata['source_revisions'] == fetched.metadata['source_revisions'] == [loc.source.model_dump()]
 
 
