@@ -107,9 +107,6 @@ class ImportActivityReader:
             state, action = "processing", "wait"
         else:
             state, action = "staged", "continue_pages"
-        # A cold or unverified Kaggle is not a ready-to-read book.
-        if not self.importer.startup.reads_current() and state not in ("finalized", "failed"):
-            state, action = "processing", "wait"
 
         cursor = None
         if state not in ("finalized", "failed"):
