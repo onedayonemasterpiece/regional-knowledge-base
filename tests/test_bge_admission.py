@@ -805,3 +805,27 @@ async def test_eight_claims_cancel_second_and_reconnect_retains_real_worker_debt
         assert idle['state']=='idle'
         await s.a.resource_state(s.run,s.token,generation,runtime_incarnation='incarnation-a',state='idle',probe_nonce=nonce)
         assert not s.a.status()['resource'] and loads==['loaded']
+
+
+@pytest.mark.asyncio
+async def test_pdf_read_uses_existing_30s_admission_without_extending_other_reads(state):
+    from regional_knowledge.kaggle_source_read import SourceReadRequest
+    s=state
+    deadline=time.monotonic()+29
+    def source_request(operation):
+        return SourceReadRequest(request_id='bounded-'+operation,
+            connection_generation=s.generation,turn_generation=0,
+            operation=operation,source_id='31111111-2222-4333-8444-555555555555',
+            article_id='unit' if operation=='source_unit_pdf' else None,
+            min_data_seq=0,deadline_ms=30000,actor=query(s.context,'actor').actor)
+    for ordinary in (query(s.context,'ordinary-query'),
+                     source_request('source_units')):
+        with pytest.raises(ValueError,match='deadline'):
+            await s.a.begin_read(s.context,ordinary,dialog_ref='ordinary',deadline=deadline)
+    pdf=await s.a.begin_read(s.context,source_request('source_unit_pdf'),
+                             dialog_ref='pdf',deadline=deadline)
+    work=await s.q.next_channel_work(s.run,s.token,s.generation)
+    assert work.kind=='read' and work.query.operation=='source_unit_pdf'
+    assert 2000<work.query.deadline_ms<=30000
+    s.a.discard_unsent(work)
+    s.a.cancel_read(pdf)
