@@ -74,6 +74,7 @@ async def test_pdf_floating_figure_uses_actual_accepted_publication_and_manifest
     page=doc['model_payload']['pages'][0]
     body=next(r for r in page['regions'] if r['region_key']=='body')
     caption=next(r for r in page['regions'] if r['region_key']=='caption-1')
+    doc['model_payload']['chunks'][0]['region_refs']=[]
     doc['model_payload']['chunks'][0]['span_refs']=[
         dict(page_id=page['page_id'],region_key=r['region_key'],start=0,
              end=len(r['source_text'])) for r in (body,caption)]
