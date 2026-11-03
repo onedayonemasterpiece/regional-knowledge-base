@@ -400,7 +400,7 @@ class KaggleSourceImporter:
 
     async def _native_status(self, access, row):
         output=await self.native_intake.status(access,row)
-        if (output.state in ('staged','finalized') and output.next_action in ('continue_pages','done')
+        if ((output.state,output.next_action) in (('staged','continue_pages'),('finalized','done'))
                 and not output.warnings):
             from .source_page_progress import read_publication_progress
             published,_=await asyncio.to_thread(read_publication_progress,self.queue,row)
