@@ -812,8 +812,11 @@ class NativeSourceIntake:
         from .source_page_progress import read_publication_progress,next_unaccepted
         published,text_batches=await asyncio.to_thread(read_publication_progress,self.queue,row)
         await self._check(access,row)
-        retry_semantic=state.get('rejected_batch_index') in text_batches
         selected={page['physical_page_index'] for page in payload['pages']}
+        graph=payload.get('entity_candidates') or {}
+        retry_semantic=(state.get('rejected_batch_index') in text_batches or
+            state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
+                any(graph.get(key) for key in ('entities','relations','entity_refs'))))
         if selected and selected<=published and not retry_semantic:
             if state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count']:
                 return self._output(row,state)

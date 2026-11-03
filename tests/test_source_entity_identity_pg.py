@@ -174,3 +174,46 @@ def test_entity_source_scope_is_exposed_to_normal_model_and_semantic_retry():
     assert 'source-global' in result.message
     assert 'TEXT APPLIED' in result.message
     assert 'same ingestion' in result.message.lower()
+
+
+@PG
+@pytest.mark.asyncio
+@pytest.mark.parametrize('changed_text',[False,True])
+async def test_empty_semantic_followup_native_preserves_exact_text(image_pg_sql18,changed_text):
+    env=image_pg_sql18;prepare,_=native(env)
+    first=_town();model=first['model_payload'];entity=copy.deepcopy(model['entity_candidates']['entities'][0])
+    story=copy.deepcopy(model['story_candidates'][0])
+    model['entity_candidates']={'entities':[]};model['story_candidates']=[]
+    assert (await accepted(env,stage_command(first,1))).status=='applied'
+    for part in ('text','semantic'):
+        command=packet(env,first,part);await prepare(command)
+        assert (await accepted(env,command)).status=='applied'
+    frozen=canonical(first)
+    async with env['connection'].transaction():
+        before=await (await env['connection'].execute('SELECT passage_id,body,language,locator FROM rkb_v4.passage_search WHERE source_id=%s ORDER BY passage_id',(SOURCE,))).fetchall()
+    second=copy.deepcopy(first);second.update(batch_index=1,previous_batch_sha256=digest(frozen))
+    entity.update(key='gusev-person',kind='person');entity.pop('poi_locator',None);entity.pop('place_context',None)
+    second['model_payload']['entity_candidates']={'entities':[entity]}
+    body='The synthetic person Gusev is recorded in 1930 and 1933.'
+    story.update(candidate_key='person-record',entity_keys=['gusev-person'],
+        title='Person record',summary=body,proposition=body,
+        basic_variant=dict(body=body,language='en',blocks=[dict(start=0,end=len(body),evidence_indexes=[0])]))
+    second['model_payload']['story_candidates']=[story]
+    if changed_text:second['model_payload']['pages'][0]['regions'][0]['source_text']+=' Changed text.'
+    assert (await accepted(env,stage_command(second,env['sequence']+1))).status=='applied'
+    text=packet(env,second,'text')
+    if changed_text:
+        with pytest.raises(SourceMaterializationRejected):await prepare(text)
+        assert (await accepted(env,text)).status=='rejected_precondition'
+    else:
+        await prepare(text);assert (await accepted(env,text)).status=='applied'
+        semantic=packet(env,second,'semantic');await prepare(semantic)
+        assert (await accepted(env,semantic)).status=='applied'
+    async with env['connection'].transaction():
+        after=await (await env['connection'].execute('SELECT passage_id,body,language,locator FROM rkb_v4.passage_search WHERE source_id=%s ORDER BY passage_id',(SOURCE,))).fetchall()
+        assert after==before
+        count=(await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.source_entity_representations WHERE source_id=%s',(SOURCE,))).fetchone())[0]
+        assert count==(0 if changed_text else 1)
+        stories=(await (await env['connection'].execute('SELECT count(*) FROM rkb_v4.story_search WHERE source_id=%s',(SOURCE,))).fetchone())[0]
+        assert stories==(0 if changed_text else 1)
+    assert canonical(first)==frozen

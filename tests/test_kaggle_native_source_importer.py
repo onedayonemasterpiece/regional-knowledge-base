@@ -1696,6 +1696,39 @@ async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(nat
 
 
 @pytest.mark.asyncio
+async def test_followup_entities_after_empty_semantic_apply_are_not_silently_ignored(native_intake):
+    s=native_intake;book=await start(s)
+    payload=batch(s,book,first=0,count=1)
+    payload['pages'][0]['regions'][0]['source_text']='Synthetic Person Alpha attended a meeting in 1930.'
+    await stage(s,book,payload)
+    for _ in ('stage','text','semantic'):
+        await finish(s,book);await call(s,book,'status')
+    before=operation_count(s)
+    payload['entity_candidates']=dict(entities=[dict(key='person-alpha',kind='person',
+        canonical_label='Person Alpha',exact_source_spelling='Person Alpha',
+        evidence=dict(page_id=payload['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))])
+    response=await stage(s,book,payload)
+    assert operation_count(s)>before, response.message
+
+
+@pytest.mark.asyncio
+async def test_old_page_enrichment_cannot_skip_current_rejected_text(native_intake):
+    s=native_intake;book=await start(s)
+    original=batch(s,book,first=0,count=1);await stage(s,book,original)
+    for _ in ('stage','text','semantic'):
+        await finish(s,book);await call(s,book,'status')
+    await stage(s,book,batch(s,book,first=1,count=1))
+    await finish(s,book);await call(s,book,'status')
+    await finish(s,book,status='rejected_precondition');await call(s,book,'status')
+    before=operation_count(s)
+    original['entity_candidates']=dict(entities=[dict(key='person-alpha',kind='person',
+        canonical_label='Synthetic',exact_source_spelling='Synthetic',
+        evidence=dict(page_id=original['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))])
+    result=await stage(s,book,original)
+    assert operation_count(s)==before and result.next_cursor=='1'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('spelling,expected',[(None,'missing'),('Private synthetic spelling '*12,'string_too_long')])
 async def test_entity_validation_distinguishes_missing_and_overlong_field_without_input(native_intake,caplog,spelling,expected):
     s=native_intake;book=await start(s);payload=batch(s,book,count=1)
