@@ -118,6 +118,57 @@ short-block/heading pagination, 30+ pages, sparse metadata, deterministic bytes,
 revision metadata, invalid/read-incomplete inputs and unsupported structures.
 These tests do not establish actual source retrieval, live Kaggle performance,
 current ACL behavior or usable MCP/Slack PDF delivery.
+
+
+## Accepted illustrations (P0 extension, owner decision 29 October)
+
+Figure metadata is read inside Kaggle from the existing accepted
+`source_illustrations` projection for the *exact selected unit pages*. The
+model's immutable source-unit start/end anchors and source-region reading order
+place each accepted figure precisely between author blocks, excluding adjacent
+pictures after the unit boundary. Captions are the accepted `caption_text`,
+not generated descriptions. Captions already present in an accepted source
+region are not repeated; the PDF also identifies the original printed page.
+The figure crop/orientation shares `accepted_figure_crop` with the existing
+`illustration_fetch` source-original page rendering path. It reuses the
+verified Kaggle original's retained page renderer and does not stage a second
+image store, load a model or send full-page pixels to Dev.
+
+When a source-gated native PDF read confirms an accepted in-unit figure but
+the current Kaggle process has no verified original handle, it returns the
+internal `pdf_original_restore_required` reason. Dev rechecks the same
+authenticated source read authority and withdrawal barrier, then invokes the
+existing OriginalIntakeController verified-receipt `_restore_handle` through
+the existing original_acquire phase (Telegram topic 2 or verified object).
+No page/image bytes transit Dev, no new original receipt or import is created.
+The final PDF uses a **new** bounded native SOURCE_READ and output permit,
+with the usual last-moment source/actor/withdrawal fence. Failed restore
+returns no PDF; a text-only successful fallback is forbidden.
+
+The fixed SOURCE_READ envelope is **256 KiB**, including base64 and JSON:
+the existing `RESULT_MAX_BYTES - 4096` bound leaves approximately
+**189 KiB of raw PDF bytes**. The JPEG figure budget reserves
+`floor(((256 KiB − 4096) × 3/4) / (N+1))` bytes per image: about
+**94.5 KiB for one** or **63 KiB each for two**, leaving equivalent space for
+the document's cover, embedded fonts, text and source captions. The actual PDF
+may be smaller, or exceed the envelope due to other content; in the latter
+case the existing `pdf_transport_limit` returns **no partial PDF**. Crops
+max out at 1200 pixels per edge, JPEG quality 85→55 and do not shrink below
+a 640-pixel long edge to meet budget. A figure that cannot remain legible at
+that budget fails rather than being silently omitted or reduced to a thumbnail.
+These are byte-budget calculations, **not live measurement** or a guarantee for
+every illustrated article.
+
+**After merge/install:** first recheck whether the accepted figure
+`3449ad19-66e7-505c-b332-5d140acb19ab` on physical index 123 belongs
+inside the *exact* unit anchors of `albinus.huldigung` (ordinal 530,
+physical 124→123), rather than assuming an accepted-chunk link implies an
+in-unit figure position. If excluded, report this boundary limitation
+explicitly and use a different unit with a proven in-bound figure for the
+live illustrated-PDF acceptance. Verify original caption, image pixels,
+printed page label, final current-source permission and cold restore. None of this PR
+touches a live Kaggle worker or imports sources.
+
 ### Warm rollout of a reviewed PDF-only helper
 
 Use the **existing** `scripts/production/build_warm_read_handler.py` with the
@@ -136,3 +187,21 @@ the complete `albinus.huldigung` export includes accepted printed `135` in
 reading order, separately from the service PDF page number. A merged source
 file alone does **not** refresh the cached resident PDF helper. This path
 does not install new PR634 native callbacks or change cold-start requirements.
+
+### Cold context required for illustrated PDF
+
+The new accepted-illustration restoration path changes the resident
+`SourceReadResult.reason` wire AST and adds `KaggleWorkerQuery.illustration_page`
+plus `kaggle_illustration_preview.accepted_figure_crop`. It **requires the
+normal cold install/restore** from merged main to establish a compatible native
+callback and helper bundle. The existing PR737 warm-builder must keep its
+`warm_source_wire_abi_changed` protection; it cannot install these new
+resident dependencies into native229/21e by a stateless warm patch. The warm
+PDF-only `PAGE_NUMBER` support and the separate cold illustrated PDF are
+different release boundaries.
+
+In the existing `albinus.huldigung` accepted-unit preview, a figure linked
+to a semantic passage is not automatically within the unit's exact end
+anchor. Do not claim Huldigung illustrated-PDF acceptance from that link
+without accepted `chunk.article_id` and span evidence. Do not select images
+by physical-page proximity or alter accepted source anchors.

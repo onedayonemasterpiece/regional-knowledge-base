@@ -770,3 +770,128 @@ async def test_revoked_direct_adapter_authority_does_not_renew_idle(target):
             deadline_monotonic=asyncio.get_running_loop().time()+2,destination=s.backend.destination)
     with s.queue.connect(write=False) as db:
         assert db.execute('SELECT useful FROM runs WHERE id=?',(s.run,)).fetchone()[0]==1000.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',['cold','withdrawn','unknown_unit'])
+async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_authority(target,case):
+    """Real shared admission + OAuth; only the synthetic native PG result is injected."""
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    import pymupdf
+    from regional_knowledge.kaggle_source_read import SourceReadRequest,SourceReadResult
+    from regional_knowledge.source_unit_pdf import render_source_unit_pdf
+    from test_source_unit_pdf import inputs
+    s=target;source='31111111-2222-4333-8444-555555555555'
+    prepared=[]
+    async def prepare(source_id,binding):
+        assert source_id==source and binding==current_binding(s.queue)
+        prepared.append(source_id)
+    s.backend.startup=SimpleNamespace(config=SimpleNamespace(import_originals=
+        SimpleNamespace(prepare_pdf_original=prepare)))
+    s.gate._restricted_sources=lambda sources: frozenset(sources) if case=='withdrawn' else frozenset()
+    async def invoke():
+        with capture_read_output() as calls:
+            value=await s.backend.source_unit_export(source,'albinus.huldigung',s.principal)
+        return value,calls
+    task=asyncio.create_task(invoke())
+    first=await work(s)
+    assert isinstance(first.query,SourceReadRequest)
+    assert first.query.operation=='source_unit_pdf' and first.query.article_id=='albinus.huldigung'
+    assert first.query.actor.person_id==s.auth.p.other.subject
+    first_reason='unit_not_found' if case=='unknown_unit' else 'pdf_original_restore_required'
+    failed=SourceReadResult(request_id=first.query.request_id,connection_generation=s.generation,
+        turn_generation=first.query.turn_generation,operation='source_unit_pdf',
+        status='unavailable',reason=first_reason,records=(),evidence=(),
+        observed_data_seq=5,observed_projection_seq=5,
+        observed_visibility_epoch=4,observed_database_generation='db-source')
+    assert await s.admission.finish_read(s.run,s.token,s.generation,failed)
+    await release(s,first)
+    if case!='cold':
+        with pytest.raises(ToolError,match='access_denied|unit_not_found'):
+            await task
+        assert prepared==[]  # A guessed unit or withdrawn source never starts original restore.
+        return
+    second=await work(s)
+    assert prepared==[source] and second.query.request_id!=first.query.request_id
+    photo=Image.new('RGB',(100,80),'white');raw=BytesIO();photo.save(raw,format='JPEG')
+    page=inputs([('body','Vor der Abbildung.'),('body','Nach der Abbildung.')])
+    page['regions'][1].reading_order=2
+    pdf=render_source_unit_pdf(**page,illustrations=[dict(
+        physical_page_index=0,reading_order=1,jpeg=raw.getvalue(),
+        caption_text='Huldigung im Schloßhof',caption_region_ids=[],page_label='123')])
+    successful=SourceReadResult(request_id=second.query.request_id,connection_generation=s.generation,
+        turn_generation=second.query.turn_generation,operation='source_unit_pdf',status='ok',
+        records=(dict(source_id=source,article_id='albinus.huldigung',
+            blob=base64.b64encode(pdf).decode()),),evidence=(),observed_data_seq=5,
+        observed_projection_seq=5,observed_visibility_epoch=4,observed_database_generation='db-source')
+    assert await s.admission.finish_read(s.run,s.token,s.generation,successful)
+    value,calls=await task
+    embedded=value.content[1].resource
+    with pymupdf.open(stream=base64.b64decode(embedded.blob),filetype='pdf') as doc:
+        assert sum(len(page.get_images()) for page in doc)==1
+        assert 'Huldigung im Schloßhof' in ''.join(page.get_text() for page in doc)
+        assert 'Исходная страница: 123' in ''.join(page.get_text() for page in doc)
+    assert len(calls)==1
+    calls[0].release()
+    await release(s,second)
+
+
+@pytest.mark.asyncio
+async def test_pdf_withdrawal_during_original_restore_never_dispatches_second_read(target):
+    """An accepted first read cannot reissue PDF bytes after source withdrawal during restore."""
+    from regional_knowledge.kaggle_source_read import SourceReadRequest, SourceReadResult
+    s=target
+    source='31111111-2222-4333-8444-555555555555'
+    entered, resume=asyncio.Event(), asyncio.Event()
+    withdrawn=False
+    restored=[]
+    outputs=[]
+
+    async def prepare(source_id, binding):
+        assert source_id==source and binding==current_binding(s.queue)
+        restored.append(source_id)
+        entered.set()
+        await resume.wait()
+
+    s.backend.startup=SimpleNamespace(config=SimpleNamespace(import_originals=
+        SimpleNamespace(prepare_pdf_original=prepare)))
+    s.gate._restricted_sources=lambda sources: frozenset(sources) if withdrawn else frozenset()
+
+    async def export():
+        with capture_read_output() as calls:
+            try:
+                return await s.backend.source_unit_export(source,'albinus.huldigung',s.principal)
+            finally:
+                outputs.extend(calls)
+
+    task=asyncio.create_task(export())
+    try:
+        first=await work(s)
+        assert isinstance(first.query,SourceReadRequest)
+        failed=SourceReadResult(request_id=first.query.request_id,
+            connection_generation=s.generation,
+            turn_generation=first.query.turn_generation,operation='source_unit_pdf',
+            status='unavailable',reason='pdf_original_restore_required',
+            records=(),evidence=(),observed_data_seq=5,
+            observed_projection_seq=5,observed_visibility_epoch=4,
+            observed_database_generation='db-source')
+        assert await s.admission.finish_read(s.run,s.token,s.generation,failed)
+        await release(s,first)
+        await asyncio.wait_for(entered.wait(),3)
+        assert not task.done() and restored==[source]
+        withdrawn=True  # The source is revoked specifically *inside* the awaited restore.
+        resume.set()
+        with pytest.raises(ToolError,match='access_denied'):
+            await task
+        assert len(s.gate.permits)==1  # No second SOURCE_READ reached the read gate.
+        assert len(s.gate.released)==1  # The first failure ticket was released.
+        assert s.admission.status()['pending_reads']==0
+        assert not outputs  # No embedded PDF, source text or pixel bytes issued.
+    finally:
+        resume.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

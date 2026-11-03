@@ -135,7 +135,7 @@ def test_printed_page_number_does_not_block_complete_article_pdf():
     assert values == before
 
 
-@pytest.mark.parametrize('kind',['footnote','table','marginalia','caption','figure'])
+@pytest.mark.parametrize('kind',['footnote','table','marginalia'])
 def test_significant_unsupported_structure_is_explicit_failure(kind):
     with pytest.raises(SourceUnitPdfError,match='unsupported_structure:'+kind):
         render_source_unit_pdf(**inputs([(kind,'Точный важный авторский элемент')]))

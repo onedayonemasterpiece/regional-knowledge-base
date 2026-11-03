@@ -455,7 +455,9 @@ class TargetRuntime:
         if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True,
-                public_illustrations=self.database.schema_version>=37)
+                public_illustrations=self.database.schema_version>=37,
+                illustration_page=(lambda figure:self.original_intake_handler.accepted_illustration_page(figure))
+                    if self.target.get('original_intake') is not None else None)
         from .kaggle_warm_read import ReadHandlerCompatibility,ReadHandlerSlot
         self.read_handler_slot=ReadHandlerSlot(handler,
             loaded_sha256=readiness.hashes['code'],

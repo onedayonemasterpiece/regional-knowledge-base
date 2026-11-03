@@ -628,6 +628,35 @@ class KaggleSourceBackend:
                 gated = await measured('finish_gate_ms',self.source_gate.finish(permit, result))
                 permit = None
                 status, reason = gated.result.status, gated.result.reason
+                if (catalog_request is not None and catalog_request.get('operation')=='source_unit_pdf'
+                        and reason=='pdf_original_restore_required'):
+                    # this unit. Restore its verified original through the existing
+                    # controller BEFORE the new bounded PDF read and output permit.
+                    timeout.reschedule(None)
+                    await self.read_authority.recheck(authority)
+                    source_id=catalog_request['source_id']
+                    if source_id in self.source_gate._restricted_sources((source_id,)):
+                        raise PermissionError('source withdrawn')
+                    startup=getattr(self,'startup',None)
+                    originals=getattr(startup.config,'import_originals',None) if startup is not None else None
+                    self.source_gate.release(gated.ticket);gated=None
+                    self.worker_queue.shared_reads.cancel_read(ticket);ticket=None
+                    if originals is None:raise failure('unavailable','pdf_render_unsupported')
+                    from .original_intake import OriginalIntakeError
+                    try:await originals.prepare_pdf_original(source_id,binding)
+                    except OriginalIntakeError:raise failure('unavailable','pdf_render_unsupported') from None
+                    await self.read_authority.recheck(authority)
+                    if (current_binding(self.worker_queue)!=binding
+                            or source_id in self.source_gate._restricted_sources((source_id,))):
+                        raise PermissionError('source or runtime changed')
+                    deadline=time.monotonic()+2;timeout.reschedule(deadline)
+                    request=request.model_copy(update={'request_id':str(uuid4()),'deadline_ms':2000})
+                    permit=await self.source_gate.dispatch(authority,request,binding)
+                    ticket=await self.worker_queue.shared_reads.begin_read(authority,permit.query,
+                        dialog_ref=destination.key,deadline=deadline,on_dispatch=dispatched)
+                    result=await asyncio.shield(ticket.result)
+                    gated=await self.source_gate.finish(permit,result);permit=None
+                    status,reason=gated.result.status,gated.result.reason
                 if (gated.result.status != 'ok' if exact else gated.result.mode != 'hybrid'):
                     if catalog_request is not None and catalog_request.get('operation')=='source_unit_pdf':
                         raise failure(status,reason,next_action=(

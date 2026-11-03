@@ -56,3 +56,63 @@ async def test_pdf_edition_uses_latest_accepted_correction_and_original_fallback
             'FROM rkb_v4.source_stage_sessions WHERE source_id=%s',(SOURCE,))).fetchone())==('1985',)
     current=await bibliography()
     assert '1988' in current and '1985' not in current
+
+
+@PG
+@pytest.mark.asyncio
+async def test_pdf_floating_figure_uses_actual_accepted_publication_and_manifest(image_pg_sql18):
+    """PG17 RED: provenance has no illustration_ids; semantic publication does."""
+    import json
+    import io
+    import pymupdf
+    from PIL import Image
+    from regional_knowledge.source_stage import canonical
+    from test_native_image_projection_20261022 import illustrated_batch
+
+    env=image_pg_sql18
+    doc=json.loads(illustrated_batch())
+    page=doc['model_payload']['pages'][0]
+    body=next(r for r in page['regions'] if r['region_key']=='body')
+    caption=next(r for r in page['regions'] if r['region_key']=='caption-1')
+    doc['model_payload']['chunks'][0]['region_refs']=[]
+    doc['model_payload']['chunks'][0]['span_refs']=[
+        dict(page_id=page['page_id'],region_key=r['region_key'],start=0,
+             end=len(r['source_text'])) for r in (body,caption)]
+    page['source_unit_version']=1
+    page['source_unit_boundaries']=[
+        dict(article_id='fixture-illustrated',action='start',region_key='body',
+             offset=0,kind='article',title='Synthetic illustrated article'),
+        dict(article_id='fixture-illustrated',action='end',region_key='body',
+             offset=len(body['source_text']))]
+    assert (await accepted(env,stage_command(doc,1))).status=='applied'
+    prepare,_=native(env)
+    for component in ('text','semantic'):
+        command=packet(env,doc,component)
+        await prepare(command)
+        assert (await accepted(env,command)).status=='applied'
+    db=env['connection']
+    async with db.transaction():
+        provenance=(await (await db.execute(
+            'SELECT data FROM rkb_v4.source_passage_provenance WHERE source_id=%s',
+            (SOURCE,))).fetchone())[0]
+        assert 'illustration_ids' not in provenance and 'article_id' not in provenance
+        link=(await (await db.execute(
+            "SELECT media->'passage_links' FROM rkb_v4.source_batch_publications "
+            "WHERE source_id=%s AND component='semantic'",(SOURCE,))).fetchone())[0]
+        assert len(link)==1 and link[0]['illustration_ids']
+    @asynccontextmanager
+    async def acquire():yield db
+    image=Image.new('RGB',(512,512),'white')
+    out=io.BytesIO()
+    image.save(out,format='JPEG')
+    called=[]
+    async def page_jpeg(figure):
+        called.append(figure['source_region_id'])
+        return out.getvalue()
+    pdf=await render_accepted_source_pdf(acquire=acquire,source_id=SOURCE,
+        article_id='fixture-illustrated',illustration_page=page_jpeg)
+    assert len(called)==1
+    with pymupdf.open(stream=pdf,filetype='pdf') as rendered:
+        assert sum(len(p.get_images()) for p in rendered)==1
+        assert any('A picture from this synthetic original.' in p.get_text()
+                   for p in rendered)

@@ -262,6 +262,47 @@ async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_v
     finally:
         stop.set();await task;await bridge.aclose();spool.close();await n.handler.aclose()
 
+@pytest.mark.asyncio
+async def test_pdf_prepare_scopes_verified_receipt_and_never_reads_page_bytes(owner,monkeypatch):
+    from regional_knowledge.original_intake import OriginalIntakeSpec,VerifiedOriginalReceipt
+    from test_kaggle_original_intake import REQUEST,PDF
+    e=owner
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    current=[True]
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),
+        binding_current=lambda b:current[0] and b==binding,
+        current_binding=lambda:binding,allowed_origins=frozenset({'https://archive.invalid'}))
+    spec=OriginalIntakeSpec(SOURCE,INGEST,REQUEST,'original.pdf',max_bytes=len(PDF))
+    receipt=VerifiedOriginalReceipt(SOURCE,INGEST,REQUEST,1,digest(PDF),len(PDF),
+        'originals/synthetic','native-etag','pdf',1,'a'*64,'b'*64,'c'*64)
+    with e.q.connect() as db:
+        db.execute('''INSERT INTO rkb_original_intakes(
+            ingestion_id,actor,operation_id,spec_json,storage_sha256,acquisition_json,receipt_json)
+            VALUES(?,?,?,?,?,?,?)''',(INGEST,e.auth.p.owner.subject,'synthetic',
+            canonical(spec.wire()).decode(),controller._storage,
+            canonical(dict(handle='old-verified-handle')).decode(),
+            canonical(receipt.wire()).decode()))
+    calls=[]
+    async def restore(context,actor,actual,original,record,*,recheck):
+        await recheck()
+        calls.append((context,actor,actual,original,record))
+        return record
+    monkeypatch.setattr(controller,'_restore_handle',restore)
+    await controller.prepare_pdf_original(SOURCE,binding)
+    assert len(calls)==1 and calls[0][0] is None
+    assert calls[0][1]==e.auth.p.owner.subject and calls[0][3]==receipt
+    assert calls[0][4]['handle']=='old-verified-handle'
+    with pytest.raises(OriginalIntakeError,match='original_verified_receipt_required'):
+        await controller.prepare_pdf_original('40000000-0000-0000-0000-000000000004',binding)
+    current[0]=False
+    with pytest.raises(OriginalIntakeError,match='original_current_binding_required'):
+        await controller.prepare_pdf_original(SOURCE,binding)
+    assert len(calls)==1  # No phase, archive, page/image GET or owner credential replay.
+    spool.close()
+
+
 def legacy_s3_original_fixture(controller):
     """Historical original S3 receipt fixture; active intake uses Telegram instead."""
     archive=controller._archive

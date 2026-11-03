@@ -91,6 +91,8 @@ class Cursor:
                 publication_year=1902)) for p in self.pages]
         elif "read_source_unit_pages_v1" in sql:
             self.rows=[(p["physical_page_index"],projection(p),max(p["physical_page_index"] for p in self.pages)+1,False) for p in self.pages]
+        else:
+            self.rows=[]  # Existing no-media fixture still has no accepted images.
     async def fetchall(self):
         return self.rows
     async def __aenter__(self):
@@ -218,3 +220,113 @@ async def test_pdf_v2_optional_text_crosses_native_mcp_and_oversize_is_explicit(
     denied=await execute_source_read(request,acquire=acquire)
     assert denied.status=='unavailable' and denied.reason=='pdf_transport_limit'
     assert denied.records==()  # Never a truncated/partial PDF.
+
+
+@pytest.mark.asyncio
+async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels():
+    from io import BytesIO
+    from PIL import Image,ImageDraw
+    from regional_knowledge.source_unit_export import _unit_figures
+    from regional_knowledge.source_unit_export import complete_unit
+    pages=fixture_pages(complete=True,order=(0,1))
+    first=pages[0]
+    for region in first['regions']:
+        if region['reading_order']>=10:region['reading_order']+=1
+    first['regions'].append(dict(region_key='fig-1',kind='figure',reading_order=10,
+        source_text='',bbox=dict(left=100,top=100,right=800,bottom=800)))
+    # A different figure after the accepted END marker on the final page must
+    # never leak into this article just because it shares a source page.
+    pages[1]['regions'].append(dict(region_key='caption-out',kind='caption',
+        reading_order=18,source_text='Printed caption outside article.',
+        bbox=dict(left=100,top=0,right=400,bottom=100)))
+    pages[1]['regions'].append(dict(region_key='neighbor-body',kind='body',
+        reading_order=19,source_text='Following article body.',
+        bbox=dict(left=0,top=0,right=100,bottom=100)))
+    pages[1]['regions'].append(dict(region_key='fig-outside',kind='figure',
+        reading_order=20,source_text='',bbox=dict(left=0,top=0,right=400,bottom=400)))
+
+    def data(page,key,bbox,caption):
+        return dict(page_id=page['page_id'],source_region_id=str(uuid5(
+            UUID(page['page_id']),'region:'+key)),bbox=bbox,
+            display_rotation_degrees=0,caption_text=caption,
+            caption_region_ids=[],crop_binding=dict(original_sha256='a'*64))
+    caption_id=str(uuid5(UUID(pages[1]['page_id']),'region:caption-out'))
+    body_link=dict(source_spans=[dict(region_id=str(uuid5(
+        UUID(pages[1]['page_id']),'region:r-15')),start=0,
+        end=len(pages[1]['regions'][15]['source_text'])),
+        dict(region_id=caption_id,start=0,end=len('Printed caption outside article.'))],
+        region_ids=[],footnote_region_ids=[],page_ids=[],passage_id=str(uuid5(UUID(SOURCE),'passage:body')))
+    neighbor_link=dict(source_spans=[dict(region_id=str(uuid5(
+        UUID(pages[1]['page_id']),'region:neighbor-body')),start=0,
+        end=len('Following article body.'))],
+        region_ids=[],footnote_region_ids=[],page_ids=[],passage_id=str(uuid5(UUID(SOURCE),'passage:neighbor')))
+    rows=[
+        (data(pages[0],'fig-1',dict(left=100,top=100,right=800,bottom=800),
+             'Принятая подпись Huldigung'),0,'import-accepted',[]),
+        (data(pages[1],'fig-outside',dict(left=0,top=0,right=400,bottom=400),
+             'Чужая подпись'),1,'import-accepted',[neighbor_link])]
+    unit=complete_unit([projection(p) for p in pages],source_id=SOURCE,
+        page_count=2,read_complete=False,article_id='albinus-unit')
+    selected=_unit_figures(unit,pages,rows)
+    assert len(selected)==1 and selected[0]['caption_text']=='Принятая подпись Huldigung'
+    # RED on old anchor-only filter: the explicit accepted body link is
+    # the sole authority for this post-anchor figure, not page proximity.
+    linked=dict(body_link,caption_region_ids=[caption_id])
+    linked_rows=[rows[0],(*rows[1][:3],[linked])]
+    assert [f['caption_text'] for f in _unit_figures(unit,pages,linked_rows)] == [
+        'Принятая подпись Huldigung','Чужая подпись']
+    # An owned heading is part of the same passage; only *outside* spans
+    # need the figure's exact caption relation.
+    heading=pages[1]['regions'][14]
+    heading['kind']='heading'
+    heading_span=dict(region_id=str(uuid5(UUID(pages[1]['page_id']),
+        'region:'+heading['region_key'])),start=0,end=len(heading['source_text']))
+    linked['source_spans'].insert(0,heading_span)
+    assert len(_unit_figures(unit,pages,linked_rows))==2
+    # The same figure must not borrow a neighboring heading beyond END.
+    pages[1]['regions'].append(dict(region_key='neighbor-heading',kind='heading',
+        reading_order=21,source_text='Next title',
+        bbox=dict(left=0,top=0,right=100,bottom=100)))
+    outside_heading=dict(region_id=str(uuid5(UUID(pages[1]['page_id']),
+        'region:neighbor-heading')),start=0,end=len('Next title'))
+    linked['source_spans'].append(outside_heading)
+    assert len(_unit_figures(unit,pages,linked_rows))==1
+    linked['source_spans'].pop()
+    assert [f['caption_text'] for f in _unit_figures(unit,pages,rows)] == [
+        'Принятая подпись Huldigung']
+
+    class MediaCursor(Cursor):
+        async def execute(self,sql,params=None):
+            if 'FROM rkb_v4.source_illustrations i' in sql:
+                assert params[:2]==(SOURCE,[0,1])
+                self.rows=rows
+            else:await super().execute(sql,params)
+    connection=Connection(pages)
+    connection.cursor_value=MediaCursor(pages)
+    @asynccontextmanager
+    async def acquire():yield connection
+    image=Image.new('RGB',(600,600),'white')
+    ImageDraw.Draw(image).rectangle((60,60,480,480),fill='darkgreen')
+    page_bytes=BytesIO();image.save(page_bytes,format='JPEG',quality=75)
+    observed=[]
+    async def native_page(figure):
+        observed.append(figure['caption_text'])
+        return page_bytes.getvalue()
+    pdf=await render_accepted_source_pdf(acquire=acquire,source_id=SOURCE,
+        article_id='albinus-unit',illustration_page=native_page)
+    assert observed==['Принятая подпись Huldigung']
+    with pymupdf.open(stream=pdf,filetype='pdf') as doc:
+        assert sum(len(page.get_images()) for page in doc)==1
+        text=''.join(page.get_text() for page in list(doc)[1:])
+        assert text.index('Abschnitt 9')<text.index('Принятая подпись Huldigung')<text.index('Abschnitt 10')
+        assert 'Исходная страница: 61' in text
+        assert 'Чужая подпись' not in text
+    # Same PDF path: only an exact accepted body passage permits the
+    # post-anchor image; its own caption, page and crop remain present.
+    rows[:]=linked_rows
+    pdf_linked=await render_accepted_source_pdf(acquire=acquire,source_id=SOURCE,
+        article_id='albinus-unit',illustration_page=native_page)
+    with pymupdf.open(stream=pdf_linked,filetype='pdf') as doc:
+        assert sum(len(page.get_images()) for page in doc)==2
+        text=''.join(page.get_text() for page in list(doc)[1:])
+        assert 'Чужая подпись' in text and 'Исходная страница: 62' in text

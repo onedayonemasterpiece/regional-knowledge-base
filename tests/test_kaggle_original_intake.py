@@ -151,6 +151,28 @@ async def test_original_pages_dispatch_uses_pinned_djvu_pixels_and_retains_same_
 
 
 @pytest.mark.asyncio
+async def test_cold_accepted_illustration_recovers_same_pinned_djvu_decoder(native,djvu_archive,djvu_bundle,monkeypatch):
+    from regional_knowledge.source_unit_pdf import SourceUnitPdfError
+    import regional_knowledge.kaggle_djvu_pixels as pixels
+    original,inventory=djvu_archive;n=native;n.handler.native_bundle=djvu_bundle
+    monkeypatch.setattr(pixels,'_jpeg',lambda rgb,width,height:(b'\xff\xd8'+rgb+b'\xff\xd9',82))
+    figure=dict(source_id=SOURCE,ingestion_id=INGEST,original_sha256=digest(original.read_bytes()),
+        physical_page_index=0)
+    with pytest.raises(SourceUnitPdfError,match='pdf_original_restore_required'):
+        await n.handler.accepted_illustration_page(figure)
+    n.handler._records['restored-handle']=dict(path=original,sha256=figure['original_sha256'],
+        size=len(original.read_bytes()),format='djvu',page_count=inventory.page_count,
+        pages={},verified={'retained':True},parser_sha256=n.handler.parser_sha256,
+        spec=spec(max_bytes=len(original.read_bytes())).wire())
+    image=await n.handler.accepted_illustration_page(figure)
+    assert image.startswith(b'\xff\xd8') and image.endswith(b'\xff\xd9')
+    assert n.parser==[]  # Uses pinned DjVu pixel renderer, not a PDF-only parser.
+    n.handler._records.clear()
+    with pytest.raises(SourceUnitPdfError,match='pdf_original_restore_required'):
+        await n.handler.accepted_illustration_page(figure)
+
+
+@pytest.mark.asyncio
 async def test_three_djvu_pages_inspect_original_once(native,monkeypatch):
     import regional_knowledge.kaggle_djvu_inspect as inspector
     import regional_knowledge.kaggle_djvu_pixels as pixels

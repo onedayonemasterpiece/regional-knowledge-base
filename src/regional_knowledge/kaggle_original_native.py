@@ -286,6 +286,28 @@ class NativeOriginalIntake:
         if record is None or args.get('original_sha256')!=record['sha256']:raise OriginalIntakeError('original_retained_bytes_unavailable')
         return record
 
+    async def _render_original_page(self,record,index):
+        """Reuse the verified PDF/DjVu page decoder for intake and accepted PDF."""
+        if record['format']=='djvu':
+            from .kaggle_djvu_inspect import inspect_djvu,DjvuStructureError
+            from .kaggle_djvu_pixels import render_verified_djvu_page,DjvuPixelsUnavailable
+            try:
+                if 'inventory' not in record:
+                    record['inventory']=await _blocking(inspect_djvu,record['path'])
+                inventory=record['inventory']
+                if inventory.page_count!=record['page_count']:
+                    raise DjvuPixelsUnavailable('djvu_page_identity_invalid')
+                return await render_verified_djvu_page(bundle=self.native_bundle,
+                    original_path=record['path'],original_bytes=record['size'],
+                    inventory=inventory,index=index)
+            except (DjvuStructureError,DjvuPixelsUnavailable) as error:
+                _LOG.warning(
+                    'original_page state=unavailable format=djvu run_id=%s ingestion_id=%s page_index=%s reason=%s',
+                    self.identity[0],record['spec']['ingestion_id'],index,str(error))
+                raise OriginalIntakeError('original_djvu_decoder_required') from None
+        return await self._parse_selected(record['path'],'page',index,
+            parser_sha256=record['parser_sha256'])
+
     async def _execute(self,frame):
         phase,args,private=frame['phase'],frame['arguments'],frame.get('original_transfer')
         if phase=='original_acquire':
@@ -466,26 +488,7 @@ class NativeOriginalIntake:
             index=args['index']
             started=time.monotonic()
             if index not in record['pages']:
-                if record['format']=='djvu':
-                    from .kaggle_djvu_inspect import inspect_djvu,DjvuStructureError
-                    from .kaggle_djvu_pixels import render_verified_djvu_page,DjvuPixelsUnavailable
-                    try:
-                        if 'inventory' not in record:
-                            record['inventory']=await _blocking(inspect_djvu,record['path'])
-                        inventory=record['inventory']
-                        if inventory.page_count!=record['page_count']:
-                            raise DjvuPixelsUnavailable('djvu_page_identity_invalid')
-                        result=await render_verified_djvu_page(bundle=self.native_bundle,
-                            original_path=record['path'],original_bytes=record['size'],
-                            inventory=inventory,index=index)
-                    except (DjvuStructureError,DjvuPixelsUnavailable) as error:
-                        _LOG.warning(
-                            'original_page state=unavailable format=djvu run_id=%s ingestion_id=%s page_index=%s reason=%s',
-                            self.identity[0],record['spec']['ingestion_id'],index,str(error))
-                        raise OriginalIntakeError('original_djvu_decoder_required') from None
-                else:
-                    result=await self._parse_selected(record['path'],'page',index,
-                        parser_sha256=record['parser_sha256'])
+                result=await self._render_original_page(record,index)
                 _LOG.info('native_original_page stage=parse_render_complete run_id=%s job_id=%s page_index=%s format=%s elapsed_ms=%.3f',
                     self.identity[0],frame['id'],index,record['format'],(time.monotonic()-started)*1000)
                 image=base64.b64decode(result.pop('image_b64'),validate=True)
@@ -512,6 +515,35 @@ class NativeOriginalIntake:
                 result['page_receipt_sha256']=digest(canonical(result));artifact['chunks'][key]=result
             return artifact['chunks'][key]
         raise OriginalIntakeError('original_phase_unsupported')
+
+    async def accepted_illustration_page(self, figure):
+        """Already verified original/page renderer; no new archive or byte proxy."""
+        from .source_unit_pdf import SourceUnitPdfError
+        if (self.closed or self.generation is None or
+                not self.current((self.identity[0],self.identity[2],self.generation))):
+            raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+        async with self._lock:
+            matches=[record for record in self._records.values()
+                if record['spec']['source_id']==figure['source_id']
+                and record['spec']['ingestion_id']==figure['ingestion_id']
+                and record['sha256']==figure['original_sha256']
+                and record.get('verified') is not None]
+            if not matches:raise SourceUnitPdfError('pdf_original_restore_required')
+            if len(matches)!=1:
+                raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+            record=matches[0]
+            index=figure['physical_page_index']
+            if not 0<=index<record['page_count']:
+                raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+            if index in record['pages']:
+                return await _blocking(record['pages'][index]['path'].read_bytes)
+            try:rendered=await self._render_original_page(record,index)
+            except OriginalIntakeError:
+                raise SourceUnitPdfError('pdf_illustration_original_unavailable') from None
+            image=base64.b64decode(rendered['image_b64'],validate=True)
+            if not 1<=len(image)<=MODEL_PAGE_BYTE_LIMIT:
+                raise SourceUnitPdfError('pdf_illustration_original_unavailable')
+            return image
 
     async def aclose(self):
         if self.telegram_channel is not None:await self.telegram_channel.aclose()
