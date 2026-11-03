@@ -45,7 +45,8 @@ class SourceGraphReadRequest(ReadIdentity):
     action:Literal['entity','list','mentions','aliases','relations','poi_facts','geo_queue']='entity'
     entity_id:str|None=None
     source_id:str|None=None
-    # Existing entity_list selectors; only a single accepted source is allowed.
+    source_ids:tuple[str,...]|None=Field(default=None,min_length=2,max_length=32)
+    # Existing entity_list selectors and native three-item result limit.
     kinds:tuple[Literal['person','organization','event','historical_thread','poi_ref'],...]|None=Field(
         default=None,min_length=1,max_length=5)
     query:Annotated[str,Field(max_length=200)]=''
@@ -58,15 +59,19 @@ class SourceGraphReadRequest(ReadIdentity):
 
     @model_validator(mode='after')
     def exact_scope(self):
-        for value in (self.entity_id,self.source_id):
+        for value in (self.entity_id,self.source_id,*(self.source_ids or ())):
             if value is not None:exact_uuid(value)
         if self.action=='geo_queue':
             if (self.entity_id is not None or self.source_id is not None or self.kinds is not None
                     or self.query or self.cursor or self.limit>5):
                 raise ValueError('bounded unscoped accepted GEO queue only')
-        elif self.action in ('list','poi_facts'):
+        elif self.action=='list':
+            if self.entity_id is not None or self.source_id is not None and self.source_ids is not None:raise ValueError('invalid entity list scope')
+        elif self.action=='poi_facts':
             if self.source_id is None or self.entity_id is not None:raise ValueError('exact accepted source scope required')
         elif self.entity_id is None:raise ValueError('exact source entity UUID required')
+        if self.source_ids is not None and (self.action!='list' or len(set(self.source_ids))!=len(self.source_ids)):
+            raise ValueError('invalid entity source list')
         if self.action!='list' and (self.kinds is not None or self.query):
             raise ValueError('entity selectors require a source-scoped list')
         if self.action!='geo_queue' and self.limit>3:raise ValueError('existing graph reads remain <=3')
@@ -144,7 +149,7 @@ def _scope(request,observed):
         # person/audience/auth epoch instead; reauthorization and the current
         # source/grant checks still occur independently on every new read.
         actor.pop('context_ref',None)
-    scope=dict(action=request.action,entity=request.entity_id,source=request.source_id,
+    scope=dict(action=request.action,entity=request.entity_id,source=request.source_id,sources=request.source_ids,
         actor=actor,observed=observed)
     if request.kinds is not None or request.query:
         scope.update(kinds=request.kinds,query=request.query)
@@ -246,18 +251,21 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                             try:after=_after(request.cursor,scope)
                             except (ValueError,TypeError,KeyError):raise ReadUnavailable('invalid_input') from None
                         records=[];evidence=[];positions=[];used=0;next_cursor=None
+                        global_list=request.action=='list' and request.source_id is None
+                        if global_list and installed[0]<48:raise ReadUnavailable('not_ready')
                         filtered=request.action=='list' and (request.kinds is not None or bool(request.query))
                         # SQL022 uses fixed PG lower + German/Greek name folds
                         # and applies both selectors before LIMIT, so a
                         # sparse hit takes one source-scoped PG page. Pre-022
                         # workers retain the original bounded keyset fallback:
                         # a new handler may be staged before its DDL is applied.
-                        sql_prefilter=filtered and installed[0]>=22
+                        sql_prefilter=global_list or filtered and installed[0]>=22
                         after_page=after
                         for page in range(1 if sql_prefilter else 8 if filtered else 1):
                             if sql_prefilter:
-                                await execute('SELECT * FROM rkb_v4.read_source_graph_filtered_v1(%s::uuid,%s::uuid,%s,%s::text[],%s,%s)',
-                                    (request.source_id,*after_page,
+                                function='read_source_graph_global_v1' if global_list else 'read_source_graph_filtered_v1'
+                                await execute(f'SELECT * FROM rkb_v4.{function}(%s::{"uuid[]" if global_list else "uuid"},%s::uuid,%s,%s::text[],%s,%s)',
+                                    (request.source_ids if global_list else request.source_id,*after_page,
                                      list(request.kinds) if request.kinds is not None else None,
                                      request.query.strip() if request.query else None,
                                      request.limit+1))
@@ -266,7 +274,7 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                                     (request.entity_id,request.source_id,request.action,*after_page,request.limit+1))
                             rows=await cursor.fetchall()
                             if len(rows)>request.limit+1:raise ReadUnavailable('internal_error')
-                            for offset,row in enumerate(rows[:request.limit] if not filtered else rows):
+                            for offset,row in enumerate(rows if sql_prefilter else rows[:request.limit] if not filtered else rows):
                                 record,item,position=_record(row,request)
                                 if filtered and not sql_prefilter and not _matches_list(record,request):
                                     after_page=position
