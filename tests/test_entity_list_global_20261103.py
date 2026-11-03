@@ -49,6 +49,37 @@ async def test_pg17_global_sql48_same_query_scoped_and_cursor(graph_sql22):
         assert scoped and all(str(r[0])==SOURCE for r in scoped)
         multi = await (await connection.execute(sql, ([SECOND,SOURCE], ['organization'], query))).fetchall()
         assert multi == first
+        # Real native request/psycopg adaptation, not a direct SQL call with a Python list.
+        # Refresh the normal synthetic frontier after fixture graph writes.
+        from contextlib import asynccontextmanager
+        from regional_knowledge.kaggle_source_graph_read import execute_source_graph_read
+        async with connection.transaction():
+            observed=await (await connection.execute(
+                "SELECT s.applied_seq,f.visibility_epoch FROM rkb_v4.recovery_state s "
+                "CROSS JOIN rkb_v4.read_frontier f WHERE s.singleton AND f.singleton")).fetchone()
+            await connection.execute(
+                "SELECT rkb_v4.publish_read_frontier(%s,%s,%s,%s,true,true)",
+                ('sql22-entity-fixture','writer-1',observed[1],observed[0]))
+        @asynccontextmanager
+        async def acquire():
+            yield connection
+        request=selected(source_id=None,source_ids=(SOURCE,SECOND),
+                         query='strasse',kinds=['organization'],limit=2)
+        page1=await execute_source_graph_read(request,acquire=acquire)
+        assert page1.status=='ok',page1
+        assert len(page1.records)==2 and page1.next_cursor
+        assert all(r['source_id'] in (SOURCE,SECOND) for r in page1.records)
+        page2=await execute_source_graph_read(
+            request.model_copy(update={'cursor':page1.next_cursor}),acquire=acquire)
+        assert page2.status=='ok',page2
+        assert page2.records and page2.records[0]['id']!=page1.records[-1]['id']
+        scoped_native=await execute_source_graph_read(
+            selected(source_id=SOURCE,query='strasse',kinds=['organization'],limit=2),acquire=acquire)
+        assert scoped_native.status=='ok' and all(r['source_id']==SOURCE for r in scoped_native.records)
+        unscoped_native=await execute_source_graph_read(
+            selected(source_id=None,query='strasse',kinds=['organization'],limit=2),acquire=acquire)
+        assert unscoped_native.status=='ok' and unscoped_native.records
+
         # Existing accepted/withdrawn source joins, never a client-side filter.
         await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SECOND,))
         remaining = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
