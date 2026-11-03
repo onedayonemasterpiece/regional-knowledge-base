@@ -884,7 +884,10 @@ def build_server(
             try:
                 settled=await asyncio.to_thread(delivery.confirm_dataset_native_receipt,
                                                 credential,request_id,native)
-            except Exception:
+            except Exception as exc:
+                from .expert_request_control import RequestControlError
+                if not isinstance(exc,RequestControlError) or exc.code!='dataset_delivery_receipt_not_covered':
+                    raise
                 return dict(state="sending",provider_sent=True,remote_accepted=False)
             return dict(state=settled["state"],provider_sent=True,remote_accepted=True)
 
