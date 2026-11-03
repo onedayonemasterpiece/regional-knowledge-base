@@ -1743,3 +1743,95 @@ async def test_entity_validation_distinguishes_missing_and_overlong_field_withou
     assert 'validation_type='+expected in caplog.text
     assert 'Private synthetic spelling' not in str(caught.value)+caplog.text
     assert operation_count(s)==0
+
+
+@pytest.mark.asyncio
+async def test_normal_import_updates_caption_history_and_recovers_restart(native_intake,monkeypatch):
+    from regional_knowledge.telegram_import_status import started_statuses
+    from uuid import uuid4
+    s=native_intake
+    book=await start(s)
+    # Original receipt metadata exists in production; the importer fixture uses
+    # an in-memory original provider instead of OriginalIntakeController tables.
+    with s.t.queue.connect() as db:
+        actor=db.execute('SELECT person_id FROM rkb_source_intake_control WHERE ingestion_id=?',(book.ingestion_id,)).fetchone()[0]
+    with s.t.queue.connect() as db:
+        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT,telegram_locator_json TEXT)')
+        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
+                   (book.ingestion_id,actor,json.dumps({'page_count':1})))
+    captions={book.ingestion_id:'Original caption with user notes\nRKB-original '+book.ingestion_id}
+    edits=[]
+    async def caption(context,ingestion_id,*,caption=None):
+        assert context.route=='owner'
+        if caption is not None:
+            captions[ingestion_id]=caption;edits.append(caption)
+        return dict(owned=True,editable=True,caption=captions[ingestion_id],updated=caption is not None)
+    monkeypatch.setattr(s.originals,'caption',caption)
+    unstarted=await start(s,file_id='not-read-yet')
+    edits.clear()
+    with s.t.queue.connect() as db:
+        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
+                   (unstarted.ingestion_id,actor,json.dumps({'page_count':1})))
+    # No native stage: merely preparing a future book does not mark it.
+    assert started_statuses(s.t.queue,actor)==[]
+    await stage(s,book,batch(s,book,first=0,count=1))
+    assert edits[-1].startswith('РКБ: ⏳')
+    assert 'Original caption with user notes' in edits[-1]
+    await call(s,book,'status')
+    await call(s,book,'status')
+    assert len(edits)==1  # Repeated status does not hit Telegram.
+    for _ in range(3):
+        await finish(s,book)
+        await call(s,book,'status')
+    await call(s,book,'finalize')
+    await finish(s,book)
+    for _ in range(8):
+        output=await call(s,book,'status')
+        if output.state=='finalized':break
+    assert output.state=='finalized'
+    assert edits[-1].startswith('РКБ: ✅ Импорт завершён\n')
+    assert edits[-1].count('РКБ:')==1
+    assert started_statuses(s.t.queue,str(uuid4()))==[]
+    # Canonical finish is insufficient if the original includes an unread leaf.
+    with s.t.queue.connect() as db:
+        db.execute('UPDATE rkb_original_intakes SET receipt_json=? WHERE ingestion_id=?',
+                   (json.dumps({'page_count':2}),book.ingestion_id))
+    await call(s,book,'status')
+    assert edits[-1].startswith('РКБ: 🏁⚠️')
+    assert all('not-read-yet' not in value for value in edits)
+    # Restart loses only the optimization, not status. Idempotent exact update.
+    s.importer._caption_synced.clear()
+    await call(s,book,'status')
+    assert edits[-1].startswith('РКБ: 🏁⚠️')
+
+
+@pytest.mark.asyncio
+async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(native_intake):
+    from regional_knowledge.telegram_import_status import started_statuses
+    s=native_intake;book=await start(s)
+    with s.t.queue.connect() as db:
+        actor=db.execute('SELECT person_id FROM rkb_source_intake_control WHERE ingestion_id=?',
+                         (book.ingestion_id,)).fetchone()[0]
+        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT,telegram_locator_json TEXT)')
+        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
+                   (book.ingestion_id,actor,json.dumps({'page_count':1})))
+    await stage(s,book,batch(s,book,count=1))
+    await finish(s,book,status='rejected_precondition',reason='native_source_stage_requires_review')
+    await call(s,book,'status')
+    assert started_statuses(s.t.queue,actor)[0][1]=='⏳⚠️ Импортируется; были ошибки'
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE rkb_native_source_intake_state SET phase='failed'")
+    assert started_statuses(s.t.queue,actor)[0][1]=='❌ Ошибка импорта'
+    # Observed production case: a newer finished/current intake reuses the same
+    # Telegram file as an old failed intake. The old caption must not win.
+    newer=await start(s,file_id='same-original-new-intake')
+    locator=json.dumps({'chat_id':-1001234567890,'message_id':42})
+    with s.t.queue.connect() as db:
+        db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?,?)',
+                   (newer.ingestion_id,actor,json.dumps({'page_count':1}),locator))
+        db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=? WHERE ingestion_id=?',
+                   (locator,book.ingestion_id))
+    await stage(s,newer,batch(s,newer,count=1))
+    projected=started_statuses(s.t.queue,actor)
+    assert len(projected)==1 and projected[0][0]['ingestion_id']==newer.ingestion_id
+    assert projected[0][1]=='⏳⚠️ Импортируется; были ошибки'

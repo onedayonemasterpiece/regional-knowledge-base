@@ -123,6 +123,7 @@ class KaggleSourceImporter:
         self.import_revisions,self.import_command=choices[0]
         self.originals, self.tokenizer = originals, tokenizer
         self._lock = asyncio.Lock()
+        self._caption_synced = {}
         self.output_gate = OwnerImportOutputGate(self)
         with self.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_source_intake_control(
@@ -288,7 +289,7 @@ class KaggleSourceImporter:
         return BookIngestOutput(ingestion_id=row['ingestion_id'], document_id=row['source_id'],
             state=state, message=message, next_action=action, **kwargs)
 
-    async def _caption_original(self, access, row):
+    async def _caption_original(self, access, row, *, status=None):
         # The existing durable phase continues after this optional bounded wait.
         try:
             source=json.loads(row['metadata_json'])
@@ -300,7 +301,24 @@ class KaggleSourceImporter:
             label=label.encode('utf-16-le')[:2*(1023-len(marker))].decode('utf-16-le',errors='ignore')
             caption=label.rstrip()+'\n'+marker
             async with asyncio.timeout(2):
+                if status is not None:
+                    if self._caption_synced.get(row['ingestion_id'],(None,))[1:] == (status,label):
+                        self._caption_synced[row['ingestion_id']]=(row.get('caption_stamp'),status,label)
+                        return False
+                    observed=await self.originals.caption(access.context,row['ingestion_id'])
+                    if observed is None:return False
+                    body=observed.get('caption') or caption
+                    if body.startswith('РКБ: '):body=body.split('\n',1)[-1]
+                    if not body.endswith(marker):body=body.rstrip()+'\n'+marker
+                    caption='РКБ: '+status+'\n'+body
+                    if len(caption.encode('utf-16-le'))>2048:
+                        _LOG.warning('original_caption state=caption_full ingestion_id=%s',row['ingestion_id'])
+                        return False
                 result=await self.originals.caption(access.context,row['ingestion_id'],caption=caption)
+            if result is not None and result.get('owned') and (result.get('updated') or result.get('caption')==caption):
+                if status is not None:self._caption_synced[row['ingestion_id']]=(row.get('caption_stamp'),status,label)
+                _LOG.info('original_caption state=synced ingestion_id=%s status=%s',row['ingestion_id'],status)
+                return True
             if result is not None and not result['owned']:
                 _LOG.warning('original_caption state=foreign_sender ingestion_id=%s',row['ingestion_id'])
         except TimeoutError:
@@ -308,6 +326,23 @@ class KaggleSourceImporter:
         except Exception as exc:
             _LOG.warning('original_caption state=unavailable ingestion_id=%s error_class=%s',
                 row['ingestion_id'],type(exc).__name__)
+
+    async def _sync_import_captions(self, access, ingestion_id):
+        # Piggyback on normal owner import traffic; no timer, service or operator.
+        # One changed caption per call bounds optional Telegram work. Restart
+        # reconstructs the projection from the journal, including completed books.
+        try:
+            from .telegram_import_status import started_statuses
+            rows=await asyncio.to_thread(started_statuses,self.queue,access.authority.person_id,
+                synced=self._caption_synced,preferred=ingestion_id,limit=2)
+            rows.sort(key=lambda item:item[0]['ingestion_id']!=ingestion_id)
+            async with asyncio.timeout(2):
+                for row,status in rows:
+                    if await self._caption_original(access,row,status=status):break
+        except TimeoutError:
+            _LOG.info('original_caption state=pending')
+        except Exception as error:
+            _LOG.warning('original_caption state=projection_unavailable error_class=%s',type(error).__name__)
 
     async def _start(self, access, *, file, metadata, source_import):
         if file is None:
@@ -970,6 +1005,7 @@ class KaggleSourceImporter:
                     output = output.model_copy(update={'message': output.message+'; stage_file_sha256='+stage_file_sha256})
                 from .product_telemetry import import_metadata
                 import_metadata(ingestion_id=output.ingestion_id,result_state=output.state,next_action=output.next_action)
+                await self._sync_import_captions(access,output.ingestion_id)
                 return await self._reply(access, output)
         except ToolError:
             raise
