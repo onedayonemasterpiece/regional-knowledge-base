@@ -54,3 +54,17 @@ async def test_pg17_global_sql48_same_query_scoped_and_cursor(graph_sql22):
         plan = await (await connection.execute(
             'EXPLAIN (FORMAT TEXT) '+sql, (None, ['person'],query))).fetchall()
         assert plan and all(row[0] for row in plan)
+
+
+@pytest.mark.asyncio
+async def test_global_native_uses_one_bounded_pg_read():
+    from regional_knowledge.kaggle_source_graph_read import execute_source_graph_read
+    from test_kaggle_fact_read import Native
+    from test_kaggle_source_graph_read import row
+    n=Native([row(2)],revision=('rkb-v4-sql001-048-v1','current'))
+    result=await execute_source_graph_read(selected(source_id=None,query='recorded alias',limit=1),
+                                           acquire=n.acquire)
+    assert result.status=='ok' and len(result.records)==1
+    calls=[(sql,params) for sql,params in n.calls if 'read_source_graph_global_v1' in sql]
+    assert len(calls)==1
+    assert calls[0][1]==(None,None,None,None,'recorded alias',2)
