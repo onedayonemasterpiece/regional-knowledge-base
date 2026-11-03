@@ -380,7 +380,9 @@ class TargetExpertDeliveryControl:
             send_doc,_=parse_send(row,raw,result_doc,result_raw)
             proof_hash=hashlib.sha256(raw).hexdigest()
             if ((row['send_intent_hash'] and row['send_intent_hash']!=proof_hash)
-                    or (row['delivery_id'] and row['delivery_id']!=send_doc['client_msg_id'])):
+                    or (row['delivery_id'] and row['delivery_id']!=send_doc['client_msg_id']
+                        and not (row['state']=='result_ready'
+                                 and row['delivery_id']==row['event_id']+':warming'))):
                 _fail('send_intent_conflict')
             db.execute("UPDATE rkb_expert_requests SET state='send_intent_ready',"
                        "send_intent_hash=?,delivery_id=?,updated_at=? WHERE id=?",
