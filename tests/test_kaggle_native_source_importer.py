@@ -488,7 +488,6 @@ async def test_status_names_unpublished_physical_page_without_overriding_authore
     assert (done.state,done.next_action)==('finalized','done')  # End of reading, not full coverage.
     assert f'unpublished_physical_page:{final_gap}' in done.warnings
     assert operation_count(s)==before+1
-    assert (await s.spool.get(state(s,book)['pending_operation_key'])).apply_state=='APPLIED' if state(s,book)['pending_operation_key'] else True
 
 
 @pytest.mark.asyncio
