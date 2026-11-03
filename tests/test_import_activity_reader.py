@@ -70,6 +70,7 @@ def watcher(tmp_path, auth):
     importer.queue, importer.startup = queue, startup
     importer._lock = asyncio.Lock()
     importer._caption_task = None
+    importer._ingestion_locks = {}
     startup.importer = importer
     ident, token = new_service_token()
     auth.provider.issue_service_credential(

@@ -1869,3 +1869,31 @@ async def test_caption_provider_wait_is_after_reader_reply(native_intake,monkeyp
         if task is not None:await task
     if provider_fails:assert not edits
     else:assert edits and edits[-1].startswith('РКБ: ⏳ Импортируется\nExisting note')
+
+
+@pytest.mark.asyncio
+async def test_slow_book_stage_does_not_hold_other_book_status(native_intake,monkeypatch):
+    s=native_intake
+    first=await start(s,file_id='lock-book-a')
+    other=await start(s,file_id='lock-book-b')
+    entered=asyncio.Event();release=asyncio.Event();same_entered=asyncio.Event()
+    async def slow_stage(access,row,*args):
+        entered.set()
+        await release.wait()
+        return s.importer._output(row,'staged','synthetic stage complete','continue_pages')
+    async def status(access,row):
+        if row['ingestion_id']==first.ingestion_id:same_entered.set()
+        return s.importer._output(row,'staged','synthetic status','continue_pages')
+    monkeypatch.setattr(s.importer,'_stage',slow_stage)
+    monkeypatch.setattr(s.importer,'_native_status',status)
+    slow=asyncio.create_task(call(s,first,'stage',payload={}))
+    await asyncio.wait_for(entered.wait(),1)
+    same=asyncio.create_task(call(s,first,'status'))
+    try:
+        response=await asyncio.wait_for(call(s,other,'status'),.5)
+        assert response.ingestion_id==other.ingestion_id
+        assert not same_entered.is_set() and not same.done()
+    finally:
+        release.set()
+        await asyncio.gather(slow,same)
+    assert same_entered.is_set()
