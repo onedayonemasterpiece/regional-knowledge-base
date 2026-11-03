@@ -980,8 +980,10 @@ class KaggleSourceImporter:
         except (ValueError, KeyError, TypeError) as error:
             # Only controlled schema labels/indices, never input or exception text.
             field_path = 'payload'
+            validation_type = None
             if isinstance(error, ValidationError):
-                loc = error.errors(include_input=False, include_context=False, include_url=False)[0]['loc']
+                detail = error.errors(include_input=False, include_context=False, include_url=False)[0]
+                loc, validation_type = detail['loc'], detail['type']
                 allowed = {'pages','chunks','entity_candidates','entities','aliases','relations',
                     'evidence','page_id','region_id','region_key','chunk_id','chunk_key',
                     'exact_quote','key','kind','canonical_label','exact_source_spelling'}
@@ -991,12 +993,12 @@ class KaggleSourceImporter:
             frame=error.__traceback__
             while frame.tb_next is not None:frame=frame.tb_next
             validator=f'{frame.tb_frame.f_code.co_name}:{frame.tb_lineno}'
-            _LOG.warning('book_ingest_invalid_input exception_class=%s field_path=%s validator=%s',
-                type(error).__name__, field_path, validator)
+            _LOG.warning('book_ingest_invalid_input exception_class=%s field_path=%s validator=%s validation_type=%s',
+                type(error).__name__, field_path, validator, validation_type)
             catalog_reason = str(error) if (type(error) is ValueError
                 and re.fullmatch(r'catalog_update_[a-z0-9_]{1,80}', str(error))) else None
             raise failure(catalog_reason or 'invalid_small_source_input', status='invalid_query',
-                exception_class=type(error).__name__, field_path=field_path, validator=validator) from None
+                exception_class=type(error).__name__, field_path=field_path, validator=validator, validation_type=validation_type) from None
 
     async def book_pages(self, *, principal, ingestion_id, cursor=None, batch_size=1):
         try:
