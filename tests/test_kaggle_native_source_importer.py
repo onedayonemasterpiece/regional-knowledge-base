@@ -1654,3 +1654,25 @@ async def test_reused_start_returns_full_nonmonotonic_research_status(native_int
     with s.t.queue.connect(write=False) as db:
         assert [tuple(r) for r in db.execute('SELECT id,state FROM jobs ORDER BY id')]==jobs
         assert db.execute('SELECT count(*) FROM rkb_source_intake_control').fetchone()[0]==rows==1
+
+
+@pytest.mark.asyncio
+async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(native_intake):
+    s=native_intake;book=await start(s)
+    payload=batch(s,book,first=0,count=1)
+    await stage(s,book,payload)
+    for phase in ('stage','text'):
+        await finish(s,book);await call(s,book,'status')
+    rejected=await finish(s,book,status='rejected_precondition')
+    await call(s,book,'status')
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
+    payload['pages'][0]['source_review_note']='Same reviewed page; corrected unpublished semantic candidates.'
+    assert (await stage(s,book,payload)).state=='processing'
+    correction=json.loads((await pending(s,book)).command.payload)
+    assert correction['batch_index']==1
+    assert correction['model_payload']['pages'][0]['physical_page_index']==0
+    with s.t.queue.connect(write=False) as db:
+        after=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence LIMIT 3')]
+    assert after==before
+    assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
