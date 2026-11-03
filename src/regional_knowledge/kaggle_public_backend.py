@@ -488,12 +488,14 @@ class KaggleSourceBackend:
             action=action,limit=limit,cursor=cursor))
 
     async def entity_list(self,principal,*,document_ids=None,kinds=None,query='',limit=3,cursor=None):
-        # Preserve the native graph's exact source bound while forwarding the
-        # existing public name/kind selectors; never scan corpus on Dev.
-        if not isinstance(document_ids,(list,tuple)) or len(document_ids)!=1:
-            raise ToolError('{"status":"unavailable","reason":"target_graph_exact_source_scope_required"}')
+        # Native SQL resolves accepted scope; never enumerate on Dev.
+        if document_ids is not None and (not isinstance(document_ids,(list,tuple)) or
+                not 1<=len(document_ids)<=32 or len(set(document_ids))!=len(document_ids)):
+            raise ToolError('{"status":"invalid_query","reason":"invalid_source_scope"}')
         return await self._search('',principal,evidence=True,graph_request=dict(
-            source_id=document_ids[0],action='list',limit=limit,cursor=cursor,
+            source_id=document_ids[0] if document_ids is not None and len(document_ids)==1 else None,
+            source_ids=tuple(document_ids) if document_ids is not None and len(document_ids)>1 else None,
+            action='list',limit=limit,cursor=cursor,
             kinds=(tuple(kinds) or None) if isinstance(kinds,(list,tuple)) else kinds,query=query))
 
     async def geo_queue(self, principal, *, limit=5):

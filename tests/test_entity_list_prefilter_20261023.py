@@ -106,7 +106,7 @@ async def graph_sql22():
             for path in scripts[:2]:
                 await connection.execute(path.read_text(),prepare=False)
         await initialize_fixture_database(connection, database_generation='sql22-entity-fixture',
-            writer_generation='writer-1',revisions=DOMAIN_REVISIONS,schema_version=22)
+            writer_generation='writer-1',revisions=DOMAIN_REVISIONS,schema_version=len(scripts))
         async with connection.transaction():
             for path in scripts[2:]:
                 await connection.execute(path.read_text(),prepare=False)
@@ -280,7 +280,6 @@ async def test_pre022_version_uses_old_keyset_without_calling_missing_function()
 def test_query_source_cursor_shape_and_empty_kinds_stay_current_contract():
     with pytest.raises(ValueError):
         selected(kinds=[])
-    with pytest.raises(ValueError):
-        selected(source_id=None)
+    assert selected(source_id=None).source_id is None
     with pytest.raises(ValueError):
         selected(action='mentions',kinds=['person'])

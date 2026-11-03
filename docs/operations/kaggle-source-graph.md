@@ -25,9 +25,11 @@ The existing `graph_fetch` tool has one registration. A known retained GEO UUID
 uses its private gate; accepted-source graph UUIDs use SourceReadGate. A failed
 branch never falls back to another authority. Accepted-source graph pages expose
 bounded entity representations, mentions, aliases and directional relations.
-`entity_list` currently requires one exact accepted source ID, at most three
-records per page. Whole-corpus graph search, kinds filtering, graph discovery,
-post-import graph mutation and POI owner verification remain unavailable.
+`entity_list` permits an omitted source or 1–32 explicit accepted sources,
+with at most three records per page. Native SQL048 performs bounded kind/name
+filtering and source/key cursor pagination. Claims across books remain independent;
+canonical graph identity merging, post-import mutation and POI owner verification
+remain unavailable.
 Native POI fact rows are persisted and readable through the fixed internal
 `poi_facts` action; there is no new public MCP tool.
 

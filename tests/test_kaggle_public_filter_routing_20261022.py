@@ -127,9 +127,6 @@ async def test_mcp_entity_list_name_kind_filters_survive_worker_and_paginated_so
         assert rejected.reason == 'invalid_input' and not rejected.records
         assert previous == len([x for x, _ in native.calls if 'read_source_graph_v1' in x])
         assert len([x for x, _ in native.calls if 'read_source_graph_v1' in x]) > 2
-        with pytest.raises(ToolError, match='target_graph_exact_source_scope_required'):
-            await startup.backend.entity_list(t.principal,
-                document_ids=None, kinds=['person'], query='person')
     finally:
         await startup.source_dispatch.aclose()
         startup.config.spool.close()
