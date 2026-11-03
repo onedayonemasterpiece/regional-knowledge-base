@@ -118,7 +118,9 @@ class RecoveryPhaseDispatch:
             if phase=='original_acquire' and (value.get('terminal') is True or value.get('error') in TERMINAL_REJECTIONS
                     or value.get('error') in ('original_telegram_scope_denied','original_telegram_document_changed',
                         'original_restore_receipt_mismatch','original_acquire_contract','original_telegram_spec_changed')):break
-            retryable=value.get('retryable',phase=='original_acquire' and value.get('error') in _RETRYABLE_TELEGRAM_ACQUIRE)
+            retryable=value.get('retryable',(phase=='original_acquire' and value.get('error') in _RETRYABLE_TELEGRAM_ACQUIRE)
+                or (phase=='original_caption' and value.get('error')=='original_telegram_binding_required'
+                    and value.get('terminal') is not True))
             if not retryable or not (value.get('error') or
                     phase=='schema_migrate' and value.get('status')=='rejected'):break
             _LOG.info('recovery_phase_retry run_id=%s phase=%s attempt=%s',
