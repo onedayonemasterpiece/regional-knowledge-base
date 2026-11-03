@@ -760,3 +760,84 @@ async def test_restart_recovers_head_without_repeating_search_or_unknown_post(
         tasks=list(restarted._tasks.values())
         for task in tasks:task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_first", [True, False])
+async def test_sa_original_executor_result_or_pr609_fallback_sends_exactly_once(
+        service, monkeypatch, model_first):
+    """One real control row, original remote journal, original native Slack sender."""
+    from regional_knowledge.expert_delivery_control import (
+        TargetExpertDeliveryControl, verified_native_slack_receipt)
+    from regional_knowledge.read_issuance import retain_read_output
+    from test_expert_delivery_control import _ready_delivery
+
+    control, credentials, _, ingress = _owned_ingress(service)
+    receiver = compose_expert_evidence_receiver(
+        target_startup=service.startup, expert_slack_ingress=ingress)
+    posts = []
+
+    def transport(request):
+        if request.url.path.endswith("/auth.test"):
+            return httpx.Response(200, json={"ok": True, "team_id": "T111", "user_id": "UBOT"})
+        body = json.loads(request.content)
+        posts.append(body)
+        return httpx.Response(200, json={"ok": True, "channel": body["channel"],
+            "ts": "1792000008.200", "message": {
+                "user": "UBOT", "text": body["text"],
+                "thread_ts": body["thread_ts"],
+                "client_msg_id": body["client_msg_id"]}})
+
+    reply = ExpertSlackSearchReply(ingress=ingress, evidence=receiver,
+        sender=_sender(transport=httpx.MockTransport(transport)))
+    reply.executor_context = object()  # Installed-path branch; original control remains real.
+    rid = control.accept(_observation())["request_id"]
+    cmd = control.exact_remote_intent(rid, 1)
+    seal = await control.spool.journal.seal([cmd],
+        predecessor=await control.spool.journal.head(), writer_generation="writer-1")
+    await control.verify_remote_intent(rid, cmd, seal)
+    assert control._row(rid)["state"] == "pending"
+
+    delivery = TargetExpertDeliveryControl(control, source_gate=lambda *_: True)
+    if model_first:
+        args = await _ready_delivery(SimpleNamespace(journal=control.spool.journal),
+            control, delivery, credentials, {"request_id": rid}, 2)
+        outgoing = delivery.claim_send_once(*args)
+        echo = await reply.sender.post_once(
+            event_id=outgoing["delivery_id"], channel=outgoing["channel_id"],
+            thread=outgoing["thread_ts"], text=outgoing["text"])
+        proof = verified_native_slack_receipt(dict(app_id="A111", user=echo["user"],
+            channel=echo["channel"], thread_ts=echo["thread_ts"], ts=echo["ts"],
+            client_msg_id=echo["event_id"], text=echo["text"]),
+            app_id="A111", team_id="T111", bot_user_id="UBOT",
+            channel_id=outgoing["channel_id"], thread_ts=outgoing["thread_ts"])
+        assert delivery.receipt(credentials, rid, proof)["state"] == "delivered"
+    else:
+        # No model answer within the bound: the existing PR609 evidence renderer wins.
+        monkeypatch.setattr("regional_knowledge.expert_slack_search_reply.MODEL_WAIT_SECONDS", 0)
+
+        class Gate:
+            async def refresh(self, gated): return gated
+            def issuance_current(self, ticket): return True
+            def release(self, ticket): pass
+
+        async def search(query, **kwargs):
+            evidence = {"status": "ok", "mode": "hybrid", "context_gap": False,
+                "prior_write_pending": False, "observed_data_seq": 1,
+                "observed_projection_seq": 1, "evidence": [{
+                    "title": "Гаузе", "text": "Подтверждённый фрагмент.",
+                    "metadata": {"citation": "Гаузе. Кёнигсберг. 1996",
+                                 "locator": "стр. 31"}}]}
+            assert retain_read_output(Gate(),
+                SimpleNamespace(ticket=object(), result=evidence), lambda value: value)
+            return None
+
+        monkeypatch.setattr(receiver.backend, "search_adapter", search)
+        await reply._answer(rid)
+        assert control.claim(credentials, request_id=rid) == {"state": "empty"}
+    await reply._answer(rid)
+    assert len(posts) == 1 and control._row(rid)["state"] == "delivered"
+    assert posts[0]["thread_ts"] == "1792000000.100"
+    assert posts[0]["text"].startswith(
+        "Source-grounded synthetic bounded result." if model_first
+        else "Найдено в источниках:")
