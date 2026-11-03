@@ -86,7 +86,7 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
-                if self._reply is not None:
+                if self._reply is not None and self._reply.executor_context is None:
                     # Read-only search: existing event_id row is the at-most-once
                     # boundary; no Dataset checkpoint/agent job is necessary.
                     self._reply.notify(outcome['request_id'])
@@ -129,6 +129,8 @@ class ExpertSlackIngress:
                     # received row that could vanish with the DevCoveer disk.
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
+                if self._reply is not None:
+                    self._reply.notify(outcome['request_id'])  # Dataset-covered model route.
                 return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
