@@ -124,6 +124,8 @@ async def native_intake(target, tmp_path):
     value = SimpleNamespace(t=t,startup=startup,spool=spool,store=store,originals=originals,
         importer=startup.importer,principal=principal,token_calls=token_calls,geo_state=geo_state)
     yield value
+    if task := getattr(startup.importer,'_caption_task',None):
+        await task
     await startup.source_dispatch.aclose()
     spool.close()
 
@@ -1775,18 +1777,23 @@ async def test_normal_import_updates_caption_history_and_recovers_restart(native
     # No native stage: merely preparing a future book does not mark it.
     assert started_statuses(s.t.queue,actor)==[]
     await stage(s,book,batch(s,book,first=0,count=1))
+    await s.importer._caption_task
     assert edits[-1].startswith('РКБ: ⏳')
     assert 'Original caption with user notes' in edits[-1]
     await call(s,book,'status')
+    await s.importer._caption_task
     await call(s,book,'status')
+    await s.importer._caption_task
     assert len(edits)==1  # Repeated status does not hit Telegram.
     for _ in range(3):
         await finish(s,book)
         await call(s,book,'status')
+        await s.importer._caption_task
     await call(s,book,'finalize')
     await finish(s,book)
     for _ in range(8):
         output=await call(s,book,'status')
+        await s.importer._caption_task
         if output.state=='finalized':break
     assert output.state=='finalized'
     assert edits[-1].startswith('РКБ: ✅ Импорт завершён\n')
@@ -1797,13 +1804,14 @@ async def test_normal_import_updates_caption_history_and_recovers_restart(native
         db.execute('UPDATE rkb_original_intakes SET receipt_json=? WHERE ingestion_id=?',
                    (json.dumps({'page_count':2}),book.ingestion_id))
     await call(s,book,'status')
+    await s.importer._caption_task
     assert edits[-1].startswith('РКБ: 🏁⚠️')
     assert all('not-read-yet' not in value for value in edits)
     # Restart loses only the optimization, not status. Idempotent exact update.
     s.importer._caption_synced.clear()
     await call(s,book,'status')
+    await s.importer._caption_task
     assert edits[-1].startswith('РКБ: 🏁⚠️')
-
 
 @pytest.mark.asyncio
 async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(native_intake):
@@ -1835,3 +1843,29 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     projected=started_statuses(s.t.queue,actor)
     assert len(projected)==1 and projected[0][0]['ingestion_id']==newer.ingestion_id
     assert projected[0][1]=='⏳⚠️ Импортируется; были ошибки'
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('provider_fails',[False,True])
+async def test_caption_provider_wait_is_after_reader_reply(native_intake,monkeypatch,provider_fails):
+    s=native_intake;book=await start(s)
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    entered=asyncio.Event();release=asyncio.Event();edits=[]
+    def projection(*args,**kwargs):return [(row,'⏳ Импортируется')]
+    async def caption(context,ingestion_id,*,caption=None):
+        entered.set();await release.wait()
+        if provider_fails:raise OriginalIntakeError('synthetic caption failure')
+        if caption is not None:edits.append(caption)
+        return dict(owned=True,updated=caption is not None,caption=caption or 'Existing note')
+    monkeypatch.setattr('regional_knowledge.telegram_import_status.started_statuses',projection)
+    monkeypatch.setattr(s.originals,'caption',caption)
+    try:
+        output=await asyncio.wait_for(call(s,book,'status'),.25)
+        assert output.ingestion_id==book.ingestion_id
+        await asyncio.wait_for(entered.wait(),.25)
+        assert not edits
+    finally:
+        release.set()
+        task=getattr(s.importer,'_caption_task',None)
+        if task is not None:await task
+    if provider_fails:assert not edits
+    else:assert edits and edits[-1].startswith('РКБ: ⏳ Импортируется\nExisting note')
