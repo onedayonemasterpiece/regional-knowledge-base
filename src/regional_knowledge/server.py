@@ -699,12 +699,11 @@ def build_server(
             "without reimporting, re-chunking or re-embedding the source. " +
             "Never infer that a source is public." + _answer_instructions
         ) if selected!='kaggle_source' else (
-            "Critical tool rules (full text in tool descriptions): "
-            "book_ingest/book_pages: one reader, resume ingestion, never resend accepted pages; "
+            "Critical tool rules for book_ingest/book_pages: one reader, resume ingestion, never resend accepted pages; "
             "transcribe source_text verbatim from issued image, mark unreadable [?], never guess; "
             "semantic chunks across pages, complete native input at most 512 pinned BGE-M3 tokens including specials; "
             "for contradictions use disagreement_search/get/edit with exact evidence, not every page. "
-            "Search/fetch checklist: use search; fetch follows it.\n"
+            "Search/fetch checklist: use search; fetch follows it. Full rules in tool descriptions.\n"
             "Mandatory import checklist:\n"
             "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
             "2. Ordinary continuation: never blindly replay accepted pages; next_cursor is a hint for book_pages(cursor).\n"
