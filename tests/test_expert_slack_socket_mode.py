@@ -221,13 +221,19 @@ async def test_official_sdk_slow_websocket_close_does_not_hold_api_lifespan(env)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ph_fails", [False, True])
+@pytest.mark.parametrize("proof", ["journal", "dataset"])
 async def test_socket_wakes_only_after_remote_acceptance_and_keeps_fallback_on_ph_failure(
-        env, tmp_path, ph_fails):
+        env, tmp_path, ph_fails, proof):
     """Live transport: one signed app mention, same durable UUID, independent bot reply."""
     import httpx
     from regional_knowledge.expert_ph_wake import ProjectsHubExpertWake
 
-    ctl, _, _ = _prepare(env)
+    if proof == "dataset":
+        from test_expert_request_recovery import attached, next_checkpoint
+        fixture = attached(env, tmp_path)
+        ctl = fixture.ctl
+    else:
+        ctl, _, _ = _prepare(env)
     ingress = ExpertSlackIngress(ctl, signing_secret=None, socket_only=True)
     replies = []
     ingress.bind_search_reply(SimpleNamespace(
@@ -266,9 +272,21 @@ async def test_socket_wakes_only_after_remote_acceptance_and_keeps_fallback_on_p
         rid = replies[0]
         original = ctl._row(rid)
         assert original['state']=='received'
-        command=ctl.exact_remote_intent(rid,1)
-        seal=await env.journal.seal([command],predecessor=None,writer_generation='writer-1')
-        await ctl.verify_remote_intent(rid,command,seal)
+        if proof == "dataset":
+            assert not await ctl.stage_received_dataset(rid)
+            store = fixture.saved.store
+            checkpoint, ref, publisher, result = next_checkpoint(
+                fixture.saved, store.export_control())
+            store.publisher = publisher
+            store.promote(checkpoint, result, manifest_ref=ref)
+            assert ctl.reconcile_dataset_coverage()==0
+            assert ctl.reconcile_dataset_coverage()==1
+            assert ctl.confirm_dataset_coverage(rid)
+        else:
+            command=ctl.exact_remote_intent(rid,1)
+            seal=await env.journal.seal([command],predecessor=None,
+                                        writer_generation='writer-1')
+            await ctl.verify_remote_intent(rid,command,seal)
         assert ctl._row(rid)['state']=='pending'
         retry=SocketModeRequest(type='events_api',envelope_id='envelope-retry',
                                 payload=event.payload)
