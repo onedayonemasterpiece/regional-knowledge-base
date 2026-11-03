@@ -102,7 +102,8 @@ class SlackChatSender:
                 or not re.fullmatch(r"[0-9]+\.[0-9]+",str(data.get("ts","")))):
             raise RuntimeError("Slack native provider echo unverified")
         return {"event_id":event_id,"channel":channel,"thread_ts":thread,
-                "ts":data["ts"],"bot_user_id":self.bot_user_id}
+                "ts":data["ts"],"bot_user_id":self.bot_user_id,
+                "user":message.get("user",self.bot_user_id),"text":message["text"]}
 
     async def _authenticate(self,http,current=None):
         auth=(await http.post("https://slack.com/api/auth.test",headers={"Authorization":"Bearer "+self.token})).json()
@@ -120,7 +121,8 @@ class SlackChatSender:
                 response.raise_for_status();data=response.json()
                 if data.get("ok") is not True or type(data.get("messages")) is not list:raise PermissionError("Slack thread reconciliation unavailable")
                 found=next((m for m in data.get("messages",[]) if (m.get("client_msg_id")==marker or m.get("metadata")=={"event_type":"rkb_slack_reply","event_payload":{"event_id":marker}}) and m.get("user")==self.bot_user_id and m.get("thread_ts")==origin["thread_ts"]),None)
-                if found:return {"channel":origin["channel_id"],"ts":found["ts"],"event_id":marker}
+                if found:return {"channel":origin["channel_id"],"ts":found["ts"],"event_id":marker,
+                                 "user":found["user"],"text":found["text"],"thread_ts":origin["thread_ts"]}
                 cursor=data.get("response_metadata",{}).get("next_cursor","")
                 if not cursor and not data.get("has_more"):return None
                 if not cursor:break
