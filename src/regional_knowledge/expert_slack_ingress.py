@@ -51,7 +51,7 @@ class ExpertSlackIngress:
 
     def bind_search_reply(self, reply):
         """One opt-in same-owner responder; no automatic provider sender."""
-        if (self._reply is not None or reply.control is not self.control
+        if (self._reply is not None or self._waker is not None or reply.control is not self.control
                 or reply.ingress is not self or not callable(getattr(reply, "notify", None))):
             raise ValueError("exact existing Slack reply composition required")
         self._reply = reply
