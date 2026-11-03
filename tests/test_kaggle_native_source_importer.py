@@ -139,7 +139,8 @@ async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu'):
 
 
 @pytest.mark.asyncio
-async def test_public_owner_status_cold_warms_once_then_resumes_same_ingestion(native_intake,monkeypatch):
+@pytest.mark.parametrize('cold_state',['starting','expired'])
+async def test_public_owner_status_cold_warms_once_then_resumes_same_ingestion(native_intake,monkeypatch,cold_state):
     """Real public MCP → importer/auth/queue on synthetic expired target; no native calls."""
     from starlette.requests import Request
     from regional_knowledge.server import build_server
@@ -166,7 +167,7 @@ async def test_public_owner_status_cold_warms_once_then_resumes_same_ingestion(n
             if retained:retained[1].release()
     before=operation_count(s)
     with s.t.queue.connect() as db:
-        db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.t.run,))
+        db.execute('UPDATE runs SET status=? WHERE id=?',(cold_state,s.t.run,))
     for _ in range(2):
         pending=await public_status()
         assert (pending['state'],pending['next_action'])==('processing','wait')
@@ -178,6 +179,25 @@ async def test_public_owner_status_cold_warms_once_then_resumes_same_ingestion(n
     with pytest.raises(ToolError,match='owned_ingestion_required'):
         await public_status(str(uuid5(UUID(book.ingestion_id),'foreign')))
     assert len(refs)==2  # Unauthorized source cannot request startup.
+    with monkeypatch.context() as patch:
+        def genuinely_unavailable():
+            raise ToolError('{"status":"unavailable","reason":"startup_retry_exhausted"}')
+        patch.setattr(s.t.queue,'request_startup',genuinely_unavailable)
+        with pytest.raises(ToolError,match='startup_retry_exhausted'):
+            await public_status()
+    with monkeypatch.context() as patch:
+        require=s.startup.config.participants.require
+        revoked=[False]
+        def scoped(*args,**kwargs):
+            if revoked[0]:raise PermissionError('synthetic grant withdrawn')
+            return require(*args,**kwargs)
+        def revoke_during_demand():
+            value=demand();revoked[0]=True;return value
+        patch.setattr(s.startup.config.participants,'require',scoped)
+        patch.setattr(s.t.queue,'request_startup',revoke_during_demand)
+        with pytest.raises(ToolError,match='access_denied'):
+            await public_status()
+    if cold_state=='expired':return  # New run needs native HELLO; no fixture for that.
     with s.t.queue.connect() as db:
         db.execute("UPDATE runs SET status='ready' WHERE id=?",(s.t.run,))
     resumed=await public_status()
