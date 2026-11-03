@@ -54,7 +54,7 @@ class ExpertSlackSocketMode:
             await client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
             return
         outcome = await asyncio.to_thread(self.ingress.control.accept, observation)
-        if self.ingress._reply.executor_context is not None:
+        if getattr(self.ingress._reply,"executor_context",None) is not None:
             # The model can claim only the original remotely accepted request.
             await self.ingress.control.stage_received_dataset(outcome["request_id"])
             if not await asyncio.to_thread(
