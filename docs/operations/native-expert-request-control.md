@@ -426,10 +426,11 @@ after an already leased or sent result.
 ## SW 2026-11-03: one Projects Hub Events wake for a saved expert request
 
 **Source only; not merged, not installed and not live-tested.** This optional
-bridge addresses only the executor wake boundary. A signed HTTP Slack expert
-request becomes eligible after `TargetExpertRequestControl.accept` and its
-**existing exact remote** request-intent seal/verification; never wake from a
-locally stored `received` request. `ExpertSlackIngress.bind_waker` posts the
+bridge addresses only the executor wake boundary. A verified Slack question
+from the signed HTTP ingress **or the live authenticated Socket Mode** becomes
+eligible only after the original exact remote request-intent acceptance /
+Dataset coverage, never from local-only `received`. The same
+`ExpertSlackIngress.bind_waker` posts the
 original RKB UUID to Projects Hub through the fixed
 `http://127.0.0.1:8196/internal/rkb/expert-wake` loopback API.
 It holds no original text, actor identity, destination or owner bearer. The PH
@@ -443,11 +444,20 @@ Slack sender is introduced.
 The opt-in `RKB_EXPERT_PH_WAKE_CONFIG` points to a private JSON descriptor
 (`codec=rkb.ph-expert-wake.v1`, exact `project_id`, absolute private
 `service_secret_file`); both files require no symlink and mode 0600.
-Binding requires existing signed **HTTP** expert ingress and executor
-context; it is incompatible with Socket Mode or the original one-line Slack
-reply fallback. This protects the existing answer behavior until Opus replaces
-it in the separate answer slice. PH `test_ack` is a dot wake receipt and
-**never** the RKB expert result or native Slack delivery.
+Binding requires the original expert ingress (signed HTTP **or** authenticated
+Socket Mode) and the installed executor context. It **coexists** with the
+original one-line PR609 fallback and with the SA model-first/fallback
+arbitration: the same Kaliningrad Base bot is the **only** Slack sender.
+Socket Mode first acknowledges the existing Slack envelope; the wake hook
+independently checks the original remote proof. A missing, rejected or
+timed-out PH wake logs a degraded signal but cannot withdraw the canonical
+pending request, block the bot reply or create a duplicate Slack message.
+PH idempotently reuses `rkb.expert.<UUID>`; no new retry queue/scheduler.
+With SA #759 installed, the original Dataset coverage step precedes the
+Socket wake and model-first fallback is governed by its bounded CAS.
+Without that verified remote coverage there is **no** PH wake.
+PH `test_ack` proves dot wake only — **never** the RKB expert result or
+native Slack delivery.
 
 All remote credentials, backend identity/scope provisioning, live deploy and
 ChatGPT subscription refresh belong to Shkiper/owner. Precisely **one**
