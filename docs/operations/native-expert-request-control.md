@@ -449,7 +449,11 @@ Socket Mode) and the installed executor context. It **coexists** with the
 original one-line PR609 fallback and with the SA model-first/fallback
 arbitration: the same Kaliningrad Base bot is the **only** Slack sender.
 Socket Mode first acknowledges the existing Slack envelope; the wake hook
-independently checks the original remote proof. A missing, rejected or
+independently checks the original remote proof. The signed HTTP ingress
+sends its JSON 200 response **before** its existing event-loop
+`BackgroundTask(wake_accepted, saved_request_id)` contacts PH. The task
+rereads the original durable RKB row: no separate queue or ACK wait.
+An unavailable PH cannot extend Slack's 2.5-second HTTP intake deadline. A missing, rejected or
 timed-out PH wake logs a degraded signal but cannot withdraw the canonical
 pending request, block the bot reply or create a duplicate Slack message.
 PH idempotently reuses `rkb.expert.<UUID>`; no new retry queue/scheduler.
