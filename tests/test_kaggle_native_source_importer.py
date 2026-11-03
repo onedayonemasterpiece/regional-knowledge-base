@@ -1693,3 +1693,20 @@ async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(nat
         after=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence LIMIT 3')]
     assert after==before
     assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('spelling,expected',[(None,'missing'),('Private synthetic spelling '*12,'string_too_long')])
+async def test_entity_validation_distinguishes_missing_and_overlong_field_without_input(native_intake,caplog,spelling,expected):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    entity=dict(key='person',kind='person',canonical_label='Synthetic',
+        evidence=dict(page_id=payload['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))
+    if spelling is not None:entity['exact_source_spelling']=spelling
+    payload['entity_candidates']=dict(entities=[entity])
+    with pytest.raises(ToolError) as caught:await stage(s,book,payload)
+    detail=json.loads(str(caught.value))
+    assert detail['field_path']=='entities.0.exact_source_spelling'
+    assert detail['validation_type']==expected
+    assert 'validation_type='+expected in caplog.text
+    assert 'Private synthetic spelling' not in str(caught.value)+caplog.text
+    assert operation_count(s)==0
