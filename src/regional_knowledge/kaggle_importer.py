@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import struct
+import time
 from uuid import UUID, uuid4, uuid5
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -123,6 +124,7 @@ class KaggleSourceImporter:
         self.import_revisions,self.import_command=choices[0]
         self.originals, self.tokenizer = originals, tokenizer
         self._lock = asyncio.Lock()
+        self._ingestion_locks = {}
         self._caption_synced = {}
         self.output_gate = OwnerImportOutputGate(self)
         with self.queue.connect() as db:
@@ -141,6 +143,9 @@ class KaggleSourceImporter:
         if self.import_revisions==ACTIVATION_REVISIONS:
             from .kaggle_native_source_intake import NativeSourceIntake
             self.native_intake=NativeSourceIntake(self)
+
+    def _lock_for(self, ingestion_id):
+        return self._ingestion_locks.setdefault(ingestion_id, asyncio.Lock())
 
     def _binding_current(self, binding):
         if not self.startup.binding_current(binding):
@@ -967,7 +972,14 @@ class KaggleSourceImporter:
             async with self._access(principal,
                     status_ids=(ingestion_id,document_id) if command=='status' else None) as access:
                 if isinstance(access,BookIngestOutput):return access
-                async with self._lock:
+                lock = self._lock
+                if command != 'start':
+                    row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id, document_id)
+                    lock = self._lock_for(row['ingestion_id'])
+                lock_started = time.monotonic()
+                async with lock:
+                    _LOG.info('book_ingest_lock command=%s ingestion_id=%s wait_ms=%.3f',
+                        command, ingestion_id, (time.monotonic()-lock_started)*1000)
                     if command == 'start':
                         if ingestion_id or document_id:
                             raise failure('fresh_source_identity_is_server_owned', status='invalid_query')
