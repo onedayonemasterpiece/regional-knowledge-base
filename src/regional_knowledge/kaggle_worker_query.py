@@ -143,7 +143,7 @@ class KaggleWorkerQuery:
             query = decode_envelope(raw)
             if (type(query) not in (Query, AcceptanceReadRequest, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest, CaseReadRequest, GeoReadRequest, EditorialReadRequest, SourceGraphReadRequest) or query.compute_claim is None
                     or len(query.compute_claim.encode('utf-8')) > 256
-                    or not 1 <= query.deadline_ms <= 2000):
+                    or not 1 <= query.deadline_ms <= (30000 if type(query) is SourceReadRequest and query.operation=='source_unit_pdf' else 2000)):
                 raise ValueError
         except (TypeError, ValueError, RecursionError, OverflowError):
             return _wire(failure('invalid_input', invalid=True))
