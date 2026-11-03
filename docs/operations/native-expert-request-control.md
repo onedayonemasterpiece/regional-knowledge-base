@@ -477,9 +477,19 @@ this runbook is not evidence of unattended dot activation.
 **Fallback and race:** `MODEL_WAIT_SECONDS=180` from original request creation:
 previous observed dot 43–82 s plus the original ~30 s Dataset cadence for
 result and send intent require more than the proposed 7 s UX target; this is
-a bounded pilot window, not a measured SLO. With no completed result/send
-intent before the deadline, the existing `searching` SQLite CAS takes
-exclusive ownership for the PR609 extractive reply. It fences a late
+a bounded pilot window, not a measured SLO. **The user does not wait
+silently:** immediately after the original request is remotely accepted and
+the model-first reply task starts, the same Kaliningrad Base sender posts
+«Ищу ответ в книгах, обычно около минуты.» to the original thread once.
+It uses PR616's existing `_claim_warming_post` and `event_id:warming`
+in the original `delivery_id`, with actor/destination recheck, no separate
+status, journal or retry after a lost ACK. The model's verified Dataset send
+intent may replace precisely this warming marker with its final native
+`client_msg_id`; PR609 fallback likewise replaces it with `event_id`.
+Both paths still issue exactly **one final answer**, separate from the
+one-time notice. With no completed result/send intent before the deadline,
+the existing `searching` SQLite CAS takes exclusive ownership for the PR609
+extractive reply. It fences a late
 `claim_context/prepare_result/claim_send_once`; the bot issues only one
 final `chat.postMessage` marked by the original `event_id`.
 Once a remotely covered executor send intent exists, **the fallback cannot
@@ -493,3 +503,19 @@ thread readback/no blind resend rules.
 nonowner/owner/revocation/provider-UNKNOWN E2E after RKB-Opus reviews/merges.
 The source-only test/CI does not prove a working installed dot subscription
 or a live Slack model answer.
+
+**Review integration with concurrent SW #758 / PH #212 (not merged here):**
+RKB-Opus should merge #758 first (with the existing PH companion reviewed),
+then rebase/merge this same PR #759 with deliberate conflict resolution.
+Both PRs touch `server.py`, `expert_slack_ingress.py`,
+`expert_slack_socket_mode.py` and this runbook: preserve #758's optional
+`bind_waker/wake_accepted` after **original Dataset proof**, and #759's
+executor-context binding, Socket Mode Dataset stage/confirm, one-shot early
+notice, model/fallback CAS and original receipt. For HTTP, retain the
+read-only reply branch without executor and `reply.notify` **plus**
+`wake_accepted` after the remote proof; for Socket Mode, retain ACK and
+notify followed by PH wake. The operator must not activate the 180-second
+model wait without the **actually installed and working** PH wake/authorized
+dot subscriber; otherwise remain on the existing immediate PR609 reply.
+#758 does not add a second Slack sender. Live integration/merge remains
+RKB-Opus and Shkiper's separate work, not demonstrated by source CI.
