@@ -195,7 +195,7 @@ async def execute_source_read(request, *, acquire, illustration_page=None):
     if type(request) is not SourceReadRequest:
         raise TypeError('fixed native source read required')
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + min(request.deadline_ms, 2000)/1000
+    deadline = loop.time() + min(request.deadline_ms, 30000 if request.operation=='source_unit_pdf' else 2000)/1000
     observed = {}
 
     def failed(reason):
