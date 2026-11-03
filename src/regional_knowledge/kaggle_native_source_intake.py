@@ -637,7 +637,12 @@ class NativeSourceIntake:
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
                 message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
-                    'Resume from next_cursor: retry unpublished rejected pages, or advance past already TEXT APPLIED duplicates.\n'
+                    'For SEMANTIC rejection after TEXT APPLIED, correct with book_ingest(stage) on that reviewed page '
+                    'under the same ingestion; earlier accepted TEXT commands are not replayed.\n'
+                    'If different people, places or organizations share a GraphBundle key, give them distinct '
+                    'source-global entity keys and update story entity_keys and relation endpoints; '
+                    'explicit entity_id reuses only verified same-kind identity.\n'
+                    'Otherwise follow next_cursor for unaccepted pages. '
                     'For unreadable spans use [?] with needs_review=false; never guess.')
                 return self.importer._output(row,'staged',message,
                     'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=rejected_next_cursor)
