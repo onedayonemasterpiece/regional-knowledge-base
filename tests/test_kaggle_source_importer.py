@@ -143,16 +143,21 @@ async def test_cold_native_binding_requests_existing_startup_and_preserves_intak
         before=[tuple(row) for row in db.execute('SELECT * FROM rkb_source_intake_control')]
     with s.t.queue.connect() as db:
         db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.t.run,))
-    with pytest.raises(ToolError) as caught:
-        if tool=='status':
-            await s.importer.book_ingest(command='status',principal=s.principal,ingestion_id=result.ingestion_id)
-        else:
+    if tool=='status':
+        waiting=await s.importer.book_ingest(command='status',principal=s.principal,
+            ingestion_id=result.ingestion_id)
+        assert (waiting.state,waiting.next_action)==('processing','wait')
+        with s.t.queue.connect(write=False) as db:
+            ref=db.execute('select startup_ref from control where id=1').fetchone()[0]
+    else:
+        with pytest.raises(ToolError) as caught:
             await s.importer.book_pages(principal=s.principal,ingestion_id=result.ingestion_id)
-    output=json.loads(str(caught.value))
-    assert output=={'status':'unavailable','reason':'target_warming',
-                   'startup_ref':output['startup_ref'],'next_action':'startup_status'}
-    assert s.t.queue.startup_status(output['startup_ref'])['status']=='pending'
-    assert s.t.queue.request_startup()['startup_ref']==output['startup_ref']
+        output=json.loads(str(caught.value))
+        assert output=={'status':'unavailable','reason':'target_warming',
+                       'startup_ref':output['startup_ref'],'next_action':'startup_status'}
+        ref=output['startup_ref']
+    assert s.t.queue.startup_status(ref)['status']=='pending'
+    assert s.t.queue.request_startup()['startup_ref']==ref
     with s.t.queue.connect(write=False) as db:
         assert [tuple(row) for row in db.execute('SELECT * FROM rkb_source_intake_control')]==before
         assert db.execute('select current_run from control where id=1').fetchone()[0]==s.t.run

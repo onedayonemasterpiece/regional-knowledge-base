@@ -297,7 +297,7 @@ async def test_missing_foreign_remote_revoked_and_user_tokens_cannot_watch(watch
 async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(watcher):
     w=watcher
     @asynccontextmanager
-    async def access(_principal):
+    async def access(_principal, **_scope):
         yield SimpleNamespace(authority=SimpleNamespace(person_id=w.actor),
                               context=object(),binding=object())
     async def receipt(*_):return object()

@@ -166,7 +166,7 @@ class KaggleSourceImporter:
             raise failure('target_runtime_changed', next_action='status')
 
     @asynccontextmanager
-    async def _access(self, principal):
+    async def _access(self, principal, *, status_ids=None):
         authority = await self.read_authority.resolve_oauth(principal.access_token, destination=self.destination)
         access = None
         try:
@@ -176,13 +176,21 @@ class KaggleSourceImporter:
                 issuer=authority.issuer, access_token=''), route='owner')
             try:
                 binding = await asyncio.to_thread(current_binding, self.queue)
-            except TargetUnavailable:
+            except TargetUnavailable as unavailable:
                 # No import execution has begun; this is an ordinary cold run,
                 # not an unknown mutation outcome or an internal failure.
                 await self.read_authority.recheck(authority)
                 await asyncio.to_thread(self.participants.require, context, 'import')
+                if status_ids is not None:
+                    row=await asyncio.to_thread(self._row,authority.person_id,*status_ids)
                 demand = await asyncio.to_thread(self.queue.request_startup)
                 logging.getLogger(__name__).info('import_runtime_wait startup_ref=%s', demand['startup_ref'])
+                if (status_ids is not None and str(unavailable)=='target runtime not ready'
+                        and demand['status']=='pending'):
+                    await self.read_authority.recheck(authority)
+                    await asyncio.to_thread(self.participants.require,context,'import')
+                    yield self._output(row,'processing','Target warming; resume book_ingest(status)','wait')
+                    return
                 raise failure('target_warming', startup_ref=demand['startup_ref'],
                               next_action='startup_status') from None
             access = ImportAccess(authority, context, binding)
@@ -921,7 +929,9 @@ class KaggleSourceImporter:
                 source_import = TargetSourceImportInput.model_validate_json(source_import.model_dump_json())
                 if command not in ('start', 'stage'):
                     raise failure('source_import_only_supported_for_start_or_stage', status='invalid_query')
-            async with self._access(principal) as access:
+            async with self._access(principal,
+                    status_ids=(ingestion_id,document_id) if command=='status' else None) as access:
+                if isinstance(access,BookIngestOutput):return access
                 async with self._lock:
                     if command == 'start':
                         if ingestion_id or document_id:
