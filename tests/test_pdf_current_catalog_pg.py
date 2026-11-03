@@ -22,10 +22,6 @@ async def test_pdf_edition_uses_latest_accepted_correction_and_original_fallback
     doc=exact_batch(count=1,receipt=original(page_count=1))
     doc['source']['metadata']['publication_year']=1985
     page=doc['model_payload']['pages'][0];region=page['regions'][0]
-    caption=next(r for r in page['regions'] if r['region_key']=='caption-1')
-    doc['model_payload']['chunks'][0]['span_refs']=[
-        dict(page_id=page['page_id'],region_key=r['region_key'],start=0,
-             end=len(r['source_text'])) for r in (body,caption)]
     page['source_unit_version']=1
     page['source_unit_boundaries']=[
         dict(article_id='fixture-unit',action='start',region_key=region['region_key'],offset=0,
@@ -77,6 +73,10 @@ async def test_pdf_floating_figure_uses_actual_accepted_publication_and_manifest
     doc=json.loads(illustrated_batch())
     page=doc['model_payload']['pages'][0]
     body=next(r for r in page['regions'] if r['region_key']=='body')
+    caption=next(r for r in page['regions'] if r['region_key']=='caption-1')
+    doc['model_payload']['chunks'][0]['span_refs']=[
+        dict(page_id=page['page_id'],region_key=r['region_key'],start=0,
+             end=len(r['source_text'])) for r in (body,caption)]
     page['source_unit_version']=1
     page['source_unit_boundaries']=[
         dict(article_id='fixture-illustrated',action='start',region_key='body',
