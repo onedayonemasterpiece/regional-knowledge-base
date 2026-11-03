@@ -338,3 +338,25 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
     assert result["last_operation_at"]!=None
     assert result["last_operation_at"].endswith("Z")
     assert result["accepted_pages"]==2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('rejected_phase',['stage','text','semantic'])
+async def test_rejected_packet_cursor_matches_native_without_skipping_unpublished_page(watcher,rejected_phase):
+    w=watcher
+    with w.queue.connect() as db:
+        synthetic_page_records(db,w,batch=1,physical=9,sequence=3,
+            text_state='APPLIED' if rejected_phase=='semantic' else 'REJECTED_PRECONDITION')
+        if rejected_phase=='stage':
+            db.execute("UPDATE rkb_control_operations SET apply_state='REJECTED_PRECONDITION' WHERE operation_key=?",
+                (f'source-stage:{w.ingestion}:1:0',))
+        db.execute("UPDATE rkb_native_source_intake_state SET batch_count=2,published_batch_count=2,"
+                   "enriched_batch_count=2,rejected_batch_index=1")
+        db.execute("UPDATE rkb_source_intake_control SET research_json=?",
+            (json.dumps({'continuation':{'arguments':{'cursor':'10'}}}),))
+    timestamp=read_timestamp(w)
+    status=(await get(w)).json()
+    assert status['next_cursor']==('10' if rejected_phase=='semantic' else '9')
+    assert status['accepted_pages']==(3 if rejected_phase=='semantic' else 2)
+    assert status['state']=='staged' and status['next_action']=='continue_pages'
+    assert read_timestamp(w)==timestamp
