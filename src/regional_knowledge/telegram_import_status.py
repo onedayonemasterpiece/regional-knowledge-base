@@ -8,14 +8,19 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
     with queue.connect(write=False) as db:
         rows=db.execute(
             "SELECT c.*,n.phase AS native_phase,n.pending_operation_key,n.batch_count,"
-            "n.published_batch_count,n.enriched_batch_count,n.rejected_batch_index,o.receipt_json "
+            "n.published_batch_count,n.enriched_batch_count,n.rejected_batch_index,o.receipt_json,o.telegram_locator_json "
             "FROM rkb_source_intake_control c "
             "JOIN rkb_native_source_intake_state n USING(ingestion_id) "
             "JOIN rkb_original_intakes o ON o.ingestion_id=c.ingestion_id AND o.actor=c.person_id "
-            "WHERE c.person_id=? AND o.receipt_json IS NOT NULL ORDER BY c.created",
+            "WHERE c.person_id=? AND o.receipt_json IS NOT NULL ORDER BY c.created DESC",
             (actor,)).fetchall()
-        result=[]
-        rows=sorted(rows,key=lambda row:row['ingestion_id']!=preferred)
+        result=[];seen=set();current=[]
+        for row in rows:
+            locator=json.loads(row['telegram_locator_json']) if row['telegram_locator_json'] else None
+            target=(locator['chat_id'],locator['message_id']) if locator else row['ingestion_id']
+            if target in seen:continue
+            seen.add(target);current.append(row)
+        rows=sorted(current,key=lambda row:row['ingestion_id']!=preferred)
         for row in rows:
             stamp=tuple(row[key] for key in ('metadata_json','phase','native_phase',
                 'rejected_batch_index','receipt_json'))

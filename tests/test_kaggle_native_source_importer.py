@@ -1756,8 +1756,8 @@ async def test_normal_import_updates_caption_history_and_recovers_restart(native
     with s.t.queue.connect() as db:
         actor=db.execute('SELECT person_id FROM rkb_source_intake_control WHERE ingestion_id=?',(book.ingestion_id,)).fetchone()[0]
     with s.t.queue.connect() as db:
-        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT)')
-        db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?)',
+        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT,telegram_locator_json TEXT)')
+        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
                    (book.ingestion_id,actor,json.dumps({'page_count':1})))
     captions={book.ingestion_id:'Original caption with user notes\nRKB-original '+book.ingestion_id}
     edits=[]
@@ -1770,7 +1770,7 @@ async def test_normal_import_updates_caption_history_and_recovers_restart(native
     unstarted=await start(s,file_id='not-read-yet')
     edits.clear()
     with s.t.queue.connect() as db:
-        db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?)',
+        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
                    (unstarted.ingestion_id,actor,json.dumps({'page_count':1})))
     # No native stage: merely preparing a future book does not mark it.
     assert started_statuses(s.t.queue,actor)==[]
@@ -1812,8 +1812,8 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     with s.t.queue.connect() as db:
         actor=db.execute('SELECT person_id FROM rkb_source_intake_control WHERE ingestion_id=?',
                          (book.ingestion_id,)).fetchone()[0]
-        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT)')
-        db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?)',
+        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT,telegram_locator_json TEXT)')
+        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
                    (book.ingestion_id,actor,json.dumps({'page_count':1})))
     await stage(s,book,batch(s,book,count=1))
     await finish(s,book,status='rejected_precondition',reason='native_source_stage_requires_review')
@@ -1822,3 +1822,16 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     with s.t.queue.connect() as db:
         db.execute("UPDATE rkb_native_source_intake_state SET phase='failed'")
     assert started_statuses(s.t.queue,actor)[0][1]=='❌ Ошибка импорта'
+    # Observed production case: a newer finished/current intake reuses the same
+    # Telegram file as an old failed intake. The old caption must not win.
+    newer=await start(s,file_id='same-original-new-intake')
+    locator=json.dumps({'chat_id':-1001234567890,'message_id':42})
+    with s.t.queue.connect() as db:
+        db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?,?)',
+                   (newer.ingestion_id,actor,json.dumps({'page_count':1}),locator))
+        db.execute('UPDATE rkb_original_intakes SET telegram_locator_json=? WHERE ingestion_id=?',
+                   (locator,book.ingestion_id))
+    await stage(s,newer,batch(s,newer,count=1))
+    projected=started_statuses(s.t.queue,actor)
+    assert len(projected)==1 and projected[0][0]['ingestion_id']==newer.ingestion_id
+    assert projected[0][1]=='⏳ Импортируется'
