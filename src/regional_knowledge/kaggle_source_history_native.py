@@ -117,6 +117,7 @@ class NativeSourceHistoryObserver:
                 async with connection.transaction():
                     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
                     await connection.execute("SET LOCAL statement_timeout='2s'")
+                    await connection.execute("SET LOCAL jit=off")
                     value=await pending_tail_refs(connection,args['source_id'],args['ingestion_id'])
             if not self.valid(binding):raise NativeHistoryError('native_history_attachment_changed')
         elif action in ('page','close','abort'):
