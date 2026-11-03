@@ -60,7 +60,8 @@ async def test_pdf_edition_uses_latest_accepted_correction_and_original_fallback
 
 @PG
 @pytest.mark.asyncio
-async def test_pdf_floating_figure_uses_actual_accepted_publication_and_manifest(image_pg_sql18):
+@pytest.mark.parametrize('exact_spans',[False,True])
+async def test_pdf_floating_figure_uses_actual_accepted_publication_and_manifest(image_pg_sql18,exact_spans):
     """PG17 RED: provenance has no illustration_ids; semantic publication does."""
     import json
     import io
@@ -74,10 +75,11 @@ async def test_pdf_floating_figure_uses_actual_accepted_publication_and_manifest
     page=doc['model_payload']['pages'][0]
     body=next(r for r in page['regions'] if r['region_key']=='body')
     caption=next(r for r in page['regions'] if r['region_key']=='caption-1')
-    doc['model_payload']['chunks'][0]['region_refs']=[]
-    doc['model_payload']['chunks'][0]['span_refs']=[
-        dict(page_id=page['page_id'],region_key=r['region_key'],start=0,
-             end=len(r['source_text'])) for r in (body,caption)]
+    if exact_spans:
+        doc['model_payload']['chunks'][0]['region_refs']=[]
+        doc['model_payload']['chunks'][0]['span_refs']=[
+            dict(page_id=page['page_id'],region_key=r['region_key'],start=0,
+                 end=len(r['source_text'])) for r in (body,caption)]
     page['source_unit_version']=1
     page['source_unit_boundaries']=[
         dict(article_id='fixture-illustrated',action='start',region_key='body',
