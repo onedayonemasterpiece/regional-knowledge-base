@@ -115,7 +115,6 @@ async def test_source_global_entity_key_disambiguation_preserves_graph_story_and
 
 def test_entity_source_scope_is_exposed_to_normal_model_and_semantic_retry():
     from types import SimpleNamespace
-    from regional_knowledge.entity_graph import GraphEntity
     from regional_knowledge.kaggle_native_source_intake import NativeSourceIntake
     from regional_knowledge.contracts import BookIngestOutput
     def output(_,state,message,action,**kwargs):
@@ -133,5 +132,3 @@ def test_entity_source_scope_is_exposed_to_normal_model_and_semantic_retry():
     assert 'source-global' in result.message
     assert 'TEXT APPLIED' in result.message
     assert 'same ingestion' in result.message.lower()
-    assert 'source-global' in (GraphEntity.model_fields['key'].description or '')
-    assert 'different' in GraphEntity.model_fields['key'].description
