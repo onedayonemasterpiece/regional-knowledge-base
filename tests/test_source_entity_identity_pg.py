@@ -75,6 +75,7 @@ async def test_source_global_entity_key_disambiguation_preserves_graph_story_and
         command=packet(env,first,part)
         await prepare(command)
         assert (await accepted(env,command)).status=='applied'
+    initial_semantic=command  # Preserve the original accepted synthetic command bytes.
     second=_person(first,key=new_key)
     assert (await accepted(env,stage_command(second,env['sequence']+1))).status=='applied'
     t=packet(env,second,'text')
@@ -89,6 +90,7 @@ async def test_source_global_entity_key_disambiguation_preserves_graph_story_and
         await prepare(c)
         assert (await accepted(env,c)).status=='applied'
     assert canonical(first)==frozen
+    assert (await accepted(env,initial_semantic)).duplicate
     async with env['connection'].transaction():
         conn=env['connection']
         ids=await (await conn.execute('''
@@ -110,6 +112,46 @@ async def test_source_global_entity_key_disambiguation_preserves_graph_story_and
             assert link and link[0]==next(ident for k,ident,_ in ids if k==new_key)
         else:
             assert stories==(1,) and ids==[( 'gusev',entity_id(UUID(SOURCE),'gusev'),'poi_ref' )]
+    if valid:
+        # A future model-selected mention can explicitly reuse the SAME person UUID.
+        person_id=next(ident for k,ident,kind in ids if k==new_key)
+        later=exact_batch(2,digest(canonical(second)),start=2,count=1)
+        page=later['model_payload']['pages'][0]
+        page['regions'][0]['source_text']='Gusev returned to a second synthetic meeting.'
+        chunk=later['model_payload']['chunks'][0]
+        proof=dict(chunk_id=str(uuid5(UUID(SOURCE),'chunk:1:'+chunk['chunk_key'])),
+            page_id=page['page_id'],
+            region_id=str(uuid5(UUID(page['page_id']),'region:body')))
+        later['model_payload']['entity_candidates']=dict(entities=[dict(
+            key='gusev-person-second-mention',entity_id=str(person_id),
+            kind='person',canonical_label='Gusev',exact_source_spelling='Gusev',
+            evidence=proof)],relations=[])
+        story_body='The same person returned to a separate synthetic meeting.'
+        later['model_payload']['story_candidates']=[dict(
+            candidate_key='person-return',title='Gusev returned',
+            summary='A second fictional source mention.',
+            proposition='The same person returned to the synthetic meeting.',
+            entity_keys=['gusev-person-second-mention'],
+            evidence_refs=[dict(page_id=page['page_id'],region_key='body',
+                chunk_key=chunk['chunk_key'])],
+            basic_variant=dict(body=story_body,language='en',
+                blocks=[dict(start=0,end=len(story_body),evidence_indexes=[0])]))]
+        assert (await accepted(env,stage_command(later,env['sequence']+1))).status=='applied'
+        for part in ('text','semantic'):
+            command=packet(env,later,part)
+            await prepare(command)
+            assert (await accepted(env,command)).status=='applied'
+        async with env['connection'].transaction():
+            conn=env['connection']
+            row=await (await conn.execute(
+                'SELECT entity_id FROM rkb_v4.source_entity_representations '
+                "WHERE source_id=%s AND entity_key='gusev-person-second-mention'",
+                (SOURCE,))).fetchone()
+            assert row==(person_id,)
+            assert (await (await conn.execute(
+                'SELECT count(*) FROM rkb_v4.source_entity_ids')).fetchone())==(3,)
+            assert (await (await conn.execute(
+                'SELECT count(*) FROM rkb_v4.story_search')).fetchone())==(3,)
 
 
 
