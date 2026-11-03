@@ -158,7 +158,7 @@ class ExpertSlackSearchReply:
     def resume_pending(self):
         with self.control.corpus.connect() as db:
             states=("'received','searching','unknown'" if self.executor_context is None
-                    else "'pending','leased','result_unsealed','searching','unknown'")
+                    else "'pending','leased','result_unsealed','result_ready','searching','unknown'")
             rows=db.execute(f"SELECT r.id FROM rkb_expert_requests r JOIN rkb_request_dialogs d ON d.id=r.dialog_id AND d.head_seq=r.dialog_seq WHERE r.state IN ({states}) ORDER BY r.created_at LIMIT 16").fetchall()
         for row in rows:self.notify(row["id"])
 
@@ -167,7 +167,7 @@ class ExpertSlackSearchReply:
         # A possible final provider effect remains sending/unknown and is not resent.
         delay=2
         states=("received","searching","unknown") if self.executor_context is None else (
-            "pending","leased","result_unsealed","searching","unknown")
+            "pending","leased","result_unsealed","result_ready","searching","unknown")
         while True:
             try:
                 row=await asyncio.to_thread(self._row,request_id,states)
@@ -216,7 +216,7 @@ class ExpertSlackSearchReply:
             if row is None or row["state"] not in states or not request_order.is_head(db,row):return None
             origin=self._verified(db,row)
             if begin and (row["state"]=="received" or self.executor_context is not None
-                          and row["state"] in ("pending","leased","result_unsealed")):
+                          and row["state"] in ("pending","leased","result_unsealed","result_ready")):
                 db.execute("UPDATE rkb_expert_requests SET state='searching',updated_at=? WHERE id=?",
                     (self.control.clock(),request_id))
             return dict(row,origin=json.dumps(origin))
@@ -263,7 +263,7 @@ class ExpertSlackSearchReply:
         if self.executor_context is None:
             row=await asyncio.to_thread(self._row,request_id,("received","searching"),begin=True)
         else:
-            states=("pending","leased","result_unsealed","searching")
+            states=("pending","leased","result_unsealed","result_ready","searching")
             row=await asyncio.to_thread(self._row,request_id,states)
             if row is None:return
             if row["state"]!="searching":
