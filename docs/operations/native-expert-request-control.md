@@ -421,3 +421,38 @@ model-first timeout/fallback must atomically arbitrate with the original
 `pending/leased/send_intent_ready/sending/unknown` states before
 sending; no hardcoded 7-second answer promise or unconditional fallback
 after an already leased or sent result.
+
+
+## SW 2026-11-03: one Projects Hub Events wake for a saved expert request
+
+**Source only; not merged, not installed and not live-tested.** This optional
+bridge addresses only the executor wake boundary. A signed HTTP Slack expert
+request becomes eligible after `TargetExpertRequestControl.accept` and its
+**existing exact remote** request-intent seal/verification; never wake from a
+locally stored `received` request. `ExpertSlackIngress.bind_waker` posts the
+original RKB UUID to Projects Hub through the fixed
+`http://127.0.0.1:8196/internal/rkb/expert-wake` loopback API.
+It holds no original text, actor identity, destination or owner bearer. The PH
+receiver's independent revocable `ph_service_rkb_expert` technical principal
+is restricted to one explicitly configured PH project. A repeated Slack event
+keeps the same canonical RKB UUID, and PH's existing command-id unique key
+`rkb.expert.<UUID>` reuses the single saved PH request and its one MCP outbox
+event. No direct RKB MCP webhook, PH note binding, new relay/outbox or dot
+Slack sender is introduced.
+
+The opt-in `RKB_EXPERT_PH_WAKE_CONFIG` points to a private JSON descriptor
+(`codec=rkb.ph-expert-wake.v1`, exact `project_id`, absolute private
+`service_secret_file`); both files require no symlink and mode 0600.
+Binding requires existing signed **HTTP** expert ingress and executor
+context; it is incompatible with Socket Mode or the original one-line Slack
+reply fallback. This protects the existing answer behavior until Opus replaces
+it in the separate answer slice. PH `test_ack` is a dot wake receipt and
+**never** the RKB expert result or native Slack delivery.
+
+All remote credentials, backend identity/scope provisioning, live deploy and
+ChatGPT subscription refresh belong to Shkiper/owner. Precisely **one**
+live control, expected timing from 13 Oct, and the owner-only refresh step:
+[Projects Hub MCP Events — RKB wake](https://github.com/onedayonemasterpiece/projects-hub/blob/chatgpt/rkb-expert-wake-ph-20261103/docs/mcp-events.md#one-shkiper-live-control--precisely-one-event).
+Do not declare the complete Slack expert workflow accepted from fixture tests
+or from PH callback acceptance. The actual execution/result path is governed
+by the unchanged RKB expert control and the separately reviewed answer slice.
