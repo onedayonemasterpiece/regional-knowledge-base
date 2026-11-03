@@ -51,9 +51,22 @@ async def test_pg17_global_sql48_same_query_scoped_and_cursor(graph_sql22):
         await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SECOND,))
         remaining = await (await connection.execute(sql, (None, ['person'], query))).fetchall()
         assert remaining and all(str(r[0]) == SOURCE for r in remaining)
-        plan = await (await connection.execute(
-            'EXPLAIN (FORMAT TEXT) '+sql, (None, ['person'],query))).fetchall()
-        assert plan and all(row[0] for row in plan)
+        # Inspect the inner join/filter, not just the non-inlineable SQL
+        # function's outer Function Scan. Tiny synthetic data needs no index.
+        plan = await (await connection.execute("""
+            EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+            SELECT n.source_id,n.entity_key FROM rkb_v4.source_entity_representations n
+            JOIN rkb_v4.sources s USING(source_id)
+            JOIN rkb_v4.active_revision a USING(source_id)
+            JOIN rkb_v4.source_visibility v USING(source_id)
+            JOIN rkb_v4.source_graph_receipts r USING(source_id)
+            WHERE s.accepted AND NOT s.withdrawn AND a.revision=1
+            AND position(rkb_v4.source_graph_name_fold_v1(%s)
+              IN rkb_v4.source_graph_name_fold_v1(n.data->>'canonical_label'))>0
+            ORDER BY n.source_id,n.entity_key COLLATE "C" LIMIT 4
+        """, (query,))).fetchall()
+        assert plan and any('Execution Time:' in row[0] for row in plan)
+        print('SQL048 synthetic inner plan: ' + '\\n'.join(row[0] for row in plan))
 
 
 @pytest.mark.asyncio
