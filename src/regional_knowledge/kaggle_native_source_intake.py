@@ -637,13 +637,11 @@ class NativeSourceIntake:
             if state.get('rejected_batch_index') is not None:
                 reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
                 message=(reason+': current packet phase rejected; earlier accepted pages remain searchable.\n'
-                    'For SEMANTIC rejection after TEXT APPLIED, correct with book_ingest(stage) on that reviewed page '
-                    'under the same ingestion; earlier accepted TEXT commands are not replayed.\n'
-                    'If different people, places or organizations share a GraphBundle key, give them distinct '
-                    'source-global entity keys and update story entity_keys and relation endpoints; '
-                    'explicit entity_id reuses only verified same-kind identity.\n'
-                    'Otherwise follow next_cursor for unaccepted pages. '
-                    'For unreadable spans use [?] with needs_review=false; never guess.')
+                    'Resume from next_cursor: retry unpublished rejected pages, or advance past already TEXT APPLIED duplicates; '
+                    'for rejected SEMANTIC enrichment, instead re-stage the reviewed page in the same ingestion.\n'
+                    'If distinct people, places or organizations share a GraphBundle key, use separate source-global keys; '
+                    'align story entity_keys and relation endpoints. Explicit entity_id reuses verified same-kind identity.\n'
+                    'Do not replay accepted commands. For unreadable spans use [?] with needs_review=false; never guess.')
                 return self.importer._output(row,'staged',message,
                     'continue_pages',source_archive_status='verified',warnings=[reason],next_cursor=rejected_next_cursor)
             return self.importer._output(row,'staged','Accepted packet published; continue reading pages. Dataset persistence is periodic.',
