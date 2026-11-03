@@ -106,7 +106,7 @@ async def graph_sql22():
             for path in scripts[:2]:
                 await connection.execute(path.read_text(),prepare=False)
         await initialize_fixture_database(connection, database_generation='sql22-entity-fixture',
-            writer_generation='writer-1',revisions=DOMAIN_REVISIONS,schema_version=22)
+            writer_generation='writer-1',revisions=DOMAIN_REVISIONS,schema_version=len(scripts))
         async with connection.transaction():
             for path in scripts[2:]:
                 await connection.execute(path.read_text(),prepare=False)
