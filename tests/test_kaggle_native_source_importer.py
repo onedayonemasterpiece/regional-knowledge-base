@@ -1726,3 +1726,20 @@ async def test_old_page_enrichment_cannot_skip_current_rejected_text(native_inta
         evidence=dict(page_id=original['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))])
     result=await stage(s,book,original)
     assert operation_count(s)==before and result.next_cursor=='1'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('spelling,expected',[(None,'missing'),('Private synthetic spelling '*12,'string_too_long')])
+async def test_entity_validation_distinguishes_missing_and_overlong_field_without_input(native_intake,caplog,spelling,expected):
+    s=native_intake;book=await start(s);payload=batch(s,book,count=1)
+    entity=dict(key='person',kind='person',canonical_label='Synthetic',
+        evidence=dict(page_id=payload['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))
+    if spelling is not None:entity['exact_source_spelling']=spelling
+    payload['entity_candidates']=dict(entities=[entity])
+    with pytest.raises(ToolError) as caught:await stage(s,book,payload)
+    detail=json.loads(str(caught.value))
+    assert detail['field_path']=='entities.0.exact_source_spelling'
+    assert detail['validation_type']==expected
+    assert 'validation_type='+expected in caplog.text
+    assert 'Private synthetic spelling' not in str(caught.value)+caplog.text
+    assert operation_count(s)==0
