@@ -243,7 +243,7 @@ class NativeSourceIntake:
         while self._packet_wakes:
             ingestion=self._packet_wakes.pop()
             try:
-                async with self.importer._lock:
+                async with self.importer._lock_for(ingestion):
                     proof=await self._packet_proof(ingestion)
                     row=await asyncio.to_thread(self.importer._row,proof.person_id,ingestion)
                     state=await asyncio.to_thread(self._state,row)

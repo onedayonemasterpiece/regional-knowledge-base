@@ -41,6 +41,8 @@ async def packet(people,tmp_path):
         _save=lambda row,**changes:row.update(changes) or row,
         _binding_current=lambda b:b is native.b,_intake_coverage_current=lambda b:native.v._coverage.current(),
         _row=lambda actor,ingestion:row if (actor,ingestion)==(row['person_id'],INGESTION) else None)
+    importer._ingestion_locks={}
+    importer._lock_for=lambda ingestion:KaggleSourceImporter._lock_for(importer,ingestion)
     bridge=object.__new__(AcceptedSourceDispatch);bridge.packet_owner=None;bridge.spool=spool
     q._source_commands=bridge
     startup.source_dispatch=bridge
