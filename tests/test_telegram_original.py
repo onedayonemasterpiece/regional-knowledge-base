@@ -308,3 +308,30 @@ def test_public_document_id_decimal_string_preserves_64_bits():
     assert model.locator().document_id==exact
     for bad in ('5.3e18', '05379726664597024218', ' 5379726664597024218'):
         with pytest.raises(ValueError):TelegramOriginalInput(**dict(locator().wire(),document_id=bad))
+
+
+@pytest.mark.asyncio
+async def test_transport_routes_caption_to_original_owner_without_snapshot_dispatch(native):
+    from test_bge_wss_worker import module,CONFIG
+    from test_kaggle_original_intake import INGEST
+    from regional_knowledge.original_intake import PHASES
+    transport=module('bge_wss_transport')
+    async def snapshot(job):
+        raise ValueError('original caption is not a snapshot phase')
+    async def query(frame):raise AssertionError('not a query')
+    worker=transport.BgeWssTransport({**CONFIG,'shared_reads':True},lambda:None,lambda:{},
+        query_handler=query,recovery_handler=snapshot)
+    worker.original_intake_handler=native.handler
+    client=Client();native.handler.telegram_downloader=downloader(client)
+    caption='РКБ: ✅ Импорт завершён\nSynthetic book\nRKB-original '+INGEST
+    command=frame('original_caption',dict(telegram_locator=locator().wire(),
+        ingestion_id=INGEST,caption=caption))
+    await worker._encode(command)
+    assert worker.pending['receipt']['value']['updated'] is True
+    assert client.message.message==caption and client.edit_calls==1
+    await worker._encode(command)  # Lost result ACK keeps the exact effect.
+    assert worker.pending['receipt']['value']['updated'] is True and client.edit_calls==1
+    assert client.send_calls==client.downloads==0
+    assert all(worker._native_handler(dict(kind='recovery_phase',phase=phase)) is native.handler
+               for phase in PHASES)
+    assert worker._native_handler(dict(kind='recovery_phase',phase='verify')) is snapshot
