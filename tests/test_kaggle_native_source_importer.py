@@ -1657,6 +1657,23 @@ async def test_reused_start_returns_full_nonmonotonic_research_status(native_int
 
 
 @pytest.mark.asyncio
+async def test_native_stage_value_error_identifies_validator_without_private_payload(native_intake,caplog):
+    s=native_intake
+    book=await start(s)
+    payload=batch(s,book,count=1)
+    payload['pages'][0]['source_review_note']='Private visual annotation ' * 30
+    with pytest.raises(ToolError) as caught:
+        await stage(s,book,payload)
+    diagnostic=json.loads(str(caught.value))
+    assert diagnostic['reason']=='invalid_small_source_input'
+    assert diagnostic['exception_class']=='ValueError'
+    assert diagnostic['validator'].startswith('_text:')
+    assert 'validator='+diagnostic['validator'] in caplog.text
+    assert 'Private visual annotation' not in str(caught.value)+caplog.text
+    assert operation_count(s)==0
+
+
+@pytest.mark.asyncio
 async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(native_intake):
     s=native_intake;book=await start(s)
     payload=batch(s,book,first=0,count=1)
