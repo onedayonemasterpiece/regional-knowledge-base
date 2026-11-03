@@ -23,83 +23,82 @@ async def test_pg17_global_sql48_same_query_scoped_and_cursor(graph_sql22):
     connection = native['connection']
     # Second *synthetic* accepted source: preserve the exact canonical joins
     # and provenance while giving every source-owned row a fresh source UUID.
+    for table in ('sources', 'revisions', 'active_revision', 'source_graph_documents', 'source_graph_receipts',
+                  'source_entity_representations'):
+        await connection.execute(
+            f'CREATE TEMP TABLE second_{table} AS SELECT * FROM rkb_v4.{table} WHERE source_id=%s', (SOURCE,))
+        await connection.execute(f'UPDATE second_{table} SET source_id=%s', (SECOND,))
+        await connection.execute(
+            f'INSERT INTO rkb_v4.{table} SELECT * FROM second_{table}')
+    # Source insertion creates its visibility row through the native trigger.
+    # This query must include two sources, with stable keyset order.
+    query = 'strasse'
+    sql = ('SELECT source_id,record_id FROM rkb_v4.read_source_graph_global_v1('
+           '%s::uuid[],NULL,NULL,%s::text[],%s,4)')
+    first = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
+    assert len(first) == 4
+    assert {str(r[0]) for r in first} == {SOURCE, SECOND}
+    assert [str(r[0]) for r in first] == sorted(str(r[0]) for r in first)
+    after = first[-1]
+    next_page = await (await connection.execute(
+        'SELECT source_id,record_id FROM rkb_v4.read_source_graph_global_v1(%s::uuid[],%s::uuid,%s,%s::text[],%s,4)',
+        (None, after[0], after[1], ['organization'], query))).fetchall()
+    assert next_page and (str(next_page[0][0]),next_page[0][1]) > (str(after[0]),after[1])
+    scoped = await (await connection.execute(sql, ([SOURCE], ['organization'], query))).fetchall()
+    assert scoped and all(str(r[0])==SOURCE for r in scoped)
+    multi = await (await connection.execute(sql, ([SECOND,SOURCE], ['organization'], query))).fetchall()
+    assert multi == first
+    # Real native request/psycopg adaptation, not a direct SQL call with a Python list.
+    # Refresh the normal synthetic frontier after fixture graph writes.
+    from contextlib import asynccontextmanager
+    from regional_knowledge.kaggle_source_graph_read import execute_source_graph_read
     async with connection.transaction():
-        for table in ('sources', 'revisions', 'active_revision', 'source_graph_documents', 'source_graph_receipts',
-                      'source_entity_representations'):
-            await connection.execute(
-                f'CREATE TEMP TABLE second_{table} AS SELECT * FROM rkb_v4.{table} WHERE source_id=%s', (SOURCE,))
-            await connection.execute(f'UPDATE second_{table} SET source_id=%s', (SECOND,))
-            await connection.execute(
-                f'INSERT INTO rkb_v4.{table} SELECT * FROM second_{table}')
-        # Source insertion creates its visibility row through the native trigger.
-        # This query must include two sources, with stable keyset order.
-        query = 'strasse'
-        sql = ('SELECT source_id,record_id FROM rkb_v4.read_source_graph_global_v1('
-               '%s::uuid[],NULL,NULL,%s::text[],%s,4)')
-        first = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
-        assert len(first) == 4
-        assert {str(r[0]) for r in first} == {SOURCE, SECOND}
-        assert [str(r[0]) for r in first] == sorted(str(r[0]) for r in first)
-        after = first[-1]
-        next_page = await (await connection.execute(
-            'SELECT source_id,record_id FROM rkb_v4.read_source_graph_global_v1(%s::uuid[],%s::uuid,%s,%s::text[],%s,4)',
-            (None, after[0], after[1], ['organization'], query))).fetchall()
-        assert next_page and (str(next_page[0][0]),next_page[0][1]) > (str(after[0]),after[1])
-        scoped = await (await connection.execute(sql, ([SOURCE], ['organization'], query))).fetchall()
-        assert scoped and all(str(r[0])==SOURCE for r in scoped)
-        multi = await (await connection.execute(sql, ([SECOND,SOURCE], ['organization'], query))).fetchall()
-        assert multi == first
-        # Real native request/psycopg adaptation, not a direct SQL call with a Python list.
-        # Refresh the normal synthetic frontier after fixture graph writes.
-        from contextlib import asynccontextmanager
-        from regional_knowledge.kaggle_source_graph_read import execute_source_graph_read
-        async with connection.transaction():
-            observed=await (await connection.execute(
-                "SELECT s.applied_seq,f.visibility_epoch FROM rkb_v4.recovery_state s "
-                "CROSS JOIN rkb_v4.read_frontier f WHERE s.singleton AND f.singleton")).fetchone()
-            await connection.execute(
-                "SELECT rkb_v4.publish_read_frontier(%s,%s,%s,%s,true,true)",
-                ('sql22-entity-fixture','writer-1',observed[1],observed[0]))
-        @asynccontextmanager
-        async def acquire():
-            yield connection
-        request=selected(source_id=None,source_ids=(SOURCE,SECOND),
-                         query='strasse',kinds=['organization'],limit=2)
-        page1=await execute_source_graph_read(request,acquire=acquire)
-        assert page1.status=='ok',page1
-        assert len(page1.records)==2 and page1.next_cursor
-        assert all(r['source_id'] in (SOURCE,SECOND) for r in page1.records)
-        page2=await execute_source_graph_read(
-            request.model_copy(update={'cursor':page1.next_cursor}),acquire=acquire)
-        assert page2.status=='ok',page2
-        assert page2.records and page2.records[0]['id']!=page1.records[-1]['id']
-        scoped_native=await execute_source_graph_read(
-            selected(source_id=SOURCE,query='strasse',kinds=['organization'],limit=2),acquire=acquire)
-        assert scoped_native.status=='ok' and all(r['source_id']==SOURCE for r in scoped_native.records)
-        unscoped_native=await execute_source_graph_read(
-            selected(source_id=None,query='strasse',kinds=['organization'],limit=2),acquire=acquire)
-        assert unscoped_native.status=='ok' and unscoped_native.records
+        observed=await (await connection.execute(
+            "SELECT s.applied_seq,f.visibility_epoch FROM rkb_v4.recovery_state s "
+            "CROSS JOIN rkb_v4.read_frontier f WHERE s.singleton AND f.singleton")).fetchone()
+        await connection.execute(
+            "SELECT rkb_v4.publish_read_frontier(%s,%s,%s,%s,true,true)",
+            ('sql22-entity-fixture','writer-1',observed[1],observed[0]))
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    request=selected(source_id=None,source_ids=(SOURCE,SECOND),
+                     query='strasse',kinds=['organization'],limit=2)
+    page1=await execute_source_graph_read(request,acquire=acquire)
+    assert page1.status=='ok',page1
+    assert len(page1.records)==2 and page1.next_cursor
+    assert all(r['source_id'] in (SOURCE,SECOND) for r in page1.records)
+    page2=await execute_source_graph_read(
+        request.model_copy(update={'cursor':page1.next_cursor}),acquire=acquire)
+    assert page2.status=='ok',page2
+    assert page2.records and page2.records[0]['id']!=page1.records[-1]['id']
+    scoped_native=await execute_source_graph_read(
+        selected(source_id=SOURCE,query='strasse',kinds=['organization'],limit=2),acquire=acquire)
+    assert scoped_native.status=='ok' and all(r['source_id']==SOURCE for r in scoped_native.records)
+    unscoped_native=await execute_source_graph_read(
+        selected(source_id=None,query='strasse',kinds=['organization'],limit=2),acquire=acquire)
+    assert unscoped_native.status=='ok' and unscoped_native.records
 
-        # Existing accepted/withdrawn source joins, never a client-side filter.
-        await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SECOND,))
-        remaining = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
-        assert remaining and all(str(r[0]) == SOURCE for r in remaining)
-        # Inspect the inner join/filter, not just the non-inlineable SQL
-        # function's outer Function Scan. Tiny synthetic data needs no index.
-        plan = await (await connection.execute("""
-            EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
-            SELECT n.source_id,n.entity_key FROM rkb_v4.source_entity_representations n
-            JOIN rkb_v4.sources s USING(source_id)
-            JOIN rkb_v4.active_revision a USING(source_id)
-            JOIN rkb_v4.source_visibility v USING(source_id)
-            JOIN rkb_v4.source_graph_receipts r USING(source_id)
-            WHERE s.accepted AND NOT s.withdrawn AND a.revision=1
-            AND position(rkb_v4.source_graph_name_fold_v1(%s)
-              IN rkb_v4.source_graph_name_fold_v1(n.data->>'canonical_label'))>0
-            ORDER BY n.source_id,n.entity_key COLLATE "C" LIMIT 4
-        """, (query,))).fetchall()
-        assert plan and any('Execution Time:' in row[0] for row in plan)
-        print('SQL048 synthetic inner plan: ' + '\\n'.join(row[0] for row in plan))
+    # Existing accepted/withdrawn source joins, never a client-side filter.
+    await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SECOND,))
+    remaining = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
+    assert remaining and all(str(r[0]) == SOURCE for r in remaining)
+    # Inspect the inner join/filter, not just the non-inlineable SQL
+    # function's outer Function Scan. Tiny synthetic data needs no index.
+    plan = await (await connection.execute("""
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+        SELECT n.source_id,n.entity_key FROM rkb_v4.source_entity_representations n
+        JOIN rkb_v4.sources s USING(source_id)
+        JOIN rkb_v4.active_revision a USING(source_id)
+        JOIN rkb_v4.source_visibility v USING(source_id)
+        JOIN rkb_v4.source_graph_receipts r USING(source_id)
+        WHERE s.accepted AND NOT s.withdrawn AND a.revision=1
+        AND position(rkb_v4.source_graph_name_fold_v1(%s)
+          IN rkb_v4.source_graph_name_fold_v1(n.data->>'canonical_label'))>0
+        ORDER BY n.source_id,n.entity_key COLLATE "C" LIMIT 4
+    """, (query,))).fetchall()
+    assert plan and any('Execution Time:' in row[0] for row in plan)
+    print('SQL048 synthetic inner plan: ' + '\\n'.join(row[0] for row in plan))
 
 
 @pytest.mark.asyncio
