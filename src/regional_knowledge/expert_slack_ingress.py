@@ -86,7 +86,7 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
-                if self._reply is not None and self._reply.executor_context is None:
+                if self._reply is not None and getattr(self._reply,"executor_context",None) is None:
                     # Read-only search: existing event_id row is the at-most-once
                     # boundary; no Dataset checkpoint/agent job is necessary.
                     self._reply.notify(outcome['request_id'])
