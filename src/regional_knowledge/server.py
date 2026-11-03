@@ -1987,6 +1987,13 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             context=expert_executor_context)
         from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
         expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
+    wake_config=os.getenv('RKB_EXPERT_PH_WAKE_CONFIG','').strip()
+    if wake_config:
+        if (expert_slack_ingress is None or expert_executor_context is None
+                or expert_slack_ingress.socket_only or reply_config):
+            raise RuntimeError('PH wake requires original signed expert executor, not fallback reply')
+        from .expert_ph_wake import ProjectsHubExpertWake
+        expert_slack_ingress.bind_waker(ProjectsHubExpertWake(expert_slack_ingress.control,wake_config))
     mcp=build_server(profile=profile,target_startup=target_startup,
         projects_hub_receiver=projects_hub_receiver,
         import_activity_receiver=import_activity_receiver,
