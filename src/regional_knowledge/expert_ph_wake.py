@@ -64,8 +64,8 @@ class ProjectsHubExpertWake:
         if (not isinstance(receipt, dict)
                 or receipt.get('project_id') != self.project_id
                 or not isinstance(receipt.get('request_id'), str)
-                or not receipt['request_id'].startswith('mcp_test_')
+                or not receipt['request_id']
                 or not isinstance(receipt.get('eventId'), str)
-                or not receipt['eventId'].startswith('evt_')):
+                or not receipt['eventId']):
             raise RuntimeError('PH request receipt invalid')
         return receipt
