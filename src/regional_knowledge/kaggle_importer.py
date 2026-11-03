@@ -126,6 +126,7 @@ class KaggleSourceImporter:
         self._lock = asyncio.Lock()
         self._ingestion_locks = {}
         self._caption_synced = {}
+        self._caption_task = None
         self.output_gate = OwnerImportOutputGate(self)
         with self.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_source_intake_control(
@@ -1017,8 +1018,10 @@ class KaggleSourceImporter:
                     output = output.model_copy(update={'message': output.message+'; stage_file_sha256='+stage_file_sha256})
                 from .product_telemetry import import_metadata
                 import_metadata(ingestion_id=output.ingestion_id,result_state=output.state,next_action=output.next_action)
-                await self._sync_import_captions(access,output.ingestion_id)
-                return await self._reply(access, output)
+                output = await self._reply(access, output)
+                if self._caption_task is None or self._caption_task.done():
+                    self._caption_task = asyncio.create_task(self._sync_import_captions(access,output.ingestion_id))
+                return output
         except ToolError:
             raise
         except PermissionError:
