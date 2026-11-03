@@ -225,7 +225,10 @@ class ExpertSlackSearchReply:
         with self.control.corpus.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
-            if (row is None or row["state"]!="searching" or row["delivery_id"] is not None
+            if (row is None or (row["state"]!="searching" and not (
+                    self.executor_context is not None and row["state"] in (
+                        "pending","leased","result_unsealed")))
+                    or row["delivery_id"] is not None
                     or not request_order.is_head(db,row)):
                 return None
             origin=self._verified(db,row)
@@ -267,6 +270,12 @@ class ExpertSlackSearchReply:
             row=await asyncio.to_thread(self._row,request_id,states)
             if row is None:return
             if row["state"]!="searching":
+                if row["delivery_id"] is None:
+                    async def claim_notice():
+                        permit=await asyncio.to_thread(self._claim_warming_post,request_id)
+                        if permit is None:raise PermissionError("Slack early notice already claimed")
+                        return dict(permit,text="Ищу ответ в книгах, обычно около минуты.")
+                    await self.sender.post_once(claim=claim_notice)
                 remaining=max(0,row["created_at"]+MODEL_WAIT_SECONDS-self.control.clock())
                 if remaining:await asyncio.sleep(remaining)
             # Existing SQLite CAS fences late model completion before fallback search.
