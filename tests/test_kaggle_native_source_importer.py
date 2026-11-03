@@ -1693,3 +1693,36 @@ async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(nat
         after=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence LIMIT 3')]
     assert after==before
     assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
+
+
+@pytest.mark.asyncio
+async def test_followup_entities_after_empty_semantic_apply_are_not_silently_ignored(native_intake):
+    s=native_intake;book=await start(s)
+    payload=batch(s,book,first=0,count=1)
+    payload['pages'][0]['regions'][0]['source_text']='Synthetic Person Alpha attended a meeting in 1930.'
+    await stage(s,book,payload)
+    for _ in ('stage','text','semantic'):
+        await finish(s,book);await call(s,book,'status')
+    before=operation_count(s)
+    payload['entity_candidates']=dict(entities=[dict(key='person-alpha',kind='person',
+        canonical_label='Person Alpha',exact_source_spelling='Person Alpha',
+        evidence=dict(page_id=payload['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))])
+    response=await stage(s,book,payload)
+    assert operation_count(s)>before, response.message
+
+
+@pytest.mark.asyncio
+async def test_old_page_enrichment_cannot_skip_current_rejected_text(native_intake):
+    s=native_intake;book=await start(s)
+    original=batch(s,book,first=0,count=1);await stage(s,book,original)
+    for _ in ('stage','text','semantic'):
+        await finish(s,book);await call(s,book,'status')
+    await stage(s,book,batch(s,book,first=1,count=1))
+    await finish(s,book);await call(s,book,'status')
+    await finish(s,book,status='rejected_precondition');await call(s,book,'status')
+    before=operation_count(s)
+    original['entity_candidates']=dict(entities=[dict(key='person-alpha',kind='person',
+        canonical_label='Synthetic',exact_source_spelling='Synthetic',
+        evidence=dict(page_id=original['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))])
+    result=await stage(s,book,original)
+    assert operation_count(s)==before and result.next_cursor=='1'
