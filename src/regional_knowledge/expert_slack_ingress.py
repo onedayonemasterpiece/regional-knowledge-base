@@ -47,6 +47,7 @@ class ExpertSlackIngress:
         # contention. The next verified event retry reads the original bytes.
         self._staging_tasks={}
         self._reply = None
+        self._waker = None
 
     def bind_search_reply(self, reply):
         """One opt-in same-owner responder; no automatic provider sender."""
@@ -54,6 +55,15 @@ class ExpertSlackIngress:
                 or reply.ingress is not self or not callable(getattr(reply, "notify", None))):
             raise ValueError("exact existing Slack reply composition required")
         self._reply = reply
+
+    def bind_waker(self, waker):
+        """Only the original accepted request can wake the separate dot client."""
+        from .expert_ph_wake import ProjectsHubExpertWake
+        if (self._waker is not None or self._reply is not None
+                or type(waker) is not ProjectsHubExpertWake
+                or waker.control is not self.control or self.socket_only):
+            raise ValueError('one RKB executor and one PH wake owner required')
+        self._waker = waker
 
     async def __call__(self, request):
         if self.socket_only:
@@ -129,6 +139,8 @@ class ExpertSlackIngress:
                     # received row that could vanish with the DevCoveer disk.
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
+                if self._waker is not None:
+                    await self._waker.wake(outcome['request_id'])
                 return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
