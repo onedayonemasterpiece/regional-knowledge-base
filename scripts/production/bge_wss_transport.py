@@ -233,7 +233,7 @@ class BgeWssTransport:
         if (len(json.dumps(frame, allow_nan=False).encode()) > 16384
                 or not all(self._identifier(frame.get(key)) for key in ('request_id', 'compute_claim'))
                 or type(frame.get('turn_generation')) is not int or frame['turn_generation'] < 0
-                or type(frame.get('deadline_ms')) is not int or not 0 < frame['deadline_ms'] <= 2000
+                or type(frame.get('deadline_ms')) is not int or not 0 < frame['deadline_ms'] <= (30000 if frame.get('type')=='SOURCE_READ' and frame.get('operation')=='source_unit_pdf' else 2000)
                 or (not exact and (not isinstance(frame.get('query'), str) or not frame['query'].strip()
                 or len(frame['query']) > 1000 or len(frame['query'].encode()) > 4096))
                 or self.encoder is None

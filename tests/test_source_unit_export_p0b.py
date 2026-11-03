@@ -368,10 +368,17 @@ async def test_native_pdf_renderer_uses_requested_bounded_budget_but_catalog_sta
     handler=KaggleWorkerQuery(acquire=acquire,tokenizer=pinned())
     request=SourceReadRequest(operation='source_unit_pdf',article_id='albinus-unit',
         limit=1,compute_claim='pdf-worker-claim',**common)
+    from test_bge_wss_worker import module, CONFIG
+    transport=module('bge_wss_transport').BgeWssTransport(
+        dict(CONFIG,shared_reads=True),lambda:object(),lambda:{},query_handler=handler)
+    transport.encoder=forbidden_encode
+    transport._validate_query(request.model_dump(mode='json'))
     pdf=await handler(request.model_dump(mode='json'),encode=forbidden_encode)
     assert pdf['status']=='ok' and pdf['records'][0]['blob']
     for operation,budget in [('source_unit_pdf',30001),('source_units',30000)]:
         rejected=request.model_copy(update={'operation':operation,'deadline_ms':budget})
+        with pytest.raises(ValueError):
+            transport._validate_query(rejected.model_dump(mode='json'))
         result=await handler(rejected.model_dump(mode='json'),encode=forbidden_encode)
         assert result['status']=='invalid_query' and result['reason']=='invalid_input'
     @asynccontextmanager
