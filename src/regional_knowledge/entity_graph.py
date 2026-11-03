@@ -62,7 +62,10 @@ class GraphAlias(Strict):
     research_sources:list[ResearchSource]=Field(default_factory=list,max_length=8)
 
 class GraphEntity(Strict):
-    key:str=Field(min_length=1,max_length=100)
+    key:str=Field(min_length=1,max_length=100,description=(
+        'Stable source-global entity identity, not a printed name or packet-local key. '
+        'Different people, places or organizations need distinct keys even when spelled identically. '
+        'Repeat a key only for the same entity and kind; explicit entity_id reuses verified same-kind identity.'))
     entity_id:UUID|None=None # Explicit reuse requires same owner and kind, never name matching.
     kind:Kind
     canonical_label:str=Field(min_length=1,max_length=200)
