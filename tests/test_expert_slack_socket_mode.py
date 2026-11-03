@@ -217,3 +217,64 @@ async def test_official_sdk_slow_websocket_close_does_not_hold_api_lifespan(env)
             tasks=[getattr(client,name,None)for name in
                    ('message_processor','current_session_monitor','message_receiver')]
             await asyncio.gather(*(t for t in tasks if t is not None),return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ph_fails", [False, True])
+async def test_socket_wakes_only_after_remote_acceptance_and_keeps_fallback_on_ph_failure(
+        env, tmp_path, ph_fails):
+    """Live transport: one signed app mention, same durable UUID, independent bot reply."""
+    import httpx
+    from regional_knowledge.expert_ph_wake import ProjectsHubExpertWake
+
+    ctl, _, _ = _prepare(env)
+    ingress = ExpertSlackIngress(ctl, signing_secret=None, socket_only=True)
+    replies = []
+    ingress.bind_search_reply(SimpleNamespace(
+        control=ctl, ingress=ingress, notify=replies.append))
+    secret = tmp_path/'ph-secret'
+    secret.write_text('p'*48); secret.chmod(0o600)
+    configuration = tmp_path/'ph-wake.json'
+    configuration.write_text(json.dumps({
+        'codec':'rkb.ph-expert-wake.v1', 'project_id':'prj_'+'a'*32,
+        'service_secret_file':str(secret)}))
+    configuration.chmod(0o600)
+
+    delivered = []
+    fake = FakeSocketClient(control=ctl)
+    def ph(request):
+        assert fake.acks[-1] == 'envelope-retry'  # ACK and bot notify precede PH I/O.
+        body = json.loads(request.content)
+        assert body == {'project_id':'prj_'+'a'*32, 'rkb_request_id':rid}
+        assert request.headers['authorization'] == 'Bearer ' + 'p'*48
+        assert 'text' not in body and 'user_id' not in body
+        delivered.append(body)
+        if ph_fails:
+            return httpx.Response(503, json={'error':'unavailable'})
+        return httpx.Response(202,json={'project_id':body['project_id'],
+            'request_id':'mcp_test_'+'b'*32, 'eventId':'evt_'+'c'*32})
+
+    ingress.bind_waker(ProjectsHubExpertWake(
+        ctl,str(configuration),transport=httpx.MockTransport(ph)))
+    adapter = ExpertSlackSocketMode(ingress=ingress, app_token='xapp-synthetic',
+        bot_token='xoxb-synthetic',client_factory=lambda *_:fake)
+    async with adapter.lifespan():
+        event = _event_request()
+        await adapter.handle(fake,event)
+        assert fake.acks == ['envelope-1']
+        assert len(replies)==1 and delivered==[]  # Local received is NOT durable.
+        rid = replies[0]
+        original = ctl._row(rid)
+        assert original['state']=='received'
+        command=ctl.exact_remote_intent(rid,1)
+        seal=await env.journal.seal([command],predecessor=None,writer_generation='writer-1')
+        await ctl.verify_remote_intent(rid,command,seal)
+        assert ctl._row(rid)['state']=='pending'
+        retry=SocketModeRequest(type='events_api',envelope_id='envelope-retry',
+                                payload=event.payload)
+        await adapter.handle(fake,retry)
+        assert fake.acks == ['envelope-1','envelope-retry']
+        assert replies==[rid,rid]  # Fallback still notified even if PH is down.
+        assert len(delivered)==1
+        assert delivered[0]['rkb_request_id']==rid
+        assert ctl._row(rid)['state']=='pending'  # PH cannot modify/claim RKB or post to Slack.
