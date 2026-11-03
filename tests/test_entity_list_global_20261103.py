@@ -24,7 +24,7 @@ async def test_pg17_global_sql48_same_query_scoped_and_cursor(graph_sql22):
     # Second *synthetic* accepted source: preserve the exact canonical joins
     # and provenance while giving every source-owned row a fresh source UUID.
     async with connection.transaction():
-        for table in ('sources', 'revisions', 'active_revision', 'source_graph_receipts',
+        for table in ('sources', 'revisions', 'active_revision', 'source_graph_documents', 'source_graph_receipts',
                       'source_entity_representations'):
             await connection.execute(
                 f'CREATE TEMP TABLE second_{table} AS SELECT * FROM rkb_v4.{table} WHERE source_id=%s', (SOURCE,))
