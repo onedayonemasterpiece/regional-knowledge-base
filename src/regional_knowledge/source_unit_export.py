@@ -79,6 +79,10 @@ def _unit_figures(unit, pages, rows):
             and part['start']<=span['start']<span['end']<=part['end'] for part in unit_spans)
     def belongs(passage):
         spans=passage.get('source_spans') or []
+        if not spans:
+            if any(ident not in positions for ident in passage.get('region_ids',[])):return False
+            spans=[dict(region_id=ident,start=0,end=len(positions[ident][2]['source_text']))
+                for ident in passage.get('region_ids',[])]
         body=[span for span in spans if
             positions.get(span['region_id'],(None,None,{}))[2].get('kind')=='body']
         return bool(body) and all(owned(span) for span in body) and all(

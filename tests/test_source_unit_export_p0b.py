@@ -292,6 +292,16 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
     linked['source_spans'].append(outside_heading)
     assert len(_unit_figures(unit,pages,linked_rows))==1
     linked['source_spans'].pop()
+    # Canonical accepted chunks can select whole regions instead of spans.
+    # The actual Huldigung passage links its BODY and CAPTION this way.
+    exact_spans=linked['source_spans']
+    linked['region_ids']=[span['region_id'] for span in exact_spans]
+    linked['source_spans']=[]
+    assert len(_unit_figures(unit,pages,linked_rows))==2
+    linked['region_ids'].append(outside_heading['region_id'])
+    assert len(_unit_figures(unit,pages,linked_rows))==1
+    linked['region_ids'].pop()
+    linked['source_spans']=exact_spans
     assert [f['caption_text'] for f in _unit_figures(unit,pages,rows)] == [
         'Принятая подпись Huldigung']
 
