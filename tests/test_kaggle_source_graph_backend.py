@@ -80,10 +80,15 @@ async def test_actual_mcp_graph_call_uses_one_typed_claim_and_current_source_out
 
 
 @pytest.mark.asyncio
-async def test_unknown_graph_scope_never_creates_another_reader_or_legacy_query(target):
+async def test_unscoped_entity_list_uses_existing_native_read_authority(target):
     startup=await configured(target)
     try:
-        with pytest.raises(ToolError,match='exact_source_scope_required'):
-            await startup.backend.entity_list(target.principal,document_ids=None,query='unbounded graph')
-        assert not startup.admission._reads
+        task=asyncio.create_task(startup.backend.entity_list(target.principal,document_ids=None,query='Kant'))
+        dispatched=await work(target)
+        assert dispatched.query.action=='list'
+        assert dispatched.query.source_id is None and dispatched.query.source_ids is None
+        assert dispatched.query.limit==3
+        assert await startup.admission.finish_read(target.run,target.token,target.generation,response(dispatched))
+        await task
+        await release(target,dispatched)
     finally:await startup.source_dispatch.aclose();startup.config.spool.close()
