@@ -297,6 +297,12 @@ async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase,value,retry',[
     ('original_acquire',{'error':'unfamiliar_original_read_error','retryable':True},True),
+    ('original_acquire',{'error':'original_telegram_presence_unknown'},True),
+    ('original_acquire',{'error':'original_telegram_scope_denied'},False),
+    ('original_acquire',{'error':'original_telegram_scope_denied','retryable':True},False),
+    ('original_acquire',{'error':'original_telegram_document_changed'},False),
+    ('original_acquire',{'error':'original_format_unsupported','terminal':True},False),
+    ('original_acquire',{'error':'original_format_unsupported','terminal':True,'retryable':True},False),
     ('original_pages',{'error':'unfamiliar_original_read_error','retryable':True},True),
     ('original_verify',{'error':'unfamiliar_original_read_error','retryable':True},True),
     ('original_archive',{'error':'unfamiliar_original_read_error'},False),

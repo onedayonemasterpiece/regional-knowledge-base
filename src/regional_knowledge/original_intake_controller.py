@@ -12,7 +12,7 @@ from .backend import RenderedPage,RenderedPageBatch
 from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
 from .contracts import ChatFile
 from .telegram_original import TelegramOriginalLocator
-from .kaggle_recovery_dispatch import RecoveryPhaseDispatch
+from .kaggle_recovery_dispatch import RecoveryPhaseDispatch,_RETRYABLE_TELEGRAM_ACQUIRE
 from .native_snapshot_transfer import SnapshotTicket,origin
 from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOriginalReceipt,
     OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value,
@@ -339,9 +339,11 @@ class OriginalIntakeController:
                         and result['value'].get('error') in TERMINAL_REJECTIONS)
                         or result.get('value',{}).get('error')=='original_telegram_document_changed'):
                     return self._reject(ingestion_id,result['value']['error'])
-                if result['value'].get('spec')!=spec:
-                    raise OriginalIntakeError('original_acquisition_receipt_unavailable')
                 record=result['value']
+                if row['telegram_locator_json'] is not None and record.get('error') in _RETRYABLE_TELEGRAM_ACQUIRE:
+                    record=await self._phase(binding,'original_acquire',args)
+                if record.get('spec')!=spec:
+                    raise OriginalIntakeError('original_acquisition_receipt_unavailable')
                 with self.queue.connect() as db:db.execute('UPDATE rkb_original_intakes SET acquisition_json=? WHERE ingestion_id=?',
                     (canonical(record).decode(),ingestion_id))
             receipt=await self._complete(context,binding,record)

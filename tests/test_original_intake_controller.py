@@ -55,6 +55,82 @@ async def test_fresh_telegram_message_pins_native_receipt_once_and_reuses_same_i
 
 
 @pytest.mark.asyncio
+async def test_owner_status_recovers_failed_telegram_acquire_without_new_start(owner,native):
+    """Initial provider presence read fails once; owner status drives the SAME queued intake."""
+    from regional_knowledge.contracts import TelegramOriginalInput
+    from test_telegram_original import Client,downloader,locator
+    class TransientPresence(Client):
+        fail_once=True
+        async def get_messages(self,chat_id,*,ids):
+            if self.fail_once:
+                self.fail_once=False
+                raise TimeoutError('synthetic read-only Telegram metadata timeout')
+            return await super().get_messages(chat_id,ids=ids)
+
+    e,n=owner,native;client=TransientPresence()
+    n.handler.telegram_downloader=downloader(client)
+    spool=ControlSpool(e.q,e.auth.p.registry,e.j,HandlerRegistry([handler()]))
+    binding=current_binding(e.q)
+    current=lambda b:b==binding and e.w.current(database_generation='synthetic-db',writer_generation='writer-1')
+    with e.q.connect(write=False) as db:
+        run=db.execute('SELECT * FROM runs WHERE id=?',(e.run,)).fetchone()
+    bridge=RecoveryPhaseDispatch(e.q,database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1'),
+        identity=(e.run,run['launch_nonce'],binding.runtime_incarnation),binding_current=current)
+    n.handler.identity=bridge.identity;n.handler.database=bridge.database
+    n.handler.current=lambda b:b==(binding.run_id,binding.runtime_incarnation,binding.connection_generation)
+    n.handler.attached(e.generation)
+    controller=OriginalIntakeController(queue=e.q,spool=spool,participants=e.auth.p.registry,
+        object_store=SimpleNamespace(client=e.c,bucket=e.s.bucket),binding_current=current,
+        current_binding=lambda:current_binding(e.q),allowed_origins=frozenset({'https://archive.invalid'}))
+    stop=asyncio.Event();phases=[]
+    async def peer():
+        while not stop.is_set():
+            work=await e.a.next_channel_work(e.run,e.token,e.generation)
+            if work is None:
+                await asyncio.sleep(.001)
+                continue
+            e.a.mark_work_sent(work)
+            f=dict(type='DISPATCH',protocol_version=2,connection_generation=e.generation,
+                **dict(work.document_payload),compute_claim=work.compute_claim,dispatch_generation=work.dispatch_generation)
+            phases.append((f['phase'],f['operation_key']))
+            receipt=await n.handler(f)
+            await bridge.receive(dict(type='RECOVERY_PHASE_RESULT',job_id=f['id'],claim=f['claim'],receipt=receipt,
+                **{k:f[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')}),
+                run_id=e.run,token=e.token,generation=e.generation)
+            r=work.resource
+            await e.a.resource_released(e.run,e.token,e.generation,runtime_incarnation=r.runtime_incarnation,
+                resource_kind='document',resource_id=r.resource_id,compute_claim=r.compute_claim,dispatch_generation=r.dispatch_generation)
+    task=asyncio.create_task(peer())
+    try:
+        loc=locator()
+        file=TelegramOriginalInput(chat_id=loc.chat_id,topic_id=loc.topic_id,message_id=loc.message_id).locator()
+        first=await controller.begin(e.auth.p.admin,operation_id='status-resumes-telegram',source_id=SOURCE,
+            ingestion_id=INGEST,file=file,max_bytes=len(PDF))
+        assert first.state=='pending' and [v[0] for v in phases]==['original_acquire']
+        root=phases[0][1]
+        with e.q.connect(write=False) as db:
+            prior=db.execute('SELECT result FROM jobs WHERE actor=? AND idempotency=?',
+                ('maintenance:'+e.run,'recovery:'+root)).fetchone()[0]
+        assert json.loads(prior)['value']=={'error':'original_telegram_presence_unknown','retryable':True}
+        async with asyncio.timeout(5):
+            resumed=await controller.status(e.auth.p.admin,INGEST)
+        assert resumed.verified and resumed.receipt.sha256==loc.sha256
+        assert [name for name,_ in phases]==['original_acquire','original_acquire','original_archive']
+        assert phases[1][1]==root+':retry:1'
+        assert client.downloads==1 and client.send_calls==0
+        with e.q.connect(write=False) as db:
+            assert db.execute('SELECT result FROM jobs WHERE actor=? AND idempotency=?',
+                ('maintenance:'+e.run,'recovery:'+root)).fetchone()[0]==prior
+        assert (await controller.status(e.auth.p.admin,INGEST)).receipt==resumed.receipt
+        assert len(phases)==3
+    finally:
+        stop.set()
+        await task
+        await bridge.aclose()
+        spool.close()
+
+
+@pytest.mark.asyncio
 async def test_telegram_lost_send_ack_reconciles_through_fresh_host_and_native_verify(owner,native):
     from dataclasses import replace
     from test_telegram_original import Client,downloader
