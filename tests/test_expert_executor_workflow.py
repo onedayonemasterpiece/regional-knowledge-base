@@ -178,6 +178,12 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             assert lease['state']=='leased' and lease['generation']==1
             assert ctl.claim_context(credentials,rid,lease['generation'],
                 lease['execution_token'])['person_id']==env.p.other.subject
+            # PR616 early notice reuses delivery_id; the covered model send
+            # must replace only this exact one-shot warming marker.
+            with ctl.corpus.connect() as db:
+                db.execute("UPDATE rkb_expert_requests SET delivery_id=event_id||':warming' WHERE id=?",
+                           (rid,))
+            assert ctl._row(rid)['delivery_id']==ctl._row(rid)['event_id']+':warming'
             body=_result(rid,lease)
             first=await client.post(RESULT,json=body,headers=_auth(credentials))
             assert first.status_code==202
