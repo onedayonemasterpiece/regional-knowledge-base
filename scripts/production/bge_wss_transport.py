@@ -337,7 +337,8 @@ class BgeWssTransport:
     def _native_handler(self,job):
         if job['kind']!='recovery_phase':return self.source_handler
         if job.get('phase')=='source_history':return self.source_history_handler
-        if job.get('phase') in {'original_acquire','original_archive','original_verify','original_pages'}:
+        from regional_knowledge.original_intake import PHASES
+        if job.get('phase') in PHASES:
             return self.original_intake_handler
         return self.recovery_handler
 
