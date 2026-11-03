@@ -815,6 +815,7 @@ def build_server(
             token=get_access_token()
             if (token is None or token.subject is None
                     or token.subject==control.people.owner
+                    or token.subject!=credentials.service_id
                     or token.client_id!=credentials.service_id):
                 raise PermissionError("restricted executor MCP credential required")
             with control.corpus.connect() as db:
