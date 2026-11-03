@@ -7,8 +7,8 @@ from mcp.types import ToolAnnotations
 
 def register_source_graph_tools(mcp,backend,geo_backend,principal):
     @mcp.tool(name='entity_list',title='Read accepted source entities',
-        description='Bounded person, organization, event, historical thread and source-place identities in one exact accepted source. '
-            'Explicit source claims and quotes; source entities do not require a Story. Source graph search and discovery remain unavailable.',
+        description='Bounded accepted person, organization, event, historical thread and source-place claims, optionally scoped to sources. '
+            'Explicit source claims and quotes; source entities do not require a Story. Canonical identity discovery remains separate.',
         annotations=ToolAnnotations(read_only_hint=True,open_world_hint=False))
     async def entity_list(document_ids:list[str]|None=None,kinds:list[str]|None=None,query:str='',
             limit:Annotated[int,Field(ge=1,le=3)]=3,cursor:str|None=None)->dict:
