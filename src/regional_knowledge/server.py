@@ -1628,6 +1628,10 @@ def build_server(
             "(places, toponyms, historical addresses) nodes, with exact_source_spelling and applicable " +
             "poi_ref locator names; link each node to source passage evidence using those packet keys " +
             "or an already accepted chunk_id (plus exact_quote when available), preserve distinct " +
+            "GraphBundle entity keys are source-global identities rather than names or per-packet keys: " +
+            "use different stable keys for a person and a place even when the spelling matches; " +
+            "keep story entity_keys and relation endpoints bound to the correct key, and reuse an existing " +
+            "same-kind identity through verified entity_id when appropriate. " +
             "physical places and never guess identities or coordinates. " +
             "An empty entity_candidates bundle is valid only when the reviewed page names no source-grounded entities. " +
             "Revising an accepted book is unsupported in this profile; never resend accepted pages. " +
