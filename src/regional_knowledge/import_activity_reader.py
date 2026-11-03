@@ -74,16 +74,17 @@ class ImportActivityReader:
                 (ingestion_id, row["source_id"], row["person_id"]),
             ).fetchone()
             accepted = published_pages(db,row) if native and native['packet_mode'] else set()
-            last_stage = None
+            last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
             # count is NOT page count (a reviewed batch can contain four pages).
             if native and native["packet_mode"]:
                 entries = db.execute(
                     "SELECT command_bytes FROM rkb_control_operations "
                     "WHERE source_id=? AND person_id=? AND operation_key LIKE ? "
-                    "AND seal_state='ACCEPTED' AND apply_state='APPLIED' "
+                    "AND seal_state='ACCEPTED' AND (apply_state='APPLIED' OR operation_key LIKE ?) "
                     "ORDER BY sequence DESC LIMIT 10000",
-                    (row["source_id"], row["person_id"], "source-stage:" + ingestion_id + ":%"),
+                    (row["source_id"], row["person_id"], "source-stage:" + ingestion_id + ":%",
+                     f"source-stage:{ingestion_id}:{native['rejected_batch_index']}:%"),
                 )
                 for entry in entries:
                     command = json.loads(entry["command_bytes"])
@@ -91,6 +92,8 @@ class ImportActivityReader:
                     if stage.get("ingestion_id") != ingestion_id:
                         continue
                     pages = stage.get("model_payload", {}).get("pages", [])
+                    if rejected_pages is None and stage.get('batch_index') == native['rejected_batch_index']:
+                        rejected_pages = pages
                     if last_stage is None:
                         last_stage = (stage, pages)
                     # Stage APPLIED without matching source.packet TEXT APPLIED is not publication.
@@ -112,7 +115,8 @@ class ImportActivityReader:
         if state not in ("finalized", "failed"):
             try:
                 research = json.loads(row["research_json"]) if row["research_json"] else {}
-                cursor = research.get("continuation", {}).get("arguments", {}).get("cursor")
+                cursor = (str(rejected_pages[0]['physical_page_index']) if rejected_pages else
+                          research.get("continuation", {}).get("arguments", {}).get("cursor"))
                 if cursor is None and last_stage:
                     cursor = last_stage[0].get("research", {}).get("continuation", {}).get("arguments", {}).get("cursor")
                 if cursor is None and last_stage and last_stage[1]:
