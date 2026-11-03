@@ -785,11 +785,13 @@ async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_a
     from test_source_unit_pdf import inputs
     s=target;source='31111111-2222-4333-8444-555555555555'
     prepared=[]
+    restored=asyncio.Event()
     async def prepare(source_id,binding):
         assert source_id==source and binding==current_binding(s.queue)
         prepared.append(source_id)
         if case=='cold_slow':
             await asyncio.sleep(2.15)  # verified restore can exceed ordinary 2 s
+        restored.set()
     s.backend.startup=SimpleNamespace(config=SimpleNamespace(import_originals=
         SimpleNamespace(prepare_pdf_original=prepare)))
     s.gate._restricted_sources=lambda sources: frozenset(sources) if case=='withdrawn' else frozenset()
@@ -815,6 +817,8 @@ async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_a
             await task
         assert prepared==[]  # A guessed unit or withdrawn source never starts original restore.
         return
+    if case=='cold_slow':
+        await asyncio.wait_for(restored.wait(),3)
     second=await work(s)
     assert prepared==[source] and second.query.request_id!=first.query.request_id
     if case=='cold_slow':
