@@ -799,7 +799,17 @@ async def test_sa_original_executor_result_or_pr609_fallback_sends_exactly_once(
     assert control._row(rid)["state"] == "pending"
 
     delivery = TargetExpertDeliveryControl(control, source_gate=lambda *_: True)
+    monkeypatch.setattr("regional_knowledge.expert_slack_search_reply.MODEL_WAIT_SECONDS",
+                        1 if model_first else 0)
     if model_first:
+        waiting = asyncio.create_task(reply._answer(rid))
+        for _ in range(100):
+            if posts: break
+            await asyncio.sleep(.01)
+        assert len(posts) == 1 and posts[0]["client_msg_id"] == "Ev-1:warming"
+        assert control._row(rid)["state"] == "pending"
+        assert control._row(rid)["delivery_id"] == "Ev-1:warming"
+        assert reply._claim_warming_post(rid) is None  # Repeat/restart cannot repost.
         args = await _ready_delivery(SimpleNamespace(journal=control.spool.journal),
             control, delivery, credentials, {"request_id": rid}, 2)
         outgoing = delivery.claim_send_once(*args)
@@ -812,9 +822,9 @@ async def test_sa_original_executor_result_or_pr609_fallback_sends_exactly_once(
             app_id="A111", team_id="T111", bot_user_id="UBOT",
             channel_id=outgoing["channel_id"], thread_ts=outgoing["thread_ts"])
         assert delivery.receipt(credentials, rid, proof)["state"] == "delivered"
+        await asyncio.wait_for(waiting, 2)  # Late model timeout cannot post fallback.
     else:
         # No model answer within the bound: the existing PR609 evidence renderer wins.
-        monkeypatch.setattr("regional_knowledge.expert_slack_search_reply.MODEL_WAIT_SECONDS", 0)
 
         class Gate:
             async def refresh(self, gated): return gated
@@ -836,8 +846,11 @@ async def test_sa_original_executor_result_or_pr609_fallback_sends_exactly_once(
         await reply._answer(rid)
         assert control.claim(credentials, request_id=rid) == {"state": "empty"}
     await reply._answer(rid)
-    assert len(posts) == 1 and control._row(rid)["state"] == "delivered"
-    assert posts[0]["thread_ts"] == "1792000000.100"
-    assert posts[0]["text"].startswith(
+    assert len(posts) == 2 and control._row(rid)["state"] == "delivered"
+    assert posts[0]["client_msg_id"] == "Ev-1:warming"
+    assert posts[0]["thread_ts"] == posts[1]["thread_ts"] == "1792000000.100"
+    assert posts[0]["text"] == "Ищу ответ в книгах, обычно около минуты."
+    assert posts[1]["client_msg_id"] != posts[0]["client_msg_id"]
+    assert posts[1]["text"].startswith(
         "Source-grounded synthetic bounded result." if model_first
         else "Найдено в источниках:")
