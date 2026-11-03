@@ -1834,4 +1834,4 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     await stage(s,newer,batch(s,newer,count=1))
     projected=started_statuses(s.t.queue,actor)
     assert len(projected)==1 and projected[0][0]['ingestion_id']==newer.ingestion_id
-    assert projected[0][1]=='⏳ Импортируется'
+    assert projected[0][1]=='⏳⚠️ Импортируется; были ошибки'

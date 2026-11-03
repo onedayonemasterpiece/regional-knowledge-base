@@ -12,20 +12,20 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
             "FROM rkb_source_intake_control c "
             "JOIN rkb_native_source_intake_state n USING(ingestion_id) "
             "JOIN rkb_original_intakes o ON o.ingestion_id=c.ingestion_id AND o.actor=c.person_id "
-            "WHERE c.person_id=? AND o.receipt_json IS NOT NULL ORDER BY c.created DESC",
+            "WHERE c.person_id=? AND o.receipt_json IS NOT NULL ORDER BY c.created DESC,c.rowid DESC",
             (actor,)).fetchall()
-        result=[];seen=set();current=[]
+        result=[];current={}
         for row in rows:
             locator=json.loads(row['telegram_locator_json']) if row['telegram_locator_json'] else None
             target=(locator['chat_id'],locator['message_id']) if locator else row['ingestion_id']
-            if target in seen:continue
-            seen.add(target);current.append(row)
-        rows=sorted(current,key=lambda row:row['ingestion_id']!=preferred)
+            selected=current.setdefault(target,{**dict(row),'earlier_failed':False})
+            if row['native_phase']=='failed' or row['phase']=='failed':selected['earlier_failed']=True
+        rows=sorted(current.values(),key=lambda row:row['ingestion_id']!=preferred)
         for row in rows:
             stamp=tuple(row[key] for key in ('metadata_json','phase','native_phase',
-                'rejected_batch_index','receipt_json'))
+                'rejected_batch_index','receipt_json','earlier_failed'))
             if synced and synced.get(row['ingestion_id'],(None,))[0]==stamp:continue
-            stages={}; text=set(); semantic=set(); errors=False
+            stages={}; text=set(); semantic=set(); errors=row['earlier_failed']
             for op in db.execute(
                 "SELECT operation_key,command_bytes,apply_state FROM rkb_control_operations "
                 "WHERE source_id=? AND person_id=? AND "
