@@ -20,6 +20,7 @@ from .read_issuance import capture_read_output
 from . import request_order
 
 _LOG = logging.getLogger(__name__)
+MODEL_WAIT_SECONDS = 180  # Observed dot 43–82 s plus two ~31 s remote checkpoints.
 _PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
 _GERMAN_QUESTION = re.compile(r"(?i)^\s*(?:wann|wo|wer|was|wie|warum|weshalb|welche\w*|in welchem|seit wann|ist|hat|gibt es)\b")
 _OPAQUE_REF = re.compile(r"(?i)(?:urn:rkb:|rkb:passage:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
@@ -134,6 +135,7 @@ class ExpertSlackSearchReply:
                     (ingress.control.app_id,ingress.control.team_id,ingress.control.bot_user_id)):
             raise ValueError("one signed ingress, human read and Slack bot authority required")
         self.ingress,self.evidence,self.sender=ingress,evidence,sender
+        self.executor_context=None  # Optional, original installed Dataset executor only.
         self.control=ingress.control
         self._tasks={}
 
@@ -153,17 +155,23 @@ class ExpertSlackSearchReply:
 
     def resume_pending(self):
         with self.control.corpus.connect() as db:
-            rows=db.execute("SELECT r.id FROM rkb_expert_requests r JOIN rkb_request_dialogs d ON d.id=r.dialog_id AND d.head_seq=r.dialog_seq WHERE r.state IN ('received','searching','unknown') ORDER BY r.created_at LIMIT 16").fetchall()
+            states=("'received','searching','unknown'" if self.executor_context is None
+                    else "'pending','leased','result_unsealed','searching','unknown'")
+            rows=db.execute(f"SELECT r.id FROM rkb_expert_requests r JOIN rkb_request_dialogs d ON d.id=r.dialog_id AND d.head_seq=r.dialog_seq WHERE r.state IN ({states}) ORDER BY r.created_at LIMIT 16").fetchall()
         for row in rows:self.notify(row["id"])
 
     async def _answer_until_sent(self, request_id):
         # Retry the same acknowledged search while warming; the notice has a distinct marker.
         # A possible final provider effect remains sending/unknown and is not resent.
         delay=2
+        states=("received","searching","unknown") if self.executor_context is None else (
+            "pending","leased","result_unsealed","searching","unknown")
         while True:
             try:
-                row=await asyncio.to_thread(self._row,request_id,("received","searching","unknown"))
+                row=await asyncio.to_thread(self._row,request_id,states)
                 if row and row["state"]=="unknown":
+                    if self.executor_context is not None and row["result_hash"]:
+                        return  # Original Dataset native-receipt route owns this UNKNOWN.
                     receipt=await self.sender.find_post(json.loads(row["origin"]),row["delivery_id"] or row["event_id"])
                     if await asyncio.to_thread(self._finish,request_id,"unknown","delivered" if receipt else "abandoned_no_resend",receipt or {"marker_not_found":True}):
                         _LOG.info("rkb_slack_reconciled request_id=%s native_found=%s",request_id,bool(receipt))
@@ -174,7 +182,7 @@ class ExpertSlackSearchReply:
                 _LOG.warning("rkb_slack_reply_deferred request_id=%s error_type=%s",
                              request_id,type(exc).__name__)
             try:
-                row=await asyncio.to_thread(self._row,request_id,("received","searching","unknown"))
+                row=await asyncio.to_thread(self._row,request_id,states)
                 if row is None:
                     return
             except asyncio.CancelledError:
@@ -205,7 +213,8 @@ class ExpertSlackSearchReply:
             row=db.execute("SELECT * FROM rkb_expert_requests WHERE id=?",(request_id,)).fetchone()
             if row is None or row["state"] not in states or not request_order.is_head(db,row):return None
             origin=self._verified(db,row)
-            if begin and row["state"]=="received":
+            if begin and (row["state"]=="received" or self.executor_context is not None
+                          and row["state"] in ("pending","leased","result_unsealed")):
                 db.execute("UPDATE rkb_expert_requests SET state='searching',updated_at=? WHERE id=?",
                     (self.control.clock(),request_id))
             return dict(row,origin=json.dumps(origin))
@@ -249,7 +258,17 @@ class ExpertSlackSearchReply:
             return True
 
     async def _answer(self, request_id):
-        row=await asyncio.to_thread(self._row,request_id,("received","searching"),begin=True)
+        if self.executor_context is None:
+            row=await asyncio.to_thread(self._row,request_id,("received","searching"),begin=True)
+        else:
+            states=("pending","leased","result_unsealed","searching")
+            row=await asyncio.to_thread(self._row,request_id,states)
+            if row is None:return
+            if row["state"]!="searching":
+                remaining=max(0,row["created_at"]+MODEL_WAIT_SECONDS-self.control.clock())
+                if remaining:await asyncio.sleep(remaining)
+            # Existing SQLite CAS fences late model completion before fallback search.
+            row=await asyncio.to_thread(self._row,request_id,states,begin=True)
         if row is None:return
         origin=json.loads(row["origin"])
         current=lambda:self._row(request_id,("searching","sending")) is not None
