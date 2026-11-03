@@ -74,15 +74,15 @@ def _unit_figures(unit, pages, rows):
         return (*location[:2],item['offset'])
     start, end=anchor(unit['start_anchor']),anchor(unit['end_anchor'])
     unit_spans=unit['source_spans']
+    def owned(span):
+        return any(span['region_id']==part['region_id']
+            and part['start']<=span['start']<span['end']<=part['end'] for part in unit_spans)
     def belongs(passage):
         spans=passage.get('source_spans') or []
         body=[span for span in spans if
             positions.get(span['region_id'],(None,None,{}))[2].get('kind')=='body']
-        return bool(body) and all(any(
-            span['region_id']==owned['region_id']
-            and owned['start']<=span['start']<span['end']<=owned['end']
-            for owned in unit_spans) for span in body) and all(
-            span in body or span['region_id'] in passage['caption_region_ids']
+        return bool(body) and all(owned(span) for span in body) and all(
+            owned(span) or span['region_id'] in passage['caption_region_ids']
             for span in spans)
     figures=[]
     for data,physical,ingestion,passages in rows:

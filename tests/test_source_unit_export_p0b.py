@@ -275,6 +275,23 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
     linked_rows=[rows[0],(*rows[1][:3],[linked])]
     assert [f['caption_text'] for f in _unit_figures(unit,pages,linked_rows)] == [
         'Принятая подпись Huldigung','Чужая подпись']
+    # An owned heading is part of the same passage; only *outside* spans
+    # need the figure's exact caption relation.
+    heading=pages[1]['regions'][14]
+    heading['kind']='heading'
+    heading_span=dict(region_id=str(uuid5(UUID(pages[1]['page_id']),
+        'region:'+heading['region_key'])),start=0,end=len(heading['source_text']))
+    linked['source_spans'].insert(0,heading_span)
+    assert len(_unit_figures(unit,pages,linked_rows))==2
+    # The same figure must not borrow a neighboring heading beyond END.
+    pages[1]['regions'].append(dict(region_key='neighbor-heading',kind='heading',
+        reading_order=21,source_text='Next title',
+        bbox=dict(left=0,top=0,right=100,bottom=100)))
+    outside_heading=dict(region_id=str(uuid5(UUID(pages[1]['page_id']),
+        'region:neighbor-heading')),start=0,end=len('Next title'))
+    linked['source_spans'].append(outside_heading)
+    assert len(_unit_figures(unit,pages,linked_rows))==1
+    linked['source_spans'].pop()
     assert [f['caption_text'] for f in _unit_figures(unit,pages,rows)] == [
         'Принятая подпись Huldigung']
 
