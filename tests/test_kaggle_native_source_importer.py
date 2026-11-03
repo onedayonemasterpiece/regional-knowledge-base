@@ -1111,6 +1111,16 @@ async def test_history_or_geo_loss_prevents_new_batch_without_rewriting_pending(
 
 
 @pytest.mark.asyncio
+async def test_registered_book_tool_explains_source_global_graph_identity(native_intake):
+    from regional_knowledge.server import build_server
+    server=build_server(target_startup=native_intake.startup)
+    declarations={tool.name:tool for tool in await server.list_tools()}
+    description=declarations['book_ingest'].description
+    assert 'source-global identities' in description
+    assert 'same-kind identity' in description
+
+
+@pytest.mark.asyncio
 async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(native_intake, monkeypatch):
     """MCP serialization must preserve the native schema14 optional-graph contract."""
     from starlette.requests import Request
