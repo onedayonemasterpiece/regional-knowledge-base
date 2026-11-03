@@ -265,7 +265,7 @@ async def execute_source_graph_read(request:SourceGraphReadRequest,*,acquire):
                             if sql_prefilter:
                                 function='read_source_graph_global_v1' if global_list else 'read_source_graph_filtered_v1'
                                 await execute(f'SELECT * FROM rkb_v4.{function}(%s::{"uuid[]" if global_list else "uuid"},%s::uuid,%s,%s::text[],%s,%s)',
-                                    (request.source_ids if global_list else request.source_id,*after_page,
+                                    (list(request.source_ids) if global_list and request.source_ids is not None else request.source_id,*after_page,
                                      list(request.kinds) if request.kinds is not None else None,
                                      request.query.strip() if request.query else None,
                                      request.limit+1))
