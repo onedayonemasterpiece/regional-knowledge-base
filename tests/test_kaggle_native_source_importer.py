@@ -139,6 +139,58 @@ async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu'):
 
 
 @pytest.mark.asyncio
+async def test_public_owner_status_cold_warms_once_then_resumes_same_ingestion(native_intake,monkeypatch):
+    """Real public MCP → importer/auth/queue on synthetic expired target; no native calls."""
+    from starlette.requests import Request
+    from regional_knowledge.server import build_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    s=native_intake;book=await start(s)
+    monkeypatch.setattr('regional_knowledge.server._principal',lambda:s.principal)
+    server=build_server(target_startup=s.startup)
+    demand=s.t.queue.request_startup
+    refs=[]
+    def requested():
+        result=demand();refs.append(result['startup_ref']);return result
+    monkeypatch.setattr(s.t.queue,'request_startup',requested)
+    async def public_status(ingestion_id=book.ingestion_id):
+        request=Request({'type':'http','method':'POST','path':'/mcp','headers':[],
+            'app':SimpleNamespace(state=SimpleNamespace()),'state':{}})
+        context=SimpleNamespace(request_context=SimpleNamespace(
+            request=request,request_id='synthetic-native-cold-status'))
+        try:
+            result=await server.call_tool('book_ingest',
+                {'command':'status','ingestion_id':ingestion_id},context)
+            return result.structured_content
+        finally:
+            retained=request.scope.pop(_SCOPE_KEY,None)
+            if retained:retained[1].release()
+    before=operation_count(s)
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE runs SET status='starting' WHERE id=?",(s.t.run,))
+    for _ in range(2):
+        pending=await public_status()
+        assert (pending['state'],pending['next_action'])==('processing','wait')
+        assert (pending['ingestion_id'],pending['document_id'])==(book.ingestion_id,book.document_id)
+        assert pending['source_archive_status'] is None
+    assert len(refs)==2 and len(set(refs))==1
+    assert s.t.queue.startup_status(refs[0])['status']=='pending'
+    assert operation_count(s)==before
+    with pytest.raises(ToolError,match='owned_ingestion_required'):
+        await public_status(str(uuid5(UUID(book.ingestion_id),'foreign')))
+    assert len(refs)==2  # Unauthorized source cannot request startup.
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE runs SET status='ready' WHERE id=?",(s.t.run,))
+    resumed=await public_status()
+    assert (resumed['state'],resumed['next_action'],resumed['ingestion_id'])==(
+        'staged','continue_pages',book.ingestion_id)
+    assert operation_count(s)==before
+    with monkeypatch.context() as patch:
+        patch.setattr(s.importer,'_binding_current',lambda _binding:False)
+        with pytest.raises(ToolError,match='target_runtime_changed'):
+            await public_status()
+
+
+@pytest.mark.asyncio
 async def test_start_updates_caption_without_blocking_verified_import(native_intake):
     s=native_intake
     book=await start(s)
