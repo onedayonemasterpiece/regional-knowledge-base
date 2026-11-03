@@ -32,24 +32,25 @@ async def test_pg17_global_sql48_same_query_scoped_and_cursor(graph_sql22):
             await connection.execute(
                 f'INSERT INTO rkb_v4.{table} SELECT * FROM second_{table}')
         # This query must include two sources, with stable keyset order.
-        query = 'unrelated entry'
+        query = 'strasse'
         sql = ('SELECT source_id,record_id FROM rkb_v4.read_source_graph_global_v1('
                '%s::uuid[],NULL,NULL,%s::text[],%s,4)')
-        first = await (await connection.execute(sql, (None, ['person'], query))).fetchall()
+        first = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
         assert len(first) == 4
+        assert {str(r[0]) for r in first} == {SOURCE, SECOND}
         assert [str(r[0]) for r in first] == sorted(str(r[0]) for r in first)
         after = first[-1]
         next_page = await (await connection.execute(
             'SELECT source_id,record_id FROM rkb_v4.read_source_graph_global_v1(%s::uuid[],%s::uuid,%s,%s::text[],%s,4)',
-            (None, after[0], after[1], ['person'], query))).fetchall()
+            (None, after[0], after[1], ['organization'], query))).fetchall()
         assert next_page and (str(next_page[0][0]),next_page[0][1]) > (str(after[0]),after[1])
-        scoped = await (await connection.execute(sql, ([SOURCE], ['person'], query))).fetchall()
+        scoped = await (await connection.execute(sql, ([SOURCE], ['organization'], query))).fetchall()
         assert scoped and all(str(r[0])==SOURCE for r in scoped)
-        multi = await (await connection.execute(sql, ([SECOND,SOURCE], ['person'], query))).fetchall()
+        multi = await (await connection.execute(sql, ([SECOND,SOURCE], ['organization'], query))).fetchall()
         assert multi == first
         # Existing accepted/withdrawn source joins, never a client-side filter.
         await connection.execute('UPDATE rkb_v4.sources SET withdrawn=true WHERE source_id=%s',(SECOND,))
-        remaining = await (await connection.execute(sql, (None, ['person'], query))).fetchall()
+        remaining = await (await connection.execute(sql, (None, ['organization'], query))).fetchall()
         assert remaining and all(str(r[0]) == SOURCE for r in remaining)
         # Inspect the inner join/filter, not just the non-inlineable SQL
         # function's outer Function Scan. Tiny synthetic data needs no index.
