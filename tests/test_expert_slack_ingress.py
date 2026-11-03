@@ -234,3 +234,90 @@ async def test_server_main_optional_slack_signed_ingress_stays_received_without_
 
     with service.target.auth.p.corpus.connect() as db:
         assert db.execute('SELECT count(*) FROM rkb_expert_requests').fetchone()[0]==1
+
+
+
+@pytest.mark.asyncio
+async def test_only_durably_accepted_rkb_event_wakes_ph_once_per_upstream_id(env, tmp_path):
+    """A signed but unsealed event never wakes dot; repeats retain the same key."""
+    from regional_knowledge.expert_ph_wake import ProjectsHubExpertWake
+
+    ctl, _, _ = _prepare(env)
+    secret = tmp_path/'ph-secret'
+    secret.write_text('p'*48)
+    secret.chmod(0o600)
+    configuration = tmp_path/'wake-config'
+    configuration.write_text(json.dumps({
+        'codec':'rkb.ph-expert-wake.v1',
+        'project_id':'prj_'+'a'*32,
+        'service_secret_file':str(secret),
+    }))
+    configuration.chmod(0o600)
+    import asyncio
+    from starlette.requests import Request
+
+    posted = []
+    ph_entered, ph_release = asyncio.Event(), asyncio.Event()
+
+    async def provider(request):
+        body = json.loads(request.content)
+        assert str(request.url) == ProjectsHubExpertWake.URL
+        assert body == {'project_id':'prj_'+'a'*32,
+                        'rkb_request_id': expected}
+        assert request.headers['authorization'] == 'Bearer ' + 'p'*48
+        assert 'text' not in body and 'owner' not in body
+        posted.append(body.copy())
+        ph_entered.set()
+        if len(posted) == 1:
+            await ph_release.wait()  # Simulate a PH response slower than Slack ACK.
+        return httpx.Response(202, json={'project_id':body['project_id'],
+                       'request_id':'ph_request_'+'b'*32,'eventId':'event_'+'c'*32})
+    ingress = ExpertSlackIngress(ctl, signing_secret=SECRET, clock=lambda:NOW)
+    ingress.bind_waker(ProjectsHubExpertWake(
+        ctl, str(configuration), transport=httpx.MockTransport(provider)))
+    with pytest.raises(ValueError):
+        ingress.bind_waker(ProjectsHubExpertWake(
+            ctl, str(configuration), transport=httpx.MockTransport(provider)))
+    raw, headers = _event()
+    endpoint = Starlette(routes=[Route(PATH, ingress.__call__, methods=['POST'])])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=endpoint),
+                                 base_url='http://test') as client:
+        assert (await client.post(PATH, content=raw, headers=headers)).status_code == 503
+        assert posted == []
+        with env.p.corpus.connect() as db:
+            expected = db.execute('SELECT id FROM rkb_expert_requests').fetchone()['id']
+        cmd = ctl.exact_remote_intent(expected, 1)
+        seal = await env.journal.seal([cmd], predecessor=None, writer_generation='writer-1')
+        await ctl.verify_remote_intent(expected, cmd, seal)
+        # Exercise the actual signed ingress + ASGI JSONResponse. Unlike
+        # ASGITransport (which waits for response background work), raw send
+        # establishes the exact HTTP response-body/PH-I/O ordering.
+        scope = {'type':'http', 'asgi':{'version':'3.0'},
+            'method':'POST', 'scheme':'http', 'root_path':'', 'path':PATH,
+            'raw_path':PATH.encode(), 'query_string':b'',
+            'server':('test', 80), 'client':('127.0.0.1', 12345),
+            'headers':[(k.lower().encode(), v.encode()) for k,v in headers.items()]}
+        reads = 0
+        async def receive():
+            nonlocal reads
+            reads += 1
+            return {'type':'http.request', 'body':raw if reads == 1 else b'',
+                    'more_body':False}
+        response = await asyncio.wait_for(ingress(Request(scope, receive)), 2)
+        assert response.status_code == 200 and posted == []
+        http_sent = asyncio.Event()
+        async def send(message):
+            if message['type']=='http.response.body' and not message.get('more_body'):
+                http_sent.set()
+        serving = asyncio.create_task(response(scope, receive, send))
+        try:
+            await asyncio.wait_for(http_sent.wait(), 2)
+            await asyncio.wait_for(ph_entered.wait(), 2)
+            assert not serving.done()  # PH still blocked; Slack already has 200.
+        finally:
+            ph_release.set()
+            await asyncio.wait_for(serving, 2)
+        assert len(posted) == 1
+        # Duplicate signed Slack event reuses the same durable RKB UUID.
+        assert (await client.post(PATH, content=raw, headers=headers)).status_code == 200
+        assert posted[0] == posted[1] and len(posted) == 2
