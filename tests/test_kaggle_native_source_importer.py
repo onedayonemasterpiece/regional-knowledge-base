@@ -1111,6 +1111,16 @@ async def test_history_or_geo_loss_prevents_new_batch_without_rewriting_pending(
 
 
 @pytest.mark.asyncio
+async def test_registered_book_tool_explains_source_global_graph_identity(native_intake):
+    from regional_knowledge.server import build_server
+    server=build_server(target_startup=native_intake.startup)
+    declarations={tool.name:tool for tool in await server.list_tools()}
+    description=declarations['book_ingest'].description
+    assert 'source-global identities' in description
+    assert 'same-kind identity' in description
+
+
+@pytest.mark.asyncio
 async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(native_intake, monkeypatch):
     """MCP serialization must preserve the native schema14 optional-graph contract."""
     from starlette.requests import Request
@@ -1661,3 +1671,25 @@ async def test_native_stage_value_error_identifies_validator_without_private_pay
     assert 'validator='+diagnostic['validator'] in caplog.text
     assert 'Private visual annotation' not in str(caught.value)+caplog.text
     assert operation_count(s)==0
+
+
+@pytest.mark.asyncio
+async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(native_intake):
+    s=native_intake;book=await start(s)
+    payload=batch(s,book,first=0,count=1)
+    await stage(s,book,payload)
+    for phase in ('stage','text'):
+        await finish(s,book);await call(s,book,'status')
+    rejected=await finish(s,book,status='rejected_precondition')
+    await call(s,book,'status')
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
+    payload['pages'][0]['source_review_note']='Same reviewed page; corrected unpublished semantic candidates.'
+    assert (await stage(s,book,payload)).state=='processing'
+    correction=json.loads((await pending(s,book)).command.payload)
+    assert correction['batch_index']==1
+    assert correction['model_payload']['pages'][0]['physical_page_index']==0
+    with s.t.queue.connect(write=False) as db:
+        after=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence LIMIT 3')]
+    assert after==before
+    assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
