@@ -363,9 +363,17 @@ async def test_native_pdf_renderer_uses_requested_bounded_budget_but_catalog_sta
                visibility_epoch=0,context_ref='request')
     common=dict(request_id='pdf-budget',connection_generation=1,turn_generation=0,
                 source_id=SOURCE,min_data_seq=0,deadline_ms=30000,actor=actor)
-    pdf=await execute_source_read(SourceReadRequest(operation='source_unit_pdf',
-        article_id='albinus-unit',limit=1,**common),acquire=acquire)
-    assert pdf.status=='ok' and pdf.records[0]['blob']
+    from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
+    from test_kaggle_worker_query import pinned, forbidden_encode
+    handler=KaggleWorkerQuery(acquire=acquire,tokenizer=pinned())
+    request=SourceReadRequest(operation='source_unit_pdf',article_id='albinus-unit',
+        limit=1,compute_claim='pdf-worker-claim',**common)
+    pdf=await handler(request.model_dump(mode='json'),encode=forbidden_encode)
+    assert pdf['status']=='ok' and pdf['records'][0]['blob']
+    for operation,budget in [('source_unit_pdf',30001),('source_units',30000)]:
+        rejected=request.model_copy(update={'operation':operation,'deadline_ms':budget})
+        result=await handler(rejected.model_dump(mode='json'),encode=forbidden_encode)
+        assert result['status']=='invalid_query' and result['reason']=='invalid_input'
     @asynccontextmanager
     async def delayed_connection():
         await asyncio.sleep(2.15)
