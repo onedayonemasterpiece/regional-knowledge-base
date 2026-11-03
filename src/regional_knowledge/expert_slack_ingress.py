@@ -51,7 +51,7 @@ class ExpertSlackIngress:
 
     def bind_search_reply(self, reply):
         """One opt-in same-owner responder; no automatic provider sender."""
-        if (self._reply is not None or self._waker is not None or reply.control is not self.control
+        if (self._reply is not None or reply.control is not self.control
                 or reply.ingress is not self or not callable(getattr(reply, "notify", None))):
             raise ValueError("exact existing Slack reply composition required")
         self._reply = reply
@@ -59,11 +59,29 @@ class ExpertSlackIngress:
     def bind_waker(self, waker):
         """Only the original accepted request can wake the separate dot client."""
         from .expert_ph_wake import ProjectsHubExpertWake
-        if (self._waker is not None or self._reply is not None
-                or type(waker) is not ProjectsHubExpertWake
-                or waker.control is not self.control or self.socket_only):
+        if (self._waker is not None or type(waker) is not ProjectsHubExpertWake
+                or waker.control is not self.control):
             raise ValueError('one RKB executor and one PH wake owner required')
         self._waker = waker
+
+    async def wake_accepted(self, request_id):
+        """Optional PH signal only after original remote proof; never gate Slack reply."""
+        if self._waker is None:
+            return
+        try:
+            if self.control.dataset_records is not None:
+                durable = await asyncio.to_thread(self.control.confirm_dataset_coverage, request_id)
+            else:
+                original = await asyncio.to_thread(self.control._row, request_id)
+                durable = original['remote_command_hash'] is not None
+            if durable:
+                await self._waker.wake(request_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # PH is an optional downstream wake. The original request remains
+            # authoritative and the bot's one-shot native Slack sender proceeds.
+            _LOG.warning("rkb_ph_wake_degraded error_type=%s", type(exc).__name__)
 
     async def __call__(self, request):
         if self.socket_only:
@@ -96,10 +114,10 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
-                if self._reply is not None:
-                    # Read-only search: existing event_id row is the at-most-once
-                    # boundary; no Dataset checkpoint/agent job is necessary.
+                if self._reply is not None and getattr(self._reply,'executor_context',None) is None:
+                    # Existing read-only fallback remains independent of optional PH.
                     self._reply.notify(outcome['request_id'])
+                    await self.wake_accepted(outcome['request_id'])
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 if self.control.dataset_records is not None:
                     # A signed request is staged only by the existing fenced
@@ -139,8 +157,9 @@ class ExpertSlackIngress:
                     # received row that could vanish with the DevCoveer disk.
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
-                if self._waker is not None:
-                    await self._waker.wake(outcome['request_id'])
+                if self._reply is not None:
+                    self._reply.notify(outcome['request_id'])
+                await self.wake_accepted(outcome['request_id'])
                 return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
         except asyncio.CancelledError:
             raise
