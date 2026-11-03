@@ -340,3 +340,36 @@ async def test_pdf_uses_only_accepted_figure_inside_unit_and_kaggle_page_pixels(
         assert sum(len(page.get_images()) for page in doc)==2
         text=''.join(page.get_text() for page in list(doc)[1:])
         assert 'Чужая подпись' in text and 'Исходная страница: 62' in text
+
+
+@pytest.mark.asyncio
+async def test_native_pdf_renderer_uses_requested_bounded_budget_but_catalog_stays_two_seconds(monkeypatch):
+    """Actual SOURCE_READ PDF renderer may take >2s; ordinary reads still time out."""
+    from regional_knowledge import source_unit_export
+    pages=fixture_pages(complete=True)
+    connection=Connection(pages)
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    async def frontier(cursor,execute,request,observed,require_dense=False):
+        observed.update(data=1,projection=1,visibility=1,database='gen1')
+    monkeypatch.setattr("regional_knowledge.kaggle_source_read._frontier",frontier)
+    original=source_unit_export.render_accepted_source_pdf
+    async def slow_pdf(**kwargs):
+        await asyncio.sleep(2.15)
+        return await original(**kwargs)
+    monkeypatch.setattr(source_unit_export,'render_accepted_source_pdf',slow_pdf)
+    actor=dict(person_id='reader',audience='personal',auth_epoch=1,
+               visibility_epoch=0,context_ref='request')
+    common=dict(request_id='pdf-budget',connection_generation=1,turn_generation=0,
+                source_id=SOURCE,min_data_seq=0,deadline_ms=30000,actor=actor)
+    pdf=await execute_source_read(SourceReadRequest(operation='source_unit_pdf',
+        article_id='albinus-unit',limit=1,**common),acquire=acquire)
+    assert pdf.status=='ok' and pdf.records[0]['blob']
+    @asynccontextmanager
+    async def delayed_connection():
+        await asyncio.sleep(2.15)
+        yield Connection(pages)
+    normal=await execute_source_read(SourceReadRequest(operation='source_units',
+        limit=1,**common),acquire=delayed_connection)
+    assert normal.status=='unavailable' and normal.reason=='deadline_exceeded'

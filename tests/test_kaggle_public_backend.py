@@ -773,7 +773,7 @@ async def test_revoked_direct_adapter_authority_does_not_renew_idle(target):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case',['cold','withdrawn','unknown_unit'])
+@pytest.mark.parametrize('case',['cold','cold_slow','withdrawn','unknown_unit'])
 async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_authority(target,case):
     """Real shared admission + OAuth; only the synthetic native PG result is injected."""
     import base64
@@ -785,9 +785,13 @@ async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_a
     from test_source_unit_pdf import inputs
     s=target;source='31111111-2222-4333-8444-555555555555'
     prepared=[]
+    restored=asyncio.Event()
     async def prepare(source_id,binding):
         assert source_id==source and binding==current_binding(s.queue)
         prepared.append(source_id)
+        if case=='cold_slow':
+            await asyncio.sleep(2.15)  # verified restore can exceed ordinary 2 s
+        restored.set()
     s.backend.startup=SimpleNamespace(config=SimpleNamespace(import_originals=
         SimpleNamespace(prepare_pdf_original=prepare)))
     s.gate._restricted_sources=lambda sources: frozenset(sources) if case=='withdrawn' else frozenset()
@@ -808,13 +812,18 @@ async def test_pdf_cold_original_restores_only_after_accepted_unit_and_current_a
         observed_visibility_epoch=4,observed_database_generation='db-source')
     assert await s.admission.finish_read(s.run,s.token,s.generation,failed)
     await release(s,first)
-    if case!='cold':
+    if case not in ('cold','cold_slow'):
         with pytest.raises(ToolError,match='access_denied|unit_not_found'):
             await task
         assert prepared==[]  # A guessed unit or withdrawn source never starts original restore.
         return
+    if case=='cold_slow':
+        await asyncio.wait_for(restored.wait(),3)
     second=await work(s)
     assert prepared==[source] and second.query.request_id!=first.query.request_id
+    if case=='cold_slow':
+        assert first.query.deadline_ms>2000 and second.query.deadline_ms>2000
+        await asyncio.sleep(2.15)  # PDF render still needs its remaining budget
     photo=Image.new('RGB',(100,80),'white');raw=BytesIO();photo.save(raw,format='JPEG')
     page=inputs([('body','Vor der Abbildung.'),('body','Nach der Abbildung.')])
     page['regions'][1].reading_order=2

@@ -181,8 +181,9 @@ class SharedReadAdmission:
         self._active();_identity(dialog_ref)
         now=self.clock()
         if deadline is not None and (not isinstance(deadline,(float,int)) or isinstance(deadline,bool)
-                or not math.isfinite(deadline) or not now<deadline<=now+2):
-            raise ValueError('absolute remaining deadline must be at most two seconds')
+                or not math.isfinite(deadline) or not now<deadline<=now+(
+                    30 if type(query) is SourceReadRequest and query.operation=='source_unit_pdf' else 2)):
+            raise ValueError('absolute read deadline exceeds its operation budget')
         if not isinstance(query,(Query,SqlHealthRequest,PassageReadRequest,StoryReadRequest,FactReadRequest,SourceReadRequest,CaseReadRequest,GeoReadRequest,EditorialReadRequest,SourceGraphReadRequest)) or not isinstance(authority,VerifiedReadAuthority):
             raise TypeError('typed query and verified authority required')
         if on_dispatch is not None and not callable(on_dispatch):

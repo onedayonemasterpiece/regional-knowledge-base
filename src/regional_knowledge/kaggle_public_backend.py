@@ -508,9 +508,10 @@ class KaggleSourceBackend:
                       story_request=None,fact_request=None,catalog_request=None,graph_request=None,kinds=('source',),trusted=None,story_cursor_generation=None):
         # Search latency is measured, not a reason to reject a live read.
         illustration=catalog_request is not None and catalog_request.get('operation')=='source_illustration'
+        pdf=catalog_request is not None and catalog_request.get('operation')=='source_unit_pdf'
         exact=exact_locator is not None or story_request is not None or fact_request is not None or catalog_request is not None or graph_request is not None
-        deadline = (min(time.monotonic()+2,trusted['deadline'])
-            if trusted is not None and exact else time.monotonic()+2)
+        deadline = (min(time.monotonic()+(30 if pdf else 2),trusted['deadline'])
+            if trusted is not None and exact else time.monotonic()+(30 if pdf else 2))
         telemetry = self.read_telemetry
         operation='illustration_fetch' if illustration else 'fetch' if exact else 'knowledge_search' if evidence else 'search'
         attempt = telemetry.begin_attempt(operation)
@@ -543,7 +544,7 @@ class KaggleSourceBackend:
                     backend_elapsed_ms=(time.monotonic()-attempt.started)*1000).model_dump(mode='json'),
                 **extra),separators=(',',':')))
         try:
-            async with asyncio.timeout_at(None if illustration else min(deadline,attempt.started+2)) as timeout:
+            async with asyncio.timeout_at(None if illustration else deadline) as timeout:
                 try:
                     filters = QueryFilters(source_ids=tuple(source_ids) if source_ids is not None else None,
                         kinds=kinds)
@@ -599,7 +600,7 @@ class KaggleSourceBackend:
                         min_data_seq=max(binding.min_data_seq,trusted['min_data_seq']) if trusted else binding.min_data_seq,
                         actor=TrustedActorContext(person_id=authority.person_id, audience=authority.destination.key,
                             auth_epoch=authority.auth_revision, visibility_epoch=0, context_ref=authority.context_ref),
-                        deadline_ms=2000 if math.isinf(deadline) else min(2000,max(1,int((deadline-time.monotonic())*1000))))
+                        deadline_ms=(30000 if pdf else 2000) if math.isinf(deadline) else min(30000 if pdf else 2000,max(1,int((deadline-time.monotonic())*1000))))
                     request = (SourceGraphReadRequest(**graph_request,**identity) if graph_request is not None else
                         SourceReadRequest(**catalog_request,**identity) if catalog_request is not None else
                         FactReadRequest(**fact_request,**identity) if fact_request is not None else
@@ -619,7 +620,7 @@ class KaggleSourceBackend:
                         runtime=ReadRuntime(resource.run_id, resource.runtime_incarnation),
                         connection_generation=resource.dispatch_generation,
                         turn_generation=request.turn_generation)
-                admission_deadline=None if math.isinf(deadline) else min(deadline,time.monotonic()+2)
+                admission_deadline=None if math.isinf(deadline) else min(deadline,time.monotonic()+(30 if pdf else 2))
                 ticket = await self.worker_queue.shared_reads.begin_read(authority, permit.query,
                     dialog_ref=destination.key, deadline=admission_deadline, on_dispatch=dispatched)
                 result = await asyncio.shield(ticket.result)
@@ -634,7 +635,6 @@ class KaggleSourceBackend:
                         and reason=='pdf_original_restore_required'):
                     # this unit. Restore its verified original through the existing
                     # controller BEFORE the new bounded PDF read and output permit.
-                    timeout.reschedule(None)
                     await self.read_authority.recheck(authority)
                     source_id=catalog_request['source_id']
                     if source_id in self.source_gate._restricted_sources((source_id,)):
@@ -651,8 +651,8 @@ class KaggleSourceBackend:
                     if (current_binding(self.worker_queue)!=binding
                             or source_id in self.source_gate._restricted_sources((source_id,))):
                         raise PermissionError('source or runtime changed')
-                    deadline=time.monotonic()+2;timeout.reschedule(deadline)
-                    request=request.model_copy(update={'request_id':str(uuid4()),'deadline_ms':2000})
+                    request=request.model_copy(update={'request_id':str(uuid4()),
+                        'deadline_ms':max(1,int((deadline-time.monotonic())*1000))})
                     permit=await self.source_gate.dispatch(authority,request,binding)
                     ticket=await self.worker_queue.shared_reads.begin_read(authority,permit.query,
                         dialog_ref=destination.key,deadline=deadline,on_dispatch=dispatched)
