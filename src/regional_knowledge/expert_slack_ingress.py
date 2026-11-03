@@ -13,6 +13,7 @@ import logging
 import re
 import time
 
+from starlette.background import BackgroundTask
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from .expert_request_control import (
@@ -117,8 +118,10 @@ class ExpertSlackIngress:
                 if self._reply is not None and getattr(self._reply,'executor_context',None) is None:
                     # Existing read-only fallback remains independent of optional PH.
                     self._reply.notify(outcome['request_id'])
-                    await self.wake_accepted(outcome['request_id'])
-                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
+                    # Starlette runs the task only *after* the HTTP 200 body is sent.
+                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'},
+                        background=BackgroundTask(self.wake_accepted, outcome['request_id'])
+                        if self._waker is not None else None)
                 if self.control.dataset_records is not None:
                     # A signed request is staged only by the existing fenced
                     # Dataset CAS. Local staging never earns Slack HTTP 200.
@@ -159,8 +162,10 @@ class ExpertSlackIngress:
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
                 if self._reply is not None:
                     self._reply.notify(outcome['request_id'])
-                await self.wake_accepted(outcome['request_id'])
-                return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
+                # PH is optional; never hold the Slack transport ACK for its 1.5s timeout.
+                return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'},
+                    background=BackgroundTask(self.wake_accepted, outcome['request_id'])
+                    if self._waker is not None else None)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
