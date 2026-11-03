@@ -91,6 +91,26 @@ async def test_native_chunk_ceiling_in_mcp_guidance_matches_runtime(native_intak
 
 
 @pytest.mark.asyncio
+async def test_native_mcp_guidance_survives_540_char_client_cutoff(native_intake):
+    server = build_server(target_startup=native_intake.startup)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    prefix = server.instructions[:540]
+    for phrase in ("book_ingest/book_pages", "never resend accepted pages",
+                   "source_text verbatim", "[?]", "512 pinned BGE-M3",
+                   "disagreement_search/get/edit", "Search/fetch checklist"):
+        assert phrase in prefix, phrase
+    for name in ("book_ingest", "book_pages"):
+        description = tools[name].description
+        for phrase in ("Transcribe source_text verbatim",
+                       "at most 512 pinned BGE-M3 tokenizer tokens",
+                       "disagreement_search", "disagreement_get", "disagreement_edit",
+                       "do not search Cases on pages without such a contradiction"):
+            assert phrase in description, (name, phrase)
+    assert "Search/fetch checklist:" in tools["search"].description
+    assert "Follow the search checklist." in tools["fetch"].description
+
+
+@pytest.mark.asyncio
 async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_unchanged(native_intake, monkeypatch):
     native = build_server(target_startup=native_intake.startup)
     native_tools = {tool.name: tool for tool in await native.list_tools()}
@@ -125,8 +145,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "On first stage supply source_import.research" in native.instructions
     assert native_text.startswith("If a reviewed page contradicts itself")
     assert "do not search Cases on pages without such a contradiction" in native_text[:500]
-    assert "8. If a reviewed page contradicts itself" in native.instructions[:2000]
-    assert "Do not search for Cases on every page without such a contradiction" in native.instructions[:2000]
+    assert "disagreement_search/get/edit" in native.instructions[:540]
+    assert "exact evidence, not every page" in native.instructions[:540]
     assert "When disagreement_search is registered" not in native_text
     assert "When disagreement_search is registered" not in native.instructions
     # Initialize stays within its original cap. The tool's pre-existing guidance
@@ -148,7 +168,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
         "6. For next_action=wait, call status; when told to retry stage, resend the identical stage, not a new operation.\n"
     )
-    assert native.instructions.startswith(checklist)
+    assert checklist in native.instructions
+    assert native.instructions.startswith("Critical tool rules")
     assert "ONE direct answer" in native.instructions
     assert "names a specific author or book" in native.instructions
     assert "В доступной базе подтверждений не найдено" in native.instructions
@@ -209,12 +230,12 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
                         "SAME startup_ref", "Do NOT end this turn",
                         "EXACT same search"):
         assert instruction in native.instructions
-    # Conditional Case discovery and existing write workflow must agree in
-    # both native instructions and the displayed book_ingest description.
+    # Full Case workflow is in tools/list; the initialize prefix only indexes it.
+    for action in ("disagreement_search", "disagreement_get",
+                   "disagreement_edit(add_evidence)", "disagreement_edit(create)"):
+        assert action in native_text, action
     for guidance in (native.instructions, native_text):
-        for action in ("disagreement_search", "disagreement_get",
-                       "disagreement_edit(add_evidence)", "disagreement_edit(create)",
-                       "UNKNOWN", "Saved"):
+        for action in ("UNKNOWN", "Saved"):
             assert action in guidance, action
     assert "In entity_candidates, evidence may use page_id, region_key and chunk_key from this stage packet." in native_text
     assert "General Case discovery/search is not presently registered" not in native_text
