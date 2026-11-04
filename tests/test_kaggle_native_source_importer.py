@@ -1796,7 +1796,7 @@ async def test_normal_import_updates_caption_history_and_recovers_restart(native
         await s.importer._caption_task
         if output.state=='finalized':break
     assert output.state=='finalized'
-    assert edits[-1].startswith('РКБ: ✅ Импорт завершён\n')
+    assert edits[-1].startswith('РКБ: ✅ Импорт завершён · страниц 1/1\n')
     assert edits[-1].count('РКБ:')==1
     assert started_statuses(s.t.queue,str(uuid4()))==[]
     # Canonical finish is insufficient if the original includes an unread leaf.
@@ -1826,10 +1826,10 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     await stage(s,book,batch(s,book,count=1))
     await finish(s,book,status='rejected_precondition',reason='native_source_stage_requires_review')
     await call(s,book,'status')
-    assert started_statuses(s.t.queue,actor)[0][1]=='⏳⚠️ Импортируется; были ошибки'
+    assert started_statuses(s.t.queue,actor)[0][1]=='⏳ Импортируется · страниц 0/1 · отклонений 1'
     with s.t.queue.connect() as db:
         db.execute("UPDATE rkb_native_source_intake_state SET phase='failed'")
-    assert started_statuses(s.t.queue,actor)[0][1]=='❌ Ошибка импорта'
+    assert started_statuses(s.t.queue,actor)[0][1]=='❌ Ошибка импорта · страниц 0/1 · отклонений 1'
     # Observed production case: a newer finished/current intake reuses the same
     # Telegram file as an old failed intake. The old caption must not win.
     newer=await start(s,file_id='same-original-new-intake')
@@ -1842,7 +1842,7 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     await stage(s,newer,batch(s,newer,count=1))
     projected=started_statuses(s.t.queue,actor)
     assert len(projected)==1 and projected[0][0]['ingestion_id']==newer.ingestion_id
-    assert projected[0][1]=='⏳⚠️ Импортируется; были ошибки'
+    assert projected[0][1]=='⏳ Импортируется · страниц 0/1'
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('provider_fails',[False,True])
