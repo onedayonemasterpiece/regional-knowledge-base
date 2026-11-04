@@ -76,6 +76,6 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
                         '⏳⚠️ Импортируется' if problems else '⏳ Импортируется')
                 status+=f' · страниц {len(completed)}/{len(expected)}'
                 status+=''.join(f' · {problem}' for problem in problems)
-            result.append(({**dict(row),'caption_stamp':stamp},status)
+            result.append(({**dict(row),'caption_stamp':stamp},status))
             if limit and len(result)>=limit:break
         return result
