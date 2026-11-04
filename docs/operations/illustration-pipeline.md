@@ -133,3 +133,5 @@ A model-authored FIGURE region, including a continuation on another scan, must h
 If Slack transforms PNG metadata (the historical example removed the 21-byte `pHYs` chunk), keep source and delivered hashes separate and inspect pixels/IDAT as appropriate. Do not call a transport-rendition hash mismatch proof that the source illustration changed.
 
 The [live acceptance report](../reports/illustration-archive-live-acceptance-20261019.md) and remediation report preserve prior real-image/original readbacks. Their measurements remain historical and do not certify fresh import, all-book recall or Kaggle reset recovery. Report each capability independently as verified/failed/pending/untested.
+
+Visually reviewed native import pages require `source_review_note` (1–500 characters, no NUL). Invalid or omitted notes return the bounded `pages.<index>.source_review_note` field location before a stage command is accepted; correct the note and retain the same source page and ingestion.

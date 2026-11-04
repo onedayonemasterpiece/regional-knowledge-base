@@ -12,6 +12,8 @@ import hashlib
 import json
 from uuid import UUID, uuid5
 
+from pydantic import ValidationError
+
 STAGE_ROUTE = 'source.stage.v1'
 SEAL_ROUTE = 'source.stage.seal.v1'
 STAGE_REVISIONS = ('rkb-v4-sql001-013-v1', 'rkb-v4-source-stage-v1', 'rkb-python-apply-source-stage-v1')
@@ -166,7 +168,7 @@ public activation. No successful result here means "imported" or "searchable".
             raise ValueError('bounded exact entity candidate bundle required')
         _reject_derived(model)
         seen = set()
-        for page, encoded in zip(pages, images, strict=True):
+        for position, (page, encoded) in enumerate(zip(pages, images, strict=True)):
             raw_image, image = _decoded(encoded, 8192)
             _keys(image, 'codec original_receipt_sha256 page_id physical_page_index original_sha256 parser_sha256 width height image_sha256 mime_type preview_render')
             if type(page) is not dict:
@@ -190,7 +192,12 @@ public activation. No successful result here means "imported" or "searchable".
                     or page.get('source_material') != 'visual_reviewed'):
                 raise ValueError('selected page/image/original provenance mismatch')
             _hash(image['image_sha256'])
-            _text(page.get('source_review_note'), 500)
+            try:
+                _text(page.get('source_review_note'), 500)
+            except ValueError:
+                raise ValidationError.from_exception_data('StagePageInput', [dict(
+                    type='value_error', loc=('pages', position, 'source_review_note'), input=None,
+                    ctx={'error': ValueError('bounded visual source review note required')})]) from None
             if any(type(image[k]) not in (int, float) or not 0 < image[k] <= 100000 for k in ('width', 'height')):
                 raise ValueError('bounded issued-image dimensions required')
             if type(image['preview_render']) is not dict or len(canonical(image['preview_render'])) > 4096:

@@ -1294,26 +1294,24 @@ async def test_native_invalid_entity_field_is_named_without_source_text(native_i
 
 
 @pytest.mark.asyncio
-async def test_invalid_source_review_note_logs_safe_caller_and_ingestion(native_intake, caplog):
-    # C/40: both source.bibliography and page.source_review_note fail at
-    # _text; the caller frame identifies which validator invoked it.
+@pytest.mark.parametrize('invalid_note', [None, 'PRIVATE_REVIEW_NOTE_DO_NOT_LOG' * 30, 'bad\x00note'])
+async def test_invalid_source_review_note_logs_safe_caller_and_ingestion(native_intake, caplog, invalid_note):
     s = native_intake
     book = await start(s)
     payload = batch(s, book, first=40, count=1)
-    private = 'PRIVATE_REVIEW_NOTE_DO_NOT_LOG'
-    payload['pages'][0]['source_review_note'] = private * 30
+    payload['pages'][0]['source_review_note'] = invalid_note
     with pytest.raises(ToolError) as caught:
         await stage(s, book, payload)
     diagnostic = json.loads(str(caught.value))
     assert diagnostic['reason'] == 'invalid_small_source_input'
-    assert diagnostic['field_path'] == 'payload'
-    assert 'book_ingest_invalid_input exception_class=ValueError' in caplog.text
-    assert 'validator=_text:' in caplog.text
-    assert 'caller_validator=validate_stage_payload:' in caplog.text
+    assert diagnostic['field_path'] == 'pages.0.source_review_note'
+    assert diagnostic['validation_type'] == 'value_error'
     assert 'ingestion_id=' + book.ingestion_id in caplog.text
-    assert private not in caplog.text
-    assert private not in str(caught.value)
+    assert 'PRIVATE_REVIEW_NOTE_DO_NOT_LOG' not in caplog.text + str(caught.value)
     assert operation_count(s) == 0
+    payload['pages'][0]['source_review_note'] = 'Visually reviewed original page.'
+    await stage(s, book, payload)
+    assert operation_count(s) == 1
 
 
 @pytest.mark.asyncio
@@ -1686,13 +1684,13 @@ async def test_native_stage_value_error_identifies_validator_without_private_pay
     s=native_intake
     book=await start(s)
     payload=batch(s,book,count=1)
-    payload['pages'][0]['source_review_note']='Private visual annotation ' * 30
+    payload['pages'][0]['source_material']='Private visual annotation'
     with pytest.raises(ToolError) as caught:
         await stage(s,book,payload)
     diagnostic=json.loads(str(caught.value))
     assert diagnostic['reason']=='invalid_small_source_input'
     assert diagnostic['exception_class']=='ValueError'
-    assert diagnostic['validator'].startswith('_text:')
+    assert diagnostic['validator'].startswith('validate_stage_payload:')
     assert 'validator='+diagnostic['validator'] in caplog.text
     assert 'Private visual annotation' not in str(caught.value)+caplog.text
     assert operation_count(s)==0
