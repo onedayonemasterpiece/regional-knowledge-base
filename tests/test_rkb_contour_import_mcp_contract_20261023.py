@@ -96,8 +96,21 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     native_tools = {tool.name: tool for tool in await native.list_tools()}
     imported = native_tools["book_ingest"]
     native_text = imported.description
-    for text in (native.instructions, native_text):
-        assert 'Revising an accepted book is unsupported in this profile' in text
+    # Real tools/list carries the full correction contract exactly once.
+    for phrase in (
+        'Ordinary continuation: never blindly replay', 'ANY previously accepted physical page',
+        'NEW region_key', 'NEW chunk_key', 'Never edit source_text',
+        'source_review_note (1-500 characters)',
+    ):
+        assert phrase in native_text, phrase
+    assert native_text.count('ANY previously accepted physical page') == 1
+    assert 'Revising an accepted book is unsupported in this profile' not in native_text
+    # MCP initialize is frequently truncated; keep only the short point 2 there.
+    assert '2. Ordinary continuation: never blindly replay accepted pages' in native.instructions
+    assert 'ANY previously accepted physical page' not in native.instructions
+    assert 'NEW region_key' not in native.instructions
+    assert 'NEW chunk_key' not in native.instructions
+    assert 'Revising an accepted book is unsupported in this profile' not in native.instructions
     assert imported.title == "Import and continue an attached scanned book"
     assert "book_ingest(command=start)" in native_text
     assert "book_pages (default 1, maximum 4" in native_text
@@ -116,8 +129,8 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "Do not search for Cases on every page without such a contradiction" in native.instructions[:2000]
     assert "When disagreement_search is registered" not in native_text
     assert "When disagreement_search is registered" not in native.instructions
-    assert len(native.instructions) <= 10503  # measured on origin/main b23c0154
-    assert len(native_text) <= 6153  # measured on origin/main b23c0154
+    assert len(native.instructions) <= 10503
+    assert len(native_text) <= 6153
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
@@ -126,7 +139,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     checklist = (
         "Mandatory import checklist:\n"
         "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
-        "2. Never resend an accepted page; next_cursor is a hint, choose the next printed page with book_pages(cursor).\n"
+        "2. Ordinary continuation: never blindly replay accepted pages; next_cursor is a hint for book_pages(cursor).\n"
         "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
         "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
         "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
