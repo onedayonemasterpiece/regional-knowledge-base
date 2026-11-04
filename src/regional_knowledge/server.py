@@ -818,13 +818,8 @@ def build_server(
         mcp.custom_route(RESULT_PATH, methods=['POST'])(expert_result_receiver.__call__)
         mcp.custom_route(RECOVERY_PATH, methods=['POST'])(expert_recovery_receiver.__call__)
 
-    # Optional MCP facades: the same installed executor credential/lease and
-    # original Dataset result receiver; no owner credential or second sender.
+    # The same provisioned executor and original delivery authority serve both MCP tools.
     if expert_result_receiver is not None and expert_slack_ingress._reply is not None:
-        from .expert_executor_workflow import _input as parse_executor_result
-        from .expert_delivery_control import verified_native_slack_receipt
-        import hashlib
-        import hmac
         receiver=expert_result_receiver
         delivery=receiver.context.delivery
         control=receiver.control
@@ -859,58 +854,9 @@ def build_server(
                   description="Restricted installed executor only. Reuse exact request/generation/token/text while Dataset result or receipt is pending; never send Slack directly.")
         async def expert_request_result(request_id:str,generation:int,
                                         execution_token:str,text:str)->dict[str,Any]:
-            credential=installed_executor()
-            value=parse_executor_result(json.dumps(dict(
-                codec="rkb.expert-executor-result.v1",request_id=request_id,
-                generation=generation,execution_token=execution_token,
-                text=text),ensure_ascii=False).encode())
-            row=await asyncio.to_thread(control._row,request_id)
-            if row["state"] in ("sending","unknown"):
-                if (row["generation"]!=generation or row["executor_id"]!=credential.service_id
-                        or not hmac.compare_digest(row["execution_token_hash"] or "",
-                            hashlib.sha256(execution_token.encode()).hexdigest())
-                        or json.loads(row["result_json"] or "{}").get("text")!=text):
-                    raise PermissionError("original executor result changed")
-                origin=json.loads(row["origin"])
-                echo=await sender.find_post(origin,row["delivery_id"])
-                if echo is None:
-                    return dict(state="unknown",provider_sent=None,remote_accepted=False)
-            else:
-                persisted=await receiver._advance(value)  # same fenced Dataset receiver
-                status=json.loads(persisted.body)
-                if status["state"]!="send_intent_ready":
-                    return status
-                permit=None
-                async def claim_native():
-                    nonlocal permit
-                    permit=await asyncio.to_thread(delivery.claim_send_once,credential,
-                        request_id,generation,execution_token)
-                    return dict(event_id=permit["delivery_id"],channel=permit["channel_id"],
-                                thread=permit["thread_ts"],text=permit["text"])
-                try:
-                    echo=await sender.post_once(claim=claim_native)
-                except BaseException:
-                    if permit is not None:
-                        await asyncio.to_thread(delivery.uncertain_delivery,credential,
-                            request_id,permit["delivery_id"])
-                    raise
-            native=verified_native_slack_receipt(dict(
-                app_id=sender.app_id,user=echo["user"],channel=echo["channel"],
-                thread_ts=echo["thread_ts"],ts=echo["ts"],
-                client_msg_id=echo["event_id"],text=echo["text"]),
-                app_id=sender.app_id,team_id=sender.team_id,
-                bot_user_id=sender.bot_user_id,channel_id=echo["channel"],
-                thread_ts=echo["thread_ts"])
-            await delivery.stage_dataset_native_receipt(credential,request_id,native)
-            try:
-                settled=await asyncio.to_thread(delivery.confirm_dataset_native_receipt,
-                                                credential,request_id,native)
-            except Exception as exc:
-                from .expert_request_control import RequestControlError
-                if not isinstance(exc,RequestControlError) or exc.code!='dataset_delivery_receipt_not_covered':
-                    raise
-                return dict(state="sending",provider_sent=True,remote_accepted=False)
-            return dict(state=settled["state"],provider_sent=True,remote_accepted=True)
+            return await delivery.deliver_native_slack_result(
+                receiver,installed_executor(),sender,request_id=request_id,
+                generation=generation,execution_token=execution_token,text=text)
 
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
