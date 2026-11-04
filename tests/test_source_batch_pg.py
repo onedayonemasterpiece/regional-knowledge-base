@@ -90,6 +90,37 @@ def native(env):
 
 @PG
 @pytest.mark.asyncio
+async def test_captionless_drawing_page_publishes_without_fake_text_or_vector(image_pg_sql18):
+    # B/233: publication of a fully observed figure may contain no passage.
+    env = image_pg_sql18
+    doc = exact_batch(count=1)
+    page = doc['model_payload']['pages'][0]
+    page['source_review_note'] = 'An observed decorative plate without words.'
+    page['regions'][0].update(region_key='ornament', kind='figure', source_text='')
+    page['illustrations'] = [dict(
+        illustration_key='ornament', source_region_key='ornament',
+        kind='drawing', visual_description='Decorative ink figure.',
+        caption_region_keys=[])]
+    doc['model_payload']['chunks'] = []
+    assert (await accepted(env, stage_command(doc, 1))).status == 'applied'
+    prepare, vectors = native(env)
+    for component in ('text', 'semantic'):
+        command = packet(env, doc, component)
+        await prepare(command)
+        assert (await accepted(env, command)).status == 'applied'
+    assert vectors == []
+    async with env['connection'].transaction():
+        async def count(table):
+            return (await (await env['connection'].execute(
+                'SELECT count(*) FROM rkb_v4.' + table)).fetchone())[0]
+        assert await count('passage_search') == 0
+        assert await count('source_illustrations') == 1
+        assert await count('source_regions') == 1
+        assert await count('source_batch_receipts') == 2
+
+
+@PG
+@pytest.mark.asyncio
 async def test_one_of_174_pages_is_searchable_without_seal_and_retry_reuses_vector(image_pg_sql18):
     env=image_pg_sql18;doc=exact_batch(count=1)
     assert (await accepted(env,stage_command(doc,1))).status=='applied'

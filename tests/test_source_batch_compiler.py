@@ -56,6 +56,55 @@ class BatchCompilerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.inputs), 1)
         self.assertEqual(media['illustrations'], [])
 
+    async def test_zero_text_page_is_accepted_without_invented_passage(self):
+        # B/233: a decorative uncaptioned drawing and a completely blank page
+        # have reviewed source provenance but no legitimate retrieval body.
+        for has_figure in (False, True):
+            doc = exact_batch(start=232, count=1, receipt=original(page_count=234))
+            page = doc['model_payload']['pages'][0]
+            page['source_review_note'] = 'Reviewed page: no printed text or caption.'
+            doc['model_payload']['chunks'] = []
+            if has_figure:
+                figure = page['regions'][0]
+                figure.update(region_key='decoration', kind='figure', source_text='')
+                page['illustrations'] = [dict(
+                    illustration_key='decoration', source_region_key='decoration',
+                    kind='drawing', visual_description='Decorative ink drawing.',
+                    caption_region_keys=[])]
+            else:
+                page['regions'] = []
+            result, media = await self.compile([doc], 0)
+            self.assertEqual(result['passages'], [])
+            self.assertEqual(self.inputs, [])
+            self.assertEqual(result['image_manifest']['pages'][0]['physical_page_index'], 232)
+            self.assertEqual(len(media['illustrations']), int(has_figure))
+            self.assertEqual(len(result['semantic']['regions']), int(has_figure))
+
+    async def test_missing_heading_coverage_hint_allows_span_ref_repair(self):
+        # C/40: a span-based body cannot add region_refs to the same chunk.
+        # The prescribed repair must preserve that valid selection mechanism.
+        doc = exact_batch(start=40, count=1)
+        page = doc['model_payload']['pages'][0]
+        body = page['regions'][0]
+        body['reading_order'] = 1
+        heading = {**body, 'region_key': 'p40.heading', 'kind': 'heading',
+                   'reading_order': 0, 'source_text': 'A printed heading'}
+        page['regions'].insert(0, heading)
+        chunk = doc['model_payload']['chunks'][0]
+        del chunk['region_refs']
+        chunk['span_refs'] = [dict(page_id=page['page_id'], region_key='body',
+                                  start=0, end=len(body['source_text']))]
+        with self.assertRaisesRegex(SourceMaterializationRejected,
+                                    '40/p40.heading:fix=add_chunk_region_refs_or_span_refs'):
+            await self.compile([doc], 0)
+        self.assertEqual(self.inputs, [])
+        chunk['span_refs'].insert(0, dict(page_id=page['page_id'],
+                                          region_key='p40.heading',
+                                          start=0, end=len(heading['source_text'])))
+        result, _ = await self.compile([doc], 0)
+        self.assertTrue(result['passages'][0]['body'].startswith('A printed heading\n'))
+        self.assertIn(body['source_text'], result['passages'][0]['body'])
+
     async def test_page81_heading_prefixed_without_losing_page82_passage(self):
         doc = exact_batch(start=80, count=2)
         page = doc['model_payload']['pages'][0]

@@ -1294,6 +1294,29 @@ async def test_native_invalid_entity_field_is_named_without_source_text(native_i
 
 
 @pytest.mark.asyncio
+async def test_invalid_source_review_note_logs_safe_caller_and_ingestion(native_intake, caplog):
+    # C/40: both source.bibliography and page.source_review_note fail at
+    # _text; the caller frame identifies which validator invoked it.
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, first=40, count=1)
+    private = 'PRIVATE_REVIEW_NOTE_DO_NOT_LOG'
+    payload['pages'][0]['source_review_note'] = private * 30
+    with pytest.raises(ToolError) as caught:
+        await stage(s, book, payload)
+    diagnostic = json.loads(str(caught.value))
+    assert diagnostic['reason'] == 'invalid_small_source_input'
+    assert diagnostic['field_path'] == 'payload'
+    assert 'book_ingest_invalid_input exception_class=ValueError' in caplog.text
+    assert 'validator=_text:' in caplog.text
+    assert 'caller_validator=validate_stage_payload:' in caplog.text
+    assert 'ingestion_id=' + book.ingestion_id in caplog.text
+    assert private not in caplog.text
+    assert private not in str(caught.value)
+    assert operation_count(s) == 0
+
+
+@pytest.mark.asyncio
 async def test_status_releases_verified_upload_and_current_file_dedup_survives_other_book(native_intake):
     s=native_intake
     first=await start(s,file_id='first-upload')
@@ -1582,7 +1605,7 @@ async def test_missing_region_diagnostic_crosses_native_receipt_to_status(native
         command_b64=base64.b64encode(command.encode()).decode(),accepted=seal_wire(entry.accepted),
         compute_claim='synthetic-compute',dispatch_generation=s.t.generation)
     expected=('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
-        '123/r123_05;123/r123_18:fix=add_chunk_region_refs')
+        '123/r123_05;123/r123_18:fix=add_chunk_region_refs_or_span_refs')
     for unsafe in ('unknown_private_reason',expected+':'+private):
         override=unsafe
         with pytest.raises(ValueError,match='fixed internal source rejection reason'):

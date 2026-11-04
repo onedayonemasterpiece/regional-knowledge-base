@@ -803,8 +803,6 @@ def validate_graph(graph: StagedGraph, *, expected_page_count: int, accepted_reu
                 f"{link.illustration_id}"
             )
 
-    if not graph.chunks:
-        errors.append("no retrieval chunks staged")
     from .search_material import graph_material
     body_chunk_count=0
     short_body_chunks=0

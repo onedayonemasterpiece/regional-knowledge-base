@@ -1042,10 +1042,15 @@ class KaggleSourceImporter:
                     else part if type(part) is str and part in allowed else '*'
                     for part in loc[:8]) or 'payload'
             frame=error.__traceback__
-            while frame.tb_next is not None:frame=frame.tb_next
+            caller=frame
+            while frame.tb_next is not None:
+                caller,frame=frame,frame.tb_next
             validator=f'{frame.tb_frame.f_code.co_name}:{frame.tb_lineno}'
-            _LOG.warning('book_ingest_invalid_input exception_class=%s field_path=%s validator=%s validation_type=%s',
-                type(error).__name__, field_path, validator, validation_type)
+            caller_validator=f'{caller.tb_frame.f_code.co_name}:{caller.tb_lineno}'
+            safe_ingestion=(ingestion_id if type(ingestion_id) is str and
+                re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',ingestion_id) else 'unknown')
+            _LOG.warning('book_ingest_invalid_input exception_class=%s field_path=%s validator=%s validation_type=%s caller_validator=%s ingestion_id=%s',
+                type(error).__name__, field_path, validator, validation_type, caller_validator, safe_ingestion)
             catalog_reason = str(error) if (type(error) is ValueError
                 and re.fullmatch(r'catalog_update_[a-z0-9_]{1,80}', str(error))) else None
             raise failure(catalog_reason or 'invalid_small_source_input', status='invalid_query',

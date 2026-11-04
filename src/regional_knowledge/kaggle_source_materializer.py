@@ -495,7 +495,7 @@ class NativeSourceCompiler:
                 for page in graph.pages for region in page.regions if str(region.region_id) in missing]
             if locations:
                 raise failure('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
-                    +';'.join(locations[:40])+':fix=add_chunk_region_refs')
+                    +';'.join(locations[:40])+':fix=add_chunk_region_refs_or_span_refs')
             raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')
