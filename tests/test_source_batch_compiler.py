@@ -102,7 +102,7 @@ class BatchCompilerTests(unittest.IsolatedAsyncioTestCase):
                                           region_key='p40.heading',
                                           start=0, end=len(heading['source_text'])))
         result, _ = await self.compile([doc], 0)
-        self.assertTrue(result['passages'][0]['body'].startswith('A printed heading\\n'))
+        self.assertTrue(result['passages'][0]['body'].startswith('A printed heading\n'))
         self.assertIn(body['source_text'], result['passages'][0]['body'])
 
     async def test_page81_heading_prefixed_without_losing_page82_passage(self):
