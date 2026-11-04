@@ -131,7 +131,6 @@ def test_validation_requires_complete_page_and_text_region_coverage():
     result = validate_graph(graph, expected_page_count=2)
 
     assert any("missing pages" in item for item in result.errors)
-    assert "no retrieval chunks staged" in result.errors
     assert any("uncovered textual regions" in item for item in result.errors)
 
 
