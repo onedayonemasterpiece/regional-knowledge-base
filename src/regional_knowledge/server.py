@@ -2028,7 +2028,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             evidence=expert_evidence_receiver,
             sender=SlackChatSender(token=bot_token,app_id=expert_slack_ingress.control.app_id,
                 team_id=expert_slack_ingress.control.team_id,
-                bot_user_id=expert_slack_ingress.control.bot_user_id))
+                bot_user_id=expert_slack_ingress.control.bot_user_id),
+            executor_context=expert_executor_context)
         expert_slack_ingress.bind_search_reply(reply)
         expert_slack_socket_mode=ExpertSlackSocketMode(ingress=expert_slack_ingress,
             app_token=os.getenv('SLACK_APP_TOKEN',''),bot_token=bot_token)
@@ -2037,7 +2038,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             raise RuntimeError('Slack search reply requires existing signed ingress and evidence reader')
         from .expert_slack_search_reply import configured_expert_slack_search_reply
         reply=configured_expert_slack_search_reply(
-            expert_slack_ingress,expert_evidence_receiver,reply_config)
+            expert_slack_ingress,expert_evidence_receiver,reply_config,
+            executor_context=expert_executor_context)
         expert_slack_ingress.bind_search_reply(reply)
     expert_claim_receiver=expert_result_receiver=expert_recovery_receiver=None
     if expert_executor_context is not None:
@@ -2049,10 +2051,6 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             context=expert_executor_context)
         from .expert_executor_recovery_receiver import ExpertExecutorRecoveryReceiver
         expert_recovery_receiver=ExpertExecutorRecoveryReceiver(expert_result_receiver.context)
-        if expert_slack_ingress._reply is not None:
-            if expert_executor_context.delivery.dataset_effects is None:
-                raise RuntimeError("model-first Slack reply requires original Dataset effects")
-            expert_slack_ingress._reply.executor_context=expert_executor_context
     wake_config=os.getenv('RKB_EXPERT_PH_WAKE_CONFIG','').strip()
     if wake_config:
         if expert_slack_ingress is None or expert_executor_context is None:
