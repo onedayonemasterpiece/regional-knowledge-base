@@ -1605,7 +1605,7 @@ async def test_missing_region_diagnostic_crosses_native_receipt_to_status(native
         command_b64=base64.b64encode(command.encode()).decode(),accepted=seal_wire(entry.accepted),
         compute_claim='synthetic-compute',dispatch_generation=s.t.generation)
     expected=('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
-        '123/r123_05;123/r123_18:fix=add_chunk_region_refs')
+        '123/r123_05;123/r123_18:fix=add_chunk_region_refs_or_span_refs')
     for unsafe in ('unknown_private_reason',expected+':'+private):
         override=unsafe
         with pytest.raises(ValueError,match='fixed internal source rejection reason'):
