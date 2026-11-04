@@ -225,7 +225,6 @@ def configured_expert_executor_context(path, *, target_startup, expert_slack_ing
     from .expert_request_control import ExecutorCredentials
     from .expert_delivery_control import TargetExpertDeliveryControl
     from .expert_executor_workflow import ExpertExecutorContext
-
     def private(filename, limit):
         data = PrivateInput(filename, limit)
         if os.stat(filename, follow_symlinks=False).st_uid != os.geteuid() or not data.current():
