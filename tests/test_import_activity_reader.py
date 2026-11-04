@@ -364,3 +364,28 @@ async def test_rejected_packet_cursor_matches_native_without_skipping_unpublishe
     assert status['accepted_pages']==(3 if rejected_phase=='semantic' else 2)
     assert status['state']=='staged' and status['next_action']=='continue_pages'
     assert read_timestamp(w)==timestamp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["applied", "durable", "pending", "unknown", "rejected", "foreign", "foreign_source", "unaccepted", "archival_unknown", "missing", "stage", "semantic"])
+async def test_applied_catalog_does_not_hold_reader_or_rest_while_real_work_stays_pending(watcher, case):
+    w=watcher
+    key=f"source-catalog:{w.ingestion}:synthetic"
+    if case=="stage":key=f"source-stage:{w.ingestion}:1:0"
+    with w.queue.connect() as db:
+        db.execute("ALTER TABLE rkb_control_operations ADD COLUMN outcome_state TEXT DEFAULT 'NOT_SENT'")
+        db.execute("UPDATE rkb_native_source_intake_state SET pending_operation_key=?",(key,))
+        if case=="semantic":db.execute("UPDATE rkb_native_source_intake_state SET enriched_batch_count=0")
+        db.execute("INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes,outcome_state) VALUES(?,?,?,?,?,?,?,?)",
+            (str(uuid4()) if case=="foreign_source" else w.source,str(uuid4()) if case=="foreign" else w.actor,key,3,"NOT_SENT" if case=="unaccepted" else "ACCEPTED",
+             {"pending":"NOT_SENT","unknown":"SENT_UNKNOWN","rejected":"REJECTED_PRECONDITION"}.get(case,"APPLIED"),
+             json.dumps({"payload_b64":base64.b64encode(json.dumps({"ingestion_id":w.ingestion}).encode()).decode()}).encode(),"DURABLE" if case=="durable" else "SENT_UNKNOWN" if case=="archival_unknown" else "NOT_SENT"))
+        if case=="missing":db.execute("DELETE FROM rkb_control_operations WHERE operation_key=?",(key,))
+    original=read_timestamp(w)
+    result=(await get(w)).json()
+    expected=("staged","continue_pages") if case in ("applied","durable") else ("processing","wait")
+    assert (result["state"],result["next_action"])==expected
+    assert result["accepted_pages"]==2 and result["next_cursor"]=="9"
+    assert read_timestamp(w)==original
+    with w.queue.connect(write=False) as db:
+        assert db.execute("SELECT pending_operation_key FROM rkb_native_source_intake_state").fetchone()[0]==key

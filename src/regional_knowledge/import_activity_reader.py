@@ -73,6 +73,13 @@ class ImportActivityReader:
                 "WHERE ingestion_id=? AND source_id=? AND person_id=?",
                 (ingestion_id, row["source_id"], row["person_id"]),
             ).fetchone()
+            pending = native["pending_operation_key"] if native else None
+            # A committed catalog is not an in-flight save; status settles its local cursor later.
+            if pending and pending.startswith(f"source-catalog:{ingestion_id}:") and db.execute(
+                    "SELECT 1 FROM rkb_control_operations WHERE operation_key=? AND source_id=? AND person_id=? "
+                    "AND seal_state='ACCEPTED' AND apply_state='APPLIED' AND outcome_state IN ('NOT_SENT','DURABLE')",
+                    (pending,row["source_id"],row["person_id"])).fetchone():
+                pending = None
             accepted = published_pages(db,row) if native and native['packet_mode'] else set()
             last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
@@ -104,7 +111,7 @@ class ImportActivityReader:
             state, action = "finalized", "done"
         elif phase == "acquiring":
             state, action = "processing", "wait"
-        elif native and (native["pending_operation_key"]
+        elif native and (pending
               or native["enriched_batch_count"] < native["batch_count"]
               or native["read_completion_requested"]):
             state, action = "processing", "wait"
