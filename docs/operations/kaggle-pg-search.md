@@ -215,3 +215,25 @@ to20ms and executes `pg_sleep(1)` to obtain an actual57014 cancellation without
 waiting60s. It verifies rollback-to-IDLE, resource release and a successful next
 query on the same WSS session and model load. Synthetic verification is not a
 live SQL-stall diagnosis or deployment acceptance.
+
+## Normal-search preparation does not expire by elapsed time — 2026-11-04
+
+Five ChatGPT MCP searches on 2026-11-03 at 21:44–21:47 UTC returned
+`unavailable/deadline_exceeded` before WSS dispatch, during OAuth verification
+and runtime binding. API journal `regional-knowledge-base.service` reports
+`dispatch_state=not_dispatched` for every failure, with controller
+`backend_elapsed_ms` 2069–3907. The two-second outer `asyncio.timeout_at`
+covered this prebinding work even though its deadline was removed after a
+healthy binding. Concurrent book imports overlapped these events, but the
+journal does not prove which host resource caused the auth/binding delay.
+
+For normal public and trusted `search`/`knowledge_search`, the two-second
+figure is a **measurement goal**, never a rejection threshold, including OAuth,
+binding, fair admission and cold-start ETA preparation. Once authorized,
+an unavailable runtime follows the existing `pending/target_warming` response
+with the existing ETA semantics. Genuine caller cancellation and authorization,
+withdrawal and final-issuance checks remain unchanged. Exact reads/fetches
+retain their existing finite deadlines. The native normal-QUERY 60-second
+**per executing SQL statement** guard and `native_query_stalled` error are
+independent and unchanged; this controller change adds no retry, queue,
+state or watchdog.
