@@ -1,4 +1,4 @@
-"""Focused projection checks: rejected operations are metrics, missing pages are warnings."""
+"""Telegram import captions report current gaps, not historical rejections."""
 import base64
 import hashlib
 import json
@@ -15,7 +15,9 @@ class _Queue:
         return self.db
 
 
-def _status(page_count, text_pages, semantic_pages, *, finished=False, rejections=0):
+def _status(page_count, text_pages, semantic_pages, *, finished=False,
+            rejections=0, rejected_batch=None, pending=False, last_processing=False,
+            prior_failed=False, failed=False):
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript("""
@@ -32,13 +34,22 @@ def _status(page_count, text_pages, semantic_pages, *, finished=False, rejection
             operation_key TEXT, command_bytes TEXT, apply_state TEXT,
             source_id TEXT, person_id TEXT, sequence INTEGER);
     """)
-    phase = "finalized" if finished else "staging"
+    locator = json.dumps({"chat_id": -100123, "message_id": 42}) if prior_failed else None
+    if prior_failed:
+        db.execute("INSERT INTO rkb_source_intake_control VALUES(?,?,?,?,?,?)",
+                   ("old", "old-source", "actor", "{}", "failed", "2026-11-03"))
+        db.execute("INSERT INTO rkb_native_source_intake_state VALUES(?,?,?,?,?,?,?)",
+                   ("old", "failed", None, 0, 0, 0, None))
+        db.execute("INSERT INTO rkb_original_intakes VALUES(?,?,?,?)",
+                   ("old", "actor", json.dumps({"page_count": page_count}), locator))
+    phase = "failed" if failed else "finalized" if finished else "staging"
     db.execute("INSERT INTO rkb_source_intake_control VALUES(?,?,?,?,?,?)",
                ("ing", "src", "actor", "{}", phase, "2026-11-04"))
     db.execute("INSERT INTO rkb_native_source_intake_state VALUES(?,?,?,?,?,?,?)",
-               ("ing", phase, None, None, None, None, None))
+               ("ing", phase, "pending-key" if pending else None, page_count,
+                page_count, page_count - int(last_processing), rejected_batch))
     db.execute("INSERT INTO rkb_original_intakes VALUES(?,?,?,?)",
-               ("ing", "actor", json.dumps({"page_count": page_count}), None))
+               ("ing", "actor", json.dumps({"page_count": page_count}), locator))
     sequence = 0
 
     def record(key, packet, state="APPLIED"):
@@ -66,17 +77,52 @@ def _status(page_count, text_pages, semantic_pages, *, finished=False, rejection
     return result[0][1]
 
 
-def test_rejected_then_applied_is_counted_without_warning():
+def test_rejection_then_acceptance_is_clean_without_history():
     status = _status(2, {0, 1}, {0, 1}, finished=True, rejections=3)
-    assert status == "✅ Импорт завершён · страниц 2/2 · отклонений 3"
-    assert "⚠️" not in status
+    assert status == "✅ Импорт завершён"
+    assert "отклонений" not in status and "⚠️" not in status
 
 
-def test_finalized_book_with_missing_page_warns():
-    assert _status(3, {0, 1}, {0, 1}, finished=True) == (
-        "🏁⚠️ Обработка закончена · страниц 2/3")
+def test_finalized_missing_text_reports_real_page_number():
+    assert _status(3, {0, 2}, {0, 2}, finished=True) == (
+        "🏁⚠️ Обработка закончена · страниц 2/3 · не импортированы стр. 2")
 
 
-def test_text_without_semantic_shows_missing_entities():
-    assert _status(3, {0, 1}, {0}) == (
-        "⏳⚠️ Импортируется · страниц 1/3 · без сущностей 1")
+def test_running_book_flags_middle_gap_but_not_unread_tail():
+    assert _status(4, {0, 2}, {0, 2}) == (
+        "⏳⚠️ Импортируется · страниц 2/4 · не импортированы стр. 2")
+
+
+def test_text_without_semantic_is_current_problem():
+    assert _status(2, {0, 1}, {0}, finished=True) == (
+        "🏁⚠️ Обработка закончена · страниц 1/2 · без сущностей 1")
+
+
+def test_old_failed_ingestion_with_same_telegram_message_is_ignored():
+    assert _status(1, {0}, {0}, finished=True, prior_failed=True) == (
+        "✅ Импорт завершён")
+
+
+def test_current_rejected_packet_flags_retry():
+    assert _status(2, {0}, {0}, rejections=1, rejected_batch=1) == (
+        "⏳⚠️ Импортируется · страниц 1/2 · пакет отклонён, ждёт переотправки")
+
+
+def test_current_failed_ingestion_alone_is_failure():
+    assert _status(1, set(), set(), failed=True, prior_failed=True) == (
+        "❌ Ошибка импорта")
+
+
+def test_pending_finalize_only_is_warning():
+    assert _status(2, {0, 1}, {0, 1}, finished=True, pending=True) == (
+        "🏁⚠️ Обработка закончена · страниц 2/2 · сохранение не завершено")
+
+
+def test_last_still_enriching_packet_is_not_prematurely_missing_entities():
+    assert _status(3, {0, 1, 2}, {0, 1}, last_processing=True) == (
+        "⏳ Импортируется · страниц 2/3")
+
+
+def test_missing_pages_list_is_bounded_to_five():
+    assert _status(10, {9}, {9}) == (
+        "⏳⚠️ Импортируется · страниц 1/10 · не импортированы стр. 1, 2, 3, 4, 5 и ещё 4")
