@@ -90,6 +90,31 @@ async def test_native_chunk_ceiling_in_mcp_guidance_matches_runtime(native_intak
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile,tool_name", [("full", "search"), ("live", "knowledge_search")])
+async def test_native_search_tools_list_preserves_answer_and_pending_rules(native_intake, monkeypatch, profile, tool_name):
+    server = build_server(profile=profile, target_startup=native_intake.startup)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    description = tools[tool_name].description
+    for phrase in (
+        "ONE direct answer in the language of the user's question",
+        "Источники:", "В доступной базе подтверждений не найдено",
+        "Не удалось проверить базу сейчас", "startup.message_ru", "measured ETA",
+        "immediately", "this turn", "keep calling startup_status",
+        "startup_ref", "until ready", "rerun this exact search", "with its original arguments",
+        "The original read was not queued", "do not mint a second launch or retry UNKNOWN effects",
+    ):
+        assert phrase in description, (tool_name, phrase)
+    if tool_name == "search":
+        assert "at most 6 sequential search/fetch calls" in description
+        assert "startup_status checks for the same cold start do not count" in description
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    legacy = build_server(profile=profile, backend_profile="legacy")
+    legacy_tools = {tool.name: tool for tool in await legacy.list_tools()}
+    assert "ONE direct answer" in legacy.instructions
+    assert "ONE direct answer" not in legacy_tools[tool_name].description
+
+
+@pytest.mark.asyncio
 async def test_native_mcp_guidance_survives_540_char_client_cutoff(native_intake):
     server = build_server(target_startup=native_intake.startup)
     tools = {tool.name: tool for tool in await server.list_tools()}
@@ -98,12 +123,12 @@ async def test_native_mcp_guidance_survives_540_char_client_cutoff(native_intake
     assert prefix.startswith("Mandatory import checklist:\n1. ")
     assert prefix.count("\n") == 9  # title, seven numbered rules, final pointer
     assert prefix.endswith("Full rules in tool descriptions.\n")
-    for phrase in ("One reader", "never resend accepted pages",
+    for phrase in ("One reader", "never blindly replay accepted pages",
                    "source_text verbatim", "[?]", "BGE-M3", "512 tokens",
                    "disagreement_search/get/edit", "book_pages(cursor)",
                    "next_cursor is a hint", "status", "catalog_update"):
         assert phrase in prefix, phrase
-    assert prefix.index("never resend accepted pages") < prefix.index("source_text verbatim") < prefix.index("BGE-M3")
+    assert prefix.index("never blindly replay accepted pages") < prefix.index("source_text verbatim") < prefix.index("BGE-M3")
     for name in ("book_ingest", "book_pages"):
         description = tools[name].description
         for phrase in ("Transcribe source_text verbatim",
@@ -128,6 +153,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         'source_review_note (1-500 characters)',
     ):
         assert phrase in native_text, phrase
+    assert native_text.count(_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS) == 1
     assert native_text.count('ANY previously accepted physical page') == 1
     assert 'Revising an accepted book is unsupported in this profile' not in native_text
     # MCP initialize is frequently truncated; keep only the short point 2 there.
