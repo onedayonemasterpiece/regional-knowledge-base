@@ -315,7 +315,7 @@ async def test_main_private_executor_env_enables_model_reply_and_ph_wake(
         assert ingress._reply._prepare_answer.__name__ == '_prepare_model'
         assert ingress._waker.control is ingress.control
         routes = {r.path for r in captured[0][1]['app'].routes}
-        assert {INGRESS, CLAIM, RESULT} <= routes
+        assert {CLAIM, RESULT} <= routes and INGRESS not in routes  # Socket-only ingress.
 
         (tmp_path / 'executor-token').chmod(0o644)
         with pytest.raises(ValueError, match='private'):
