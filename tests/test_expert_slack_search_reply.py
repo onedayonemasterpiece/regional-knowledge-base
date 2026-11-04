@@ -70,6 +70,9 @@ def test_fb_one_bibliography_per_book(catalog, question, citation, locator, text
     reply = answer_from_evidence(_evidence(items), question)
     assert reply == "Найдено в источниках:\n1. " + expected
     assert source_id not in reply and "pages" not in reply and "Повторная" not in reply
+    for item in items[:2]:
+        item["metadata"]["source_revisions"] = [{"revision": 1}]  # No source_id.
+    assert answer_from_evidence(_evidence(items), question) == reply
 
 
 def test_sourced_reply_fallback_is_one_excerpt_per_book_not_three_source_cards():

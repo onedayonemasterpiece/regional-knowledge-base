@@ -66,7 +66,7 @@ def answer_from_evidence(result, question=""):
         if not name:continue
         name=re.split(r"(?i),\s*(?:с\.|стр\.|pp?\.|s\.|pages?)\s*\d",name)[0]
         sources=meta.get("source_revisions") or []
-        key=sources[0]["source_id"] if sources else name
+        key=(sources[0].get("source_id") if sources else None) or name
         if key in seen:continue
         seen.add(key)
         page=_PAGE.search(locator or clean(meta.get("citation"),1024))
