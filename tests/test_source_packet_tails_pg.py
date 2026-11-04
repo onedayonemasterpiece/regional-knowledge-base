@@ -41,7 +41,7 @@ async def test_pending_tail_is_derived_from_native_regions_and_disappears_after_
 @PG
 @pytest.mark.asyncio
 async def test_fully_covered_book_tail_query_keeps_two_second_budget(database):
-    # Query-only projection fixture: 250 pages × 16 regions, no vectors or corpus.
+    # Query-only projection fixture: 1000 pages × 16 regions, no vectors or corpus.
     # Materializer/continuation semantics are exercised above on current migrations.
     from uuid import UUID, uuid5
     import hashlib
@@ -62,7 +62,7 @@ async def test_fully_covered_book_tail_query_keeps_two_second_budget(database):
         await c.execute('INSERT INTO rkb_v4.source_stage_sessions VALUES(%s,%s)',(SOURCE,INGESTION))
         region_rows=[];provenance=[];pages=[];batches=[]
         text='Synthetic source words. '*12;sha=hashlib.sha256(text.encode()).hexdigest()
-        for index in range(250):
+        for index in range(1000):
             page_id=str(uuid5(UUID(SOURCE),'page:1:'+str(index)));regions=[]
             for n in range(16):
                 key='body'+str(n);ident=str(uuid5(UUID(page_id),'region:'+key))
@@ -99,3 +99,16 @@ async def test_fully_covered_book_tail_query_keeps_two_second_budget(database):
                 dict(page_ids=[page_id],region_ids=[],source_spans=[dict(region_id=ident,end=10)],footnote_region_ids=[ident])]:
             await c.execute('UPDATE rkb_v4.source_passage_provenance SET data=%s WHERE passage_id=%s',(Jsonb(coverage),ident))
             assert await pending_tail_refs(c,SOURCE,INGESTION)==dict(tail_refs=[],has_more=False)
+        # Keep all candidates from the cutoff batch before ordering its authored pages.
+        # A naive LIMIT 5 before the JSON page ordinal would lose the earliest page.
+        chosen=pages[100:106]
+        for _,page_id,index,_,_ in chosen:
+            ident=str(uuid5(UUID(page_id),'region:body0'))
+            await c.execute('DELETE FROM rkb_v4.source_passage_provenance WHERE passage_id=%s',(ident,))
+            await c.execute('UPDATE rkb_v4.source_stage_pages SET batch_index=100 WHERE page_id=%s',(page_id,))
+        authored=[page[-1].obj for page in reversed(chosen)]
+        await c.execute("UPDATE rkb_v4.source_stage_batches SET payload_bytes=convert_to(%s::jsonb::text,'UTF8') WHERE batch_index=100",
+            (Jsonb(dict(model_payload=dict(pages=authored))),))
+        result=await pending_tail_refs(c,SOURCE,INGESTION)
+        assert [ref['physical_page_index'] for ref in result['tail_refs']]==[105,104,103,102]
+        assert result['has_more']
