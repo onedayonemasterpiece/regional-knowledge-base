@@ -62,7 +62,7 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
                 pages=', '.join(str(page+1) for page in missing[:5])
                 if len(missing)>5:pages+=f' и ещё {len(missing)-5}'
                 problems.append(f'не импортированы стр. {pages}')
-            if text_only:problems.append(f'без сущностей {len(text_only)}')
+            if text_only:problems.append(f'не разобраны {len(text_only)} стр.')
             if row['rejected_batch_index'] is not None:
                 problems.append('пакет отклонён, ждёт переотправки')
             if finished and row['pending_operation_key']:

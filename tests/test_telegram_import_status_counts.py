@@ -95,7 +95,7 @@ def test_running_book_flags_middle_gap_but_not_unread_tail():
 
 def test_text_without_semantic_is_current_problem():
     assert _status(2, {0, 1}, {0}, finished=True) == (
-        "🏁⚠️ Обработка закончена · страниц 1/2 · без сущностей 1")
+        "🏁⚠️ Обработка закончена · страниц 1/2 · не разобраны 1 стр.")
 
 
 def test_old_failed_ingestion_with_same_telegram_message_is_ignored():
