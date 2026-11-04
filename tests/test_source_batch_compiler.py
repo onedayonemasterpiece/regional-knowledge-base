@@ -80,6 +80,26 @@ class BatchCompilerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(media['illustrations']), int(has_figure))
             self.assertEqual(len(result['semantic']['regions']), int(has_figure))
 
+    async def test_unrepresented_figure_reports_exact_page_and_keeps_full_image_review(self):
+        doc=exact_batch(start=82,count=1)
+        page=doc['model_payload']['pages'][0]
+        figure={**page['regions'][0], 'region_key':'p82.figure_continuation',
+                'kind':'figure','source_text':'','reading_order':1}
+        page['regions'].append(figure)
+        expected=('native_source_stage_requires_review:missing_figure_review:'
+                  'physical_page_index/region_key=82/p82.figure_continuation:'
+                  'fix=stage_illustrations_for_each_figure_region')
+        with self.assertRaises(SourceMaterializationRejected) as rejected:
+            await self.compile([doc],0)
+        self.assertEqual(str(rejected.exception),expected)
+        self.assertEqual(self.inputs,[])
+        page['illustrations']=[dict(illustration_key='continuation',
+            source_region_key='p82.figure_continuation',kind='drawing',
+            visual_description='Synthetic continuation of a drawing.',caption_region_keys=[])]
+        result,media=await self.compile([doc],0)
+        self.assertEqual(len(media['illustrations']),1)
+        self.assertEqual(len(result['passages']),1)
+
     async def test_missing_heading_coverage_hint_allows_span_ref_repair(self):
         # C/40: a span-based body cannot add region_refs to the same chunk.
         # The prescribed repair must preserve that valid selection mechanism.

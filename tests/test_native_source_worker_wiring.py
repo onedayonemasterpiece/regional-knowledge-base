@@ -314,14 +314,15 @@ async def test_content_rejection_uses_ordinary_apply_and_preserves_rejected_rece
 
 
 @pytest.mark.asyncio
-async def test_review_rejection_survives_real_apply_validation_and_unknown_reason_is_denied(monkeypatch):
+@pytest.mark.parametrize('reason',['native_source_stage_requires_review',
+    'native_source_stage_requires_review:missing_figure_review:physical_page_index/region_key=82/p82.figure_continuation:fix=stage_illustrations_for_each_figure_region'])
+async def test_review_rejection_survives_real_apply_validation_and_unknown_reason_is_denied(monkeypatch,reason):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from psycopg.pq import TransactionStatus
     from psycopg.rows import tuple_row
     from regional_knowledge.kaggle_apply import apply_accepted
 
-    reason = 'native_source_stage_requires_review'
     value = await worker_fixture(MATERIALIZE_ROUTE, monkeypatch,
         materializer_error=SourceMaterializationRejected(reason))
     database = value.worker.database
