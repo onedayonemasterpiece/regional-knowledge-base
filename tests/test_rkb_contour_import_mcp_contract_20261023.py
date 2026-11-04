@@ -17,7 +17,7 @@ from regional_knowledge.source_stage import MAX_BATCH_BYTES, MAX_BATCH_PAGES, va
 from regional_knowledge.story_contracts import StageStoryCandidateInput
 from test_kaggle_source_importer import options
 from regional_knowledge.original_intake import OriginalIntakeSpec
-from regional_knowledge.server import build_server
+from regional_knowledge.server import build_server, _ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS
 from test_participants import people
 from test_read_authority import auth
 from test_kaggle_public_backend import target
@@ -129,8 +129,11 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "Do not search for Cases on every page without such a contradiction" in native.instructions[:2000]
     assert "When disagreement_search is registered" not in native_text
     assert "When disagreement_search is registered" not in native.instructions
+    # Initialize stays within its original cap. The tool's pre-existing guidance
+    # retains its own cap while the one required correction clause is additive.
     assert len(native.instructions) <= 10503
-    assert len(native_text) <= 6153
+    assert native_text.count(_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS) == 1
+    assert len(native_text) - len(_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS) <= 6153
     assert "book_pages (default 1 page, maximum requested 4" in native.instructions
     assert "current chunk_key or an already accepted chunk_id" in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
