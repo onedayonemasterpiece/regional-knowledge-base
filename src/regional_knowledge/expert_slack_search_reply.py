@@ -159,14 +159,13 @@ class ExpertSlackSearchReply:
         self.control=ingress.control
         if executor_context is None:
             self._active_states=("received","searching")
-            self._begin_states=("received",)
             self._notice_states=("searching",)
             self._prepare_answer=self._prepare_immediate
         else:
             self._active_states=("pending","leased","result_unsealed","searching")
-            self._begin_states=("pending","leased","result_unsealed")
             self._notice_states=self._active_states
             self._prepare_answer=self._prepare_model
+        self._begin_states=self._active_states[:-1]
         self._pending_states=self._active_states+("unknown",)
         self._tasks={}
 
