@@ -72,6 +72,8 @@ _SOURCE_TRANSCRIPTION_INSTRUCTIONS = (
     "Before stage, compare headings, complete list membership and numerical attribution with "
     "the same issued image. For unreadable spans, preserve legible text verbatim, insert [?], "
     "and leave needs_review=false; never guess. "
+    "Join words split by printed line-end hyphenation; omit U+00AD (soft hyphen) "
+    "and join-space. Preserve real compound-word hyphens. "
     "Split long text into ordered source regions within existing bounds, never compress it "
     "to fit a chunk or packet. Keep normalization in normalized_text and authored summaries "
     "or stories in their separate fields. "

@@ -74,7 +74,7 @@ def answer_from_evidence(result, question=""):
         if page:
             prefix="S." if german else "с."
             name+=f", {prefix} {page[2]}"
-        fragment=re.split(r"(?<=[.!?])\s+"," ".join(item["text"].split()),maxsplit=1)[0]
+        fragment=re.split(r"(?<=[.!?])\s+"," ".join(re.sub(r"\u00ad\s*", "", item["text"]).split()),maxsplit=1)[0]
         sentence=clean(fragment,200)
         if len(fragment)>200:sentence=clean(fragment,199)+"…"
         if _OPAQUE_REF.search(sentence):continue

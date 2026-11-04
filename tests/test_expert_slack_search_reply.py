@@ -75,6 +75,18 @@ def test_fb_one_bibliography_per_book(catalog, question, citation, locator, text
     assert answer_from_evidence(_evidence(items), question) == reply
 
 
+def test_fb_joins_soft_hyphen_words_without_changing_source_or_real_hyphens():
+    """Synthetic U+00AD regression for the existing Slack excerpt renderer."""
+    source = ("Здание рас\u00ad\nполагалось рядом, его проек\u00ad ты сохраняли "
+              "историко-культурный облик и зда\u00adние.")
+    item = {"title": "Тестовый атлас", "text": source, "metadata": {"locator": "pages 5"}}
+    output = answer_from_evidence(_evidence([item]))
+    assert ("Здание располагалось рядом, его проекты сохраняли "
+            "историко-культурный облик и здание.") in output
+    assert "\u00ad" not in output
+    assert item["text"] == source
+
+
 def test_sourced_reply_fallback_is_one_excerpt_per_book_not_three_source_cards():
     evidence=_evidence([{
         "title":"Гаузе <@U111>", "text":"Возникла крепость. Второе предложение <@U111>.",
