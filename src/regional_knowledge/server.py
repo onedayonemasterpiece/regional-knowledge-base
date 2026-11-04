@@ -78,16 +78,12 @@ _SOURCE_TRANSCRIPTION_INSTRUCTIONS = (
 )
 
 _SOURCE_BGE_CHUNK_INSTRUCTIONS = (
-    "Each chunk's complete native input (joined selected source region/span text, "
-    "including selected headings and [Footnote] labels/text) must be at most 512 pinned "
-    "BGE-M3 tokenizer tokens, including special tokens; chunk.title is metadata, not added separately. "
-    "Split longer thoughts at complete sentences to stay within the exact token bound. "
+    "Each chunk's complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text) must be at most 512 pinned "
+    "BGE-M3 tokenizer tokens, including special tokens; chunk.title is metadata, not added separately. Split longer thoughts at complete sentences to stay within the exact token bound. "
 )
 _SOURCE_DISAGREEMENT_INSTRUCTIONS = (
-    "If a reviewed page contradicts itself, an earlier page of this book, or an already-read "
-    "source (date, number, name, attribution, cause, title), use registered disagreement_search "
-    "by subject or source_id, disagreement_get the candidate, then disagreement_edit(add_evidence) "
-    "or disagreement_edit(create) followed by add_evidence with an exact quote, if authorized; "
+    "If a reviewed page contradicts itself, an earlier page of this book, or an already-read source (date, number, name, attribution, cause, title), use registered disagreement_search "
+    "by subject or source_id, disagreement_get the candidate, then disagreement_edit(add_evidence) or disagreement_edit(create) followed by add_evidence with an exact quote, if authorized; "
     "do not search Cases on pages without such a contradiction. "
 )
 
@@ -699,15 +695,10 @@ def build_server(
             "without reimporting, re-chunking or re-embedding the source. " +
             "Never infer that a source is public." + _answer_instructions
         ) if selected!='kaggle_source' else (
-            "Mandatory import checklist:\n"
-            "1. One reader; resume ingestion; never resend accepted pages.\n"
-            "2. Read image; source_text verbatim; unclear [?], never guess.\n"
-            "3. Semantic chunks across pages; complete BGE-M3 input at most 512 tokens.\n"
-            "4. Contradictions only: disagreement_search/get/edit with exact evidence.\n"
-            "5. Printed order via book_pages(cursor); next_cursor is a hint.\n"
-            "6. On wait call status; on retry resend identical stage.\n"
-            "7. Evidence for entities; imprint via catalog_update; never invent.\n"
-            "Full rules in tool descriptions.\n"
+            "Mandatory import checklist:\n1. One reader; resume ingestion; never resend accepted pages.\n2. Read image; source_text verbatim; unclear [?], never guess.\n"
+            "3. Semantic chunks across pages; complete BGE-M3 input at most 512 tokens.\n4. Contradictions only: disagreement_search/get/edit with exact evidence.\n"
+            "5. Printed order via book_pages(cursor); next_cursor is a hint.\n6. On wait call status; on retry resend identical stage.\n"
+            "7. Evidence for entities; imprint via catalog_update; never invent.\nFull rules in tool descriptions.\n"
         ),
         **kwargs,
     )
@@ -1878,9 +1869,7 @@ def build_server(
             "For irregular scans, cursor may name any physical page; the model decides printed reading order, and next_cursor is only a suggestion. Use only for an existing ingestion. "
             + _SOURCE_TRANSCRIPTION_INSTRUCTIONS
             + (_SOURCE_BGE_CHUNK_INSTRUCTIONS + _SOURCE_DISAGREEMENT_INSTRUCTIONS
-               if selected == 'kaggle_source' else '')
-            + ("If a cold import tool returns startup_ref/next_action=startup_status, call startup_status with the SAME ref until ready, then repeat the exact original call (not dispatched). "
-               if selected == 'kaggle_source' else '')
+               + "If a cold import tool returns startup_ref/next_action=startup_status, call startup_status with the SAME ref until ready, then repeat the exact original call (not dispatched). " if selected == 'kaggle_source' else '')
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
     )
