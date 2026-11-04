@@ -162,7 +162,8 @@ async def test_untrusted_exception_never_leaks_or_becomes_final_rejection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["book_ingest", "book_pages"])
-async def test_domain_json_extras_and_private_error_text_do_not_escape(registered_books, tool):
+@pytest.mark.parametrize("field_path", ["entities.0.evidence.region_key", "pages.0.source_review_note"])
+async def test_domain_json_extras_and_private_error_text_do_not_escape(registered_books, tool, field_path):
     server, backend = registered_books
     backend.error = ToolError(json.dumps({
         "status": "invalid_query", "reason": "invalid_small_source_input",
@@ -175,12 +176,12 @@ async def test_domain_json_extras_and_private_error_text_do_not_escape(registere
     }
     backend.error = ToolError(json.dumps({
         "status": "invalid_query", "reason": "invalid_small_source_input",
-        "exception_class": "ValidationError", "field_path": "entities.0.evidence.region_key",
+        "exception_class": "ValidationError", "field_path": field_path,
     }))
     assert await error_envelope(server, tool) == {
         "status": "invalid_query", "reason": "invalid_small_source_input",
         "error_class": "domain", "exception_class": "ValidationError",
-        "field_path": "entities.0.evidence.region_key",
+        "field_path": field_path,
     }
 
 

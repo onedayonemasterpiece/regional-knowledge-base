@@ -19,10 +19,12 @@ from dataclasses import dataclass
 from functools import wraps
 from uuid import UUID, uuid5
 
+from pydantic import ValidationError
+
 from .bge_contract import TOKEN_REJECTION_PATTERN
 from .control_spool import SpoolConflict
 from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH, SOURCE_COVERAGE_REJECTION_PATTERN,
-    canonical, digest, encode_issued_image, validate_stage_payload)
+    canonical, digest, encode_issued_image, validate_stage_payload, _text as validate_stage_text)
 
 
 _LOG=logging.getLogger(__name__)
@@ -847,6 +849,13 @@ class NativeSourceIntake:
                 public_rights=json.loads(row['rights_json'])),issued_images_b64=[encode_issued_image(v) for v in issued],
             model_payload=payload,research=dict(frontier_id=str(uuid5(UUID(row['ingestion_id']),'research')),
                 **research.model_dump(mode='json')))
+        for index, page in enumerate(payload['pages']):
+            try:
+                validate_stage_text(page.get('source_review_note'), 500)
+            except ValueError:
+                raise ValidationError.from_exception_data('StagePageInput', [dict(
+                    type='value_error', loc=('pages', index, 'source_review_note'), input=None,
+                    ctx={'error': ValueError('bounded visual source review note required')})]) from None
         validate_stage_payload(canonical(doc),source_id=row['source_id'])
         if (self._request_hash(doc)==state['last_request_sha256']
                 and state.get('rejected_batch_index') is None):
