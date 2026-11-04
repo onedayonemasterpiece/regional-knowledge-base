@@ -239,6 +239,17 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             row=ctl._row(rid)
             assert row['state']=='unknown' and row['delivery_attempt']==1
             assert row['delivery_receipt'] is None
+            # Re-enter the actual MCP delivery method after ambiguous Slack ACK:
+            # inspect the original thread, never issue a second provider POST.
+            from unittest.mock import AsyncMock
+            sender=SimpleNamespace(find_post=AsyncMock(return_value=None),
+                                   post_once=AsyncMock(side_effect=AssertionError('duplicate POST')))
+            retry=await ctx.delivery.deliver_native_slack_result(
+                result,credentials,sender,request_id=rid,
+                generation=lease['generation'],execution_token=lease['execution_token'],
+                text=body['text'])
+            assert retry==dict(state='unknown',provider_sent=None,remote_accepted=False)
+            sender.post_once.assert_not_awaited()
         # No created provider result or new writer authority.
         assert p.calls.count('capture')==3
     finally:
