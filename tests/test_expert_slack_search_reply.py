@@ -825,8 +825,8 @@ async def test_sa_original_executor_result_or_pr609_fallback_sends_exactly_once(
                 "client_msg_id": body["client_msg_id"]}})
 
     reply = ExpertSlackSearchReply(ingress=ingress, evidence=receiver,
-        sender=_sender(transport=httpx.MockTransport(transport)))
-    reply.executor_context = object()  # Installed-path branch; original control remains real.
+        sender=_sender(transport=httpx.MockTransport(transport)),
+        executor_context=SimpleNamespace(delivery=SimpleNamespace(dataset_effects=object())))
     rid = control.accept(_observation())["request_id"]
     cmd = control.exact_remote_intent(rid, 1)
     seal = await control.spool.journal.seal([cmd],
@@ -848,16 +848,18 @@ async def test_sa_original_executor_result_or_pr609_fallback_sends_exactly_once(
         assert reply._claim_warming_post(rid) is None  # Repeat/restart cannot repost.
         args = await _ready_delivery(SimpleNamespace(journal=control.spool.journal),
             control, delivery, credentials, {"request_id": rid}, 2)
-        outgoing = delivery.claim_send_once(*args)
-        echo = await reply.sender.post_once(
-            event_id=outgoing["delivery_id"], channel=outgoing["channel_id"],
-            thread=outgoing["thread_ts"], text=outgoing["text"])
-        proof = verified_native_slack_receipt(dict(app_id="A111", user=echo["user"],
-            channel=echo["channel"], thread_ts=echo["thread_ts"], ts=echo["ts"],
-            client_msg_id=echo["event_id"], text=echo["text"]),
-            app_id="A111", team_id="T111", bot_user_id="UBOT",
-            channel_id=outgoing["channel_id"], thread_ts=outgoing["thread_ts"])
-        assert delivery.receipt(credentials, rid, proof)["state"] == "delivered"
+        async def ready(_):
+            return SimpleNamespace(body=b'{"state":"send_intent_ready"}')
+        async def staged(*_):
+            pass
+        monkeypatch.setattr(delivery, "stage_dataset_native_receipt", staged)
+        monkeypatch.setattr(delivery, "confirm_dataset_native_receipt",
+                            lambda credential, identity, proof: delivery.receipt(credential,identity,proof))
+        sent = await delivery.deliver_native_slack_result(
+            SimpleNamespace(_advance=ready), credentials, reply.sender,
+            request_id=rid, generation=args[2], execution_token=args[3],
+            text=json.loads(control._row(rid)["result_json"])["text"])
+        assert sent == dict(state="delivered", provider_sent=True, remote_accepted=True)
         await asyncio.wait_for(waiting, 2)  # Late model timeout cannot post fallback.
     else:
         # No model answer within the bound: the existing PR609 evidence renderer wins.
