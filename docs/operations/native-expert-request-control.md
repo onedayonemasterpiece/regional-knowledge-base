@@ -232,7 +232,11 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   group-public output only. Without an actual external expert executor,
   one bounded fallback message begins «Найдено в источниках:» and gives
   one line per distinct book (known title/author/year/page and the first
-  source sentence, capped at 200 characters). It is **not** a model answer.
+  source sentence, capped at 200 characters). Each line uses at most two
+  catalog authors (`и др.` / `u. a.` when needed), one title/year, localized
+  page `с.` / `S.`, and a whole-word excerpt (ellipsis on truncation).
+  Neither citation text nor opaque IDs are appended to the bibliography.
+  It is **not** a model answer.
   Verified zero hits and technical unavailability remain distinct. No raw
   three-card quote list, UUID, internal LLM, owner impersonation or unsupported
   proof link is introduced.

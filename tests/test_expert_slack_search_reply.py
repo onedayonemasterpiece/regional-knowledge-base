@@ -39,13 +39,49 @@ def _sender(**options):
                            bot_user_id="UBOT",**options)
 
 
+@pytest.mark.parametrize("catalog,question,citation,locator,text,expected", [
+    ({"title": "Кёнигсберг. Том I", "authors": ["Фриц Гаузе"], "publication_year": 1996},
+     "Когда возникла крепость?", "Фриц Гаузе. Кёнигсберг. Том I (1996), pages 9", None,
+     "Возникла крепость. Следующее предложение.",
+     "Фриц Гаузе. Кёнигсберг. Том I (1996), с. 9 — Возникла крепость."),
+    ({"title": "Исторический сборник", "authors": [f"Автор {n}" for n in range(1, 31)],
+      "publication_year": 2001}, "Что описывает сборник?", "Повторная библиография, pages 42–43", None,
+     "Сборник описывает " + "историю города " * 20,
+     "Автор 1, Автор 2 и др. Исторический сборник (2001), с. 42–43 — "
+     + ("Сборник описывает " + "историю города " * 12).rstrip() + "…"),
+    ({"title": "Die Börse", "authors": ["Anna Beispiel", "Otto Muster", "Eva Test"]},
+     "Wo lag die Börse?", "Повторная библиография, pages 42–43", "pages 42–43",
+     "Die Börse lag am Fluss. Ein weiterer Satz.",
+     "Anna Beispiel, Otto Muster u. a. Die Börse, S. 42–43 — Die Börse lag am Fluss."),
+], ids=["gause-citation-pages", "collection-30-authors-word-boundary", "de-boerse"])
+def test_fb_one_bibliography_per_book(catalog, question, citation, locator, text, expected):
+    """Synthetic E2E-shaped projections; no book excerpts or private metadata."""
+    source_id = "11111111-1111-4111-8111-111111111111"
+    metadata = {"source_provenance": {"catalog": catalog}, "citation": citation,
+                "source_revisions": [{"source_id": source_id, "revision": 1}]}
+    if locator is not None:
+        metadata["locator"] = locator
+    # The production title already includes all authors/bibliography; never append citation.
+    title = ", ".join(catalog["authors"]) + ". " + catalog["title"] + ", с. 9"
+    items = [{"title": title, "text": text, "metadata": metadata},
+             {"title": title, "text": "Другой пассаж.",
+              "metadata": dict(metadata, citation="Другое представление той же книги, pages 99")},
+             {"title": source_id, "text": "Служебная запись.", "metadata": {}}]
+    reply = answer_from_evidence(_evidence(items), question)
+    assert reply == "Найдено в источниках:\n1. " + expected
+    assert source_id not in reply and "pages" not in reply and "Повторная" not in reply
+    for item in items[:2]:
+        item["metadata"]["source_revisions"] = [{"revision": 1}]  # No source_id.
+    assert answer_from_evidence(_evidence(items), question) == reply
+
+
 def test_sourced_reply_fallback_is_one_excerpt_per_book_not_three_source_cards():
     evidence=_evidence([{
-        "title":"Гаузе", "text":"Возникла крепость. Второе предложение <@U111>.",
+        "title":"Гаузе <@U111>", "text":"Возникла крепость. Второе предложение <@U111>.",
         "metadata":{"citation":"Кёнигсберг, том I <@U111>", "locator":"стр. 31"}}])
     sourced=answer_from_evidence(evidence)
     assert sourced.startswith("Найдено в источниках:\n1. Гаузе")
-    assert "стр. 31" in sourced and "Возникла крепость." in sourced
+    assert "с. 31" in sourced and "Возникла крепость." in sourced
     assert "Второе предложение" not in sourced and "не удалось" not in sourced.lower()
     assert "<@U111>" not in sourced and "&lt;@U111&gt;" in sourced
     assert "Цитата (фрагмент)" not in sourced
@@ -269,7 +305,7 @@ async def test_three_guarded_passages_post_one_answer_with_sources_in_original_t
     sent = posts[0]
     assert sent["thread_ts"] == "1792000000.100" and sent["client_msg_id"] == "Ev-1"
     assert sent["text"].count("Найдено в источниках:") == 1
-    assert "Гаузе" in sent["text"] and "стр. 31" in sent["text"]
+    assert "Гаузе" in sent["text"] and "с. 31" in sent["text"]
     assert "Цитата (фрагмент)" not in sent["text"]
     assert "11111111-1111-1111-1111-111111111111" not in sent["text"]
     assert "Текст первого фрагмента." in sent["text"]
