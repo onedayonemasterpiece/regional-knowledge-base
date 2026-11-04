@@ -156,6 +156,47 @@ async def release(s, value):
 
 
 @pytest.mark.asyncio
+async def test_normal_search_survives_slow_auth_before_ready_binding(target, monkeypatch):
+    s = target
+    entered, continue_auth = asyncio.Event(), asyncio.Event()
+    original = s.auth.resolver.resolve_oauth
+
+    async def delayed_auth(*args, **kwargs):
+        entered.set()
+        await continue_auth.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(s.auth.resolver, 'resolve_oauth', delayed_auth)
+
+    async def search():
+        with capture_read_output() as calls:
+            result = await s.backend.search('synthetic query', s.principal)
+        calls[0].complete(result.status, result.reason)
+        calls[0].release()
+        return result
+
+    task = asyncio.create_task(search())
+    value = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.sleep(2.1)
+        assert not task.done(), 'slow auth must not turn the search into a time-only refusal'
+        continue_auth.set()
+        value = await work(s)
+        await settle(s, value)
+        result = await task
+        assert result.status == 'degraded' and result.mode == 'hybrid'
+        assert s.gate.released
+    finally:
+        continue_auth.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if value is not None:
+            await release(s, value)
+
+
+@pytest.mark.asyncio
 async def test_search_waits_past_queue_and_native_timing_goals(target,env):
     from regional_knowledge.source_read_gate import SourceReadGate
     from regional_knowledge.kaggle_worker_query import KaggleWorkerQuery
