@@ -294,7 +294,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
     async def test_bad_packet_does_not_close_import_or_revoke_prior_packets(self):
         self.packet_mode();await self.stage();self.finish();await self.helper.status(self.access,self.row)
         self.finish(status='rejected_precondition')
-        reason='native_source_stage_requires_review';raw=canonical(dict(reason=reason))
+        reason='native_source_stage_requires_review:missing_figure_review:physical_page_index/region_key=82/p82.figure_continuation:fix=stage_illustrations_for_each_figure_region';raw=canonical(dict(reason=reason))
         self.pending().apply_receipt.outcome=canonical(dict(
             result_b64=base64.b64encode(raw).decode(),result_sha256=digest(raw)))
         result=await self.helper.status(self.access,self.row)

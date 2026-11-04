@@ -491,11 +491,15 @@ class NativeSourceCompiler:
             missing={ident for error in validation.errors
                 if re.fullmatch(r"uncovered textual regions: \['[0-9a-f-]{36}'(?:, '[0-9a-f-]{36}'){0,39}\]",error)
                 for ident in re.findall(r"'([0-9a-f-]{36})'",error)}
-            locations=[f'{page.physical_page_index}/{region.region_key}'
-                for page in graph.pages for region in page.regions if str(region.region_id) in missing]
-            if locations:
-                raise failure('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
-                    +';'.join(locations[:40])+':fix=add_chunk_region_refs_or_span_refs')
+            figures={match.group(1) for error in validation.errors
+                if (match:=re.fullmatch(r'figure must be staged or explicitly excluded: ([0-9a-f-]{36})',error))}
+            for identifiers,kind,fix in ((missing,'missing_chunk_coverage','add_chunk_region_refs_or_span_refs'),
+                    (figures,'missing_figure_review','stage_illustrations_for_each_figure_region')):
+                locations=[f'{page.physical_page_index}/{region.region_key}'
+                    for page in graph.pages for region in page.regions if str(region.region_id) in identifiers]
+                if locations:
+                    raise failure('native_source_stage_requires_review:'+kind+':physical_page_index/region_key='
+                        +';'.join(locations[:40])+':fix='+fix)
             raise failure('native_source_stage_requires_review')
         if research['state']=='complete' and not all(reviews.get(str(p.page_id)) for p in graph.pages):
             raise failure('complete_research_requires_explicit_same_pass_page_review')
