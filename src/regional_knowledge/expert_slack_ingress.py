@@ -84,6 +84,44 @@ class ExpertSlackIngress:
             # authoritative and the bot's one-shot native Slack sender proceeds.
             _LOG.warning("rkb_ph_wake_degraded error_type=%s", type(exc).__name__)
 
+    async def accept_durable(self, observation):
+        """Shared HTTP/Socket admission; model requests need original Dataset coverage."""
+        outcome=await asyncio.to_thread(self.control.accept,observation)
+        if self._reply is not None and getattr(self._reply,'executor_context',None) is None:
+            return outcome  # Existing immediate PR609 path needs no Dataset stage.
+        if self.control.dataset_records is not None:
+            # A signed request is staged only by the existing fenced
+            # Dataset CAS. Local staging never earns Slack HTTP 200.
+            request_id=outcome['request_id']
+            task=self._staging_tasks.get(request_id)
+            if task is None:
+                if len(self._staging_tasks)>=_MAX_INFLIGHT_STAGES:
+                    return None
+                task=asyncio.create_task(
+                    self.control.stage_received_dataset(request_id))
+                self._staging_tasks[request_id]=task
+                def done(finished, identity=request_id):
+                    if self._staging_tasks.get(identity) is finished:
+                        self._staging_tasks.pop(identity,None)
+                    try:
+                        finished.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as exc:
+                        # Provider event content, ids and secrets MUST
+                        # NOT appear in logs. The retry stays 503.
+                        _LOG.warning("expert_dataset_stage_pending error_type=%s",
+                                     type(exc).__name__)
+                task.add_done_callback(done)
+            # Do not cancel a CAS task while its worker thread still
+            # holds the existing writer fence. Slack HTTP may time out
+            # independently; never 200 until exact remote coverage.
+            await asyncio.shield(task)
+            covered=await asyncio.to_thread(
+                self.control.confirm_dataset_coverage,request_id)
+            outcome=dict(outcome,durable=covered)
+        return outcome if outcome['durable'] is True else None
+
     async def __call__(self, request):
         if self.socket_only:
             return JSONResponse({'error':'socket_mode_only'},status_code=404,
@@ -114,55 +152,13 @@ class ExpertSlackIngress:
                 if observation is None:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
-                outcome=await asyncio.to_thread(self.control.accept,observation)
-                if self._reply is not None and getattr(self._reply,'executor_context',None) is None:
-                    # Existing read-only fallback remains independent of optional PH.
-                    self._reply.notify(outcome['request_id'])
-                    # Starlette runs the task only *after* the HTTP 200 body is sent.
-                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'},
-                        background=BackgroundTask(self.wake_accepted, outcome['request_id'])
-                        if self._waker is not None else None)
-                if self.control.dataset_records is not None:
-                    # A signed request is staged only by the existing fenced
-                    # Dataset CAS. Local staging never earns Slack HTTP 200.
-                    request_id=outcome['request_id']
-                    task=self._staging_tasks.get(request_id)
-                    if task is None:
-                        if len(self._staging_tasks)>=_MAX_INFLIGHT_STAGES:
-                            return JSONResponse({'error':'remote_intent_pending'},
-                                status_code=503,headers={'Cache-Control':'no-store',
-                                                         'Retry-After':'1'})
-                        task=asyncio.create_task(
-                            self.control.stage_received_dataset(request_id))
-                        self._staging_tasks[request_id]=task
-                        def done(finished, identity=request_id):
-                            if self._staging_tasks.get(identity) is finished:
-                                self._staging_tasks.pop(identity,None)
-                            try:
-                                finished.result()
-                            except asyncio.CancelledError:
-                                pass
-                            except Exception as exc:
-                                # Provider event content, ids and secrets MUST
-                                # NOT appear in logs. The retry stays 503.
-                                _LOG.warning("expert_dataset_stage_pending error_type=%s",
-                                             type(exc).__name__)
-                        task.add_done_callback(done)
-                    # Do not cancel a CAS task while its worker thread still
-                    # holds the existing writer fence. Slack HTTP may time out
-                    # independently; never 200 until exact remote coverage.
-                    await asyncio.shield(task)
-                    covered=await asyncio.to_thread(
-                        self.control.confirm_dataset_coverage,request_id)
-                    outcome=dict(outcome,durable=covered)
-                if outcome['durable'] is not True:
-                    # Do not give Slack an irreversible 200 for a local-only
-                    # received row that could vanish with the DevCoveer disk.
+                outcome=await self.accept_durable(observation)
+                if outcome is None:
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
                 if self._reply is not None:
                     self._reply.notify(outcome['request_id'])
-                # PH is optional; never hold the Slack transport ACK for its 1.5s timeout.
+                # PH wake stays after HTTP 200; the bot alone sends Slack replies.
                 return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'},
                     background=BackgroundTask(self.wake_accepted, outcome['request_id'])
                     if self._waker is not None else None)

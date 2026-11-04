@@ -813,6 +813,45 @@ def build_server(
         mcp.custom_route(RESULT_PATH, methods=['POST'])(expert_result_receiver.__call__)
         mcp.custom_route(RECOVERY_PATH, methods=['POST'])(expert_recovery_receiver.__call__)
 
+    # The same provisioned executor and original delivery authority serve both MCP tools.
+    if expert_result_receiver is not None and expert_slack_ingress._reply is not None:
+        receiver=expert_result_receiver
+        delivery=receiver.context.delivery
+        control=receiver.control
+        credentials=receiver.context.credentials
+        sender=expert_slack_ingress._reply.sender
+
+        def installed_executor():
+            token=get_access_token()
+            if (token is None or token.subject!=credentials.service_id
+                    or token.client_id!=credentials.service_id
+                    or token.subject==control.people.owner):
+                raise PermissionError("restricted executor MCP credential required")
+            with control.corpus.connect() as db:
+                control._service(db,credentials)
+            return credentials
+
+        @mcp.tool(name="expert_request_claim",title="Claim original Slack expert request",
+                  description="Restricted installed executor only. Use returned original question and lease; never impersonate the Slack author.")
+        async def expert_request_claim(request_id:str|None=None,
+                                       lease_seconds:Annotated[int,Field(ge=1,le=300)]=240)->dict[str,Any]:
+            credential=installed_executor()
+            lease=await asyncio.to_thread(control.claim,credential,
+                                          request_id=request_id,lease_seconds=lease_seconds)
+            if lease["state"]=="leased":
+                original=await asyncio.to_thread(control.claim_context,credential,
+                    lease["request_id"],lease["generation"],lease["execution_token"])
+                return dict(lease,input_text=original["input_text"],scope=original["scope"])
+            return lease
+
+        @mcp.tool(name="expert_request_result",title="Save and deliver correlated expert answer",
+                  description="Restricted installed executor only. Reuse exact request/generation/token/text while Dataset result or receipt is pending; never send Slack directly.")
+        async def expert_request_result(request_id:str,generation:int,
+                                        execution_token:str,text:str)->dict[str,Any]:
+            return await delivery.deliver_native_slack_result(
+                receiver,installed_executor(),sender,request_id=request_id,
+                generation=generation,execution_token=execution_token,text=text)
+
     @mcp.custom_route("/fast-tier/health", methods=["GET"])
     async def fast_tier_health(request: Request):
         encoder = getattr(backend, "embedder", None)
@@ -1990,7 +2029,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             evidence=expert_evidence_receiver,
             sender=SlackChatSender(token=bot_token,app_id=expert_slack_ingress.control.app_id,
                 team_id=expert_slack_ingress.control.team_id,
-                bot_user_id=expert_slack_ingress.control.bot_user_id))
+                bot_user_id=expert_slack_ingress.control.bot_user_id),
+            executor_context=expert_executor_context)
         expert_slack_ingress.bind_search_reply(reply)
         expert_slack_socket_mode=ExpertSlackSocketMode(ingress=expert_slack_ingress,
             app_token=os.getenv('SLACK_APP_TOKEN',''),bot_token=bot_token)
@@ -1999,7 +2039,8 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             raise RuntimeError('Slack search reply requires existing signed ingress and evidence reader')
         from .expert_slack_search_reply import configured_expert_slack_search_reply
         reply=configured_expert_slack_search_reply(
-            expert_slack_ingress,expert_evidence_receiver,reply_config)
+            expert_slack_ingress,expert_evidence_receiver,reply_config,
+            executor_context=expert_executor_context)
         expert_slack_ingress.bind_search_reply(reply)
     expert_claim_receiver=expert_result_receiver=expert_recovery_receiver=None
     if expert_executor_context is not None:

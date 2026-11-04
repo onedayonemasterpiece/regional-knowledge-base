@@ -6,7 +6,6 @@ The request is admitted by the SAME TargetExpertRequestControl as HTTP.
 """
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 import logging
 import time
@@ -53,7 +52,9 @@ class ExpertSlackSocketMode:
         if observation is None:
             await client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
             return
-        outcome = await asyncio.to_thread(self.ingress.control.accept, observation)
+        outcome = await self.ingress.accept_durable(observation)
+        if outcome is None:
+            raise RuntimeError("original Slack request still awaiting Dataset coverage")
         # A failed SQLite/identity/capability check must not be acknowledged.
         await client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
         try:

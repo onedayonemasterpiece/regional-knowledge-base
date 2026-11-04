@@ -8,6 +8,7 @@ No new journal, service, source corpus or network access is created here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 import hashlib
 import hmac
 import json
@@ -62,7 +63,7 @@ class TargetExpertDeliveryControl:
 
     The injected gate is the existing target source/Case output authority;
     no dummy allow-all gate is installed at runtime. Tests use a synthetic
-    gate to prove deny/UNKNOWN order. This component never posts to Slack.
+    gate to prove deny/UNKNOWN order. One native sender is supplied by the caller.
     """
     def __init__(self, control: TargetExpertRequestControl, *, source_gate):
         if type(control) is not TargetExpertRequestControl or not callable(source_gate):
@@ -303,6 +304,55 @@ class TargetExpertDeliveryControl:
             return dict(request_id=row['id'],state='delivered')
 
 
+    async def deliver_native_slack_result(self, receiver, credentials, sender, *,
+                                          request_id, generation, execution_token, text):
+        """Original Dataset CAS, native sender and marker readback without resend."""
+        from .expert_executor_workflow import _input as parse_executor_result
+        value=parse_executor_result(json.dumps(dict(
+            codec="rkb.expert-executor-result.v1",request_id=request_id,
+            generation=generation,execution_token=execution_token,
+            text=text),ensure_ascii=False).encode())
+        row=await asyncio.to_thread(self.control._row,request_id)
+        if row["state"] in ("sending","unknown"):
+            if (row["generation"]!=generation or row["executor_id"]!=credentials.service_id
+                    or not hmac.compare_digest(row["execution_token_hash"] or "",
+                        hashlib.sha256(execution_token.encode()).hexdigest())
+                    or json.loads(row["result_json"] or "{}").get("text")!=text):
+                raise PermissionError("original executor result changed")
+            echo=await sender.find_post(json.loads(row["origin"]),row["delivery_id"])
+            if echo is None:return dict(state="unknown",provider_sent=None,remote_accepted=False)
+        else:
+            status=json.loads((await receiver._advance(value)).body)
+            if status["state"]!="send_intent_ready":return status
+            permit=None
+            async def claim_native():
+                nonlocal permit
+                permit=await asyncio.to_thread(self.claim_send_once,credentials,
+                    request_id,generation,execution_token)
+                return dict(event_id=permit["delivery_id"],channel=permit["channel_id"],
+                            thread=permit["thread_ts"],text=permit["text"])
+            try:
+                echo=await sender.post_once(claim=claim_native)
+            except BaseException:
+                if permit is not None:
+                    await asyncio.to_thread(self.uncertain_delivery,credentials,
+                        request_id,permit["delivery_id"])
+                raise
+        native=verified_native_slack_receipt(
+            dict(app_id=sender.app_id,user=echo["user"],channel=echo["channel"],
+                 thread_ts=echo["thread_ts"],ts=echo["ts"],
+                 client_msg_id=echo["event_id"],text=echo["text"]),
+            app_id=sender.app_id,team_id=sender.team_id,bot_user_id=sender.bot_user_id,
+            channel_id=echo["channel"],thread_ts=echo["thread_ts"])
+        await self.stage_dataset_native_receipt(credentials,request_id,native)
+        try:
+            settled=await asyncio.to_thread(self.confirm_dataset_native_receipt,
+                                            credentials,request_id,native)
+        except RequestControlError as exc:
+            if exc.code!="dataset_delivery_receipt_not_covered":raise
+            return dict(state="sending",provider_sent=True,remote_accepted=False)
+        return dict(state=settled["state"],provider_sent=True,remote_accepted=True)
+
     def _require_dataset_effects(self):
         if self.dataset_effects is None:
             _fail('dataset_effect_store_required')
@@ -380,7 +430,9 @@ class TargetExpertDeliveryControl:
             send_doc,_=parse_send(row,raw,result_doc,result_raw)
             proof_hash=hashlib.sha256(raw).hexdigest()
             if ((row['send_intent_hash'] and row['send_intent_hash']!=proof_hash)
-                    or (row['delivery_id'] and row['delivery_id']!=send_doc['client_msg_id'])):
+                    or (row['delivery_id'] and row['delivery_id']!=send_doc['client_msg_id']
+                        and not (row['state']=='result_ready'
+                                 and row['delivery_id']==row['event_id']+':warming'))):
                 _fail('send_intent_conflict')
             db.execute("UPDATE rkb_expert_requests SET state='send_intent_ready',"
                        "send_intent_hash=?,delivery_id=?,updated_at=? WHERE id=?",

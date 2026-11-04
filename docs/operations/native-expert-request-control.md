@@ -478,3 +478,101 @@ live control, expected timing from 13 Oct, and the owner-only refresh step:
 Do not declare the complete Slack expert workflow accepted from fixture tests
 or from PH callback acceptance. The actual execution/result path is governed
 by the unchanged RKB expert control and the separately reviewed answer slice.
+
+
+## SA, 03.11.2026 — restricted MCP claim/result + bounded Slack answer (source-only)
+
+The short-path PR609 sender is unchanged **unless** the owner installs the original
+`ExpertExecutorContext` together with the existing signed/Socket Slack ingress and
+bot reply. That opt-in composition exposes **two tools** on the same RKB MCP server:
+
+1. `expert_request_claim(request_id=null, lease_seconds=240)`: the installed
+   executor claims an already **Dataset-covered** original Slack request;
+   `leased` supplies `request_id`, `generation`, `execution_token`,
+   exact original `input_text` and `scope`. `empty/deferred` is not a question.
+   Work only within the Slack author's authorized group/personal evidence scope.
+2. `expert_request_result(request_id, generation, execution_token, text)`:
+   the same restricted executor saves that model-authored answer using the
+   **existing** receiver's `result_pending → send_intent_pending →
+   send_intent_ready` Dataset boundaries. Repeat the **identical** tool
+   arguments while `remote_accepted=false`. On covered send intent, the
+   native Kaliningrad Base sender uses `TargetExpertDeliveryControl.claim_send_once`
+   and commits the provider's actual native receipt through original Dataset
+   controls. `sending` means the Slack post was observed but its receipt may
+   still need checkpoint coverage; a repeat inspects original thread by marker.
+   `unknown` is **never permission to send again**.
+
+**What Shkiper must install (not done in this PR):** owner-route
+`provision_executor` of an `ExecutorCredentials(service_id, token)` for the
+existing `TargetExpertRequestControl` and bind its **actual** credential and
+`TargetExpertDeliveryControl` (real `source_gate`, Dataset effects) into
+`ExpertExecutorContext`. Configure the existing Slack ingress, verified app/team,
+allowed channels, original participant links and public_search grants, existing
+Slack sender and `expert_slack_search_reply`; configure a separate **confidential,
+non-owner RKB OAuth client and executor actor** with
+`client_id == subject == ExecutorCredentials.service_id`. Only a verified
+access token for this exact installed client+actor passes the MCP tool gate,
+and the server rechecks the *installed* service credential on every invocation.
+Never pass the service token in tool arguments, give owner credentials to dot,
+commit config/token paths or install a permissive source gate. If the executor
+is absent, leave PR609 running unchanged.
+
+**Dot call flow:** on a real accepted request notification, or when explicitly
+driven to claim existing durable work, call `expert_request_claim`, then search
+RKB for the *exact* returned question with original Slack actor's permitted
+source evidence (not dot's owner scope), synthesize the response per
+[product answer modes §2](../product/rkb-answer-modes-20261024.md), and call
+`expert_request_result` with the same request ID, generation and lease token
+until remote acceptance / confirmed receipt. Ordinary answer: 1–4 meaningful
+sentences in the question's language and an `Источники:` bibliography
+with real author/title/year/printed pages when available, no UUID; German
+question → German answer immediately followed by Russian translation.
+No inventing a claim from irrelevant top-K. **The MCP Events webhook
+publisher/subscription and dot wake are NOT installed by this source slice**;
+this runbook is not evidence of unattended dot activation.
+
+**Fallback and race:** `MODEL_WAIT_SECONDS=180` from original request creation:
+previous observed dot 43–82 s plus the original ~30 s Dataset cadence for
+result and send intent require more than the proposed 7 s UX target; this is
+a bounded pilot window, not a measured SLO. **The user does not wait
+silently:** immediately after the original request is remotely accepted and
+the model-first reply task starts, the same Kaliningrad Base sender posts
+«Ищу ответ в книгах, обычно около минуты.» to the original thread once.
+It uses PR616's existing `_claim_warming_post` and `event_id:warming`
+in the original `delivery_id`, with actor/destination recheck, no separate
+status, journal or retry after a lost ACK. The model's verified Dataset send
+intent may replace precisely this warming marker with its final native
+`client_msg_id`; PR609 fallback likewise replaces it with `event_id`.
+Both paths still issue exactly **one final answer**, separate from the
+one-time notice. With no completed result/send intent before the deadline,
+the existing `searching` SQLite CAS takes exclusive ownership for the PR609
+extractive reply. It fences a late
+`claim_context/prepare_result/claim_send_once`; the bot issues only one
+final `chat.postMessage` marked by the original `event_id`.
+Once a remotely covered executor send intent exists, **the fallback cannot
+steal that send**: the original model sender/receipt control owns delivery.
+A late result after fallback fails its original lease/state fence and cannot
+post a second final message. Warming notices retain their distinct
+`:warming` one-shot marker. A missing native ACK follows existing UNKNOWN
+thread readback/no blind resend rules.
+
+**Release ownership:** Shkiper alone installs/restarts and runs a real
+nonowner/owner/revocation/provider-UNKNOWN E2E after RKB-Opus reviews/merges.
+The source-only test/CI does not prove a working installed dot subscription
+or a live Slack model answer.
+
+**Review integration with concurrent SW #758 / PH #212 (not merged here):**
+RKB-Opus should merge #758 first (with the existing PH companion reviewed),
+then rebase/merge this same PR #759 with deliberate conflict resolution.
+Both PRs touch `server.py`, `expert_slack_ingress.py`,
+`expert_slack_socket_mode.py` and this runbook: preserve #758's optional
+`bind_waker/wake_accepted` after **original Dataset proof**, and #759's
+executor-context binding, Socket Mode Dataset stage/confirm, one-shot early
+notice, model/fallback CAS and original receipt. For HTTP, retain the
+read-only reply branch without executor and `reply.notify` **plus**
+`wake_accepted` after the remote proof; for Socket Mode, retain ACK and
+notify followed by PH wake. The operator must not activate the 180-second
+model wait without the **actually installed and working** PH wake/authorized
+dot subscriber; otherwise remain on the existing immediate PR609 reply.
+#758 does not add a second Slack sender. Live integration/merge remains
+RKB-Opus and Shkiper's separate work, not demonstrated by source CI.

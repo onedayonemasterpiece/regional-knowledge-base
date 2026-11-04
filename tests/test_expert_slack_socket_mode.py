@@ -55,9 +55,15 @@ def _event_request(n=1, *, event_type="app_mention", **overrides):
 
 
 @pytest.mark.asyncio
-async def test_socket_authenticated_original_nonowner_stored_before_ack_same_event_id(env):
+async def test_socket_authenticated_original_nonowner_stored_before_ack_same_event_id(env, monkeypatch):
     ctl,_,link=_prepare(env)
     ingress=ExpertSlackIngress(ctl,signing_secret=None,socket_only=True)
+    calls=[]
+    prepare=ingress.accept_durable
+    async def through_ingress(observation):
+        calls.append(True)
+        return await prepare(observation)
+    monkeypatch.setattr(ingress,'accept_durable',through_ingress)
     wakes=[]
     ingress.bind_search_reply(SimpleNamespace(control=ctl,ingress=ingress,notify=wakes.append))
     fake=FakeSocketClient(control=ctl)
@@ -79,11 +85,51 @@ async def test_socket_authenticated_original_nonowner_stored_before_ack_same_eve
             envelope_id="envelope-retry",payload=request.payload))
         assert fake.acks==["envelope-1","envelope-retry"]
         assert wakes==[wakes[0],wakes[0]]
+        assert calls==[True,True]  # Socket uses the same durable ingress as HTTP.
         with ctl.corpus.connect() as db:
             assert db.execute("SELECT count(*) FROM rkb_expert_requests").fetchone()[0]==1
         # The existing PR383 CAS, not the Socket envelope, fences a second post.
     assert fake.calls==["connect","ack","ack","close"]
     assert adapter._client is None
+
+
+@pytest.mark.asyncio
+async def test_socket_model_first_uses_ingress_dataset_gate_before_ack(env,tmp_path,monkeypatch):
+    """Original Dataset CAS must be remotely covered before Socket ACK/notify."""
+    from test_expert_request_recovery import attached,next_checkpoint
+    fixture=attached(env,tmp_path)
+    ctl=fixture.ctl
+    ingress=ExpertSlackIngress(ctl,signing_secret=None,socket_only=True)
+    replies=[]
+    ingress.bind_search_reply(SimpleNamespace(
+        control=ctl,ingress=ingress,notify=replies.append,executor_context=object()))
+    calls=[]
+    original=ingress.accept_durable
+    async def through_ingress(observation):
+        calls.append(True)
+        return await original(observation)
+    monkeypatch.setattr(ingress,'accept_durable',through_ingress)
+    fake=FakeSocketClient(control=ctl)
+    adapter=ExpertSlackSocketMode(ingress=ingress,app_token='xapp-synthetic',
+        bot_token='xoxb-synthetic',client_factory=lambda *_:fake)
+    async with adapter.lifespan():
+        event=_event_request()
+        with pytest.raises(RuntimeError,match='awaiting Dataset coverage'):
+            await adapter.handle(fake,event)
+        assert fake.acks==[] and replies==[] and calls==[True]
+        with ctl.corpus.connect() as db:
+            rid=db.execute('SELECT id FROM rkb_expert_requests').fetchone()['id']
+        store=fixture.saved.store
+        checkpoint,ref,publisher,result=next_checkpoint(
+            fixture.saved,store.export_control())
+        store.publisher=publisher
+        store.promote(checkpoint,result,manifest_ref=ref)
+        assert ctl.reconcile_dataset_coverage()==0
+        assert ctl.reconcile_dataset_coverage()==1
+        assert ctl.confirm_dataset_coverage(rid)
+        await adapter.handle(fake,event)
+        assert fake.acks==['envelope-1'] and replies==[rid]
+        assert calls==[True,True]
 
 
 @pytest.mark.asyncio

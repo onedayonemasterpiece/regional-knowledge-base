@@ -178,6 +178,12 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             assert lease['state']=='leased' and lease['generation']==1
             assert ctl.claim_context(credentials,rid,lease['generation'],
                 lease['execution_token'])['person_id']==env.p.other.subject
+            # PR616 early notice reuses delivery_id; the covered model send
+            # must replace only this exact one-shot warming marker.
+            with ctl.corpus.connect() as db:
+                db.execute("UPDATE rkb_expert_requests SET delivery_id=event_id||':warming' WHERE id=?",
+                           (rid,))
+            assert ctl._row(rid)['delivery_id']==ctl._row(rid)['event_id']+':warming'
             body=_result(rid,lease)
             first=await client.post(RESULT,json=body,headers=_auth(credentials))
             assert first.status_code==202
@@ -233,6 +239,17 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             row=ctl._row(rid)
             assert row['state']=='unknown' and row['delivery_attempt']==1
             assert row['delivery_receipt'] is None
+            # Re-enter the actual MCP delivery method after ambiguous Slack ACK:
+            # inspect the original thread, never issue a second provider POST.
+            from unittest.mock import AsyncMock
+            sender=SimpleNamespace(find_post=AsyncMock(return_value=None),
+                                   post_once=AsyncMock(side_effect=AssertionError('duplicate POST')))
+            retry=await ctx.delivery.deliver_native_slack_result(
+                result,credentials,sender,request_id=rid,
+                generation=lease['generation'],execution_token=lease['execution_token'],
+                text=body['text'])
+            assert retry==dict(state='unknown',provider_sent=None,remote_accepted=False)
+            sender.post_once.assert_not_awaited()
         # No created provider result or new writer authority.
         assert p.calls.count('capture')==3
     finally:

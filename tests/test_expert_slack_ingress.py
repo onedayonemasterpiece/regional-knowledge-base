@@ -38,10 +38,17 @@ def app(control):
 
 
 @pytest.mark.asyncio
-async def test_signed_request_is_received_but_slack_ack_only_after_exact_remote_seal(env):
+async def test_signed_request_is_received_but_slack_ack_only_after_exact_remote_seal(env, monkeypatch):
     ctl,creds,link=_prepare(env)
     raw,headers=_event()
-    service=app(ctl)
+    ingress=ExpertSlackIngress(ctl,signing_secret=SECRET,clock=lambda:NOW)
+    calls=[]
+    prepare=ingress.accept_durable
+    async def through_ingress(observation):
+        calls.append(True)
+        return await prepare(observation)
+    monkeypatch.setattr(ingress,'accept_durable',through_ingress)
+    service=Starlette(routes=[Route(PATH,ingress.__call__,methods=['POST'])])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=service),base_url='http://test') as client:
         first=await client.post(PATH,content=raw,headers=headers)
         assert first.status_code==503 and first.json()=={'error':'remote_intent_pending'}
@@ -61,6 +68,7 @@ async def test_signed_request_is_received_but_slack_ack_only_after_exact_remote_
         assert (await ctl.verify_remote_intent(request_id,cmd,seal))['remote_accepted']
         accepted=await client.post(PATH,content=raw,headers=headers)
         assert accepted.status_code==200 and accepted.json()=={'ok':True}
+        assert calls==[True,True,True]  # HTTP uses exactly one shared ingress method.
         with env.p.corpus.connect() as db:
             assert db.execute('SELECT count(*) FROM rkb_expert_requests').fetchone()[0]==1
             assert db.execute('SELECT state FROM rkb_expert_requests').fetchone()[0]=='pending'
