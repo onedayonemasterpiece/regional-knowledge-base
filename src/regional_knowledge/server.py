@@ -2014,6 +2014,13 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
         from .expert_slack_composition import compose_expert_evidence_receiver
         expert_evidence_receiver=compose_expert_evidence_receiver(
             target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
+    executor_config=os.getenv('RKB_EXPERT_EXECUTOR_CONFIG','').strip()
+    if executor_config:
+        if expert_executor_context is not None:
+            raise RuntimeError('expert executor has more than one configured owner')
+        from .kaggle_source_owners import configured_expert_executor_context
+        expert_executor_context=configured_expert_executor_context(
+            executor_config,target_startup=target_startup,expert_slack_ingress=expert_slack_ingress)
     # Both transports reuse the same signed/verified Slack human search reply.
     # Socket Mode uses the existing operator-owned app/bot env tokens only when
     # the private ingress descriptor explicitly selects the socket-only codec.

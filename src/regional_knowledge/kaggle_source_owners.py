@@ -219,6 +219,29 @@ def configured_expert_slack_ingress(target_startup, config_path):
                               socket_only=socket_only)
 
 
+def configured_expert_executor_context(path, *, target_startup, expert_slack_ingress):
+    """Bind the already-provisioned service to its original delivery control."""
+    from .projects_hub_reader import PrivateInput
+    from .expert_request_control import ExecutorCredentials
+    from .expert_delivery_control import TargetExpertDeliveryControl
+    from .expert_executor_workflow import ExpertExecutorContext
+    def private(filename, limit):
+        data = PrivateInput(filename, limit)
+        if os.stat(filename, follow_symlinks=False).st_uid != os.geteuid() or not data.current():
+            raise ValueError('private executor file owner changed')
+        return data.value
+
+    value = json.loads(private(path, 2048))
+    if (type(value) is not dict or set(value) != {'codec', 'service_id', 'service_token_file'}
+            or value['codec'] != 'rkb.expert-executor.v1'
+            or type(value['service_id']) is not str or not value['service_id']):
+        raise ValueError('exact executor config required')
+    credentials = ExecutorCredentials(value['service_id'],
+        private(value['service_token_file'], 512).decode('ascii').strip())
+    return ExpertExecutorContext(credentials, TargetExpertDeliveryControl(
+        expert_slack_ingress.control, source_gate=lambda *_: target_startup.reads_current()))
+
+
 def configured_source_service():
     """Fixed production entrypoint over the application's existing owner config."""
     path=os.getenv('RKB_KAGGLE_SOURCE_CONFIG','').strip()

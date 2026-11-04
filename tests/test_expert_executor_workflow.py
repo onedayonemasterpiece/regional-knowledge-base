@@ -255,3 +255,73 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
     finally:
         local.spool.close()
         p.guard.close()
+
+
+@pytest.mark.asyncio
+async def test_main_private_executor_env_enables_model_reply_and_ph_wake(
+    owner, env, tmp_path, monkeypatch,
+):
+    """Actual env -> context -> reply/wake; no provider, Kaggle or Slack I/O."""
+    import json
+
+    import regional_knowledge.kaggle_source_owners as owners
+    from regional_knowledge.kaggle_service_startup import TargetServiceConfig, TargetServiceStartup
+    from test_kaggle_service_startup import HistoryAdapter
+
+    p, local, _control, credentials, _app = composition(owner, env, tmp_path, monkeypatch)
+    startup = TargetServiceStartup(TargetServiceConfig(
+        owner.auth.provider, env.p.registry, owner.q, local.spool,
+        HistoryAdapter(), 'writer-1', p.guard.current))
+    try:
+        def private(filename, value):
+            filename.write_text(value if isinstance(value, str) else json.dumps(value))
+            filename.chmod(0o600)
+            return str(filename)
+
+        ingress_file = private(tmp_path / 'ingress.json', {
+            'codec': 'rkb.expert-slack-socket.v1', 'app_id': 'A111',
+            'team_id': 'T111', 'bot_user_id': 'UBOT', 'allowed_channels': ['C111']})
+        secret_file = private(tmp_path / 'executor-token', credentials.token)
+        executor_file = private(tmp_path / 'executor.json', {
+            'codec': 'rkb.expert-executor.v1',
+            'service_id': credentials.service_id, 'service_token_file': secret_file})
+        wake_secret = private(tmp_path / 'ph-secret', 'synthetic-ph-service-token-' + 'a' * 32)
+        wake_file = private(tmp_path / 'wake.json', {
+            'codec': 'rkb.ph-expert-wake.v1',
+            'project_id': 'prj_' + 'b' * 32, 'service_secret_file': wake_secret})
+        monkeypatch.setenv('RKB_EXPERT_SLACK_INGRESS_CONFIG', ingress_file)
+        monkeypatch.setenv('RKB_EXPERT_EXECUTOR_CONFIG', executor_file)
+        monkeypatch.setenv('RKB_EXPERT_PH_WAKE_CONFIG', wake_file)
+        monkeypatch.setenv('SLACK_BOT_TOKEN', 'xoxb-synthetic-no-provider')
+        monkeypatch.setenv('SLACK_APP_TOKEN', 'xapp-synthetic-no-provider')
+
+        seen = []
+        original = owners.configured_expert_slack_ingress
+        def capture_ingress(*args):
+            ingress = original(*args)
+            seen.append(ingress)
+            return ingress
+        monkeypatch.setattr(owners, 'configured_expert_slack_ingress', capture_ingress)
+        captured = _capture_main(monkeypatch)
+        server.main(target_startup=startup)
+
+        assert len(captured) == 1 and len(seen) == 1
+        ingress = seen[0]
+        context = ingress._reply.executor_context
+        assert isinstance(context, ExpertExecutorContext)
+        assert context.credentials == credentials
+        assert context.delivery.control is ingress.control
+        assert context.delivery.dataset_effects is not None
+        assert ingress._reply._prepare_answer.__name__ == '_prepare_model'
+        assert ingress._waker.control is ingress.control
+        routes = {r.path for r in captured[0][1]['app'].routes}
+        assert {CLAIM, RESULT} <= routes and INGRESS not in routes  # Socket-only ingress.
+
+        (tmp_path / 'executor-token').chmod(0o644)
+        with pytest.raises(ValueError, match='private'):
+            server.main(target_startup=startup)
+        assert len(captured) == 1
+    finally:
+        await startup.source_dispatch.aclose()
+        local.spool.close()
+        p.guard.close()
