@@ -21,7 +21,7 @@ from . import request_order
 
 _LOG = logging.getLogger(__name__)
 MODEL_WAIT_SECONDS = 180  # Observed dot 43–82 s plus two ~31 s remote checkpoints.
-_PAGE = re.compile(r"(?i)(page|seite|стр(?:аница|\.)|лист|\bp\.\s*\d|\bs\.\s*\d)")
+_PAGE = re.compile(r"(?i)(?<!\w)(pp?\.|с\.|стр\.|s\.|seite|pages?|лист)\s*(\d+(?:\s*[-–,]\s*\d+)*)")
 _GERMAN_QUESTION = re.compile(r"(?i)^\s*(?:wann|wo|wer|was|wie|warum|weshalb|welche\w*|in welchem|seit wann|ist|hat|gibt es)\b")
 _OPAQUE_REF = re.compile(r"(?i)(?:urn:rkb:|rkb:passage:|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
@@ -40,7 +40,11 @@ def answer_from_evidence(result, question=""):
     if not result.get("evidence"):
         return ("In den verfügbaren Quellen wurden keine Belege gefunden. Русский перевод: В доступных источниках подтверждений не найдено."
                 if _GERMAN_QUESTION.search(question) else "В доступных источниках подтверждений не найдено.")
-    clean=lambda s,n:html.escape(" ".join(s.split())[:n],quote=False) if type(s) is str else ""
+    def clean(s,n):
+        s=" ".join(s.split()) if type(s) is str else ""
+        if len(s)>n:s=s[:n].rsplit(" ",1)[0] if " " in s[:n] else ""
+        return html.escape(s,quote=False)
+    german=bool(_GERMAN_QUESTION.search(question))
     lines=["Найдено в источниках:"]
     seen=set()
     for item in result["evidence"][:3]:
@@ -48,20 +52,32 @@ def answer_from_evidence(result, question=""):
         if type(meta) is not dict or not item.get("text"):
             raise PermissionError("exact source text required")
         title=clean(item.get("title"),250)
-        citation=clean(meta.get("citation"),350)
         locator=clean(meta.get("locator"),160)
+        catalog=(meta.get("source_provenance") or {}).get("catalog") or {}
+        if catalog.get("title"):
+            authors=[clean(a,250) for a in catalog.get("authors",[]) if type(a) is str and a.strip()]
+            names=", ".join(authors[:2])
+            if len(authors)>2:names+=" u. a." if german else " и др."
+            year=catalog.get("publication_year")
+            title=(names.rstrip(".")+". " if names else "")+clean(catalog["title"],250)+(f" ({year})" if type(year) is int and 1<=year<=3000 else "")
         title="" if _OPAQUE_REF.search(title) else title
-        citation="" if _OPAQUE_REF.search(citation) else citation
         locator="" if _OPAQUE_REF.search(locator) else locator
-        name=title or citation
+        name=title or clean(meta.get("citation"),350)
+        if _OPAQUE_REF.search(name):continue
         if not name:continue
-        key=citation or re.split(r"(?i),\s*(?:с\.|стр\.|p\.|s\.)\s*\d",title)[0]
+        name=re.split(r"(?i),\s*(?:с\.|стр\.|pp?\.|s\.|pages?)\s*\d",name)[0]
+        sources=meta.get("source_revisions") or []
+        key=(sources[0].get("source_id") if sources else None) or name
         if key in seen:continue
         seen.add(key)
-        if citation and citation not in name:name+=". "+citation
-        if locator and _PAGE.search(locator) and locator not in name:name+=", "+locator
-        fragment=clean(item["text"],200)
-        sentence=re.split(r"(?<=[.!?])\s+",fragment,maxsplit=1)[0]
+        page=_PAGE.search(locator or clean(meta.get("citation"),1024))
+        if page:
+            prefix="S." if german else "с."
+            name+=f", {prefix} {page[2]}"
+        fragment=re.split(r"(?<=[.!?])\s+"," ".join(item["text"].split()),maxsplit=1)[0]
+        sentence=clean(fragment,200)
+        if len(fragment)>200:sentence=clean(fragment,199)+"…"
+        if _OPAQUE_REF.search(sentence):continue
         lines.append(f"{len(lines)}. {name} — {sentence}")
     return "\n".join(lines) if len("\n".join(lines).encode())<=12000 else "Найдено в источниках: (ответ превышает допустимый размер)"
 

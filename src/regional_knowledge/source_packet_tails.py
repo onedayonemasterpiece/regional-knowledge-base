@@ -42,28 +42,38 @@ async def pending_tail_refs(connection, source_id, ingestion_id):
         WHERE st.source_id=%s AND st.ingestion_id=%s AND s.accepted AND NOT s.withdrawn''',
         (source_id,ingestion_id))).fetchone() is None:
         raise ValueError('source_tail_scope_unavailable')
-    rows=await (await connection.execute('''SELECT r.region_id,r.page_id,p.physical_page_index,
-        p.model_page->'regions',r.source_text_sha256,sp.covered_end
+    rows=await (await connection.execute('''WITH provenance AS MATERIALIZED (
+        SELECT data FROM rkb_v4.source_passage_provenance WHERE source_id=%s
+        ), coverage AS MATERIALIZED (
+        SELECT page_id,span->>'region_id' region_id,max((span->>'end')::integer) covered_end
+        FROM provenance CROSS JOIN LATERAL jsonb_array_elements_text(data->'page_ids') page_id
+        CROSS JOIN LATERAL jsonb_array_elements(data->'source_spans') span
+        GROUP BY page_id,span->>'region_id'
+        ), complete AS MATERIALIZED (
+        SELECT page_id,region_id FROM provenance
+        CROSS JOIN LATERAL jsonb_array_elements_text(data->'page_ids') page_id
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+          coalesce(data->'footnote_region_ids','[]'::jsonb) ||
+          CASE WHEN data->'source_spans'='[]'::jsonb THEN coalesce(data->'region_ids','[]'::jsonb) ELSE '[]'::jsonb END) region_id
+        ), candidates AS MATERIALIZED (
+        SELECT r.source_id,r.region_id,r.page_id,p.physical_page_index,p.batch_index,
+        p.model_page->'regions' regions,r.source_text_sha256,coalesce(sp.covered_end,0) covered_end
         FROM rkb_v4.source_regions r JOIN rkb_v4.source_stage_pages p
           ON p.source_id=r.source_id AND p.page_id=r.page_id
-        JOIN rkb_v4.source_stage_batches b ON b.source_id=p.source_id AND b.batch_index=p.batch_index
-        JOIN LATERAL jsonb_array_elements(convert_from(b.payload_bytes,'UTF8')::jsonb->'model_payload'->'pages')
-          WITH ORDINALITY AS page_order(page,ordinal) ON page_order.page->>'page_id'=p.page_id::text
-        CROSS JOIN LATERAL(SELECT coalesce(max((span->>'end')::integer),0) covered_end
-          FROM rkb_v4.source_passage_provenance z
-          CROSS JOIN LATERAL jsonb_array_elements(z.data->'source_spans') span
-          WHERE z.source_id=r.source_id
-            AND z.data @> jsonb_build_object('page_ids',jsonb_build_array(r.page_id::text))
-            AND span->>'region_id'=r.region_id::text) sp
+        LEFT JOIN coverage sp ON sp.page_id=r.page_id::text AND sp.region_id=r.region_id::text
         WHERE r.source_id=%s AND btrim(r.source_text)<>''
-          AND btrim(substr(r.source_text,sp.covered_end+1),E' \\t\\n\\r')<>''
+          AND btrim(substr(r.source_text,coalesce(sp.covered_end,0)+1),E' \\t\\n\\r')<>''
           AND EXISTS(SELECT 1 FROM jsonb_array_elements(p.model_page->'regions') m
               WHERE m->>'kind'='body' AND m->>'source_text'=r.source_text)
-          AND NOT EXISTS(SELECT 1 FROM rkb_v4.source_passage_provenance z
-              WHERE z.source_id=r.source_id AND z.data @> jsonb_build_object('page_ids',jsonb_build_array(r.page_id::text))
-                AND ((z.data->'source_spans'='[]'::jsonb AND z.data->'region_ids' @> jsonb_build_array(r.region_id::text))
-                  OR z.data->'footnote_region_ids' @> jsonb_build_array(r.region_id::text)))
-        ORDER BY p.batch_index,page_order.ordinal,r.region_id LIMIT 5''',(source_id,))).fetchall()
+          AND NOT EXISTS(SELECT 1 FROM complete z
+              WHERE z.page_id=r.page_id::text AND z.region_id=r.region_id::text)
+        ORDER BY p.batch_index FETCH FIRST 5 ROWS WITH TIES
+        ) SELECT r.region_id,r.page_id,r.physical_page_index,r.regions,r.source_text_sha256,r.covered_end
+        FROM candidates r JOIN rkb_v4.source_stage_batches b
+          ON b.source_id=r.source_id AND b.batch_index=r.batch_index
+        JOIN LATERAL jsonb_array_elements(convert_from(b.payload_bytes,'UTF8')::jsonb->'model_payload'->'pages')
+          WITH ORDINALITY AS page_order(page,ordinal) ON page_order.page->>'page_id'=r.page_id::text
+        ORDER BY r.batch_index,page_order.ordinal,r.region_id LIMIT 5''',(source_id,source_id))).fetchall()
     refs=[]
     for ident,page_id,index,regions,sha,start in rows:
         region=next((r for r in regions if str(uuid5(UUID(str(page_id)),'region:'+r['region_key']))==str(ident)),None)

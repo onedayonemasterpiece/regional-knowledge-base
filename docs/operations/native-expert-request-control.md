@@ -232,7 +232,11 @@ only for local at-most-once Slack delivery. This is not a new service or queue.
   group-public output only. Without an actual external expert executor,
   one bounded fallback message begins «Найдено в источниках:» and gives
   one line per distinct book (known title/author/year/page and the first
-  source sentence, capped at 200 characters). It is **not** a model answer.
+  source sentence, capped at 200 characters). Each line uses at most two
+  catalog authors (`и др.` / `u. a.` when needed), one title/year, localized
+  page `с.` / `S.`, and a whole-word excerpt (ellipsis on truncation).
+  Neither citation text nor opaque IDs are appended to the bibliography.
+  It is **not** a model answer.
   Verified zero hits and technical unavailability remain distinct. No raw
   three-card quote list, UUID, internal LLM, owner impersonation or unsupported
   proof link is introduced.
@@ -421,6 +425,55 @@ model-first timeout/fallback must atomically arbitrate with the original
 `pending/leased/send_intent_ready/sending/unknown` states before
 sending; no hardcoded 7-second answer promise or unconditional fallback
 after an already leased or sent result.
+
+
+## SW 2026-11-03: one Projects Hub Events wake for a saved expert request
+
+**Source only; not merged, not installed and not live-tested.** This optional
+bridge addresses only the executor wake boundary. A verified Slack question
+from the signed HTTP ingress **or the live authenticated Socket Mode** becomes
+eligible only after the original exact remote request-intent acceptance /
+Dataset coverage, never from local-only `received`. The same
+`ExpertSlackIngress.bind_waker` posts the
+original RKB UUID to Projects Hub through the fixed
+`http://127.0.0.1:8196/internal/rkb/expert-wake` loopback API.
+It holds no original text, actor identity, destination or owner bearer. The PH
+receiver's independent revocable `ph_service_rkb_expert` technical principal
+is restricted to one explicitly configured PH project. A repeated Slack event
+keeps the same canonical RKB UUID, and PH's existing command-id unique key
+`rkb.expert.<UUID>` reuses the single saved PH request and its one MCP outbox
+event. No direct RKB MCP webhook, PH note binding, new relay/outbox or dot
+Slack sender is introduced.
+
+The opt-in `RKB_EXPERT_PH_WAKE_CONFIG` points to a private JSON descriptor
+(`codec=rkb.ph-expert-wake.v1`, exact `project_id`, absolute private
+`service_secret_file`); both files require no symlink and mode 0600.
+Binding requires the original expert ingress (signed HTTP **or** authenticated
+Socket Mode) and the installed executor context. It **coexists** with the
+original one-line PR609 fallback and with the SA model-first/fallback
+arbitration: the same Kaliningrad Base bot is the **only** Slack sender.
+Socket Mode first acknowledges the existing Slack envelope; the wake hook
+independently checks the original remote proof. The signed HTTP ingress
+sends its JSON 200 response **before** its existing event-loop
+`BackgroundTask(wake_accepted, saved_request_id)` contacts PH. The task
+rereads the original durable RKB row: no separate queue or ACK wait.
+An unavailable PH cannot extend Slack's 2.5-second HTTP intake deadline. A missing, rejected or
+timed-out PH wake logs a degraded signal but cannot withdraw the canonical
+pending request, block the bot reply or create a duplicate Slack message.
+PH idempotently reuses `rkb.expert.<UUID>`; no new retry queue/scheduler.
+With SA #759 installed, the original Dataset coverage step precedes the
+Socket wake and model-first fallback is governed by its bounded CAS.
+Without that verified remote coverage there is **no** PH wake.
+PH `test_ack` proves dot wake only — **never** the RKB expert result or
+native Slack delivery.
+
+All remote credentials, backend identity/scope provisioning, live deploy and
+ChatGPT subscription refresh belong to Shkiper/owner. Precisely **one**
+live control, expected timing from 13 Oct, and the owner-only refresh step:
+[Projects Hub MCP Events — RKB wake](https://github.com/onedayonemasterpiece/projects-hub/blob/chatgpt/rkb-expert-wake-ph-20261103/docs/mcp-events.md#one-shkiper-live-control--precisely-one-event).
+Do not declare the complete Slack expert workflow accepted from fixture tests
+or from PH callback acceptance. The actual execution/result path is governed
+by the unchanged RKB expert control and the separately reviewed answer slice.
 
 
 ## SA, 03.11.2026 — restricted MCP claim/result + bounded Slack answer (source-only)

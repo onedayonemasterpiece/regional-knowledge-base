@@ -67,6 +67,9 @@ class ExpertSlackSocketMode:
         except Exception as exc:
             _LOG.warning("rkb_socket_read_wakeup_unavailable error_type=%s",
                          type(exc).__name__)
+        # Socket ACK already completed; PH is only a signal and cannot stop
+        # the same bot's existing Slack reply or its no-duplicate-send CAS.
+        await self.ingress.wake_accepted(outcome["request_id"])
 
     def _make_client(self):
         if self._client_factory is not None:

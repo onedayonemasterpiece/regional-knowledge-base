@@ -78,6 +78,28 @@ _SOURCE_TRANSCRIPTION_INSTRUCTIONS = (
 )
 
 
+_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS = (
+    "Ordinary continuation: never blindly replay an accepted page or its predecessor; "
+    "next_cursor is a hint for choosing the next unaccepted page. "
+    "For a confirmed mistake, while the same ingestion is still staging and no stage is pending, "
+    "submit one new corrective book_ingest(stage) for ANY previously accepted physical page, "
+    "not only the latest page. Preserve its page_id, physical_page_index, the same "
+    "controller-issued image receipt, and all unaffected region_keys, source_text, "
+    "chunk_keys, evidence, previous_physical_page_index and source_unit_boundaries. "
+    "Correct only the confirmed boundary; for omitted readable source_text "
+    "add a NEW region_key holding only the missing transcription and a NEW chunk_key "
+    "for its new passage. Never edit source_text or hashes of existing regions, rename "
+    "an old region_key, reuse an accepted chunk_key or change an accepted passage body. "
+    "For the new text update chunk references/span offsets and cover all source regions. "
+    "For rejected SEMANTIC enrichment after TEXT APPLIED, use identical accepted text "
+    "and corrected candidates rather than replaying accepted text commands. "
+    "State the correction reason in source_review_note (1-500 characters). "
+    "A correction adds a new accepted page interpretation; it never overwrites accepted bytes. "
+    "For next_action=wait, call status and retry the identical pending stage; never alter it. "
+    "After finalize the native stage is sealed and cannot be corrected by this workflow. "
+)
+
+
 def _principal() -> Principal:
     token = get_access_token()
     if token is None or token.subject is None:
@@ -665,7 +687,7 @@ def build_server(
         ) if selected!='kaggle_source' else (
             "Mandatory import checklist:\n"
             "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
-            "2. Never resend an accepted page; next_cursor is a hint, choose the next printed page with book_pages(cursor).\n"
+            "2. Ordinary continuation: never blindly replay accepted pages; next_cursor is a hint for book_pages(cursor).\n"
             "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
             "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
             "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
@@ -673,7 +695,6 @@ def build_server(
             + "7. " + _SOURCE_TRANSCRIPTION_INSTRUCTIONS + "\n" +
             "8. If a reviewed page contradicts itself, an earlier page of this book, or an already-read source (date, number, name, attribution, cause, title), use registered disagreement_search by subject or source_id, disagreement_get the candidate, then disagreement_edit(add_evidence) or disagreement_edit(create) followed by add_evidence with an exact quote, if authorized. Do not search for Cases on every page without such a contradiction.\n"
             "If a cold import tool returns startup_ref with next_action=startup_status, wait using that same startup_status ref until ready, then repeat the exact original call; that invocation was not dispatched.\n"
-            "Revising an accepted book is unsupported in this profile; never resend accepted pages.\n"
             "The Kaggle native importer accepts an owner-authorized PDF/DjVu original up to 128 MiB and 2500 physical pages, subject to verified original intake. Ordinary owner-only start is shared-searchable without a mandatory per-book public_rights declaration; the owner's legal attestation is retained. Authentication does not grant another actor access to private Case, original or scan proof. Use exactly the ordinary workflow: book_ingest(start) with the attached original, then book_pages (default 1 page, maximum requested 4; the renderer may return just one actual ImageContent), model visual/source review, book_ingest(stage) with up to four reviewed pages and source passage evidence (page_id and region_key with a current chunk_key or an already accepted chunk_id), choose the next unaccepted page with book_pages(cursor) in printed reading order (next_cursor is a hint) and follow next_action, then book_ingest(finalize) only to record that reading ended. One accepted native text packet becomes searchable by registered search, knowledge_search or fetch after its actual apply, not merely after a pending stage request. There is no whole-book activation or extra validation step before the first page can be found. A rejected page can be corrected and retried in the same ingestion; an independently accepted earlier page remains searchable. Optional story, fact, illustration, map and POI enrichment may remain pending or reject without rolling back accepted source text. "
             "Build semantically coherent source chunks with model-chosen boundaries at changes of thought, typically about 256 BGE tokens (roughly 800-1000 characters as a rough estimate, not a ceiling); each chunk's complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text) must be at most 512 pinned BGE-M3 tokenizer tokens, including special tokens; chunk.title is metadata, not added separately. Split longer thoughts at complete sentences to stay within the exact token bound; a printed paragraph, physical page or stage packet is not a mandatory chunk boundary. Preserve whole sentences: split a long or visually unbroken paragraph at a complete sentence when the idea changes, using exact span_refs and source_text offsets; combine short adjacent paragraphs about the same idea into one appropriately sized chunk using source-backed region_refs or span_refs. Read continuing text with book_pages; one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages, not one oversized chunk. If a completed thought spans pages and fits current limits, one chunk may use ordered region_refs OR exact span_refs from both real page_ids and source regions; preserve original page/region/span provenance and never invent unseen continuation or force a whole packet into one chunk. "
             "If book_ingest(status) returns next_action=continue_tail, use its tail_refs (page_id, physical_page_index, region_id, region_key, source_text_sha256, start, end; start/end are exact Unicode codepoint offsets in the original source region) for the contiguous uncovered body suffix on the last accepted packet page. Read the next page with book_pages at next_cursor by default; for irregular scans choose the model-selected physical cursor (even below next_cursor), set previous_physical_page_index to the accepted tail page's physical index and then choose small, sentence-complete semantic chunks with ordered exact span_refs or region_refs across the accepted prior tail and newly issued, reviewed page(s), retaining prior page/region/span provenance. For span_refs supply page_id, region_key, start and end; the server derives source_text_sha256 from the known region text, so the model must not calculate or supply a hash. Stage only newly issued, visually reviewed page(s) in a 1-4-page packet: do not re-stage the accepted prior page, split sentences, invent missing text, use system-chosen split/merge boundaries, or finalize while status still indicates continue_tail. "
@@ -796,7 +817,6 @@ def build_server(
         mcp.custom_route(CLAIM_PATH, methods=['POST'])(expert_claim_receiver.__call__)
         mcp.custom_route(RESULT_PATH, methods=['POST'])(expert_result_receiver.__call__)
         mcp.custom_route(RECOVERY_PATH, methods=['POST'])(expert_recovery_receiver.__call__)
-
 
     # Optional MCP facades: the same installed executor credential/lease and
     # original Dataset result receiver; no owner credential or second sender.
@@ -1727,7 +1747,7 @@ def build_server(
             "An empty entity_candidates bundle is valid only when the reviewed page names no source-grounded entities. " +
             "Graph keys are distinct source-global identities. Align story entity_keys/relations; " +
             "entity_id reuses verified same-kind identity. " +
-            "Revising an accepted book is unsupported in this profile; add omitted semantics with identical text and new candidates, never replay commands. " +
+            _ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS +
             "Use one owner-authorized native PDF/DjVu book intake (128 MiB, 2500 physical pages maximum, subject to verified original receipt). Ordinary start requires an attached original and no per-book public_rights declaration; an honest owner attestation is retained, and current actor/source/Case ACL still applies. Workflow: book_ingest(command=start) -> book_pages (default 1, maximum 4 requested pages; actual renderer may deliver only one visual page) -> model-reviewed book_ingest(command=stage) in bounded packets of 1-4 pages -> after actual accepted text-packet apply, that page's text is searchable by registered search/knowledge_search/fetch -> book_ingest(command=finalize) means only reading ended. Do not wait for an entire book, a separate validation/activation step, GEO bootstrap, semantic comparison, media or Story completeness before searching an accepted page. Later optional semantic, story and illustration enrichment does not undo accepted text; if a packet is rejected, correct and retry that page under the SAME ingestion and preserve earlier published pages. On the first stage set source_import.research: pending with the exact owned book_pages continuation (ingestion_id, cursor, batch_size=1), or complete with empty continuation if actually finished. Return processing/wait/UNKNOWN/pending truthfully, retain current model-authored research continuation and follow returned next_action; treat next_cursor as a hint, not a required physical-page order; do not claim the page applied or Saved until confirmed, and do not tight-poll. Use exact source image, page, region, passage and evidence refs, and stage coherent semantic passages rather than arbitrary page-sized chunks. Each chunk's complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text) must be at most 512 pinned BGE-M3 tokenizer tokens, including special tokens; chunk.title is metadata, not added separately. Split longer thoughts at complete sentences to stay within the exact token bound. Include a meaningful section heading before its related body in that passage's ordered region_refs or span_refs; do not omit it, attach it to unrelated passages or make a heading-only chunk just for coverage. Review stories, dates, quantities, people, events, places and figures in that SAME page pass; set knowledge_reviewed/story_candidates_reviewed honestly. Story rules: see book_ingest.story_candidates field description. Optional stage JSON-file TRANSPORT bound is <=1 MiB; the separate <=700 KiB canonical native envelope includes source metadata, model data and INCLUDING issued image receipts. Keep exact accepted source IDs, no fabricated map geometry/POI. Use registered search/knowledge_search/fetch for accepted source assertions. For title-page bibliography corrections use a separate book_ingest(stage, metadata.catalog_update={expected_revision:1,...}) without pages/chunks. An accepted source.catalog.v1 command preserves original stage bytes and source revision; APPLIED is not yet Dataset Saved. On the SAME visually reviewed page record each confirmed chapter/article/section boundary in source_unit_boundaries, with source_unit_version=1, existing article_id, observed kind/title on starts and original region_key plus Unicode codepoint offset. For an article ending at its region's end, offset may be omitted. Use end markers at real next boundaries, not guessed ends from page counts. For reversed scans, inserted leaves, gaps or duplicate scans, read in the actual printed sequence: request any unaccepted physical page using book_pages(cursor), and set previous_physical_page_index to the immediately preceding reviewed page's physical index, even when that predecessor was already accepted. Stage only the new page; never resend the predecessor. Subsequent pages may set source_unit_version=1 without duplicating starts; open units do not block accepted text/search and stay unit_not_ready until a confirmed end or verified EOF. Do not invent tools or bypass source/Case authorization."
         ),
         annotations=ToolAnnotations(
@@ -2007,6 +2027,7 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
     logging.getLogger("regional_knowledge.oauth_provider").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.kaggle_recovery_dispatch").setLevel(logging.INFO)
+    logging.getLogger("regional_knowledge.kaggle_importer").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
@@ -2086,6 +2107,12 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
             if expert_executor_context.delivery.dataset_effects is None:
                 raise RuntimeError("model-first Slack reply requires original Dataset effects")
             expert_slack_ingress._reply.executor_context=expert_executor_context
+    wake_config=os.getenv('RKB_EXPERT_PH_WAKE_CONFIG','').strip()
+    if wake_config:
+        if expert_slack_ingress is None or expert_executor_context is None:
+            raise RuntimeError('PH wake requires original expert ingress and executor')
+        from .expert_ph_wake import ProjectsHubExpertWake
+        expert_slack_ingress.bind_waker(ProjectsHubExpertWake(expert_slack_ingress.control,wake_config))
     mcp=build_server(profile=profile,target_startup=target_startup,
         projects_hub_receiver=projects_hub_receiver,
         import_activity_receiver=import_activity_receiver,

@@ -13,6 +13,7 @@ import logging
 import re
 import time
 
+from starlette.background import BackgroundTask
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from .expert_request_control import (
@@ -47,6 +48,7 @@ class ExpertSlackIngress:
         # contention. The next verified event retry reads the original bytes.
         self._staging_tasks={}
         self._reply = None
+        self._waker = None
 
     def bind_search_reply(self, reply):
         """One opt-in same-owner responder; no automatic provider sender."""
@@ -54,6 +56,33 @@ class ExpertSlackIngress:
                 or reply.ingress is not self or not callable(getattr(reply, "notify", None))):
             raise ValueError("exact existing Slack reply composition required")
         self._reply = reply
+
+    def bind_waker(self, waker):
+        """Only the original accepted request can wake the separate dot client."""
+        from .expert_ph_wake import ProjectsHubExpertWake
+        if (self._waker is not None or type(waker) is not ProjectsHubExpertWake
+                or waker.control is not self.control):
+            raise ValueError('one RKB executor and one PH wake owner required')
+        self._waker = waker
+
+    async def wake_accepted(self, request_id):
+        """Optional PH signal only after original remote proof; never gate Slack reply."""
+        if self._waker is None:
+            return
+        try:
+            if self.control.dataset_records is not None:
+                durable = await asyncio.to_thread(self.control.confirm_dataset_coverage, request_id)
+            else:
+                original = await asyncio.to_thread(self.control._row, request_id)
+                durable = original['remote_command_hash'] is not None
+            if durable:
+                await self._waker.wake(request_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # PH is an optional downstream wake. The original request remains
+            # authoritative and the bot's one-shot native Slack sender proceeds.
+            _LOG.warning("rkb_ph_wake_degraded error_type=%s", type(exc).__name__)
 
     async def __call__(self, request):
         if self.socket_only:
@@ -86,11 +115,13 @@ class ExpertSlackIngress:
                     # Signed unsupported/self/bot event: no new request.
                     return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
                 outcome=await asyncio.to_thread(self.control.accept,observation)
-                if self._reply is not None and getattr(self._reply,"executor_context",None) is None:
-                    # Read-only search: existing event_id row is the at-most-once
-                    # boundary; no Dataset checkpoint/agent job is necessary.
+                if self._reply is not None and getattr(self._reply,'executor_context',None) is None:
+                    # Existing read-only fallback remains independent of optional PH.
                     self._reply.notify(outcome['request_id'])
-                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
+                    # Starlette runs the task only *after* the HTTP 200 body is sent.
+                    return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'},
+                        background=BackgroundTask(self.wake_accepted, outcome['request_id'])
+                        if self._waker is not None else None)
                 if self.control.dataset_records is not None:
                     # A signed request is staged only by the existing fenced
                     # Dataset CAS. Local staging never earns Slack HTTP 200.
@@ -130,8 +161,11 @@ class ExpertSlackIngress:
                     return JSONResponse({'error':'remote_intent_pending'},
                         status_code=503,headers={'Cache-Control':'no-store','Retry-After':'1'})
                 if self._reply is not None:
-                    self._reply.notify(outcome['request_id'])  # Dataset-covered model route.
-                return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'})
+                    self._reply.notify(outcome['request_id'])
+                # PH is optional; never hold the Slack transport ACK for its 1.5s timeout.
+                return JSONResponse({'ok':True},headers={'Cache-Control':'no-store'},
+                    background=BackgroundTask(self.wake_accepted, outcome['request_id'])
+                    if self._waker is not None else None)
         except asyncio.CancelledError:
             raise
         except TimeoutError:

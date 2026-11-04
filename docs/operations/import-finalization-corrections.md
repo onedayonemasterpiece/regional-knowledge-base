@@ -2,6 +2,21 @@
 
 Active target2026-10-20. Source pages/chunks/evidence/hash/revision are immutable after acceptance; [handoff](../prompts/rkb-scalable-kaggle-implementation-20261019.md) governs storage/recovery.
 
+The long corrective-stage rule is exposed once in `book_ingest` tool description; the
+MCP initialize instructions retain only a brief ordinary-continuation reminder.
+
+During an ongoing native `phase=staging`, a confirmed omission on an already
+accepted physical page may be supplied by a new `book_ingest(stage)` for that
+same ingestion and issued page receipt. This is **not** blind continuation
+replay: existing `region_key`/`region_id` transcriptions and hashes and
+existing `chunk_key`/`passage_id` bodies stay unchanged. Add the missing
+readable text under a **new `region_key` and new `chunk_key`** with matching
+source evidence; never rename the old region. SQL026
+`source_batch_conflicts_v1` rejects changes to existing region/passage
+identities. A rejected semantic-only enrichment after TEXT APPLIED can instead
+restage identical text with corrected candidates. No source-text correction
+is allowed after finalize; the older accepted commands are not replayed.
+
 Native stage intake returns `unavailable` with reason
 `source_stage_not_accepted_retry_same_stage` when SQLite reports native
 `SQLITE_BUSY` (code 5) in the local spool stage transaction, which rolls back

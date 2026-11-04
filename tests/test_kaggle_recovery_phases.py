@@ -306,6 +306,12 @@ async def work_for(s,bridge,phase='verify',args=None,key='same-operation'):
     ('original_pages',{'error':'unfamiliar_original_read_error','retryable':True},True),
     ('original_verify',{'error':'unfamiliar_original_read_error','retryable':True},True),
     ('original_archive',{'error':'unfamiliar_original_read_error'},False),
+    ('original_caption',{'error':'original_telegram_binding_required'},True),
+    ('original_caption',{'error':'original_telegram_binding_required','retryable':False},False),
+    ('original_caption',{'error':'original_telegram_binding_required','terminal':True},False),
+    ('original_caption',{'error':'original_telegram_scope_denied'},False),
+    ('original_caption',{'error':'original_telegram_document_changed'},False),
+    ('original_caption',{'error':'unfamiliar_original_read_error'},False),
     ('original_acquire',{'handle':'already-acquired'},False),
 ])
 async def test_aborted_original_read_uses_existing_retry_chain_without_retrying_sends(state,phase,value,retry):
