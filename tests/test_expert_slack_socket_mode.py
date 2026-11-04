@@ -55,9 +55,15 @@ def _event_request(n=1, *, event_type="app_mention", **overrides):
 
 
 @pytest.mark.asyncio
-async def test_socket_authenticated_original_nonowner_stored_before_ack_same_event_id(env):
+async def test_socket_authenticated_original_nonowner_stored_before_ack_same_event_id(env, monkeypatch):
     ctl,_,link=_prepare(env)
     ingress=ExpertSlackIngress(ctl,signing_secret=None,socket_only=True)
+    calls=[]
+    prepare=ingress.accept_durable
+    async def through_ingress(observation):
+        calls.append(True)
+        return await prepare(observation)
+    monkeypatch.setattr(ingress,'accept_durable',through_ingress)
     wakes=[]
     ingress.bind_search_reply(SimpleNamespace(control=ctl,ingress=ingress,notify=wakes.append))
     fake=FakeSocketClient(control=ctl)
@@ -79,6 +85,7 @@ async def test_socket_authenticated_original_nonowner_stored_before_ack_same_eve
             envelope_id="envelope-retry",payload=request.payload))
         assert fake.acks==["envelope-1","envelope-retry"]
         assert wakes==[wakes[0],wakes[0]]
+        assert calls==[True,True]  # Socket uses the same durable ingress as HTTP.
         with ctl.corpus.connect() as db:
             assert db.execute("SELECT count(*) FROM rkb_expert_requests").fetchone()[0]==1
         # The existing PR383 CAS, not the Socket envelope, fences a second post.
