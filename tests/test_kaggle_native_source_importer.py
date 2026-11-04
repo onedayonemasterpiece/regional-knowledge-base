@@ -1826,7 +1826,7 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     await stage(s,book,batch(s,book,count=1))
     await finish(s,book,status='rejected_precondition',reason='native_source_stage_requires_review')
     await call(s,book,'status')
-    assert started_statuses(s.t.queue,actor)[0][1]=='⏳⚠️ Импортируется; были ошибки'
+    assert started_statuses(s.t.queue,actor)[0][1]=='⏳⚠️ Импортируется · страниц 0/1 · пакет отклонён, ждёт переотправки'
     with s.t.queue.connect() as db:
         db.execute("UPDATE rkb_native_source_intake_state SET phase='failed'")
     assert started_statuses(s.t.queue,actor)[0][1]=='❌ Ошибка импорта'
@@ -1842,7 +1842,7 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     await stage(s,newer,batch(s,newer,count=1))
     projected=started_statuses(s.t.queue,actor)
     assert len(projected)==1 and projected[0][0]['ingestion_id']==newer.ingestion_id
-    assert projected[0][1]=='⏳⚠️ Импортируется; были ошибки'
+    assert projected[0][1]=='⏳ Импортируется · страниц 0/1'
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('provider_fails',[False,True])
