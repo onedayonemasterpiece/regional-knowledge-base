@@ -67,8 +67,6 @@ async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input
     from regional_knowledge.kaggle_importer import MAX_BYTES, MAX_PAGES
     assert MAX_BYTES == 128 * 1024 * 1024
     assert MAX_PAGES == 2500
-    assert "128 MiB" in server.instructions
-    assert "2500 physical pages" in server.instructions
     assert "128 MiB" in ingest.description
     assert "2500 physical pages" in ingest.description
     assert "no per-book public_rights declaration" in ingest.description
@@ -83,12 +81,64 @@ async def test_native_chunk_ceiling_in_mcp_guidance_matches_runtime(native_intak
 
     server = build_server(target_startup=native_intake.startup)
     ingest = next(tool for tool in await server.list_tools() if tool.name == "book_ingest")
-    for guidance in (server.instructions, ingest.description):
+    pages = next(tool for tool in await server.list_tools() if tool.name == "book_pages")
+    for guidance in (ingest.description, pages.description):
         assert f"at most {MAX_TOKENS} pinned BGE-M3 tokenizer tokens" in guidance
         assert "complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text)" in guidance
         assert "chunk.title is metadata, not added separately" in guidance
         assert "Split longer thoughts at complete sentences" in guidance
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile,tool_name", [("full", "search"), ("live", "knowledge_search")])
+async def test_native_search_tools_list_preserves_answer_and_pending_rules(native_intake, monkeypatch, profile, tool_name):
+    server = build_server(profile=profile, target_startup=native_intake.startup)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    description = tools[tool_name].description
+    for phrase in (
+        "ONE direct answer in the language of the user's question",
+        "Источники:", "В доступной базе подтверждений не найдено",
+        "Не удалось проверить базу сейчас", "startup.message_ru", "measured ETA",
+        "immediately", "this turn", "keep calling startup_status",
+        "startup_ref", "until ready", "rerun this exact search", "with its original arguments",
+        "The original read was not queued", "do not mint a second launch or retry UNKNOWN effects",
+    ):
+        assert phrase in description, (tool_name, phrase)
+    if tool_name == "search":
+        assert "at most 6 sequential search/fetch calls" in description
+        assert "startup_status checks for the same cold start do not count" in description
+    monkeypatch.setenv("RKB_DEV_NOAUTH", "1")
+    legacy = build_server(profile=profile, backend_profile="legacy")
+    legacy_tools = {tool.name: tool for tool in await legacy.list_tools()}
+    assert "ONE direct answer" in legacy.instructions
+    assert "ONE direct answer" not in legacy_tools[tool_name].description
+
+
+@pytest.mark.asyncio
+async def test_native_mcp_guidance_survives_540_char_client_cutoff(native_intake):
+    server = build_server(target_startup=native_intake.startup)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    prefix = server.instructions[:540]
+    assert len(server.instructions) <= 540
+    assert prefix.startswith("Mandatory import checklist:\n1. ")
+    assert prefix.count("\n") == 9  # title, seven numbered rules, final pointer
+    assert prefix.endswith("Full rules in tool descriptions.\n")
+    for phrase in ("One reader", "never blindly replay accepted pages",
+                   "source_text verbatim", "[?]", "BGE-M3", "512 tokens",
+                   "disagreement_search/get/edit", "book_pages(cursor)",
+                   "next_cursor is a hint", "status", "catalog_update"):
+        assert phrase in prefix, phrase
+    assert prefix.index("never blindly replay accepted pages") < prefix.index("source_text verbatim") < prefix.index("BGE-M3")
+    for name in ("book_ingest", "book_pages"):
+        description = tools[name].description
+        for phrase in ("Transcribe source_text verbatim",
+                       "at most 512 pinned BGE-M3 tokenizer tokens",
+                       "complete native input (joined selected source region/span text, including selected headings and [Footnote] labels/text)",
+                       "disagreement_search", "disagreement_get", "disagreement_edit",
+                       "do not search Cases on pages without such a contradiction"):
+            assert phrase in description, (name, phrase)
+    assert "Search/fetch checklist:" in tools["search"].description
+    assert "Follow the search checklist." in tools["fetch"].description
 
 @pytest.mark.asyncio
 async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_unchanged(native_intake, monkeypatch):
@@ -103,6 +153,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         'source_review_note (1-500 characters)',
     ):
         assert phrase in native_text, phrase
+    assert native_text.count(_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS) == 1
     assert native_text.count('ANY previously accepted physical page') == 1
     assert 'Revising an accepted book is unsupported in this profile' not in native_text
     # MCP initialize is frequently truncated; keep only the short point 2 there.
@@ -112,60 +163,28 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert 'NEW chunk_key' not in native.instructions
     assert 'Revising an accepted book is unsupported in this profile' not in native.instructions
     assert imported.title == "Import and continue an attached scanned book"
-    assert "book_ingest(command=start)" in native_text
-    assert "book_pages (default 1, maximum 4" in native_text
-    assert "book_ingest(command=stage)" in native_text
-    assert "after actual accepted text-packet apply" in native_text
-    assert "book_ingest(command=finalize) means only reading ended" in native_text
-    assert "correct and retry that page under the SAME ingestion" in native_text
-    assert "optional semantic, story and illustration enrichment does not undo accepted text" in native_text
-    assert "Return processing/wait/UNKNOWN/pending truthfully" in native_text
-    assert "On the first stage set source_import.research" in native_text
-    assert "pending with the exact owned book_pages continuation" in native_text
-    assert "On first stage supply source_import.research" in native.instructions
+    for phrase in ("book_ingest(command=start)", "book_pages (default 1, maximum 4",
+                   "book_ingest(command=stage)", "after actual accepted text-packet apply",
+                   "book_ingest(command=finalize) means only reading ended",
+                   "correct and retry that page under the SAME ingestion",
+                   "optional semantic, story and illustration enrichment does not undo accepted text",
+                   "Return processing/wait/UNKNOWN/pending truthfully",
+                   "On the first stage set source_import.research",
+                   "pending with the exact owned book_pages continuation",
+                   "or an already accepted chunk_id"):
+        assert phrase in native_text, phrase
     assert native_text.startswith("If a reviewed page contradicts itself")
     assert "do not search Cases on pages without such a contradiction" in native_text[:500]
-    assert "8. If a reviewed page contradicts itself" in native.instructions[:2000]
-    assert "Do not search for Cases on every page without such a contradiction" in native.instructions[:2000]
     assert "When disagreement_search is registered" not in native_text
-    assert "When disagreement_search is registered" not in native.instructions
-    # Initialize stays within its original cap. The tool's pre-existing guidance
-    # retains its own cap while the one required correction clause is additive.
-    assert len(native.instructions) <= 10503
-    assert native_text.count(_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS) == 1
-    assert len(native_text) - len(_ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS) <= 6153
-    assert "book_pages (default 1 page, maximum requested 4" in native.instructions
-    assert "current chunk_key or an already accepted chunk_id" in native.instructions
+    assert len(native.instructions) <= 540
+    assert native.instructions.startswith("Mandatory import checklist:\n")
+    assert native.instructions.endswith("Full rules in tool descriptions.\n")
+    assert "On first stage supply source_import.research" not in native.instructions
     assert "exact page/region/quote evidence" not in native.instructions
-    # This is the server's global MCP initialize guidance, not a tools/list
-    # description. The native and legacy init workflows must not mix.
-    checklist = (
-        "Mandatory import checklist:\n"
-        "1. Use one reader and the existing ingestion; never start a second import to resume.\n"
-        "2. Ordinary continuation: never blindly replay accepted pages; next_cursor is a hint for book_pages(cursor).\n"
-        "3. Record people, places, organizations and events that the page actually names, with evidence; pages without entities are normal.\n"
-        "4. Read title/imprint metadata; fill author and year through metadata.catalog_update when absent.\n"
-        "5. Use thought-complete semantic chunks across pages when needed, never heading-only chunks.\n"
-        "6. For next_action=wait, call status; when told to retry stage, resend the identical stage, not a new operation.\n"
-    )
-    assert native.instructions.startswith(checklist)
-    assert "ONE direct answer" in native.instructions
-    assert "names a specific author or book" in native.instructions
-    assert "В доступной базе подтверждений не найдено" in native.instructions
-    for native_init in (
-        "book_pages (default 1 page, maximum requested 4",
-        "book_ingest(stage) with up to four reviewed pages",
-        "One accepted native text packet becomes searchable",
-        "after its actual apply",
-        "book_ingest(finalize) only to record that reading ended",
-        "no whole-book activation or extra validation step",
-    ):
-        assert native_init in native.instructions, native_init
-    assert "Finalized source activation" not in native.instructions
     # Existing stage wire supports page-scoped regions/exact source spans.
     # Model chooses meaning boundaries; 256 tokens is not a new hard cap and a
     # 1-4-page packet is not a chunk or evidence of deployed tail handling.
-    chunk_guidance = native.instructions
+    chunk_guidance = native_text
     assert chunk_guidance.count("Build semantically coherent source chunks") == 1
     for expected in (
         "model-chosen boundaries at changes of thought",
@@ -203,27 +222,21 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     ):
         assert expected in chunk_guidance, expected
     assert "When evidence is insufficient, OMIT basic_variant" in _non_null(imported.input_schema, imported.input_schema["properties"]["story_candidates"])["description"]
-    assert "Finalization alone activates" not in native.instructions
-    # Cold search continuation is one native instruction, not a new method.
-    for instruction in ("startup.message_ru", "startup.eta_seconds",
-                        "SAME startup_ref", "Do NOT end this turn",
-                        "EXACT same search"):
-        assert instruction in native.instructions
-    # Conditional Case discovery and existing write workflow must agree in
-    # both native instructions and the displayed book_ingest description.
-    for guidance in (native.instructions, native_text):
-        for action in ("disagreement_search", "disagreement_get",
-                       "disagreement_edit(add_evidence)", "disagreement_edit(create)",
-                       "UNKNOWN", "Saved"):
-            assert action in guidance, action
+    assert "Finalization alone activates" not in native_text
+    # Search and cold-start guidance stays in the registered search/status tools.
+    assert "keep calling startup_status" in native_tools["search"].description
+    assert "repeat the exact original search" in native_tools["startup_status"].description
+    for action in ("disagreement_search", "disagreement_get",
+                   "disagreement_edit(add_evidence)", "disagreement_edit(create)"):
+        assert action in native_text, action
+    for state in ("UNKNOWN", "Saved"):
+        assert state in native_text
     assert "In entity_candidates, evidence may use page_id, region_key and chunk_key from this stage packet." in native_text
     assert "General Case discovery/search is not presently registered" not in native_text
-    assert "General Case discovery/search is a separately unresolved capability gap" not in native.instructions
-
     # Runtime-registered rules must be available in tools/list, not only initialize.
-    instruction = native.instructions
+    instruction = native_text
     story_rules = _non_null(imported.input_schema, imported.input_schema["properties"]["story_candidates"])["description"]
-    assert instruction.count("Story rules: see book_ingest.story_candidates.") == 1
+    assert instruction.count("Story rules: see book_ingest.story_candidates field description.") == 1
     assert "Story body: write" not in instruction
     assert "Story rules: see book_ingest.story_candidates field description." in native_text
     for required in (
