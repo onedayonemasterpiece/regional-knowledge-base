@@ -150,18 +150,22 @@ async def test_final_auth_rejection_still_denied_with_pending_stage_timing(auth,
 
 
 @pytest.mark.asyncio
-async def test_slow_optional_eta_still_obeys_original_deadline_and_logs_interrupted_phase(auth,tmp_path,monkeypatch):
+async def test_slow_optional_eta_returns_existing_pending_without_time_refusal(auth,tmp_path,monkeypatch):
     backend,queue,admission,telemetry,records=backend_for(auth,tmp_path)
-    async def slow_estimate(ref):await asyncio.sleep(3)
+    original_wait=backend._startup_wait
+    async def slow_estimate(ref):
+        await asyncio.sleep(2.1)
+        return await original_wait(ref)
     monkeypatch.setattr(backend,'_startup_wait',slow_estimate)
     try:
-        with pytest.raises(ToolError,match='deadline_exceeded'):
-            await backend.search('PRIVATE_TIMEOUT',SimpleNamespace(access_token=auth.tokens.access_token))
+        reply=await backend.search('PRIVATE_TIMEOUT',SimpleNamespace(access_token=auth.tokens.access_token))
+        assert reply.status=='pending' and reply.reason=='target_warming'
+        assert reply.startup.status=='pending'
         await asyncio.to_thread(telemetry._queue.join)
         terminal=next(r for r in records if r.get('terminal'))
-        assert terminal['status']=='unavailable' and terminal['reason']=='deadline_exceeded'
-        assert terminal['controller_stages_ms']['startup_eta_ms']>0
-        assert 'startup_final_auth_ms' not in terminal['controller_stages_ms']
+        assert terminal['status']=='pending' and terminal['reason']=='target_warming'
+        assert terminal['controller_stages_ms']['startup_eta_ms']>=2000
+        assert 'startup_final_auth_ms' in terminal['controller_stages_ms']
         assert not auth.resolver._contexts
         assert 'PRIVATE_' not in json.dumps(records)
         with queue.connect(write=False) as db:
