@@ -18,21 +18,20 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
         for row in rows:
             locator=json.loads(row['telegram_locator_json']) if row['telegram_locator_json'] else None
             target=(locator['chat_id'],locator['message_id']) if locator else row['ingestion_id']
-            selected=current.setdefault(target,{**dict(row),'earlier_failed':False})
-            if row['native_phase']=='failed' or row['phase']=='failed':selected['earlier_failed']=True
+            current.setdefault(target,dict(row))
         rows=sorted(current.values(),key=lambda row:row['ingestion_id']!=preferred)
         for row in rows:
             stamp=tuple(row[key] for key in ('metadata_json','phase','native_phase',
-                'rejected_batch_index','receipt_json','earlier_failed'))
+                'rejected_batch_index','receipt_json'))
             if synced and synced.get(row['ingestion_id'],(None,))[0]==stamp:continue
-            stages={}; text=set(); semantic=set(); errors=row['earlier_failed']
+            stages={}; text=set(); semantic=set(); rejected=0
             for op in db.execute(
                 "SELECT operation_key,command_bytes,apply_state FROM rkb_control_operations "
                 "WHERE source_id=? AND person_id=? AND "
                 "(operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
                 (row['source_id'],actor,'source-stage:'+row['ingestion_id']+':%',
                  'source-packet:'+row['ingestion_id']+':%')):
-                if op['apply_state']=='REJECTED_PRECONDITION':errors=True
+                if op['apply_state']=='REJECTED_PRECONDITION':rejected+=1
                 if op['apply_state']!='APPLIED':continue
                 payload=base64.b64decode(json.loads(op['command_bytes'])['payload_b64'],validate=True)
                 packet=json.loads(payload)
@@ -46,17 +45,22 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
                     pages=stages.get((index,packet.get('last_batch_sha256')),set())
                     if packet.get('component')=='text':text.update(pages)
                     elif packet.get('component')=='semantic':semantic.update(pages)
+            expected=set(range(json.loads(row['receipt_json'])['page_count']))
+            completed=expected & text & semantic
+            text_only=(expected & text)-semantic
+            counts=f' · страниц {len(completed)}/{len(expected)}'
+            if text_only:counts+=f' · без сущностей {len(text_only)}'
+            if rejected:counts+=f' · отклонений {rejected}'
             finished=row['native_phase']=='finalized' or row['phase']=='finalized'
             if row['native_phase']=='failed' or row['phase']=='failed':
                 status='❌ Ошибка импорта'
             elif finished:
-                expected=set(range(json.loads(row['receipt_json'])['page_count']))
-                complete=expected<=text and expected<=semantic and not row['pending_operation_key']
-                status=('✅ Импорт завершён' if complete and not errors else
-                        '✅⚠️ Импорт завершён; были ошибки' if complete else
-                        '🏁⚠️ Обработка закончена; есть пропуски или ошибки')
+                complete=len(completed)==len(expected) and not row['pending_operation_key']
+                status=('✅ Импорт завершён' if complete else
+                        '🏁⚠️ Обработка закончена' if len(completed)<len(expected) else
+                        '🏁 Обработка закончена')
             else:
-                status='⏳⚠️ Импортируется; были ошибки' if errors else '⏳ Импортируется'
-            result.append(({**dict(row),'caption_stamp':stamp},status))
+                status='⏳⚠️ Импортируется' if text_only else '⏳ Импортируется'
+            result.append(({**dict(row),'caption_stamp':stamp},status+counts))
             if limit and len(result)>=limit:break
         return result
