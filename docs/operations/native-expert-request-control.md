@@ -576,3 +576,56 @@ model wait without the **actually installed and working** PH wake/authorized
 dot subscriber; otherwise remain on the existing immediate PR609 reply.
 #758 does not add a second Slack sender. Live integration/merge remains
 RKB-Opus and Shkiper's separate work, not demonstrated by source CI.
+
+
+## SA-CFG, 04.11.2026 — production executor config (source-only)
+
+The production entrypoint now reads **\`RKB_EXPERT_EXECUTOR_CONFIG\`** when set,
+before constructing the existing Slack reply and PH wake. The value is an
+**absolute path** to an owner-held regular JSON file (no symlinks, no access
+for group/others; use mode 0600). Its exact descriptor is:
+
+\`\`\`json
+{
+  "codec": "rkb.expert-executor.v1",
+  "service_id": "executor-service-id-from-provision_executor",
+  "service_token_file": "/absolute/private/path/expert-executor.token"
+}
+\`\`\`
+
+The referenced token file is **also** a 0600 owner-held regular file without
+symlinks. Neither the token, real identity, nor actual operator paths belong
+in Git or sample configurations. The service ID and token must be the **same
+already provisioned** \`ExecutorCredentials\` for the **same**
+\`TargetExpertRequestControl\`; the loader never provisions an executor,
+another delivery authority or a sender. It binds the original
+\`TargetExpertDeliveryControl\` to that ingress, with target read-current
+fencing; the existing claim/send path also rechecks the original Slack
+actor, link, grant and destination. This wiring does **not** certify a
+live source-ACL or model citation E2E.
+
+**Shkiper — installation sequence after RKB-Opus review/merge:**
+
+1. Confirm the deployed target has the original Dataset-backed expert
+   ingress, original Participants/spool and verified Slack app/team/bot,
+   nonowner \`public_search\` grant, and live source-read authority.
+2. Use the existing owner-only \`provision_executor\` to install the exact
+   \`service_id\`/token; configure a **non-owner** OAuth client where
+   \`client_id == subject == service_id\`. Never reuse owner credentials.
+3. Create the two private executor files above, correct owner and mode 0600;
+   point \`RKB_EXPERT_EXECUTOR_CONFIG\` to the JSON file. Keep existing
+   \`RKB_EXPERT_SLACK_INGRESS_CONFIG\` and either HTTP
+   \`RKB_EXPERT_SLACK_REPLY_CONFIG\` **or** Socket Mode's existing
+   \`SLACK_APP_TOKEN\`/\`SLACK_BOT_TOKEN\`, not both reply transports.
+4. Provision the separate existing PH service descriptor and
+   \`RKB_EXPERT_PH_WAKE_CONFIG\`; verify the PH project, dot subscriber and
+   wake installation **before** restarting with model-first enabled.
+   Otherwise omit **both** the executor and PH-wake env values and retain
+   PR609 immediate reply. There is no new feature flag.
+5. Restart only through the authorized operator procedure, then verify
+   actual owner/nonowner and DE+RU questions, evidence/source withdrawal,
+   missing citations, revoked grant and lost Slack ACK. A successful
+   source-only CI or PH wake ACK is not proof of delivered model answers.
+
+**Ownership:** RKB-Opus reviews and merges this follow-up; only Shkiper
+sets file ownership, secret bytes, environment and the live restart/E2E.
