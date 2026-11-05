@@ -583,6 +583,16 @@ class TargetServiceStartup:
         # to the NEW run. Still await the exact existing old-run checkpoint
         # task; never use that old task to grant a new capture/promotion.
         binding=self.binding
+        if (binding is not None and binding.run_id==run_id
+                and binding.connection_generation!=connection_generation):
+            try:current=current_binding(self.config.queue,allow_draining=True)
+            except TargetUnavailable:raise RuntimeError('dataset_checkpoint_stop_binding_changed') from None
+            if (current.run_id,current.runtime_incarnation,current.connection_generation)!=(
+                    run_id,binding.runtime_incarnation,connection_generation):
+                raise RuntimeError('dataset_checkpoint_stop_binding_changed')
+            self.restorer.dispatch.bind_attachment(current)
+            self.coverage=await self._dataset_coverage(current)
+            binding=self.binding
         if (binding is None or binding.run_id!=run_id
                 or binding.connection_generation!=connection_generation):
             binding=getattr(checkpoint,'_task_binding',None)

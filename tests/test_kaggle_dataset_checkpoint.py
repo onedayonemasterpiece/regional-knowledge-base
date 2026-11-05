@@ -527,3 +527,51 @@ async def test_missing_saved_timestamp_triggers_checkpoint_now(tmp_path,monkeypa
     assert await p.owner.refresh(p.binding)
     assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
     assert p.calls==['capture','finalize','verify']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('identity_change',[None,'run','incarnation'])
+async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tmp_path,monkeypatch,identity_change):
+    """Real stop callback, checkpoint capture, provider readback and Saved pointer."""
+    from regional_knowledge.kaggle_service_startup import TargetServiceStartup
+    from regional_knowledge.kaggle_restore_startup import SourceRestoreCoordinator
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    key=await put_control(p)
+    old=NS(run_id='run',runtime_incarnation='inc',connection_generation=2,writer_generation='writer')
+    new=NS(run_id='other' if identity_change=='run' else 'run',
+        runtime_incarnation='other' if identity_change=='incarnation' else 'inc',connection_generation=3,writer_generation='writer')
+    p.binding=old;p.startup.binding=old;p.startup.dataset_checkpoints=p.owner
+    with p.q.connect() as db:
+        db.execute("ALTER TABLE runs ADD COLUMN launch_nonce TEXT DEFAULT 'nonce'")
+        db.execute("UPDATE runs SET status='draining'")
+    def verified_binding(queue,*,allow_draining=False):
+        assert allow_draining
+        return new
+    monkeypatch.setattr('regional_knowledge.kaggle_public_backend.current_binding',verified_binding)
+    monkeypatch.setattr('regional_knowledge.kaggle_service_startup.current_binding',verified_binding)
+    # The source-history cursor is already independently verified. Rebinding
+    # its existing Dataset cursor must not reopen serving or start PG replay.
+    async def coverage(binding):
+        assert binding is new
+        p.binding=binding;p.startup.binding=binding
+        return p.proof
+    p.startup._dataset_coverage=coverage
+    observed=[]
+    dispatch=NS(identity=('run','nonce','inc'),bind_attachment=lambda binding:observed.append(binding))
+    coordinator=NS(queue=p.q,startup=NS(schema_migrations=NS(resume_attachment=lambda:False)),dispatch=dispatch,
+        _observe=lambda:(new,'nonce'))
+    async def request(binding,*args,**kwargs):
+        assert SourceRestoreCoordinator.resume_attachment(coordinator)
+        return await native(binding,*args,**kwargs)
+    native=p.startup.restorer.dispatch.request
+    p.startup.restorer.dispatch=NS(bind_attachment=dispatch.bind_attachment,request=request)
+    p.startup.binding_current=lambda binding:False  # Draining stays closed to public tools.
+    if identity_change:
+        with pytest.raises(RuntimeError,match='stop_binding_changed'):
+            await TargetServiceStartup.before_planned_stop(p.startup,'run',3)
+        assert not p.calls and not p.store.remote_durable(key,b'pending')
+    else:
+        assert await TargetServiceStartup.before_planned_stop(p.startup,'run',3)
+        assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
+        assert p.calls==['capture','finalize','verify'] and observed and all(b is new for b in observed)
+        assert not p.startup.binding_current(new)

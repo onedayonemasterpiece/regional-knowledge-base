@@ -213,7 +213,8 @@ def test_existing_authenticated_stop_waits_for_checkpoint_outcome():
     assert calls==[('before','run',generation),('settled','run',generation)]
 
 
-def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops():
+@pytest.mark.parametrize('message',['dataset_checkpoint_stop_binding_changed','private https://secret.invalid/?token=hidden'])
+def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops(caplog,message):
     """Failed cloud durability is reported, not re-sent or faked as Saved."""
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
@@ -221,7 +222,7 @@ def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops():
     calls=[]
     async def pre_stop(run_id,generation):
         calls.append((run_id,generation))
-        raise TimeoutError('synthetic Dataset publication pending')
+        raise TimeoutError(message)
     queue=PlannedQueue()
     with TestClient(Starlette(routes=[channel_route(queue,before_stop=pre_stop)])) as app:
         with app.websocket_connect('/bge-worker/channel',headers={'Authorization':'Bearer secret'}) as socket:
@@ -230,6 +231,8 @@ def test_existing_authenticated_stop_waits_for_checkpoint_error_then_stops():
             queue.current=False
             assert socket.receive_json()==expected_stop(generation)
     assert calls==[('run',generation)]
+    assert ('dataset_checkpoint_stop_binding_changed' if message.startswith('dataset_') else 'unavailable') in caplog.text
+    assert 'secret.invalid' not in caplog.text and 'hidden' not in caplog.text
 
 
 def test_pending_checkpoint_keeps_runtime_and_retries_only_on_authenticated_heartbeat():
