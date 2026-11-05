@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import time
-import traceback
 import weakref
 from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -348,22 +347,13 @@ def _call(function: PgFunction):
         sql.Identifier("rkb_v4"), sql.Identifier(function.name))
 
 
-def _error_origin(error):
-    frames=traceback.extract_tb(error.__traceback__)[-2:]
-    sql_frames=re.findall(r'(?:^|\n)PL/pgSQL function ([a-z_][a-z0-9_.]*)\([^\n]*\) line ([0-9]+) at ',
-        error.diag.context or '') if isinstance(error,psycopg.Error) else []
-    return ','.join([f'{frame.name}:{frame.lineno}' for frame in frames]+
-        [f'{name}:{line}' for name,line in sql_frames])[:256]
-
-
 def _rollback_diagnostic(error):
     # The apply wrapper suppresses private PG messages, but retains its exception context.
     cause=(error.__cause__ or error.__context__ or error) if isinstance(error,ApplyExecutionError) else error
     name=type(cause).__name__
     code=getattr(cause,'sqlstate',None)
     return {'error_type':name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',name) else 'Exception',
-            'sqlstate':code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9]{5}',code) else None,
-            'validator':_error_origin(cause) or None}
+            'sqlstate':code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9]{5}',code) else None}
 
 
 async def apply_accepted(connection, *, journal: RecoveryJournal, seal: AcceptedSeal,
