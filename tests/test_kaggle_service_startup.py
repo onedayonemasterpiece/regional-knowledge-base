@@ -472,7 +472,7 @@ async def test_existing_planned_stop_waits_for_checkpoint_outcome_before_nine_ho
             events.append(('checkpoint',binding.run_id))
             await asyncio.sleep(0)
             return True
-    fake=SimpleNamespace(dataset_checkpoints=Checkpoint(),binding=binding,
+    fake=SimpleNamespace(dataset_checkpoints=Checkpoint(),binding=binding,coverage=object(),
         config=SimpleNamespace(queue=queue))
     assert await TargetServiceStartup.before_planned_stop(fake,run_id,1)
     assert events==[('checkpoint',run_id)]
