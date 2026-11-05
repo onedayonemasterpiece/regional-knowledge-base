@@ -112,8 +112,7 @@ class ImportActivityReader:
         elif phase == "acquiring":
             state, action = "processing", "wait"
         elif native and (pending
-              or native["enriched_batch_count"] < native["batch_count"]
-              or native["read_completion_requested"]):
+              or native["enriched_batch_count"] < native["batch_count"]):
             state, action = "processing", "wait"
         else:
             state, action = "staged", "continue_pages"
