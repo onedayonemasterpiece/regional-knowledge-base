@@ -100,3 +100,11 @@ Database authority remains the current source intake control and accepted
 packet journal. No second registry/table, tokens in query strings, new
 provider dependencies, or public listener. Local CI is **not** live E2E
 acceptance; Shkiper installs and verifies after RKB-Opus merges.
+
+Reading-completion intent is not active worker work. When no command is pending
+and all current packet enrichment is settled, the activity reader returns
+`staged` / `continue_pages` even when `read_completion_requested` is set. This
+allows the existing silent-reader handoff to resume ordinary `book_ingest(status)`,
+which continues that same completion intent. This GET never finalizes a book or
+changes its intent. Pending commands and unfinished enrichment still return
+`processing` / `wait`.

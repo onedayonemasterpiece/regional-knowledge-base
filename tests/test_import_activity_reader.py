@@ -389,3 +389,23 @@ async def test_applied_catalog_does_not_hold_reader_or_rest_while_real_work_stay
     assert read_timestamp(w)==original
     with w.queue.connect(write=False) as db:
         assert db.execute("SELECT pending_operation_key FROM rkb_native_source_intake_state").fetchone()[0]==key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("work", ["none", "pending", "semantic"])
+async def test_completion_intent_without_work_allows_reader_to_resume_finalize(watcher, work):
+    w = watcher
+    with w.queue.connect() as db:
+        db.execute("UPDATE rkb_native_source_intake_state SET read_completion_requested=1")
+        if work == "pending":
+            db.execute("UPDATE rkb_native_source_intake_state SET pending_operation_key='finish-pending'")
+        if work == "semantic":
+            db.execute("UPDATE rkb_native_source_intake_state SET enriched_batch_count=0")
+    original = read_timestamp(w)
+    result = (await get(w)).json()
+    expected = ("staged", "continue_pages") if work == "none" else ("processing", "wait")
+    assert (result["state"], result["next_action"]) == expected
+    assert result["accepted_pages"] == 2 and result["next_cursor"] == "9"
+    assert read_timestamp(w) == original
+    with w.queue.connect(write=False) as db:
+        assert db.execute("SELECT read_completion_requested FROM rkb_native_source_intake_state").fetchone()[0] == 1
