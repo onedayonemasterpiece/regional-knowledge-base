@@ -260,7 +260,7 @@ class SharedReadAdmission:
         bridge.spool.registry.resolve(command)
         actor=await bridge.spool.authorize_command(context,command)
         from .kaggle_native_source_intake import _AcceptedPacketProof
-        if type(context) is _AcceptedPacketProof:return actor
+        if type(context) is _AcceptedPacketProof:context=self._commands.get(actor,context)
         if len(set(self._documents)|set(self._commands)|{actor})>256:
             raise AdmissionUnavailable('canonical durable actor capacity exhausted')
         self._commands[actor]=context
