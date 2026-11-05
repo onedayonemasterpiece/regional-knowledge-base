@@ -177,7 +177,7 @@ class BgeQueue:
     def _run_expired(run, now):
         prepared=('bootstrap_finalized_at' in run.keys() and run['bootstrap_finalized_at'] is not None)
         lost = (now-run['heartbeat']>HEARTBEAT_SECONDS
-                if run['status']!='starting' or prepared else now-run['started']>900)
+                if run['status']!='starting' or prepared else now-max(run['started'],run['heartbeat'])>900)
         return (run['status']=='expired' or now>=run['started']+MAX_LIFETIME
                 or (run['status']!='draining' and now>=run['useful']+IDLE_SECONDS)
                 or lost or run['status']=='failed')
@@ -214,13 +214,15 @@ class BgeQueue:
                 _LOG.info('bge_idle_drain requested run_id=%s provider_version=%s',
                           run['id'],run['provider_version'])
                 continue
-            # A cold start gets at most 15 minutes to prove the completed native
-            # bootstrap or become ready. Only trusted finalized pins permit the
-            # normal heartbeat lease; idle and maximum lifetimes still apply.
+            # Cold bootstrap permits a 15-minute heartbeat gap from launch;
+            # active suffix recovery must not expire merely for its age.
+            # Finalized pins use the normal lease; idle/max lifetimes still apply.
             if self._run_expired(run, now):
                 if pending(db,run['id']):
                     continue
                 db.execute("update runs set status='expired' where id=?",(run['id'],))
+                _LOG.warning('bge_run_expired run_id=%s provider_version=%s state=%s age_s=%.3f heartbeat_age_s=%.3f',
+                             run['id'],run['provider_version'],run['status'],now-run['started'],now-run['heartbeat'])
                 db.execute("update jobs set state='pending',run_id=null,claim=null,lease_until=null where run_id=? and state='claimed' and kind!='recovery_phase'",(run['id'],))
                 db.execute('update control set current_run=null where current_run=?',(run['id'],))
                 db.execute('update control set successor=null where successor=?',(run['id'],))
