@@ -44,6 +44,14 @@ def _sender(**options):
      "Когда возникла крепость?", "Фриц Гаузе. Кёнигсберг. Том I (1996), pages 9", None,
      "Возникла крепость. Следующее предложение.",
      "Фриц Гаузе. Кёнигсберг. Том I (1996), с. 9 — Возникла крепость."),
+    ({"title": "Росписи", "authors": ["Автор"], "publication_year": 2012},
+     "Что сохранилось?", "Росписи, pages 16", None,
+     "4. Роспись занимала восточную стену. Позднее её восстановили.",
+     "Автор. Росписи (2012), с. 16 — 4. Роспись занимала восточную стену. Позднее её восстановили."),
+    ({"title": "Кирхи", "authors": ["Исследователь"], "publication_year": 2018},
+     "Где стояла кирха?", "Кирхи, pages 205", None,
+     "Илл. 12. Кирха находилась на площади. Описание продолжалось.",
+     "Исследователь. Кирхи (2018), с. 205 — Илл. 12. Кирха находилась на площади. Описание продолжалось."),
     ({"title": "Исторический сборник", "authors": [f"Автор {n}" for n in range(1, 31)],
       "publication_year": 2001}, "Что описывает сборник?", "Повторная библиография, pages 42–43", None,
      "Сборник описывает " + "историю города " * 20,
@@ -53,7 +61,7 @@ def _sender(**options):
      "Wo lag die Börse?", "Повторная библиография, pages 42–43", "pages 42–43",
      "Die Börse lag am Fluss. Ein weiterer Satz.",
      "Anna Beispiel, Otto Muster u. a. Die Börse, S. 42–43 — Die Börse lag am Fluss."),
-], ids=["gause-citation-pages", "collection-30-authors-word-boundary", "de-boerse"])
+], ids=["gause-citation-pages", "numbered-caption", "illustration-caption", "collection-30-authors-word-boundary", "de-boerse"])
 def test_fb_one_bibliography_per_book(catalog, question, citation, locator, text, expected):
     """Synthetic E2E-shaped projections; no book excerpts or private metadata."""
     source_id = "11111111-1111-4111-8111-111111111111"
