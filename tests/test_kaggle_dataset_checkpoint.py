@@ -207,6 +207,30 @@ async def put_control(p,name='one',data=b'pending'):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('unknown_field',[None,'seal_state','apply_state','outcome_state'])
+async def test_stop_checkpoint_uses_canonical_unknown_not_stale_source_head(tmp_path,monkeypatch,unknown_field):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch)
+    await put_control(p)
+    states=dict(seal_state='ACCEPTED',apply_state='APPLIED',outcome_state='DURABLE')
+    if unknown_field:states[unknown_field]='SENT_UNKNOWN'
+    with p.q.connect() as db:
+        db.execute('INSERT INTO rkb_control_source_heads VALUES(?,?,?,?,?,?)',
+            ('source',7,'a'*64,1,1,1))
+        db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?)',
+            ('operation',7,states['seal_state'],states['apply_state'],states['outcome_state'],'b'*64))
+    if unknown_field:
+        with pytest.raises(CheckpointPending):await p.owner.before_stop(p.binding)
+        assert 'capture' not in p.calls and p.store.latest_checkpoint.dataset_version==1
+    else:
+        assert await p.owner.before_stop(p.binding)
+        assert p.calls==['capture','finalize','verify']
+        assert p.store.latest_checkpoint.base_sequence==7
+        control=json.loads(p.saved[2][2]['source-control.json'])
+        assert control['heads']==[['source',7,'a'*64,1,0,0]]
+
+
+@pytest.mark.asyncio
 async def test_failed_control_upload_retries_current_bytes_after_ticket_expiry(tmp_path,monkeypatch):
     from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
     from regional_knowledge.kaggle_dataset_publisher import DatasetPublicationError
