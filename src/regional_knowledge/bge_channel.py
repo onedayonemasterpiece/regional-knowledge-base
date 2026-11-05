@@ -275,8 +275,11 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                     except CheckpointPending:
                         return False  # Retry only on the next authenticated heartbeat.
                     except Exception as error:
+                        code=error.args[0] if error.args and type(error.args[0]) is str and error.args[0] in (
+                            'dataset_checkpoint_stop_binding_changed','dataset_checkpoint_stop_run_missing',
+                            'dataset_checkpoint_nine_hour_limit') else 'unavailable'
                         logger.warning(json.dumps({'event':'bge_stop_checkpoint',
-                            'run_id':run_id,'outcome':'error','error_type':type(error).__name__}))
+                            'run_id':run_id,'outcome':'error','error_type':type(error).__name__,'code':code}))
                 # Same authenticated WSS, exact run/incarnation, no new frame.
                 # A delivered STOP is not native provider terminal evidence.
                 stop_sent = True

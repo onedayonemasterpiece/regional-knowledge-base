@@ -273,3 +273,26 @@ async def test_lifespan_yields_wss_route_before_waiting_for_pre_ready_restore(re
         async with startup.lifespan(None):
             await entered.wait()
             assert startup.running and not startup.reads_current()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_transport_draining_attachment_preserves_launch_pin(owner):
+    from regional_knowledge.kaggle_restore_startup import SourceRestoreCoordinator
+    from regional_knowledge.kaggle_public_backend import current_binding,TargetUnavailable
+    from regional_knowledge.kaggle_pg_snapshot_native import SnapshotError
+    import json
+    e=owner
+    with e.q.connect() as db:
+        expected=json.loads(e.q._runtime_row(db,e.run)['expected_json'])
+        db.execute("UPDATE runs SET status='draining' WHERE id=?",(e.run,))
+    coordinator=SimpleNamespace(queue=e.q,writer=e.w,
+        config=SimpleNamespace(launch_config_sha256=expected['hashes']['launch_config']),
+        database=SimpleNamespace(database_generation='synthetic-db',writer_generation='writer-1',
+            schema_version=expected.get('schema_version')))
+    observed,_=SourceRestoreCoordinator._observe(coordinator)
+    assert observed.run_id==e.run and observed.connection_generation==e.generation
+    assert observed.runtime_incarnation=='retained-incarnation'
+    with pytest.raises(TargetUnavailable):current_binding(e.q)  # Public serving remains closed.
+    coordinator.config.launch_config_sha256='f'*64
+    with pytest.raises(SnapshotError,match='restore_pinned_launch_differs'):
+        SourceRestoreCoordinator._observe(coordinator)

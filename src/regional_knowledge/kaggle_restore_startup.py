@@ -95,7 +95,7 @@ class SourceRestoreCoordinator:
             run=db.execute('SELECT * FROM runs WHERE id=?',(self.writer.run_id,)).fetchone()
             current=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()
             runtime=self.queue._runtime_row(db,self.writer.run_id)
-            if (run is None or current[0]!=run['id'] or run['status'] not in ('starting','ready')
+            if (run is None or current[0]!=run['id'] or run['status'] not in ('starting','ready','draining')
                     or not run['channel_active'] or run['attachment_conflict'] or self.queue._run_expired(run,self.queue.clock())
                     or not run['runtime_incarnation'] or run['provider_version'] is None or runtime is None):
                 raise SnapshotError('restore_current_attachment_unavailable')
@@ -145,7 +145,7 @@ class SourceRestoreCoordinator:
         if self.startup.schema_migrations.resume_attachment():return True
         binding,nonce=self._observe()
         from .kaggle_public_backend import current_binding,TargetUnavailable
-        try:binding=current_binding(self.queue)
+        try:binding=current_binding(self.queue,allow_draining=True)
         except TargetUnavailable:pass  # Bootstrap/restore still uses pre-READY authority.
         if (binding.run_id,nonce,binding.runtime_incarnation)!=self.dispatch.identity:
             raise SnapshotError('restore_retained_runtime_changed')
