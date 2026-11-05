@@ -163,6 +163,32 @@ async def test_accepted_packet_finishes_without_http_and_keeps_authority_scoped(
     admission=NS(_active=lambda:None,queue=e.q,_documents={},_commands=contexts,_event=asyncio.Event())
     await SharedReadAdmission.register_command_actor(admission,proof,command)
     assert contexts=={e.row['person_id']:original}
+    # A reconstructed API has no HTTP actor context. Its accepted derivative
+    # must still enter the real indexed queue selection, not just be enqueued.
+    admission=e.q.configure_shared_reads(authority)
+    try:
+        await admission.register_command_actor(proof,command)
+        entry=await e.spool.get(command.operation_key)
+        identity=dict(operation_key=command.operation_key,command_sha256=entry.command_sha256,
+            database_generation='db-source',writer_generation='writer-1',sequence=command.sequence)
+        queued=e.q._enqueue_source_command(e.bridge,e.row['person_id'],identity)
+        with e.q.connect(write=False) as db:
+            run=db.execute('SELECT current_run FROM control WHERE id=1').fetchone()[0]
+        token=(e.q.path.parent/'bge-worker-credentials'/run).read_text()
+        nonce=e.q.prepare_channel(run)
+        e.q.launch_claim(run);e.q.launch_record(run,'fixture/packet',provider_version=1)
+        generation=e.q.attach_channel(run,token,nonce,'fixture-inc')['connection_generation']
+        e.q.heartbeat(run,token,ready=True,connection_generation=generation)
+        e.q._admission_bind(run,token,generation,'fixture-inc')
+        _,_,selected,_=e.q._admission_snapshot(run,token,generation,
+            command_actors=tuple(admission._commands))
+        assert [job['id'] for job in selected]==[queued]
+        e.people.corpus.put('rkb_users',[{'id':e.people.owner.subject,'status':'disabled'}])
+        with pytest.raises(PermissionError):
+            await e.bridge.authorize_job(admission._commands[e.row['person_id']],selected[0])
+    finally:
+        e.people.corpus.put('rkb_users',[{'id':e.people.owner.subject,'status':'active'}])
+        admission.close()
     for changed in [replace(command,operation_key=command.operation_key+':other'),
             replace(command,ids={'source_id':'00000000-0000-0000-0000-000000000099'}),
             replace(command,payload=canonical(doc|{'ingestion_id':'00000000-0000-0000-0000-000000000099'})),
