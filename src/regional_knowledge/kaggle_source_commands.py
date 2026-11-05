@@ -32,6 +32,14 @@ MAX_SOURCE_RECEIPT_BYTES=16*1024
 _LOG=logging.getLogger(__name__)
 
 
+def _error_origin(error):
+    frames=traceback.extract_tb(error.__traceback__)[-2:]
+    sql_frames=re.findall(r'(?:^|\n)PL/pgSQL function ([a-z_][a-z0-9_.]*)\([^\n]*\) line ([0-9]+) at ',
+        error.diag.context or '') if isinstance(error,psycopg.Error) else []
+    return ','.join([f'{frame.name}:{frame.lineno}' for frame in frames]+
+        [f'{name}:{line}' for name,line in sql_frames])
+
+
 def canonical(value):
     return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
 
@@ -262,13 +270,8 @@ class WorkerSourceExecutor:
                         reason='invalid_model_input'
                     reject_reason=reason
                     cause=error.__context__ or error
-                    frames=traceback.extract_tb(cause.__traceback__)[-2:]
-                    sql_frames=re.findall(r'(?:^|\n)PL/pgSQL function ([a-z_][a-z0-9_.]*)\([^\n]*\) line ([0-9]+) at ',
-                        cause.diag.context or '') if isinstance(cause,psycopg.Error) else []
-                    origin=','.join([f'{frame.name}:{frame.lineno}' for frame in frames]+
-                        [f'{name}:{line}' for name,line in sql_frames])
                     _LOG.warning('native_source_materialization state=rejected route=%s sequence=%s reason=%s error_type=%s validator=%s',
-                        command.route,command.sequence,reason,type(cause).__name__,origin)
+                        command.route,command.sequence,reason,type(cause).__name__,_error_origin(cause))
                     break
                 except psycopg.errors.QueryCanceled as error:
                     if (command.route=='source.batch.v1' and error.sqlstate=='57014'
@@ -291,8 +294,8 @@ class WorkerSourceExecutor:
                 except Exception as error:
                     reject_reason='native_source_sql_rolled_back'
                     reject_error=error
-                    _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s',
-                        command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None))
+                    _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s validator=%s',
+                        command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None),_error_origin(error))
                     break
                 else:
                     break
