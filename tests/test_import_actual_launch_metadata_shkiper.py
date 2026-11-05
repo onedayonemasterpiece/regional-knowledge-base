@@ -39,7 +39,9 @@ async def test_full55_wheel_schema14_target_fits_actual_launch_envelope(tmp_path
     artifact = Path(os.environ['RKB_IMPORT_NATIVE_METADATA'])
     raw = (artifact / 'native-manifest.json').read_bytes()
     assert hashlib.sha256(raw).hexdigest() == '84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5'
-    native = json.loads((artifact / 'native-receipt.json').read_text())
+    receipt_raw = (artifact / 'native-receipt.json').read_bytes()
+    assert hashlib.sha256(receipt_raw).hexdigest() == '614374cb291305644c8c53eb24839bc9c22ddd7da248eed9e131e6451c013170'
+    native = json.loads(receipt_raw)
     adapter = packaging()
     base, candidate = inputs(adapter)
     receipt=dataset_placement(candidate) if dependency_transport=='dataset' else placement(candidate)

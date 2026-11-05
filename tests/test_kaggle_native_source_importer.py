@@ -1272,6 +1272,53 @@ async def test_mcp_catalog_correction_keeps_controlled_cause_without_private_inp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('location', ['entity', 'alias', 'relation'])
+async def test_mcp_entity_evidence_error_keeps_packet_path(native_intake, monkeypatch, caplog, location):
+    from regional_knowledge.server import build_server
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=1)
+    good = dict(page_id=payload['pages'][0]['page_id'], region_key='body', chunk_key='page-0')
+    bad = {key: value for key, value in good.items() if key != 'chunk_key'}
+    bad['exact_quote'] = 'PRIVATE_QUOTE_DO_NOT_RETURN'
+    node = dict(key='person', kind='person', canonical_label='Synthetic',
+                exact_source_spelling='Synthetic', evidence=good)
+    graph = dict(entities=[node], relations=[])
+    if location == 'entity':
+        node['evidence'] = bad
+        path = 'entity_candidates.entities.0.evidence'
+    elif location == 'alias':
+        node['aliases'] = [dict(value='Synthetic alias', evidence=bad)]
+        path = 'entity_candidates.entities.0.aliases.0.evidence'
+    else:
+        graph['entities'].append(dict(key='organization', kind='organization',
+            canonical_label='Synthetic organization', exact_source_spelling='Synthetic organization', evidence=good))
+        graph['relations'] = [dict(source_key='person', target_key='organization',
+                                   kind='affiliated_with', evidence=[bad])]
+        path = 'entity_candidates.relations.0.evidence.0'
+    payload['entity_candidates'] = graph
+    monkeypatch.setattr('regional_knowledge.server._principal', lambda: s.principal)
+    server = build_server(target_startup=s.startup)
+    with pytest.raises(ToolError) as caught:
+        await server._tool_manager.call_tool('book_ingest', dict(
+            command='stage', ingestion_id=book.ingestion_id,
+            source_import=options(research=True, ingestion_id=book.ingestion_id, state='pending').model_dump(mode='json'),
+            **payload), None)
+    diagnostic = json.loads(str(caught.value).removeprefix('Error executing tool book_ingest: '))
+    assert diagnostic['reason'] == 'invalid_small_source_input'
+    assert diagnostic['field_path'] == path
+    assert 'PRIVATE_QUOTE_DO_NOT_RETURN' not in str(caught.value) + caplog.text
+    assert operation_count(s) == 0
+    bad['chunk_key'] = good['chunk_key']
+    bad.pop('exact_quote')
+    await server._tool_manager.call_tool('book_ingest', dict(
+        command='stage', ingestion_id=book.ingestion_id,
+            source_import=options(research=True, ingestion_id=book.ingestion_id, state='pending').model_dump(mode='json'),
+            **payload), None)
+    assert operation_count(s) == 1
+
+
+@pytest.mark.asyncio
 async def test_native_invalid_entity_field_is_named_without_source_text(native_intake, caplog):
     s = native_intake
     book = await start(s)
@@ -1287,9 +1334,9 @@ async def test_native_invalid_entity_field_is_named_without_source_text(native_i
     diagnostic = json.loads(str(caught.value))
     assert diagnostic["reason"] == "invalid_small_source_input"
     assert diagnostic["exception_class"] == "ValidationError"
-    assert diagnostic["field_path"] == "region_key"
+    assert diagnostic["field_path"] == "entity_candidates.entities.0.evidence.region_key"
     assert "private source contents" not in caplog.text
-    assert caplog.text.count("book_ingest_invalid_input exception_class=ValidationError field_path=region_key") == 1
+    assert caplog.text.count("book_ingest_invalid_input exception_class=ValidationError field_path=entity_candidates.entities.0.evidence.region_key") == 1
     assert operation_count(s) == 0
 
 
