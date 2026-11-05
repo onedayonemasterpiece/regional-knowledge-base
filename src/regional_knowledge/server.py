@@ -108,7 +108,9 @@ _ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS = (
     "State the correction reason in source_review_note (1-500 characters). "
     "A correction adds a new accepted page interpretation; it never overwrites accepted bytes. "
     "For next_action=wait, call status and retry the identical pending stage; never alter it. "
-    "After finalize the native stage is sealed and cannot be corrected by this workflow. "
+    "When status returns continue_pages for missing semantic packets after reading completion, "
+    "resume only those pages with identical accepted text and corrected semantic input. "
+    "Other finalized corrections remain sealed. "
 )
 
 

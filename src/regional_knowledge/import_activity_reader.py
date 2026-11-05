@@ -12,7 +12,7 @@ from uuid import UUID
 from starlette.responses import JSONResponse
 
 from .projects_hub_reader import PrivateInput
-from .source_page_progress import published_pages,next_unaccepted
+from .source_page_progress import published_pages,next_unaccepted,enrichment_gaps
 
 PATH = "/internal/import/activity"
 SERVICE_ID = "launcher-import-watch"
@@ -81,6 +81,7 @@ class ImportActivityReader:
                     (pending,row["source_id"],row["person_id"])).fetchone():
                 pending = None
             accepted = published_pages(db,row) if native and native['packet_mode'] else set()
+            missing_semantic = enrichment_gaps(db,row) if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized') else set()
             last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
             # count is NOT page count (a reviewed batch can contain four pages).
@@ -107,7 +108,7 @@ class ImportActivityReader:
         phase = row["phase"]
         if phase == "failed" or native and native["phase"] == "failed":
             state, action = "failed", "blocker"
-        elif native and native["phase"] == "finalized" or phase == "finalized":
+        elif (native and native["phase"] == "finalized" or phase == "finalized") and not missing_semantic:
             state, action = "finalized", "done"
         elif phase == "acquiring":
             state, action = "processing", "wait"
@@ -133,6 +134,8 @@ class ImportActivityReader:
                 cursor = None
             else:
                 cursor = next_unaccepted(cursor,accepted)
+        if missing_semantic and not pending and state != 'failed':
+            cursor = str(min(missing_semantic))
         timestamp = row["last_operation_at"]
         return dict(state=state, next_action=action,
                     last_operation_at=(datetime.fromtimestamp(timestamp, timezone.utc).isoformat()

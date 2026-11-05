@@ -43,7 +43,7 @@ def watcher(tmp_path, auth):
         db.execute("""CREATE TABLE rkb_control_operations (
             source_id TEXT, person_id TEXT, operation_key TEXT,
             sequence INTEGER, seal_state TEXT, apply_state TEXT,
-            command_bytes BLOB)""")
+            command_bytes BLOB,outcome_bytes BLOB)""")
         db.execute(
             "INSERT INTO rkb_source_intake_control VALUES(?,?,?,?,?,?,?)",
             (ingestion, source, actor, "staging", now - 10, now - 5,
@@ -61,7 +61,7 @@ def watcher(tmp_path, auth):
         for seq, key, payload in ((1,f"source-stage:{ingestion}:0:0",raw),
                                   (2,f"source-packet:{ingestion}:0:text",json.dumps(packet).encode())):
             command=json.dumps({"payload_b64":base64.b64encode(payload).decode()}).encode()
-            db.execute("INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)",
                 (source,actor,key,seq,"ACCEPTED","APPLIED",command))
     startup = SimpleNamespace(importer=None,
         config=SimpleNamespace(queue=queue, oauth_provider=auth.provider),
@@ -118,7 +118,7 @@ def synthetic_page_records(db,w,*,batch,physical,sequence,text_state="APPLIED"):
         key=(f"source-stage:{w.ingestion}:{batch}:0" if kind=="stage" else
              f"source-packet:{w.ingestion}:{batch}:text")
         command=json.dumps({"payload_b64":base64.b64encode(payload).decode()}).encode()
-        db.execute("INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?)",
+        db.execute("INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)",
             (w.source,w.actor,key,sequence+n,"ACCEPTED",applied,command))
 
 
@@ -235,7 +235,17 @@ async def test_authorized_activity_is_redacted_read_only_and_cold_ready_book_res
     with w.queue.connect() as db:
         db.execute("UPDATE rkb_source_intake_control SET phase='finalized'")
     finalized=(await get(w)).json()
-    assert (finalized["state"],finalized["next_action"])==("finalized","done")
+    assert (finalized["state"],finalized["next_action"],finalized["next_cursor"]) == ("staged","continue_pages","3")
+    # A real SEM receipt, not counters alone, permits normal completion.
+    with w.queue.connect() as db:
+        text_command = db.execute("SELECT command_bytes FROM rkb_control_operations WHERE operation_key LIKE '%:text'").fetchone()[0]
+        packet = json.loads(base64.b64decode(json.loads(text_command)['payload_b64']))
+        packet['component'] = 'semantic'
+        command = json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+        db.execute("INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)",
+            (w.source,w.actor,f'source-packet:{w.ingestion}:0:semantic',3,'ACCEPTED','APPLIED',command))
+    finalized = (await get(w)).json()
+    assert (finalized["state"],finalized["next_action"]) == ("finalized","done")
     with w.queue.connect() as db:
         db.execute("UPDATE rkb_source_intake_control SET phase='failed'")
     failed=(await get(w)).json()

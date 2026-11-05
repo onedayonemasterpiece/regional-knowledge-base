@@ -24,7 +24,9 @@ behavior; the status line appears when the native import actually starts.
 
 Normal owner book_ingest traffic updates changed captions, including previously
 finished books, without a code agent, new daemon, timer or Telegram credential.
-Each call considers at most two changed books and edits at most one; unchanged
+Each call considers at most two changed books and edits at most one. A changed
+other book is tried before the active book, so continuous active-page changes
+cannot starve an older finished caption; unchanged
 metadata skips journal parsing and Telegram calls. The in-memory optimization
 is discarded on restart; authoritative desired status is reconstructed from
 the existing journal. The entire optional provider update has a two-second

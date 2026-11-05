@@ -8,13 +8,13 @@ import hashlib
 import json
 
 
-def read_publication_progress(queue, row):
+def read_publication_progress(queue, row, component="text"):
     """Open SQLite in the calling worker; connections never cross threads."""
     with queue.connect(write=False) as db:
-        return publication_progress(db, row)
+        return publication_progress(db, row) if component=="text" else publication_progress(db, row, component)
 
 
-def publication_progress(db, row):
+def publication_progress(db, row, component="text"):
     ingestion=row['ingestion_id']
     stages={}
     published=set()
@@ -26,7 +26,7 @@ def publication_progress(db, row):
         "SELECT operation_key,command_bytes FROM rkb_control_operations "
         "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' AND apply_state='APPLIED' "
         "AND (operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
-        (row['source_id'],row['person_id'],stage_prefix+'%',text_prefix+'%:text'))
+        (row['source_id'],row['person_id'],stage_prefix+'%',text_prefix+'%:'+component))
     for item in entries:
         payload=base64.b64decode(json.loads(item['command_bytes'])['payload_b64'],validate=True)
         doc=json.loads(payload)
@@ -38,7 +38,7 @@ def publication_progress(db, row):
             stages[index,hashlib.sha256(payload).hexdigest()]={
                 page['physical_page_index'] for page in pages}
         elif (item['operation_key'].startswith(text_prefix)
-              and doc.get('component')=='text'):
+              and doc.get('component')==component):
             pages=stages.get((index,doc.get('last_batch_sha256')))
             if pages is not None:
                 published.update(pages)
@@ -56,3 +56,38 @@ def next_unaccepted(cursor, published):
     if index not in published:return cursor  # Authored reverse/gap cursor stays intact.
     while index in published:index+=1
     return str(index)
+
+
+def enrichment_gaps(db, row):
+    """Ordinary continuation excludes the latest unresolved SQL rollback."""
+    published, _ = publication_progress(db, row)
+    stages = {}; semantic = set(); latest = {}
+    for item in db.execute(
+            "SELECT operation_key,command_bytes,apply_state,outcome_bytes FROM rkb_control_operations "
+            "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' "
+            "AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
+            "AND (operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
+            (row['source_id'],row['person_id'],'source-stage:'+row['ingestion_id']+':%',
+             'source-packet:'+row['ingestion_id']+':%:semantic')):
+        raw = base64.b64decode(json.loads(item['command_bytes'])['payload_b64'], validate=True)
+        packet = json.loads(raw)
+        if packet.get('ingestion_id') != row['ingestion_id']: continue
+        if item['operation_key'].startswith('source-stage:'):
+            if item['apply_state']=='APPLIED':
+                stages[packet['batch_index'],hashlib.sha256(raw).hexdigest()] = {
+                    page['physical_page_index'] for page in packet['model_payload']['pages']}
+        elif packet.get('component')=='semantic':
+            pages = stages.get((packet['batch_index'],packet['last_batch_sha256']),set())
+            reason = None
+            if item['apply_state']=='APPLIED': semantic.update(pages)
+            elif item['outcome_bytes']:
+                outcome = json.loads(item['outcome_bytes'])
+                reason = json.loads(base64.b64decode(outcome['result_b64'],validate=True)).get('reason')
+            latest.update((page,reason) for page in pages)
+    return published - semantic - {page for page,reason in latest.items()
+                                  if reason=='native_source_sql_rolled_back'}
+
+
+def read_enrichment_gaps(queue, row):
+    with queue.connect(write=False) as db:
+        return enrichment_gaps(db, row)

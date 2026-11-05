@@ -142,6 +142,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             'regional_knowledge.control_spool':NS(SpoolError=SpoolError,SpoolUnknown=SpoolUnknown),
             'regional_knowledge.recovery_journal':NS(JournalUnknown=JournalUnknown),
             'regional_knowledge.source_page_progress':NS(
+                read_enrichment_gaps=lambda *_:set(),
                 read_publication_progress=lambda *_:(set(),set()),next_unaccepted=next_unaccepted),
         }
         self.mock=patch.dict(sys.modules,modules); self.mock.start(); self.addCleanup(self.mock.stop)

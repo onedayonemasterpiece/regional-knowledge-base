@@ -569,16 +569,16 @@ async def test_publication_scan_keeps_other_api_work_running(native_intake, monk
         token = await s.t.auth.provider.load_access_token(s.principal.access_token)
         await s.t.auth.provider.revoke_token(token)
 
-    def scan(db, row):
+    def scan(db, row, component="text"):
         # Model slow SQLite/JSON work while another API callback needs the loop.
         # An event handshake avoids relying on machine-speed timing thresholds.
         other_request = threading.Event()
         loop.call_soon_threadsafe(other_request.set)
         assert other_request.wait(1), 'publication scan blocked other API callbacks'
         observed.append(True)
-        if revoked:
+        if revoked and len(observed) == 1:
             asyncio.run_coroutine_threadsafe(revoke(), loop).result(3)
-        return original(db, row)
+        return original(db, row, component)
 
     monkeypatch.setattr(progress, 'publication_progress', scan)
     async def request():
@@ -1970,3 +1970,71 @@ async def test_slow_book_stage_does_not_hold_other_book_status(native_intake,mon
         release.set()
         await asyncio.gather(slow,same)
     assert same_entered.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["native_source_packet_requires_review", "native_source_sql_rolled_back"])
+async def test_completion_resumes_older_rejected_semantic_packet(native_intake, reason):
+    """Later successful packets must not hide an earlier rejected SEM page."""
+    s = native_intake
+    book = await start(s)
+    await stage(s, book, batch(s, book, first=0, count=1))
+    await finish(s, book)
+    await call(s, book, 'status')
+    await finish(s, book)
+    await call(s, book, 'status')
+    await finish(s, book, status='rejected_precondition', reason=reason)
+    await call(s, book, 'status')
+    await stage(s, book, batch(s, book, first=1, count=1))
+    for _ in range(3):
+        await finish(s, book)
+        await call(s, book, 'status')
+    before = operation_count(s)
+    result = await call(s, book, 'finalize')
+    if reason == 'native_source_sql_rolled_back':
+        await finish(s, book)
+        completed = await call(s, book, 'status')
+        assert (completed.state, completed.next_action) == ('finalized', 'done')
+    else:
+        assert result.next_action == 'continue_pages'
+        assert result.next_cursor == '0'
+        assert operation_count(s) == before  # No finish, replay, or repair command.
+        # Reproduce a legacy finished source through its original finish command.
+        import regional_knowledge.source_page_progress as progress
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(progress, 'read_enrichment_gaps', lambda *_: set())
+            await call(s, book, 'finalize')
+            await finish(s, book)
+            assert (await call(s, book, 'status')).state == 'finalized'
+        resumed = await call(s, book, 'status')
+        assert (resumed.next_action, resumed.next_cursor) == ('continue_pages', '0')
+    with pytest.raises(ToolError, match='native_candidate_already_sealed'):
+        await stage(s, book, batch(s, book, first=1, count=1))
+    # Normal model-authored same-text input, not a replay of accepted commands.
+    await stage(s, book, batch(s, book, first=0, count=1))
+    for _ in range(3):
+        await finish(s, book)
+        await call(s, book, 'status')
+    await call(s, book, 'finalize')
+    if state(s, book)['pending_operation_key']:
+        await finish(s, book)
+    completed = await call(s, book, 'status')
+    assert (completed.state, completed.next_action) == ('finalized', 'done')
+
+
+@pytest.mark.asyncio
+async def test_changed_active_caption_does_not_starve_finished_book(native_intake, monkeypatch):
+    import regional_knowledge.telegram_import_status as projection
+    s = native_intake
+    calls = []
+    monkeypatch.setattr(projection, 'started_statuses', lambda *_, **__: [
+        ({'ingestion_id': 'current'}, 'active page changed again'),
+        ({'ingestion_id': 'finished'}, 'finished save has settled'),
+    ])
+    async def caption(access, row, *, status):
+        calls.append(row['ingestion_id'])
+        return True
+    monkeypatch.setattr(s.importer, '_caption_original', caption)
+    await s.importer._sync_import_captions(
+        SimpleNamespace(authority=SimpleNamespace(person_id='synthetic-owner')), 'current')
+    assert calls == ['finished']

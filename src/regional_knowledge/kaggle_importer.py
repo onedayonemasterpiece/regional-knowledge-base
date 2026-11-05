@@ -341,7 +341,7 @@ class KaggleSourceImporter:
             from .telegram_import_status import started_statuses
             rows=await asyncio.to_thread(started_statuses,self.queue,access.authority.person_id,
                 synced=self._caption_synced,preferred=ingestion_id,limit=2)
-            rows.sort(key=lambda item:item[0]['ingestion_id']!=ingestion_id)
+            rows.sort(key=lambda item:item[0]['ingestion_id']==ingestion_id)
             async with asyncio.timeout(2):
                 for row,status in rows:
                     if await self._caption_original(access,row,status=status):break
