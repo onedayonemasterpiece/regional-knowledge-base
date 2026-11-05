@@ -347,12 +347,21 @@ def _call(function: PgFunction):
         sql.Identifier("rkb_v4"), sql.Identifier(function.name))
 
 
+def _rollback_diagnostic(error):
+    # The apply wrapper suppresses private PG messages, but retains its exception context.
+    cause=(error.__cause__ or error.__context__ or error) if isinstance(error,ApplyExecutionError) else error
+    name=type(cause).__name__
+    code=getattr(cause,'sqlstate',None)
+    return {'error_type':name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',name) else 'Exception',
+            'sqlstate':code if isinstance(code,str) and re.fullmatch(r'[A-Z0-9]{5}',code) else None}
+
+
 async def apply_accepted(connection, *, journal: RecoveryJournal, seal: AcceptedSeal,
                          command: ExactCommand, database_generation: str,
                          writer_generation: str, registry: HandlerRegistry,
                          max_command_bytes: int = 1048576,
                          max_outcome_bytes: int = 1048576,
-                         reject_reason: str | None = None) -> ApplyReceipt:
+                         reject_reason: str | None = None, reject_error: Exception | None = None) -> ApplyReceipt:
     """Verify remote acceptance before TX, then atomically apply a trusted PG handler.
 
     Functions and registry are trusted deployment artifacts. Both functions must
@@ -422,7 +431,9 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                     if checked is None or type(checked[0]) is not bool:
                         raise ApplyConflict("precondition function must return one boolean")
                     status = "applied" if checked[0] else "rejected_precondition"
-                    result = _json({'reason':reject_reason}) if reject_reason is not None else b""
+                    result = (_json({'reason':reject_reason, **(_rollback_diagnostic(reject_error)
+                        if reject_reason=='native_source_sql_rolled_back' and reject_error is not None else {})})
+                        if reject_reason is not None else b"")
                     after = before
                     if checked[0]:
                         stage = 'effect'
