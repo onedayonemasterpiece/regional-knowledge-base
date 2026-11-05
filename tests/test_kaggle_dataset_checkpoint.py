@@ -530,7 +530,7 @@ async def test_missing_saved_timestamp_triggers_checkpoint_now(tmp_path,monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('identity_change',[None,'run','incarnation'])
+@pytest.mark.parametrize('identity_change',[None,'run','incarnation','coverage_cleared'])
 async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tmp_path,monkeypatch,identity_change):
     """Real stop callback, checkpoint capture, provider readback and Saved pointer."""
     from regional_knowledge.kaggle_service_startup import TargetServiceStartup
@@ -539,8 +539,10 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
     key=await put_control(p)
     old=NS(run_id='run',runtime_incarnation='inc',connection_generation=2,writer_generation='writer')
     new=NS(run_id='other' if identity_change=='run' else 'run',
-        runtime_incarnation='other' if identity_change=='incarnation' else 'inc',connection_generation=3,writer_generation='writer')
+        runtime_incarnation='other' if identity_change=='incarnation' else 'inc',
+        connection_generation=2 if identity_change=='coverage_cleared' else 3,writer_generation='writer')
     p.binding=old;p.startup.binding=old;p.startup.dataset_checkpoints=p.owner
+    if identity_change=='coverage_cleared':p.startup.coverage=None
     with p.q.connect() as db:
         db.execute("ALTER TABLE runs ADD COLUMN launch_nonce TEXT DEFAULT 'nonce'")
         db.execute("UPDATE runs SET status='draining'")
@@ -566,12 +568,12 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
     native=p.startup.restorer.dispatch.request
     p.startup.restorer.dispatch=NS(bind_attachment=dispatch.bind_attachment,request=request)
     p.startup.binding_current=lambda binding:False  # Draining stays closed to public tools.
-    if identity_change:
+    if identity_change in ('run','incarnation'):
         with pytest.raises(RuntimeError,match='stop_binding_changed'):
-            await TargetServiceStartup.before_planned_stop(p.startup,'run',3)
+            await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
         assert not p.calls and not p.store.remote_durable(key,b'pending')
     else:
-        assert await TargetServiceStartup.before_planned_stop(p.startup,'run',3)
+        assert await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
         assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
         assert p.calls==['capture','finalize','verify'] and observed and all(b is new for b in observed)
         assert not p.startup.binding_current(new)

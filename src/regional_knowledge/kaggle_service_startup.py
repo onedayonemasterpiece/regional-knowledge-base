@@ -584,7 +584,7 @@ class TargetServiceStartup:
         # task; never use that old task to grant a new capture/promotion.
         binding=self.binding
         if (binding is not None and binding.run_id==run_id
-                and binding.connection_generation!=connection_generation):
+                and (binding.connection_generation!=connection_generation or self.coverage is None)):
             try:current=current_binding(self.config.queue,allow_draining=True)
             except TargetUnavailable:raise RuntimeError('dataset_checkpoint_stop_binding_changed') from None
             if (current.run_id,current.runtime_incarnation,current.connection_generation)!=(
