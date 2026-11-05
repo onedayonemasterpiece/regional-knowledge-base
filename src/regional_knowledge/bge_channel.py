@@ -267,9 +267,8 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                     if not stop_checkpoint.done():
                         return False  # Dispatch and receive must complete the checkpoint RPCs.
                     try:
-                        stop_checkpoint.result()
                         logger.info(json.dumps({'event':'bge_stop_checkpoint',
-                            'run_id':run_id,'connection_generation':generation,'outcome':'settled'}))
+                            'run_id':run_id,'connection_generation':generation,'outcome':'returned','result':stop_checkpoint.result()}))
                     except asyncio.CancelledError:
                         raise
                     except CheckpointPending:
