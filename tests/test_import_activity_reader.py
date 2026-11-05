@@ -235,7 +235,17 @@ async def test_authorized_activity_is_redacted_read_only_and_cold_ready_book_res
     with w.queue.connect() as db:
         db.execute("UPDATE rkb_source_intake_control SET phase='finalized'")
     finalized=(await get(w)).json()
-    assert (finalized["state"],finalized["next_action"])==("finalized","done")
+    assert (finalized["state"],finalized["next_action"],finalized["next_cursor"]) == ("staged","continue_pages","3")
+    # A real SEM receipt, not counters alone, permits normal completion.
+    with w.queue.connect() as db:
+        text_command = db.execute("SELECT command_bytes FROM rkb_control_operations WHERE operation_key LIKE '%:text'").fetchone()[0]
+        packet = json.loads(base64.b64decode(json.loads(text_command)['payload_b64']))
+        packet['component'] = 'semantic'
+        command = json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+        db.execute("INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?)",
+            (w.source,w.actor,f'source-packet:{w.ingestion}:0:semantic',3,'ACCEPTED','APPLIED',command))
+    finalized = (await get(w)).json()
+    assert (finalized["state"],finalized["next_action"]) == ("finalized","done")
     with w.queue.connect() as db:
         db.execute("UPDATE rkb_source_intake_control SET phase='failed'")
     failed=(await get(w)).json()

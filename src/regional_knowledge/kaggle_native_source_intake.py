@@ -692,6 +692,15 @@ class NativeSourceIntake:
                 or state['pending_operation_key'] or state.get('rejected_batch_index') is not None
                 or state['phase'] not in ('staging','finalized')):
             return None
+        if state['packet_mode']:
+            from .source_page_progress import read_enrichment_gaps
+            missing = await asyncio.to_thread(read_enrichment_gaps, self.queue, row)
+            await self._check(access, row)
+            if missing:
+                return self.importer._output(row, 'needs_review',
+                    'Continue the existing import on pages without an APPLIED semantic packet; '
+                    'retain exact text and correct the reviewed semantic input, then finalize.',
+                    'continue_pages', next_cursor=str(min(missing)), source_archive_status='verified')
         await self._check(access,row)
         restorer=getattr(self.startup,'restorer',None)
         if restorer is not None and not restorer.complete:
@@ -800,7 +809,8 @@ class NativeSourceIntake:
         state=await self._recover_orphan(access,row,state,'stage',self._stage_key(row,state))
         if (state['pending_operation_key'] and state['pending_kind']!='batch') or state['phase']=='failed':
             return self._output(row,state)
-        if state['phase']!='staging': raise _failure('native_candidate_already_sealed',status='invalid_query')
+        if state['phase']!='staging' and not (state['packet_mode'] and state['phase']=='finalized'):
+            raise _failure('native_candidate_already_sealed',status='invalid_query')
         receipt=await self.importer._receipt(access,row)
         if receipt is None: return self.importer._output(row,'processing','Verified original pending','wait')
         if source_import is not None and source_import.public_rights is not None:
@@ -823,7 +833,12 @@ class NativeSourceIntake:
         await self._check(access,row)
         selected={page['physical_page_index'] for page in payload['pages']}
         graph=payload.get('entity_candidates') or {}
-        retry_semantic=(state.get('rejected_batch_index') in text_batches or
+        from .source_page_progress import read_enrichment_gaps
+        missing = await asyncio.to_thread(read_enrichment_gaps, self.queue, row) if selected<=published else set()
+        await self._check(access,row)
+        if state['phase']=='finalized' and not selected<=missing:
+            raise _failure('native_candidate_already_sealed',status='invalid_query')
+        retry_semantic=(bool(selected & missing) or state.get('rejected_batch_index') in text_batches or
             state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
                 any(graph.get(key) for key in ('entities','relations','entity_refs'))))
         if selected and selected<=published and not retry_semantic:
@@ -913,8 +928,10 @@ class NativeSourceIntake:
         if not state.get('read_completion_requested'):
             state=await asyncio.to_thread(self._update,row,read_completion_requested=1)
         state=await self._packet_progress(access,row,await self._drive(access,row,state))
-        if state['pending_operation_key'] or state['phase'] in ('failed','finalized'):
+        if state['pending_operation_key'] or state['phase']=='failed':
             return self._output(row,state)
+        if state['phase']=='finalized':
+            return await self._tail_output(access,row,state) or self._output(row,state)
         if state['enriched_batch_count']<state['batch_count'] or not state['read_completion_requested']:
             return self._output(row,state)
         tails=await self._tail_output(access,row,state)

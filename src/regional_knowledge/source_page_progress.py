@@ -14,7 +14,7 @@ def read_publication_progress(queue, row):
         return publication_progress(db, row)
 
 
-def publication_progress(db, row):
+def publication_progress(db, row, component="text"):
     ingestion=row['ingestion_id']
     stages={}
     published=set()
@@ -26,7 +26,7 @@ def publication_progress(db, row):
         "SELECT operation_key,command_bytes FROM rkb_control_operations "
         "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' AND apply_state='APPLIED' "
         "AND (operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
-        (row['source_id'],row['person_id'],stage_prefix+'%',text_prefix+'%:text'))
+        (row['source_id'],row['person_id'],stage_prefix+'%',text_prefix+'%:'+component))
     for item in entries:
         payload=base64.b64decode(json.loads(item['command_bytes'])['payload_b64'],validate=True)
         doc=json.loads(payload)
@@ -38,7 +38,7 @@ def publication_progress(db, row):
             stages[index,hashlib.sha256(payload).hexdigest()]={
                 page['physical_page_index'] for page in pages}
         elif (item['operation_key'].startswith(text_prefix)
-              and doc.get('component')=='text'):
+              and doc.get('component')==component):
             pages=stages.get((index,doc.get('last_batch_sha256')))
             if pages is not None:
                 published.update(pages)
@@ -56,3 +56,11 @@ def next_unaccepted(cursor, published):
     if index not in published:return cursor  # Authored reverse/gap cursor stays intact.
     while index in published:index+=1
     return str(index)
+
+
+def read_enrichment_gaps(queue, row):
+    """Missing successful SEM receipts stay in the ordinary page continuation."""
+    with queue.connect(write=False) as db:
+        published, _ = publication_progress(db, row)
+        semantic, _ = publication_progress(db, row, 'semantic')
+        return published - semantic
