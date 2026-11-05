@@ -1973,7 +1973,8 @@ async def test_slow_book_stage_does_not_hold_other_book_status(native_intake,mon
 
 
 @pytest.mark.asyncio
-async def test_completion_resumes_older_rejected_semantic_packet(native_intake):
+@pytest.mark.parametrize("reason", ["native_source_packet_requires_review", "native_source_sql_rolled_back"])
+async def test_completion_resumes_older_rejected_semantic_packet(native_intake, reason):
     """Later successful packets must not hide an earlier rejected SEM page."""
     s = native_intake
     book = await start(s)
@@ -1982,7 +1983,7 @@ async def test_completion_resumes_older_rejected_semantic_packet(native_intake):
     await call(s, book, 'status')
     await finish(s, book)
     await call(s, book, 'status')
-    await finish(s, book, status='rejected_precondition', reason='native_source_packet_requires_review')
+    await finish(s, book, status='rejected_precondition', reason=reason)
     await call(s, book, 'status')
     await stage(s, book, batch(s, book, first=1, count=1))
     for _ in range(3):
@@ -1990,18 +1991,23 @@ async def test_completion_resumes_older_rejected_semantic_packet(native_intake):
         await call(s, book, 'status')
     before = operation_count(s)
     result = await call(s, book, 'finalize')
-    assert result.next_action == 'continue_pages'
-    assert result.next_cursor == '0'
-    assert operation_count(s) == before  # No finish, replay, or repair command.
-    # Reproduce a legacy finished source through its original finish command.
-    import regional_knowledge.source_page_progress as progress
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(progress, 'read_enrichment_gaps', lambda *_: set())
-        await call(s, book, 'finalize')
+    if reason == 'native_source_sql_rolled_back':
         await finish(s, book)
-        assert (await call(s, book, 'status')).state == 'finalized'
-    resumed = await call(s, book, 'status')
-    assert (resumed.next_action, resumed.next_cursor) == ('continue_pages', '0')
+        completed = await call(s, book, 'status')
+        assert (completed.state, completed.next_action) == ('finalized', 'done')
+    else:
+        assert result.next_action == 'continue_pages'
+        assert result.next_cursor == '0'
+        assert operation_count(s) == before  # No finish, replay, or repair command.
+        # Reproduce a legacy finished source through its original finish command.
+        import regional_knowledge.source_page_progress as progress
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(progress, 'read_enrichment_gaps', lambda *_: set())
+            await call(s, book, 'finalize')
+            await finish(s, book)
+            assert (await call(s, book, 'status')).state == 'finalized'
+        resumed = await call(s, book, 'status')
+        assert (resumed.next_action, resumed.next_cursor) == ('continue_pages', '0')
     with pytest.raises(ToolError, match='native_candidate_already_sealed'):
         await stage(s, book, batch(s, book, first=1, count=1))
     # Normal model-authored same-text input, not a replay of accepted commands.

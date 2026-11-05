@@ -12,7 +12,7 @@ from uuid import UUID
 from starlette.responses import JSONResponse
 
 from .projects_hub_reader import PrivateInput
-from .source_page_progress import published_pages,next_unaccepted,publication_progress
+from .source_page_progress import published_pages,next_unaccepted,enrichment_gaps
 
 PATH = "/internal/import/activity"
 SERVICE_ID = "launcher-import-watch"
@@ -81,8 +81,7 @@ class ImportActivityReader:
                     (pending,row["source_id"],row["person_id"])).fetchone():
                 pending = None
             accepted = published_pages(db,row) if native and native['packet_mode'] else set()
-            semantic = publication_progress(db,row,'semantic')[0] if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized') else accepted
-            missing_semantic = accepted - semantic
+            missing_semantic = enrichment_gaps(db,row) if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized') else set()
             last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
             # count is NOT page count (a reviewed batch can contain four pages).

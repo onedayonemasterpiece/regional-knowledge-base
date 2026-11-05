@@ -833,8 +833,8 @@ class NativeSourceIntake:
         await self._check(access,row)
         selected={page['physical_page_index'] for page in payload['pages']}
         graph=payload.get('entity_candidates') or {}
-        from .source_page_progress import read_enrichment_gaps
-        missing = await asyncio.to_thread(read_enrichment_gaps, self.queue, row) if selected<=published else set()
+        semantic, _ = await asyncio.to_thread(read_publication_progress, self.queue, row, 'semantic') if selected<=published else (set(),set())
+        missing = published - semantic if selected<=published else set()
         await self._check(access,row)
         if state['phase']=='finalized' and not selected<=missing:
             raise _failure('native_candidate_already_sealed',status='invalid_query')

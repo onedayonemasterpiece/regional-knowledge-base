@@ -45,3 +45,10 @@ semantic input for those pages, including a historically reading-completed
 packet import. Other finalized corrections remain sealed; exact-text SQL guards,
 old commands, receipts and original reading-completion provenance are unchanged.
 No separate repair queue, mode or manual caption edit is involved.
+
+The latest SEM outcome for each page is read from the same ordered journal.
+An unresolved `native_source_sql_rolled_back` is not automatically sent back
+to the model: ordinary completion may end with that explicit error still shown
+in Telegram. It is not successful semantic coverage or a green check, and its
+unknown runtime cause still needs investigation. A later correctable rejection
+or successful outcome supersedes the older rollback for continuation selection.
