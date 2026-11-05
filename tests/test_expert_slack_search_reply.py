@@ -65,7 +65,19 @@ def _sender(**options):
      "Wo lag die Börse?", "Повторная библиография, pages 42–43", "pages 42–43",
      "Die Börse lag am Fluss. Ein weiterer Satz.",
      "Anna Beispiel, Otto Muster u. a. Die Börse, S. 42–43 — Die Börse lag am Fluss. Ein weiterer Satz."),
-], ids=["gause-citation-pages", "numbered-caption", "illustration-caption", "date-abbreviation-1939", "collection-30-authors-word-boundary", "de-boerse"])
+    ({"title": "Переселенцы", "authors": ["Автор"], "publication_year": 2015},
+      "Что сообщалось?", "Переселенцы, pages 7", None,
+      "ятельно. Такие случаи встречались.",
+      "Автор. Переселенцы (2015), с. 7 — …ятельно. Такие случаи встречались."),
+    ({"title": "Chronik", "authors": ["Anna Beispiel"], "publication_year": 1921},
+      "Wann wurde es erwähnt?", "Chronik, pages 11", None,
+      "und wurde später erwähnt.",
+      "Anna Beispiel. Chronik (1921), S. 11 — …und wurde später erwähnt."),
+    ({"title": "Архитектура", "authors": ["Автор"], "publication_year": 2019},
+      "Что было построено?", "Архитектура, pages 13", None,
+      "Здание стояло рядом с парком.",
+      "Автор. Архитектура (2019), с. 13 — Здание стояло рядом с парком."),
+], ids=["gause-citation-pages", "numbered-caption", "illustration-caption", "date-abbreviation-1939", "collection-30-authors-word-boundary", "de-boerse", "lowercase-cyrillic", "lowercase-latin", "uppercase-unchanged"])
 def test_fb_one_bibliography_per_book(catalog, question, citation, locator, text, expected):
     """Synthetic E2E-shaped projections; no book excerpts or private metadata."""
     source_id = "11111111-1111-4111-8111-111111111111"
