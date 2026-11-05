@@ -1577,6 +1577,11 @@ async def test_masked_packet_rejection_logs_origin_and_retains_safe_diagnostic(n
         receipt,_=decode_receipt(await worker(frame))
     body=json.loads(base64.b64decode(json.loads(receipt.outcome)['result_b64']))
     # The invalid fixed reason is refused by apply before its canonical SQL rollback receipt.
+    validator = body.pop('validator')
+    assert validator and len(validator) <= 256
+    if not masked:
+        assert 'invalid_model_field:' in validator
+        if postgres: assert 'rkb_v4.prepare_source_batch_v1:57' in validator
     assert body=={'reason':'native_source_sql_rolled_back',
         'error_type':'RejectedSql' if postgres and not masked else 'ValueError',
         'sqlstate':'22023' if postgres and not masked else None}

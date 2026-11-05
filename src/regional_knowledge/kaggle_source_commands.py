@@ -14,13 +14,12 @@ import json
 import logging
 import re
 import time
-import traceback
 from uuid import UUID
 
 import psycopg
 from psycopg.pq import TransactionStatus
 
-from .kaggle_apply import ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
+from .kaggle_apply import _error_origin, ApplyUnknown, ApplyReceipt, HandlerRegistry, HandlerSpec, PgFunction, Revisions, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, StaleWriter
 from .bge_contract import TOKEN_REJECTION_PATTERN
 from .source_stage import SOURCE_COVERAGE_REJECTION_PATTERN
@@ -30,14 +29,6 @@ SOURCE_WITHDRAW='source.withdraw.v1'
 MAX_SOURCE_FRAME_BYTES=2*1024*1024
 MAX_SOURCE_RECEIPT_BYTES=16*1024
 _LOG=logging.getLogger(__name__)
-
-
-def _error_origin(error):
-    frames=traceback.extract_tb(error.__traceback__)[-2:]
-    sql_frames=re.findall(r'(?:^|\n)PL/pgSQL function ([a-z_][a-z0-9_.]*)\([^\n]*\) line ([0-9]+) at ',
-        error.diag.context or '') if isinstance(error,psycopg.Error) else []
-    return ','.join([f'{frame.name}:{frame.lineno}' for frame in frames]+
-        [f'{name}:{line}' for name,line in sql_frames])
 
 
 def canonical(value):
