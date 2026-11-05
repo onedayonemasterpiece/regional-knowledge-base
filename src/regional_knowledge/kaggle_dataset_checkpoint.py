@@ -101,7 +101,9 @@ class _WorkCycleCapture(SourceDatasetSeed):
             rows=db.execute('SELECT source_id,sequence,command_sha256,restriction,pending,unknown '
                 'FROM rkb_control_source_heads ORDER BY source_id LIMIT ?',
                 (physical.limits.max_receipts+1,)).fetchall()
-        if len(rows)>physical.limits.max_receipts or any(row[5] for row in rows):
+        # _prefix_ready checks immutable operation states under prefix_guard;
+        # a cached source head can still carry UNKNOWN after its apply settled.
+        if len(rows)>physical.limits.max_receipts:
             raise SnapshotError('dataset_checkpoint_source_control_unsettled')
         history=self.startup.history
         # Only this immutable future checkpoint describes the captured prefix
