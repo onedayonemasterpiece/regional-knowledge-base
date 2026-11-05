@@ -597,10 +597,12 @@ def test_startup_recovery_renews_existing_heartbeat_lease(tmp_path):
     # A long suffix recovery remains starting but sends authenticated heartbeats.
     for _ in range(4):
         now[0]+=300
+        assert queue.record_request_activity()
         queue.heartbeat(run,token)
     with queue.connect(write=False) as db:
         row=db.execute('select * from runs where id=?',(run,)).fetchone()
         assert row['status']=='starting' and row['ready_at'] is None
         assert not queue._run_expired(row,now[0])
+        assert queue._run_expired(dict(row,heartbeat=row['started']),now[0])
         assert queue._run_expired(row,now[0]+900.001)
         assert queue._run_expired(dict(row,started=now[0]-12*3600),now[0])
