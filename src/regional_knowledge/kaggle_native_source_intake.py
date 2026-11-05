@@ -34,28 +34,37 @@ def resolve_stage_entity_evidence(payload, source_id):
     bundle = payload.get('entity_candidates') if type(payload) is dict else None
     if type(bundle) is not dict:
         return payload
+    from pydantic import ValidationError
     from .story_contracts import StageStoryEvidenceInput
     from .entity_graph import GraphBundle
 
     bundle = json.loads(canonical(bundle))
     references = []
     nodes = bundle.get('entities')
-    for node in nodes if type(nodes) is list else []:
+    for index, node in enumerate(nodes if type(nodes) is list else []):
         if type(node) is dict:
-            references.append(node.get('evidence'))
+            path = ('entity_candidates', 'entities', index)
+            references.append((path + ('evidence',), node.get('evidence')))
             aliases = node.get('aliases')
             if type(aliases) is list:
-                references.extend(alias.get('evidence') for alias in aliases if type(alias) is dict)
+                references.extend((path + ('aliases', alias_index, 'evidence'), alias.get('evidence'))
+                    for alias_index, alias in enumerate(aliases) if type(alias) is dict)
     edges = bundle.get('relations')
-    for edge in edges if type(edges) is list else []:
+    for index, edge in enumerate(edges if type(edges) is list else []):
         if type(edge) is dict and type(edge.get('evidence')) is list:
-            references.extend(edge['evidence'])
+            references.extend((('entity_candidates', 'relations', index, 'evidence', ref_index), evidence)
+                for ref_index, evidence in enumerate(edge['evidence']))
     changed = False
-    for evidence in references:
+    for path, evidence in references:
         if type(evidence) is not dict or not ({'region_key', 'chunk_key'} & evidence.keys()):
             continue
-        ref = StageStoryEvidenceInput.model_validate(
-            {key: value for key, value in evidence.items() if key != 'exact_quote'})
+        try:
+            ref = StageStoryEvidenceInput.model_validate(
+                {key: value for key, value in evidence.items() if key != 'exact_quote'})
+        except ValidationError as error:
+            raise ValidationError.from_exception_data('StageStoryEvidenceInput', [
+                {**detail, 'loc': path + detail['loc']}
+                for detail in error.errors(include_input=False, include_url=False)]) from None
         evidence['region_id'] = str(uuid5(UUID(ref.page_id), 'region:' + ref.region_key))
         evidence['chunk_id'] = ref.chunk_id or str(uuid5(UUID(source_id), 'chunk:1:' + ref.chunk_key))
         evidence.pop('region_key', None)
