@@ -77,6 +77,7 @@ def answer_from_evidence(result, question=""):
         fragment=" ".join(re.sub(r"\u00ad\s*", "", item["text"]).split())
         sentence=clean(fragment,200)
         if len(fragment)>200:sentence=clean(fragment,199)+"…"
+        if fragment[:1].islower():sentence="…"+sentence
         if _OPAQUE_REF.search(sentence):continue
         lines.append(f"{len(lines)}. {name} — {sentence}")
     return "\n".join(lines) if len("\n".join(lines).encode())<=12000 else "Найдено в источниках: (ответ превышает допустимый размер)"
