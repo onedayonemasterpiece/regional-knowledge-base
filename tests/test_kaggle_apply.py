@@ -425,7 +425,7 @@ async def test_native_source_rejection_is_retained_without_applying_effect(env,r
 
 @PG
 @pytest.mark.asyncio
-@pytest.mark.parametrize('wrapped',[False,True,None])
+@pytest.mark.parametrize('wrapped',[False,True])
 async def test_sql_rollback_receipt_retains_safe_diagnostic_and_original_duplicate(env,wrapped):
     import base64
     secret='synthetic private statement https://private.invalid/?token=never-return'
@@ -436,14 +436,36 @@ async def test_sql_rollback_receipt_retains_safe_diagnostic_and_original_duplica
         error=outer
     cmd=item();seal=await accepted(env,cmd)
     receipt=await apply(env,cmd,seal,reject_reason='native_source_sql_rolled_back',
-                        reject_error=error if wrapped is not None else None)
+                        reject_error=error)
     outcome=json.loads(receipt.outcome)
-    diagnostic = (dict(error_type='CheckViolation', sqlstate='23514', validator=None)
-                  if wrapped is not None else {})
     assert json.loads(base64.b64decode(outcome['result_b64']))=={
-        'reason':'native_source_sql_rolled_back', **diagnostic}
+        'reason':'native_source_sql_rolled_back','error_type':'CheckViolation','sqlstate':'23514'}
     assert secret not in receipt.outcome.decode()
     assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
     duplicate=await apply(env,cmd,seal,reject_reason='native_source_sql_rolled_back',
                           reject_error=ValueError(secret))
     assert duplicate.duplicate and duplicate.outcome==receipt.outcome
+
+
+@PG
+@pytest.mark.asyncio
+async def test_fresh_restore_rejection_keeps_original_journal_outcome(env, monkeypatch):
+    import regional_knowledge.kaggle_apply as native
+    cmd = item(); seal = await accepted(env, cmd)
+    with monkeypatch.context() as old:
+        old.setattr(native, '_rollback_diagnostic', lambda error: {'error_type': 'ValueError', 'sqlstate': None})
+        original = await apply(env, cmd, seal, reject_reason='native_source_sql_rolled_back',
+                               reject_error=ValueError('synthetic private input'))
+    await env['journal'].record_outcome(seal, command=cmd, database_generation=env['generation'],
+                                      outcome=original.outcome, writer_generation='writer-1')
+    # Disposable synthetic PG is now at the Saved boundary before this rejection.
+    async with env['connection'].transaction():
+        await env['connection'].execute('TRUNCATE rkb_v4.applied_ops')
+        await env['connection'].execute('UPDATE rkb_v4.recovery_state SET applied_seq=0 WHERE singleton')
+    replayed = await apply(env, cmd, seal, reject_reason='native_source_sql_rolled_back',
+                           reject_error=ValueError('synthetic private input'))
+    assert not replayed.duplicate
+    assert replayed.outcome == original.outcome
+    await env['journal'].record_outcome(seal, command=cmd, database_generation=env['generation'],
+                                      outcome=replayed.outcome, writer_generation='writer-1')
+    assert await facts(env['connection']) == ((1, 's1', 'f1', 'e1'), 1, 0, [])

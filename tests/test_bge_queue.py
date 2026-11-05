@@ -139,14 +139,15 @@ def test_planned_idle_drain_preserves_provider_reservation_and_pending_work(tmp_
     assert queue.result('actor',job)['state']=='done'
 
 
-def test_planned_drain_keeps_attached_current_channel_for_exact_stop(tmp_path):
+@pytest.mark.parametrize("ready", [False, True])
+def test_planned_drain_keeps_attached_current_channel_for_exact_stop(tmp_path, ready):
     now=[1000.];q=BgeQueue(tmp_path/'planned-stop.sqlite',clock=lambda:now[0])
     q.request_startup();run,token=run_details(q)
     q.launch_claim(run,provider_ref='owner/fixture')
     nonce=q.prepare_channel(run)
     q.launch_record(run,'owner/fixture',provider_version=12)
     generation=q.attach_channel(run,token,nonce,'same-runtime')['connection_generation']
-    q.heartbeat(run,token,ready=True,connection_generation=generation)
+    q.heartbeat(run,token,ready=ready,connection_generation=generation)
     assert not q.stop_eligible(run,token,generation)
     assert q.request_idle_drain(run,provider_ref='owner/fixture',provider_version=12)
     q.maintenance()
