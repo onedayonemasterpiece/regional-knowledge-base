@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "name": "native-packages.tar",
+      "role": "code",
+      "sha256": "ae4824f871ce47d4a15487b8c171515eee1c20da11611ad0bc7233b9a476c006",
+      "size": 96378880
+    },
+    {
+      "name": "native-manifest.json",
+      "role": "code",
+      "sha256": "84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5",
+      "size": 955336
+    }
+  ],
+  "codec": "rkb.native_collection_artifacts.v1",
+  "extracted_bytes": 518406477,
+  "file_count": 3532,
+  "native_execution_verified": false,
+  "package_count": 103,
+  "platform": {
+    "libc_name": "glibc",
+    "libc_version": "2.39",
+    "machine": "x86_64",
+    "os_id": "ubuntu",
+    "os_version_id": "24.04"
+  },
+  "spec": {
+    "manifest_name": "native-manifest.json",
+    "manifest_sha256": "84ab517abe83ca7f90b16290f30332415522eb4b355b6ef194c40df89cb264f5"
+  },
+  "target_abi_observed": false
+}
