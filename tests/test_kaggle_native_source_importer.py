@@ -2014,3 +2014,21 @@ async def test_completion_resumes_older_rejected_semantic_packet(native_intake):
         await finish(s, book)
     completed = await call(s, book, 'status')
     assert (completed.state, completed.next_action) == ('finalized', 'done')
+
+
+@pytest.mark.asyncio
+async def test_changed_active_caption_does_not_starve_finished_book(native_intake, monkeypatch):
+    import regional_knowledge.telegram_import_status as projection
+    s = native_intake
+    calls = []
+    monkeypatch.setattr(projection, 'started_statuses', lambda *_, **__: [
+        ({'ingestion_id': 'current'}, 'active page changed again'),
+        ({'ingestion_id': 'finished'}, 'finished save has settled'),
+    ])
+    async def caption(access, row, *, status):
+        calls.append(row['ingestion_id'])
+        return True
+    monkeypatch.setattr(s.importer, '_caption_original', caption)
+    await s.importer._sync_import_captions(
+        SimpleNamespace(authority=SimpleNamespace(person_id='synthetic-owner')), 'current')
+    assert calls == ['finished']
