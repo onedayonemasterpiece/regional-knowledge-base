@@ -43,7 +43,7 @@ def _sender(**options):
     ({"title": "Кёнигсберг. Том I", "authors": ["Фриц Гаузе"], "publication_year": 1996},
      "Когда возникла крепость?", "Фриц Гаузе. Кёнигсберг. Том I (1996), pages 9", None,
      "Возникла крепость. Следующее предложение.",
-     "Фриц Гаузе. Кёнигсберг. Том I (1996), с. 9 — Возникла крепость."),
+     "Фриц Гаузе. Кёнигсберг. Том I (1996), с. 9 — Возникла крепость. Следующее предложение."),
     ({"title": "Росписи", "authors": ["Автор"], "publication_year": 2012},
      "Что сохранилось?", "Росписи, pages 16", None,
      "4. Роспись занимала восточную стену. Позднее её восстановили.",
@@ -52,6 +52,10 @@ def _sender(**options):
      "Где стояла кирха?", "Кирхи, pages 205", None,
      "Илл. 12. Кирха находилась на площади. Описание продолжалось.",
      "Исследователь. Кирхи (2018), с. 205 — Илл. 12. Кирха находилась на площади. Описание продолжалось."),
+    ({"title": "Порты", "authors": ["Исследователь"], "publication_year": 2011},
+     "Что известно о Пайзе?", "Порты, pages 27", None,
+     "Карта «Пайзе» датирована 1939 г. Далее описана гавань.",
+     "Исследователь. Порты (2011), с. 27 — Карта «Пайзе» датирована 1939 г. Далее описана гавань."),
     ({"title": "Исторический сборник", "authors": [f"Автор {n}" for n in range(1, 31)],
       "publication_year": 2001}, "Что описывает сборник?", "Повторная библиография, pages 42–43", None,
      "Сборник описывает " + "историю города " * 20,
@@ -60,8 +64,8 @@ def _sender(**options):
     ({"title": "Die Börse", "authors": ["Anna Beispiel", "Otto Muster", "Eva Test"]},
      "Wo lag die Börse?", "Повторная библиография, pages 42–43", "pages 42–43",
      "Die Börse lag am Fluss. Ein weiterer Satz.",
-     "Anna Beispiel, Otto Muster u. a. Die Börse, S. 42–43 — Die Börse lag am Fluss."),
-], ids=["gause-citation-pages", "numbered-caption", "illustration-caption", "collection-30-authors-word-boundary", "de-boerse"])
+     "Anna Beispiel, Otto Muster u. a. Die Börse, S. 42–43 — Die Börse lag am Fluss. Ein weiterer Satz."),
+], ids=["gause-citation-pages", "numbered-caption", "illustration-caption", "date-abbreviation-1939", "collection-30-authors-word-boundary", "de-boerse"])
 def test_fb_one_bibliography_per_book(catalog, question, citation, locator, text, expected):
     """Synthetic E2E-shaped projections; no book excerpts or private metadata."""
     source_id = "11111111-1111-4111-8111-111111111111"
@@ -102,12 +106,12 @@ def test_sourced_reply_fallback_is_one_excerpt_per_book_not_three_source_cards()
     sourced=answer_from_evidence(evidence)
     assert sourced.startswith("Найдено в источниках:\n1. Гаузе")
     assert "с. 31" in sourced and "Возникла крепость." in sourced
-    assert "Второе предложение" not in sourced and "не удалось" not in sourced.lower()
+    assert "Второе предложение" in sourced and "не удалось" not in sourced.lower()
     assert "<@U111>" not in sourced and "&lt;@U111&gt;" in sourced
     assert "Цитата (фрагмент)" not in sourced
     no_page=answer_from_evidence(_evidence([{
         "title":"Wiechert","text":"Ein Satz. Weiterer Satz","metadata":{"locator":"opaque-id"}}]))
-    assert "Найдено в источниках:\n1. Wiechert — Ein Satz." in no_page
+    assert "Найдено в источниках:\n1. Wiechert — Ein Satz. Weiterer Satz" in no_page
     assert "opaque-id" not in no_page
     german=answer_from_evidence(_evidence([]), "Wo lag die Königsberger Synagoge?")
     assert german.startswith("In den verfügbaren Quellen")
