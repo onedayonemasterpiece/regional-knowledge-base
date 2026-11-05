@@ -425,7 +425,7 @@ async def test_native_source_rejection_is_retained_without_applying_effect(env,r
 
 @PG
 @pytest.mark.asyncio
-@pytest.mark.parametrize('wrapped',[False,True])
+@pytest.mark.parametrize('wrapped',[False,True,None])
 async def test_sql_rollback_receipt_retains_safe_diagnostic_and_original_duplicate(env,wrapped):
     import base64
     secret='synthetic private statement https://private.invalid/?token=never-return'
@@ -436,10 +436,12 @@ async def test_sql_rollback_receipt_retains_safe_diagnostic_and_original_duplica
         error=outer
     cmd=item();seal=await accepted(env,cmd)
     receipt=await apply(env,cmd,seal,reject_reason='native_source_sql_rolled_back',
-                        reject_error=error)
+                        reject_error=error if wrapped is not None else None)
     outcome=json.loads(receipt.outcome)
+    diagnostic = (dict(error_type='CheckViolation', sqlstate='23514', validator=None)
+                  if wrapped is not None else {})
     assert json.loads(base64.b64decode(outcome['result_b64']))=={
-        'reason':'native_source_sql_rolled_back','error_type':'CheckViolation','sqlstate':'23514'}
+        'reason':'native_source_sql_rolled_back', **diagnostic}
     assert secret not in receipt.outcome.decode()
     assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
     duplicate=await apply(env,cmd,seal,reject_reason='native_source_sql_rolled_back',
