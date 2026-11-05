@@ -60,7 +60,8 @@ async def test_materializer_runtime_error_is_retained_and_replayed_without_recon
         first=await peer.wait('SOURCE_COMMAND_RESULT')
         receipt,outcome=decode_receipt(first['receipt'])
         assert receipt.status=='rejected_precondition' and not receipt.duplicate
-        assert json.loads(base64.b64decode(outcome['result_b64']))=={'reason':'native_source_sql_rolled_back'}
+        assert json.loads(base64.b64decode(outcome['result_b64']))=={
+            'reason':'native_source_sql_rolled_back','error_type':'RuntimeError','sqlstate':None}
         await peer.put(dict(type='RESULT_ACK',job_id=request['id'],claim=request['claim'],status='accepted'))
         replay=request|dict(id='replayed-source',claim='replayed-claim',compute_claim='replayed-compute')
         await peer.put(replay)
@@ -112,7 +113,8 @@ async def test_real_pg_rollback_rejection_duplicate_next_command_and_read_on_sam
     request=frame(bad,seal,handler)
     receipt,outcome=decode_receipt(await worker(request))
     assert receipt.status=='rejected_precondition' and not receipt.duplicate
-    assert json.loads(base64.b64decode(outcome['result_b64']))=={'reason':'native_source_sql_rolled_back'}
+    assert json.loads(base64.b64decode(outcome['result_b64']))=={
+        'reason':'native_source_sql_rolled_back','error_type':'RaiseException','sqlstate':'P0001'}
     async with connection.transaction():
         assert await (await connection.execute('SELECT count(*) FROM rkb_v4.passage_search')).fetchone()==(0,)
         assert await (await connection.execute('SELECT count(*) FROM rkb_v4.source_batch_receipts')).fetchone()==(0,)

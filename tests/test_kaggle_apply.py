@@ -421,3 +421,27 @@ async def test_native_source_rejection_is_retained_without_applying_effect(env,r
     for unsafe in {reason+':private text',reason.replace('Page-0.body','bad/key')}-{reason}:
         with pytest.raises(ValueError,match='fixed internal source rejection reason'):
             await apply(env,cmd,seal,reject_reason=unsafe)
+
+
+@PG
+@pytest.mark.asyncio
+@pytest.mark.parametrize('wrapped',[False,True])
+async def test_sql_rollback_receipt_retains_safe_diagnostic_and_original_duplicate(env,wrapped):
+    import base64
+    secret='synthetic private statement https://private.invalid/?token=never-return'
+    error=psycopg.errors.CheckViolation(secret)
+    if wrapped:
+        outer=ApplyExecutionError('rolled back')
+        outer.__context__=error
+        error=outer
+    cmd=item();seal=await accepted(env,cmd)
+    receipt=await apply(env,cmd,seal,reject_reason='native_source_sql_rolled_back',
+                        reject_error=error)
+    outcome=json.loads(receipt.outcome)
+    assert json.loads(base64.b64decode(outcome['result_b64']))=={
+        'reason':'native_source_sql_rolled_back','error_type':'CheckViolation','sqlstate':'23514'}
+    assert secret not in receipt.outcome.decode()
+    assert await facts(env['connection'])==((1,'s1','f1','e1'),1,0,[])
+    duplicate=await apply(env,cmd,seal,reject_reason='native_source_sql_rolled_back',
+                          reject_error=ValueError(secret))
+    assert duplicate.duplicate and duplicate.outcome==receipt.outcome

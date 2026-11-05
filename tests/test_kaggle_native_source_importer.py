@@ -1482,7 +1482,7 @@ async def test_unpublished_rejected_page_four_stays_retry_cursor(native_intake):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('postgres',[False,True])
-async def test_masked_packet_rejection_logs_origin_without_changing_receipt(native_intake,monkeypatch,caplog,postgres):
+async def test_masked_packet_rejection_logs_origin_and_retains_safe_diagnostic(native_intake,monkeypatch,caplog,postgres):
     from contextlib import asynccontextmanager
     import logging
     import regional_knowledge.kaggle_apply as apply_module
@@ -1527,7 +1527,8 @@ async def test_masked_packet_rejection_logs_origin_without_changing_receipt(nati
     with caplog.at_level(logging.WARNING,logger='regional_knowledge.kaggle_source_commands'):
         receipt,_=decode_receipt(await worker(frame))
     body=json.loads(base64.b64decode(json.loads(receipt.outcome)['result_b64']))
-    assert body=={'reason':'native_source_sql_rolled_back'}  # Historical canonical receipt stays exact.
+    # The invalid fixed reason is refused by apply before its canonical SQL rollback receipt.
+    assert body=={'reason':'native_source_sql_rolled_back','error_type':'ValueError','sqlstate':None}
     assert ('error_type=RejectedSql' if postgres else 'error_type=ValueError') in caplog.text
     assert 'invalid_model_field:' in caplog.text
     if postgres:assert 'rkb_v4.prepare_source_batch_v1:57' in caplog.text

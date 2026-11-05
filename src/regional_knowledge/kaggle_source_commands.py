@@ -227,6 +227,7 @@ class WorkerSourceExecutor:
         if frame.get('handler_sha256')!=handler.fingerprint:
             raise PermissionError('source registry binding mismatch')
         reject_reason=None
+        reject_error=None
         if command.schema_revision=='rkb-v4-sql001-014-v1' and command.route in ('source.materialize.v1','source.stage.seal.v1','source.batch.v1'):
             if self.materializer is None:raise ValueError('native source materializer unavailable')
             # Verify this captured authenticated accepted intent BEFORE private
@@ -278,6 +279,7 @@ class WorkerSourceExecutor:
                                 command.route,command.sequence)
                             continue
                         reject_reason='native_source_sql_rolled_back'
+                        reject_error=error
                         _LOG.warning('source_prepare_57014 rolled_back_rejection route=%s sequence=%s',
                             command.route,command.sequence)
                         break
@@ -288,6 +290,7 @@ class WorkerSourceExecutor:
                     raise
                 except Exception as error:
                     reject_reason='native_source_sql_rolled_back'
+                    reject_error=error
                     _LOG.warning('native_source_materialization state=rolled_back route=%s sequence=%s error_type=%s sqlstate=%s',
                         command.route,command.sequence,type(error).__name__,getattr(error,'sqlstate',None))
                     break
@@ -301,14 +304,15 @@ class WorkerSourceExecutor:
                         registry=self.registry,max_outcome_bytes=8192)
                     try:
                         receipt=await apply_accepted(connection,**options,
-                            **({'reject_reason':reject_reason} if reject_reason is not None else {}))
+                            **({'reject_reason':reject_reason,'reject_error':reject_error} if reject_reason is not None else {}))
                     except (ApplyUnknown, PermissionError, StaleWriter):
                         raise
-                    except Exception:
+                    except Exception as error:
                         # The failed call has unwound. Existing committed outcomes
                         # win before an unapplied command receives a real rejection.
                         reject_reason='native_source_sql_rolled_back'
-                        receipt=await apply_accepted(connection,**options,reject_reason=reject_reason)
+                        reject_error=error
+                        receipt=await apply_accepted(connection,**options,reject_reason=reject_reason,reject_error=reject_error)
                         _LOG.warning('native_source_apply state=rolled_back_rejection_retained route=%s sequence=%s',
                             command.route,command.sequence)
                 break

@@ -650,12 +650,13 @@ async def test_worker_reconciles_lost_apply_ack_once_on_fresh_connection(accepte
 @pytest.mark.asyncio
 async def test_lost_rejection_ack_cannot_retry_as_effect(accepted,monkeypatch):
     from regional_knowledge.kaggle_apply import ApplyUnknown,ApplyExecutionError
-    e=accepted;_,_,frame=await dispatch(e);reasons=[];connections=[]
+    e=accepted;_,_,frame=await dispatch(e);reasons=[];diagnostics=[];connections=[]
     @asynccontextmanager
     async def acquire():
         connection=object();connections.append(connection);yield connection
     async def apply(connection,**options):
         reasons.append(options.get('reject_reason'))
+        diagnostics.append(type(options['reject_error']).__name__ if options.get('reject_error') else None)
         if len(reasons)==1:raise ApplyExecutionError('rolled back')
         if len(reasons)==2:raise ApplyUnknown('lost rejection ACK')
         return native_receipt(e.command,e.handler,duplicate=True)
@@ -664,6 +665,7 @@ async def test_lost_rejection_ack_cannot_retry_as_effect(accepted,monkeypatch):
         run_id=e.s.run,launch_nonce=e.s.nonce,runtime_incarnation='incarnation-a')
     await executor(frame)
     assert reasons==[None,'native_source_sql_rolled_back','native_source_sql_rolled_back']
+    assert diagnostics==[None,'ApplyExecutionError','ApplyExecutionError']
     assert len(connections)==2
 
 
