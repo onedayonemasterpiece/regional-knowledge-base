@@ -78,7 +78,7 @@ async def test_current_epoch_fence_fails_closed_without_waiting_for_busy_auth_wr
     a=auth;ident,token,_=issue(a);verified=verify(a,ident,token)
     held=threading.Event();release=threading.Event()
     def busy():
-        with a.provider.store._lock:held.set();release.wait(2)
+        a.provider.store.mutate(lambda state: (held.set(), release.wait(2)))
     worker=threading.Thread(target=busy);worker.start();assert held.wait(1)
     try:
         import time
@@ -89,6 +89,19 @@ async def test_current_epoch_fence_fails_closed_without_waiting_for_busy_auth_wr
     assert a.provider.service_credential_current(verified)
     a.now[0]+=86401
     assert not a.provider.service_credential_current(verified)
+
+
+@pytest.mark.asyncio
+async def test_service_checks_share_an_existing_auth_read_without_false_denial(auth):
+    a=auth;ident,token,_=issue(a);verified=verify(a,ident,token)
+    held=threading.Event();release=threading.Event()
+    worker=threading.Thread(target=lambda: a.provider.store.read(
+        lambda state: (held.set(), release.wait(2))))
+    worker.start();assert held.wait(1)
+    try:
+        assert verify(a,ident,token) == verified
+        assert a.provider.service_credential_current(verified)
+    finally:release.set();worker.join()
 
 
 @pytest.mark.parametrize('change',[{'operation':'import'},{'provider':'slack'},{'workspace_ids':[]},
