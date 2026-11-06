@@ -43,7 +43,7 @@ def watcher(tmp_path, auth):
         db.execute("""CREATE TABLE rkb_control_operations (
             source_id TEXT, person_id TEXT, operation_key TEXT,
             sequence INTEGER, seal_state TEXT, apply_state TEXT,
-            command_bytes BLOB,outcome_bytes BLOB)""")
+            command_bytes BLOB,outcome_bytes BLOB,progress_json TEXT)""")
         db.execute(
             "INSERT INTO rkb_source_intake_control VALUES(?,?,?,?,?,?,?)",
             (ingestion, source, actor, "staging", now - 10, now - 5,
