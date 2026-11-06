@@ -13,6 +13,7 @@ def run_details(queue):
 @pytest.mark.parametrize('missing',[
     ('bge_retention',),('bge_assigned',),('bge_retention','bge_assigned'),
     ('bge_live',),('bge_retention','bge_assigned','bge_live'),
+    ('bge_read_retention',),
 ])
 def test_existing_queue_upgrades_missing_maintenance_indexes_without_changing_jobs(tmp_path,missing):
     queue=BgeQueue(tmp_path/'queue.sqlite')
@@ -23,7 +24,7 @@ def test_existing_queue_upgrades_missing_maintenance_indexes_without_changing_jo
     reopened=BgeQueue(queue.path)
     with reopened.connect(write=False) as db:
         indexes={row['name'] for row in db.execute('PRAGMA index_list(jobs)')}
-        assert {'bge_retention','bge_assigned','bge_live'}<=indexes
+        assert {'bge_retention','bge_assigned','bge_live','bge_read_retention'}<=indexes
         assert dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())==before
     assert reopened._schema_current()
 
@@ -37,6 +38,9 @@ def test_existing_queue_upgrades_missing_maintenance_indexes_without_changing_jo
     ("SELECT 1 FROM jobs WHERE run_id=? AND state='claimed' "
         "AND kind IN ('source_command','recovery_phase') LIMIT 1",
         ('retained-run',),'bge_assigned',('run_id=?','state=?')),
+    ("SELECT id FROM jobs INDEXED BY bge_read_retention WHERE state='done' AND kind='recovery_phase' "
+        "AND updated<? AND json_extract(identity,'$.phase') IN ('snapshot_status','source_history','original_pages')",
+        (1000.,),'bge_read_retention',('updated<?',)),
 ])
 def test_maintenance_plans_bound_retention_time_and_assigned_run(tmp_path,sql,arguments,index,bounds):
     queue=BgeQueue(tmp_path/'queue.sqlite')
@@ -455,6 +459,32 @@ def test_done_query_results_expire_after_bounded_retention(tmp_path):
     assert queue.result('actor',query)['state']=='done'
     now[0]+=2;queue.maintenance()
     with pytest.raises(PermissionError):queue.result('actor',query)
+
+
+def test_terminal_read_results_expire_without_losing_current_or_mutation_receipts(tmp_path):
+    now=[1000.];q=BgeQueue(tmp_path/'read-retention.sqlite',clock=lambda:now[0])
+    rows={}
+    for phase in ('snapshot_status','source_history','original_pages','capture','capture_upload','original_acquire','apply'):
+        rows[phase]=('retired',phase,'done',1000.)
+    rows.update(active=('active','snapshot_status','done',1000.),
+                pending=('retired','snapshot_status','pending',1000.),
+                recent=('retired','snapshot_status','done',1000.+DONE_QUERY_RETENTION_SECONDS))
+    with q.connect() as db:
+        db.execute("INSERT INTO bge_provider_terminal_receipts VALUES('retired','{}')")
+        for key,(run,phase,state,updated) in rows.items():
+            db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,result) '
+                "VALUES(?,?,?,'recovery_phase','[]',?,?,1000,?,?)",
+                (key,'maintenance:'+run,key,json.dumps(dict(phase=phase,run_id=run)),state,updated,
+                 json.dumps(dict(value=dict(status='complete')))))
+        before={r['id']:dict(r) for r in db.execute('SELECT * FROM jobs')}
+    now[0]+=DONE_QUERY_RETENTION_SECONDS-1;q.maintenance()
+    with q.connect(write=False) as db:assert db.execute('SELECT count(*) FROM jobs').fetchone()[0]==len(rows)
+    now[0]+=2;q.maintenance()
+    with q.connect(write=False) as db:
+        after={r['id']:dict(r) for r in db.execute('SELECT * FROM jobs')}
+    assert set(before)-set(after)=={'snapshot_status','source_history','original_pages'}
+    for key in after:
+        if key!='pending':assert after[key]==before[key]
 
 def test_done_audit_document_results_expire_without_touching_production_documents(tmp_path):
     now=[1000.];queue=BgeQueue(tmp_path/'queue.sqlite',clock=lambda:now[0])
