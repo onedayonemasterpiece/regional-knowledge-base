@@ -41,7 +41,8 @@ suffix. A supported rollback must itself understand the nullable local format.
 Verified Dataset promotion also retires at most128 local `commands/` bindings
 already excluded by the existing Dataset export policy. Their outcome, accepted
 sequence locator and accepted manifest must all be Dataset-covered. This runs
-inside the existing promotion transaction; no additional worker or timer exists.
+after the existing promotion transaction commits; no additional worker or timer exists.
+A reclamation failure is logged and cannot roll back verified Saved.
 The sealed segments and exact outcomes stay unchanged, so original-command
 lookup and duplicate/conflict checks use the already supported addressed journal
 path. Pending or unindexed bindings remain. Lost promotion acknowledgment does

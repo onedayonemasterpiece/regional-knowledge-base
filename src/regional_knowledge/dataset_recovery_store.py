@@ -12,6 +12,7 @@ from io import BytesIO
 import json
 import logging
 import secrets
+import sqlite3
 
 from .kaggle_dataset_base import DatasetCheckpoint
 from .recovery_journal import StoredObject, JournalConflict, JournalLimit
@@ -213,15 +214,21 @@ class DatasetRecoveryStore:
                         f'dataset:{checkpoint.dataset_version}:{tag}',checkpoint.dataset_version))
             db.execute('UPDATE rkb_dataset_recovery_store SET latest_json=? WHERE storage=?',
                 (json.dumps(checkpoint.wire(),sort_keys=True,separators=(',',':')),self.storage_identity))
-            # Same omission policy as a fresh Dataset restore; cap promotion work.
-            covered,params=self._covered_command_bindings()
-            removed=db.execute('DELETE FROM rkb_dataset_recovery_objects WHERE storage=? AND key IN ('
-                'SELECT key FROM rkb_dataset_recovery_objects AS command WHERE storage=? AND ('
-                +covered+') ORDER BY key LIMIT 128)',
-                (self.storage_identity,self.storage_identity)+params).rowcount
-        if removed:
-            logging.getLogger(__name__).info('dataset_journal_bindings_retired count=%s version=%s base_sequence=%s',
-                removed,checkpoint.dataset_version,checkpoint.base_sequence)
+        # Reclamation failure must never roll back a verified Saved promotion.
+        try:
+            with self.queue.connect() as db:
+                covered,params=self._covered_command_bindings()
+                removed=db.execute('DELETE FROM rkb_dataset_recovery_objects WHERE storage=? AND key IN ('
+                    'SELECT key FROM rkb_dataset_recovery_objects AS command WHERE storage=? AND ('
+                    +covered+') ORDER BY key LIMIT 128)',
+                    (self.storage_identity,self.storage_identity)+params).rowcount
+        except (sqlite3.Error,OSError) as exc:
+            logging.getLogger(__name__).warning('dataset_journal_bindings_retirement_failed category=%s version=%s',
+                type(exc).__name__,checkpoint.dataset_version)
+        else:
+            if removed:
+                logging.getLogger(__name__).info('dataset_journal_bindings_retired count=%s version=%s base_sequence=%s',
+                    removed,checkpoint.dataset_version,checkpoint.base_sequence)
 
     def allows_storage_transition(self,previous):
         if previous!=self.origin_storage_identity:return False
