@@ -95,6 +95,30 @@ def enrichment_gaps(db, row):
                                   if reason=='native_source_sql_rolled_back'}
 
 
+def accepted_model_page(db, row, physical_index):
+    """The latest APPLIED model page and its chunks: what a semantic retry must restage verbatim."""
+    from .source_batch_context import chunk_pages
+    found = None
+    for item in db.execute(
+            "SELECT command_bytes FROM rkb_control_operations "
+            "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' AND apply_state='APPLIED' "
+            "AND operation_key LIKE ? ORDER BY sequence LIMIT 10000",
+            (row['source_id'],row['person_id'],'source-stage:'+row['ingestion_id']+':%')):
+        packet = json.loads(base64.b64decode(json.loads(item['command_bytes'])['payload_b64'], validate=True))
+        if packet.get('ingestion_id') != row['ingestion_id']: continue
+        model = packet.get('model_payload') or {}
+        for page in model.get('pages', []):
+            if page.get('physical_page_index') == physical_index:
+                found = dict(page=page, chunks=[c for c in model.get('chunks', [])
+                                                if page.get('page_id') in chunk_pages(c, text_only=True)])
+    return found
+
+
+def read_accepted_model_page(queue, row, physical_index):
+    with queue.connect(write=False) as db:
+        return accepted_model_page(db, row, physical_index)
+
+
 def read_enrichment_gaps(queue, row):
     with queue.connect(write=False) as db:
         return enrichment_gaps(db, row)

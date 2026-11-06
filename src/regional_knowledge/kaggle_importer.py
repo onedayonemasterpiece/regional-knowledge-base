@@ -1089,6 +1089,9 @@ class KaggleSourceImporter:
                     raise failure('native_original_page_binding_mismatch')
             from .server import _book_page_tool_result
             from .product_telemetry import import_metadata
+            from .source_page_progress import read_accepted_model_page
+            accepted = await asyncio.to_thread(read_accepted_model_page, self.queue, row,
+                                               batch.pages[0].physical_page_index)
             preview=batch.pages[0].native_text_info.get('preview_render') or {}
             import_metadata(ingestion_id=ingestion_id,source_id=row['source_id'],page_count=len(batch.pages),
                 physical_page_index=batch.pages[0].physical_page_index,
@@ -1097,4 +1100,4 @@ class KaggleSourceImporter:
             # Renew owner authorization after slow rendering, retaining the result's runtime fence.
             async with self._access(principal) as delivery:
                 delivery.binding = access.binding
-                return await self._reply(delivery, batch, render=lambda value: _book_page_tool_result(ingestion_id, value))
+                return await self._reply(delivery, batch, render=lambda value: _book_page_tool_result(ingestion_id, value, accepted))
