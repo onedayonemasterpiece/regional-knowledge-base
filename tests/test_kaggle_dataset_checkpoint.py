@@ -207,6 +207,19 @@ async def put_control(p,name='one',data=b'pending'):
 
 
 @pytest.mark.asyncio
+async def test_planned_stop_without_coverage_does_not_release_unsaved_prefix(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch)
+    with p.q.connect() as db:
+        db.execute('UPDATE rkb_control_spool_meta SET sequence=8 WHERE id=1')
+    p.startup.coverage=None
+    assert not await p.owner.refresh(p.binding)  # Ordinary startup can await coverage.
+    with pytest.raises(CheckpointPending):
+        await p.owner.before_stop(p.binding)
+    assert p.store.latest_checkpoint.base_sequence==7 and not p.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('unknown_field',[None,'seal_state','apply_state','outcome_state'])
 async def test_stop_checkpoint_uses_canonical_unknown_not_stale_source_head(tmp_path,monkeypatch,unknown_field):
     from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
@@ -553,9 +566,12 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
     monkeypatch.setattr('regional_knowledge.kaggle_service_startup.current_binding',verified_binding)
     # The source-history cursor is already independently verified. Rebinding
     # its existing Dataset cursor must not reopen serving or start PG replay.
+    rebinds=[]
     async def coverage(binding):
         assert binding is new
         p.binding=binding;p.startup.binding=binding
+        rebinds.append(binding)
+        if identity_change=='coverage_cleared' and len(rebinds)==1:return None
         return p.proof
     p.startup._dataset_coverage=coverage
     observed=[]
@@ -573,6 +589,13 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
             await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
         assert not p.calls and not p.store.remote_durable(key,b'pending')
     else:
+        if identity_change=='coverage_cleared':
+            from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+            with pytest.raises(CheckpointPending):
+                await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
+            assert not p.calls and p.startup.coverage is None
+        # The existing heartbeat retries this same callback; 785 rebinds the
+        # cleared cursor again, then capture/readback settles the pending stop.
         assert await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
         assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
         assert p.calls==['capture','finalize','verify'] and observed and all(b is new for b in observed)
