@@ -104,6 +104,8 @@ class ImportActivityReader:
                         rejected_pages = pages
                     if last_stage is None:
                         last_stage = (stage, pages)
+                    if last_stage is not None and (native['rejected_batch_index'] is None or rejected_pages is not None):
+                        break
                     # Stage APPLIED without matching source.packet TEXT APPLIED is not publication.
         phase = row["phase"]
         if phase == "failed" or native and native["phase"] == "failed":

@@ -179,6 +179,24 @@ async def test_activity_199_page_journal_skips_stale_140_not_rejected_198(watche
     print(f"synthetic 199 TEXT APPLIED pages + 1 rejected duplicate: watch={elapsed_ms} ms")
     assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"199")
 
+
+@pytest.mark.parametrize('rejected',[None,31])
+def test_latest_stage_lookup_stops_when_latest_and_rejected_are_found(watcher,monkeypatch,rejected):
+    from regional_knowledge import import_activity_reader as reader
+    w=watcher
+    with w.queue.connect() as db:
+        for index in range(32):synthetic_page_records(db,w,batch=index,physical=index,sequence=10+2*index)
+        db.execute('UPDATE rkb_native_source_intake_state SET rejected_batch_index=?',(rejected,))
+    # Publication proof has its own receipt-coverage tests; isolate the second
+    # latest-stage lookup, which must not re-decode unrelated historical stages.
+    monkeypatch.setattr(reader,'published_pages',lambda *_:{3,8})
+    decode=reader.base64.b64decode;calls=[]
+    def observed(*args,**kwargs):
+        calls.append(1);return decode(*args,**kwargs)
+    monkeypatch.setattr(reader.base64,'b64decode',observed)
+    status=w.receiver.snapshot(w.ingestion,w.actor)
+    assert status['accepted_pages']==2 and len(calls)==1
+
 @pytest.mark.asyncio
 async def test_verified_original_before_first_stage_is_ready_for_reader(watcher):
     w=watcher
