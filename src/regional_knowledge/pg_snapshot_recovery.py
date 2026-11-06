@@ -123,7 +123,9 @@ class PhysicalSnapshotRecovery:
             source_control={'key':control_key,'sha256':sha(control),'length':len(control)})
         data=encode(manifest);key=self.journal.prefix+'/snapshots/manifests/'+sha(data)
         await self.journal._immutable(key,data,self.limits.max_control_bytes)
-        _LOG.info('snapshot_base_sealed manifest_hash=%s cursor=%s bytes=%s',sha(data),proof.applied_sequence,blob.size)
+        _LOG.log(logging.WARNING if blob.size*5>=self.limits.max_archive_bytes*4 else logging.INFO,
+            'snapshot_base_sealed manifest_hash=%s cursor=%s bytes=%s archive_limit_bytes=%s archive_ratio=%.3f',
+            sha(data),proof.applied_sequence,blob.size,self.limits.max_archive_bytes,blob.size/self.limits.max_archive_bytes)
         return ObjectRef(key,sha(data),len(data),proof.applied_sequence)
 
     async def recover(self,manifest_ref,binding,*,database,expected_versions,identity,operation_key,
