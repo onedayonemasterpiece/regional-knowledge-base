@@ -249,7 +249,7 @@ class ControlSpool:
                 if db.execute('SELECT stream FROM rkb_control_spool_meta WHERE id=1').fetchone()[0]!=journal.stream:
                     raise SpoolConflict('control database belongs to another ordered stream')
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_operations(
-                    operation_key TEXT PRIMARY KEY,command_bytes BLOB NOT NULL CHECK(length(command_bytes) BETWEEN 1 AND 1048576),command_sha256 TEXT NOT NULL,
+                    operation_key TEXT PRIMARY KEY,command_bytes BLOB CHECK(length(command_bytes) BETWEEN 1 AND 1048576),command_sha256 TEXT NOT NULL,
                     sequence INTEGER NOT NULL UNIQUE,source_id TEXT NOT NULL,person_id TEXT NOT NULL,
                     database_generation TEXT NOT NULL,dependency_bytes BLOB NOT NULL,handler_sha256 TEXT NOT NULL,
                     reserved_bytes INTEGER NOT NULL,created REAL NOT NULL,updated REAL NOT NULL,
@@ -259,6 +259,8 @@ class ControlSpool:
                     apply_bytes BLOB,outcome_bytes BLOB,outcome_sha256 TEXT,
                     outcome_state TEXT NOT NULL CHECK(outcome_state IN ('NOT_SENT','SENT_UNKNOWN','DURABLE')),
                     remote_receipt_bytes BLOB)''')
+                from .control_raw_retention import initialize_nullable_raw
+                initialize_nullable_raw(db)
                 from .source_page_progress import initialize_progress_receipts
                 initialize_progress_receipts(db)
                 # Derived counters for independent public-source reads. The
@@ -303,10 +305,20 @@ class ControlSpool:
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_accepted ON rkb_control_operations(source_id,seal_state,sequence DESC,operation_key)')
                 db.execute("CREATE INDEX IF NOT EXISTS rkb_control_pending ON rkb_control_operations(source_id,sequence DESC) WHERE outcome_state<>'DURABLE'")
                 db.execute("CREATE INDEX IF NOT EXISTS rkb_control_unknown ON rkb_control_operations(source_id,sequence DESC) WHERE seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'")
+                old=db.execute("SELECT sql FROM sqlite_master WHERE name='rkb_control_intent_immutable'").fetchone()
+                if old and 'operation_key,command_bytes,' in old[0]:
+                    db.execute('DROP TRIGGER rkb_control_intent_immutable')
                 db.execute('''CREATE TRIGGER IF NOT EXISTS rkb_control_intent_immutable BEFORE UPDATE OF
-                    operation_key,command_bytes,command_sha256,sequence,source_id,person_id,database_generation,
+                    operation_key,command_sha256,sequence,source_id,person_id,database_generation,
                     dependency_bytes,handler_sha256,reserved_bytes,created ON rkb_control_operations
                     BEGIN SELECT RAISE(ABORT,'immutable canonical control intent'); END''')
+                db.execute('''CREATE TRIGGER IF NOT EXISTS rkb_control_raw_immutable BEFORE UPDATE OF command_bytes ON rkb_control_operations
+                    WHEN NOT (OLD.command_bytes IS NOT NULL AND NEW.command_bytes IS NULL
+                        AND NEW.outcome_bytes IS NULL AND OLD.outcome_state='DURABLE'
+                        AND OLD.apply_state='APPLIED' AND OLD.progress_json IS NOT NULL)
+                    BEGIN SELECT RAISE(ABORT,'immutable canonical control bytes'); END''')
+                db.execute("CREATE INDEX IF NOT EXISTS rkb_control_raw_retention ON rkb_control_operations(database_generation,updated,sequence) "
+                    "WHERE command_bytes IS NOT NULL AND progress_json IS NOT NULL AND outcome_state='DURABLE' AND apply_state='APPLIED'")
                 db.execute('''CREATE TABLE IF NOT EXISTS rkb_control_receipts(
                     operation_key TEXT PRIMARY KEY,command_sha256 TEXT NOT NULL,receipt_bytes BLOB NOT NULL)''')
                 # Compact heads derived from verified accepted commands. No book
@@ -461,7 +473,9 @@ class ControlSpool:
         with self._db() as db:
             for row in db.execute('SELECT sequence,seal_state,apply_state,command_bytes,outcome_bytes,'
                     'source_id,command_sha256,dependency_bytes,'
-                    "json_extract(CAST(command_bytes AS TEXT),'$.route') AS route,"
+                    "CASE WHEN operation_key LIKE 'source-stage:%' THEN 'source.stage.v1' "
+                    "WHEN operation_key LIKE 'source-packet:%' THEN 'source.batch.v1' "
+                    "ELSE json_extract(CAST(command_bytes AS TEXT),'$.route') END AS route,"
                     f'{_read_pending_sql()} AS read_pending,{_read_unknown_sql()} AS read_unknown '
                     'FROM rkb_control_operations WHERE sequence>? AND sequence<=? ORDER BY sequence',
                     (base,accepted)):
@@ -622,10 +636,11 @@ class ControlSpool:
         with self._db(write=True) as db:
             prior=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone()
             if prior is not None:
-                if (bytes(prior['command_bytes'])!=data or prior['database_generation']!=database_generation
+                if ((bytes(prior['command_bytes'])!=data if prior['command_bytes'] is not None else _hash(data)!=prior['command_sha256'])
+                        or prior['database_generation']!=database_generation
                         or bytes(prior['dependency_bytes'])!=dependency):
                     raise SpoolConflict('operation key has different exact command/scope/database bytes')
-                return self._entry(prior)
+                return self._entry(prior) if prior['command_bytes'] is not None else None
             used=self._used_bytes(db)
             if used+reserved>self.max_bytes:raise SpoolFull('control spool budget exhausted before remote acceptance')
             if db.execute('SELECT 1 FROM rkb_control_operations WHERE sequence=?',(command.sequence,)).fetchone():
@@ -639,6 +654,10 @@ class ControlSpool:
             db.execute('UPDATE rkb_control_spool_meta SET sequence=max(sequence,?) WHERE id=1',(command.sequence,))
             return self._entry(db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone())
 
+    async def stage_validated(self,command,data,handler,database_generation):
+        entry=await self._write(self._stage,command,data,handler,database_generation)
+        return entry if entry is not None else await self.get(command.operation_key)
+
     async def stage_source_withdraw(self,context,command,*,database_generation):
         self._active()
         # The same intake lock protects native empty-genesis proof and history
@@ -648,7 +667,7 @@ class ControlSpool:
             frozen,data,handler=self._validate(command,database_generation)
             if frozen.route!=SOURCE_WITHDRAW:raise SpoolDenied('withdrawal intake requires withdrawal route')
             if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
-            return await self._write(self._stage,frozen,data,handler,database_generation)
+            return await self.stage_validated(frozen,data,handler,database_generation)
 
     async def stage_source_import(self,context,command,*,database_generation):
         """Exact already-resolved import bytes; no local inference or raw seed path."""
@@ -658,7 +677,7 @@ class ControlSpool:
             frozen,data,handler=self._validate(command,database_generation)
             if frozen.route not in ('source.import.v1','source.import.v2','source.import.v3','source.import.v4'):raise SpoolDenied('import intake requires import route')
             if frozen.person_id!=actor:raise SpoolDenied('command person does not authenticate its actor')
-            return await self._write(self._stage,frozen,data,handler,database_generation)
+            return await self.stage_validated(frozen,data,handler,database_generation)
 
     async def stage_story_editorial(self,context,command,*,database_generation):
         self._active()
@@ -667,7 +686,7 @@ class ControlSpool:
             if frozen.route not in ('story.edit.v1','story.access.v1'):
                 raise SpoolDenied('editorial intake requires an exact editorial route')
             await self.authorize_command(context,frozen)
-            return await self._write(self._stage,frozen,data,handler,database_generation)
+            return await self.stage_validated(frozen,data,handler,database_generation)
 
     async def stage_domain_command(self,context,command,*,database_generation):
         """Fixed installed domain validators; no caller-selected scope or authority."""
@@ -678,7 +697,7 @@ class ControlSpool:
                     'disagreement.access.v1','disagreement.draft.v1','disagreement.publish.v1','geo.manifest.install.v1','geo.dependencies.upgrade.v2'):
                 raise SpoolDenied('domain intake requires a fixed installed domain route')
             await self.authorize_command(context,frozen)
-            return await self._write(self._stage,frozen,data,handler,database_generation)
+            return await self.stage_validated(frozen,data,handler,database_generation)
 
     def _row(self,key):
         _bounded(key,4096)
@@ -737,7 +756,41 @@ class ControlSpool:
 
     async def get(self,key):
         self._active()
-        return self._entry(await _database(self._row,key))
+        row=await _database(self._row,key)
+        if row['command_bytes'] is None:
+            # The existing remote journal is the exact-byte authority, not a new archive.
+            command=await self.journal._accepted_command_bytes(key)
+            outcome=await self.journal.remote_outcome(key)
+            if command is None or outcome is None:raise JournalUnknown('retired_control_bytes_unavailable')
+            row['command_bytes']=command
+            row['outcome_bytes']=base64.b64decode(json.loads(outcome.data)['outcome_b64'],validate=True)
+        return self._entry(row)
+
+    def _retire_raw(self,checkpoint,limit):
+        from .control_raw_retention import protected_raw
+        with self._db(write=True) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_native_source_intake_state'").fetchone():return 0
+            predicate=("database_generation=? AND updated<? AND sequence<=? AND command_bytes IS NOT NULL "
+                "AND progress_json IS NOT NULL AND seal_state='ACCEPTED' AND outcome_state='DURABLE' AND apply_state='APPLIED'")
+            params=(checkpoint.database_generation,self.clock()-self.raw_retention_seconds,checkpoint.base_sequence)
+            if not db.execute('SELECT 1 FROM rkb_control_operations WHERE '+predicate+' LIMIT 1',params).fetchone():return 0
+            protected=protected_raw(db)
+            exclusions=(' AND operation_key NOT IN ('+','.join('?' for _ in protected)+')') if protected else ''
+            keys=[r[0] for r in db.execute('SELECT operation_key FROM rkb_control_operations WHERE '+predicate+
+                exclusions+' ORDER BY updated,sequence LIMIT ?',(*params,*sorted(protected),limit))]
+            db.executemany('UPDATE rkb_control_operations SET command_bytes=NULL,outcome_bytes=NULL WHERE operation_key=?',
+                ((key,) for key in keys))
+            return len(keys)
+
+    async def retire_raw(self):
+        from .dataset_recovery_store import DatasetRecoveryStore
+        self._active()
+        if type(self.journal.store) is not DatasetRecoveryStore:return 0
+        async with self._lock:
+            checkpoint=self.journal.store.latest_checkpoint
+            count=await self._write(self._retire_raw,checkpoint,128)
+        if count:_LOG.info('control_raw_retired base_sequence=%s rows=%s',checkpoint.base_sequence,count)
+        return count
 
     def _before_seal(self,key,predecessor):
         with self._db(write=True) as db:
@@ -830,8 +883,9 @@ class ControlSpool:
             row=db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()
             if not row or row['seal_state']!='ACCEPTED' or (receipt.operation_key,receipt.sequence,receipt.command_sha256,receipt.database_generation)!=(key,row['sequence'],row['command_sha256'],row['database_generation']):
                 raise SpoolConflict('apply receipt does not bind the original accepted operation/database')
-            if row['apply_bytes'] is not None and (bytes(row['apply_bytes'])!=data or bytes(row['outcome_bytes'])!=receipt.outcome):
+            if row['apply_bytes'] is not None and (bytes(row['apply_bytes'])!=data or row['outcome_sha256']!=receipt.outcome_sha256):
                 raise SpoolConflict('exact committed outcome differs')
+            if row['command_bytes'] is None:return  # Exact duplicate does not restore retired bodies.
             db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?,progress_json=?
                 WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),progress_outcome(row['progress_json'],receipt.outcome),key))
         if row['apply_bytes'] is None:

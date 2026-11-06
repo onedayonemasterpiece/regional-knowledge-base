@@ -89,7 +89,7 @@ class ImportActivityReader:
                 entries = db.execute(
                     "SELECT command_bytes FROM rkb_control_operations "
                     "WHERE source_id=? AND person_id=? AND operation_key LIKE ? "
-                    "AND seal_state='ACCEPTED' AND (apply_state='APPLIED' OR operation_key LIKE ?) "
+                    "AND command_bytes IS NOT NULL AND seal_state='ACCEPTED' AND (apply_state='APPLIED' OR operation_key LIKE ?) "
                     "ORDER BY sequence DESC LIMIT 10000",
                     (row["source_id"], row["person_id"], "source-stage:" + ingestion_id + ":%",
                      f"source-stage:{ingestion_id}:{native['rejected_batch_index']}:%"),

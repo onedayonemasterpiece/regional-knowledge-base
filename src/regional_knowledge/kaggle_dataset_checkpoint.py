@@ -212,7 +212,15 @@ class SourceDatasetCheckpoints:
         # concurrently. A second caller never starts another capture.
         if self._refresh_lock.locked():return False
         async with self._refresh_lock:
-            return await self._refresh(binding,planned_stop=planned_stop)
+            result=await self._refresh(binding,planned_stop=planned_stop)
+            # Retirement follows the already verified Saved pointer, including quiet ticks.
+            from .control_spool import ControlSpool
+            if isinstance(self.startup.config.spool,ControlSpool):
+                try:await self.startup.config.spool.retire_raw()
+                except Exception as exc:
+                    _LOG.warning('control_raw_retirement_deferred base_sequence=%s error_type=%s',
+                        self.store.latest_checkpoint.base_sequence,type(exc).__name__)
+            return result
 
     @property
     def saved_seq(self):
