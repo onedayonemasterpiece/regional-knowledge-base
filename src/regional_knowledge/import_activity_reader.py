@@ -12,7 +12,7 @@ from uuid import UUID
 from starlette.responses import JSONResponse
 
 from .projects_hub_reader import PrivateInput
-from .source_page_progress import published_pages,next_unaccepted,enrichment_gaps
+from .source_page_progress import publication_progress,next_unaccepted,enrichment_gaps
 
 PATH = "/internal/import/activity"
 SERVICE_ID = "launcher-import-watch"
@@ -80,7 +80,7 @@ class ImportActivityReader:
                     "AND seal_state='ACCEPTED' AND apply_state='APPLIED' AND outcome_state IN ('NOT_SENT','DURABLE')",
                     (pending,row["source_id"],row["person_id"])).fetchone():
                 pending = None
-            accepted = published_pages(db,row) if native and native['packet_mode'] else set()
+            accepted, text_batches = publication_progress(db,row) if native and native['packet_mode'] else (set(),set())
             missing_semantic = enrichment_gaps(db,row) if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized') else set()
             last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
@@ -108,7 +108,7 @@ class ImportActivityReader:
                         break
                     # Stage APPLIED without matching source.packet TEXT APPLIED is not publication.
         phase = row["phase"]
-        unpublished_rejection = bool(rejected_pages and any(p['physical_page_index'] not in accepted for p in rejected_pages))
+        unpublished_rejection = bool(rejected_pages and native['rejected_batch_index'] not in text_batches)
         if phase == "failed" or native and native["phase"] == "failed":
             state, action = "failed", "blocker"
         elif (native and native["phase"] == "finalized" or phase == "finalized") and not (missing_semantic or unpublished_rejection):

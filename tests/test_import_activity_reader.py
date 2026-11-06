@@ -189,7 +189,7 @@ def test_latest_stage_lookup_stops_when_latest_and_rejected_are_found(watcher,mo
         db.execute('UPDATE rkb_native_source_intake_state SET rejected_batch_index=?',(rejected,))
     # Publication proof has its own receipt-coverage tests; isolate the second
     # latest-stage lookup, which must not re-decode unrelated historical stages.
-    monkeypatch.setattr(reader,'published_pages',lambda *_:{3,8})
+    monkeypatch.setattr(reader,'publication_progress',lambda *_:({3,8},set()))
     decode=reader.base64.b64decode;calls=[]
     def observed(*args,**kwargs):
         calls.append(1);return decode(*args,**kwargs)
@@ -373,7 +373,8 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
 
 
 @pytest.mark.asyncio
-async def test_finalized_unpublished_rejected_text_is_not_done(watcher):
+@pytest.mark.parametrize("physical,cursor", [(9,"9"),(3,"4")])
+async def test_finalized_unpublished_rejected_text_is_not_done(watcher,physical,cursor):
     w=watcher
     with w.queue.connect() as db:
         raw=db.execute("SELECT command_bytes FROM rkb_control_operations WHERE operation_key LIKE '%:text'").fetchone()[0]
@@ -382,12 +383,12 @@ async def test_finalized_unpublished_rejected_text_is_not_done(watcher):
         command=json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
         db.execute('INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)',
             (w.source,w.actor,f'source-packet:{w.ingestion}:0:semantic',3,'ACCEPTED','APPLIED',command))
-        synthetic_page_records(db,w,batch=1,physical=9,sequence=4,text_state='REJECTED_PRECONDITION')
+        synthetic_page_records(db,w,batch=1,physical=physical,sequence=4,text_state='REJECTED_PRECONDITION')
         db.execute("UPDATE rkb_native_source_intake_state SET phase='finalized',batch_count=2,published_batch_count=2,enriched_batch_count=2,rejected_batch_index=1")
         db.execute("UPDATE rkb_source_intake_control SET phase='finalized'")
     before=read_timestamp(w)
     result=(await get(w)).json()
-    assert (result['state'],result['next_action'],result['next_cursor'])==('staged','continue_pages','9')
+    assert (result['state'],result['next_action'],result['next_cursor'])==('staged','continue_pages',cursor)
     assert result['accepted_pages']==2 and read_timestamp(w)==before
 
 
