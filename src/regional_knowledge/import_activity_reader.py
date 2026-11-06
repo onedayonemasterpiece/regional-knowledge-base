@@ -108,9 +108,10 @@ class ImportActivityReader:
                         break
                     # Stage APPLIED without matching source.packet TEXT APPLIED is not publication.
         phase = row["phase"]
+        unpublished_rejection = bool(rejected_pages and any(p['physical_page_index'] not in accepted for p in rejected_pages))
         if phase == "failed" or native and native["phase"] == "failed":
             state, action = "failed", "blocker"
-        elif (native and native["phase"] == "finalized" or phase == "finalized") and not missing_semantic:
+        elif (native and native["phase"] == "finalized" or phase == "finalized") and not (missing_semantic or unpublished_rejection):
             state, action = "finalized", "done"
         elif phase == "acquiring":
             state, action = "processing", "wait"
@@ -136,7 +137,7 @@ class ImportActivityReader:
                 cursor = None
             else:
                 cursor = next_unaccepted(cursor,accepted)
-        if missing_semantic and not pending and state != 'failed':
+        if missing_semantic and not unpublished_rejection and not pending and state != 'failed':
             cursor = str(min(missing_semantic))
         timestamp = row["last_operation_at"]
         return dict(state=state, next_action=action,

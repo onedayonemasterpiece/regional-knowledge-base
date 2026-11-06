@@ -2047,6 +2047,33 @@ async def test_completion_resumes_older_rejected_semantic_packet(native_intake, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('legacy_finished', [False, True])
+async def test_rejected_text_cannot_finish_or_seal_out_ordinary_correction(native_intake, monkeypatch, legacy_finished):
+    s=native_intake;book=await start(s)
+    await stage(s,book,batch(s,book,count=1))
+    await finish(s,book);await call(s,book,'status')
+    await finish(s,book,status='rejected_precondition',reason='native_source_packet_input_invalid')
+    await call(s,book,'status')
+    if legacy_finished:
+        from unittest.mock import AsyncMock
+        with monkeypatch.context() as patch:
+            patch.setattr(type(s.importer.native_intake),'_tail_output',AsyncMock(return_value=None))
+            await call(s,book,'finalize');await finish(s,book)
+            assert (await call(s,book,'status')).state=='finalized'
+    before=operation_count(s)
+    result=await call(s,book,'finalize' if not legacy_finished else 'status')
+    assert (result.next_action,result.next_cursor)==('continue_pages','0')
+    assert operation_count(s)==before
+    wrong=await stage(s,book,batch(s,book,first=1,count=1))
+    assert (wrong.next_action,wrong.next_cursor)==('continue_pages','0')
+    assert operation_count(s)==before
+    await stage(s,book,batch(s,book,count=1))
+    for _ in range(3):
+        await finish(s,book);await call(s,book,'status')
+    assert state(s,book)['published_batch_count']==state(s,book)['batch_count']
+
+
+@pytest.mark.asyncio
 async def test_legacy_masked_rollback_gets_one_ordinary_retry(native_intake):
     """Before 798 a fixed model rejection was stored as a SQL rollback without SQLSTATE."""
     s = native_intake
