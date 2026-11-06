@@ -426,9 +426,10 @@ class KaggleCasesBackend:
                         or type(remote.length) is not int or not 1<=remote.length<=journal.max_outcome_bytes):
                     raise failure('remote_outcome_unproved')
                 original=await journal._read(journal.prefix+'/commands/'+hashlib.sha256(key.encode()).hexdigest(),journal.max_segment_bytes)
-                if original is None or hashlib.sha256(original.data).hexdigest()!=command_hash:
+                original_bytes=original.data if original else await journal._accepted_command_bytes(key)
+                if original_bytes is None or hashlib.sha256(original_bytes).hexdigest()!=command_hash:
                     raise failure('remote_outcome_unproved')
-                command=_command(original.data)
+                command=_command(original_bytes)
                 if (command.operation_key!=key or command.person_id!=authority.person_id
                         or command.ids.get('case_id')!=case_id or not command.route.startswith('disagreement.')
                         or inferred_create and validate_case_payload(command.payload)['action']!='create'

@@ -266,6 +266,21 @@ class RecoveryJournal:
             return None
         return value
 
+    async def _accepted_command_bytes(self, operation_key):
+        """Read the retained sealed segment after its duplicate binding was collected."""
+        saved=await self.remote_outcome(operation_key)
+        if saved is None:return None
+        outcome=_decode(saved.data)
+        if (outcome.get('codec')!='rkb.outcome.v1' or outcome.get('stream')!=self.stream
+                or outcome.get('operation_key')!=operation_key
+                or type(outcome.get('sequence')) is not int or outcome['sequence']<1):
+            raise JournalCorrupt('invalid collected command outcome locator')
+        command=await self._occupied_command(outcome['sequence'])
+        data=_encode(command)
+        if command['operation_key']!=operation_key or _hash(data)!=outcome.get('command_sha256'):
+            raise JournalCorrupt('collected command differs from accepted segment')
+        return data
+
     async def _immutable(self, key: str, data: bytes, limit: int) -> None:
         if len(data) > limit:
             raise JournalLimit("object exceeds configured byte budget")
@@ -547,10 +562,11 @@ class RecoveryJournal:
         command = _decode(data)
         key = self.prefix + "/commands/" + _hash(command["operation_key"].encode())
         old = await self._read(key, self.max_segment_bytes)
-        if old is not None and old.data == data:
+        original_data=old.data if old is not None else await self._accepted_command_bytes(command['operation_key'])
+        if original_data == data:
             return
-        if old is not None:
-            original = _decode(self._validate_command(_decode(old.data)))
+        if original_data is not None:
+            original = _decode(self._validate_command(_decode(original_data)))
             old_identity = {k: v for k, v in original.items() if k != "sequence"}
             new_identity = {k: v for k, v in command.items() if k != "sequence"}
             if old_identity != new_identity or original["sequence"] == command["sequence"]:
