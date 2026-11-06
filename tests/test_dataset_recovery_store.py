@@ -161,8 +161,10 @@ async def test_fresh_saved_after_collection_restores_exact_outcomes_and_preaccep
     native=dict(dataset_ref=publisher.ref,dataset_version=2,base_sequence=7,
         archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
     p.store.promote(checkpoint,native,manifest_ref=p.ref)
-    assert await p.store.read(p.prefix+'commands/'+sha(commands[0].operation_key.encode()),max_bytes=10000) is not None
-    # The next Saved omits covered duplicate bindings, without local DELETE.
+    assert await p.store.read(p.prefix+'commands/'+sha(commands[0].operation_key.encode()),max_bytes=10000) is None
+    assert await journal.seal(commands,predecessor=None,writer_generation='writer')==accepted
+    assert await journal._accepted_command_bytes(commands[0].operation_key)==commands[0].encode()
+    # The local and next Saved representations both omit covered duplicate bindings.
     files['journal-control.json']=p.store.export_control()
     checkpoint=replace(checkpoint,dataset_version=3,
         journal=DatasetFile('journal-control.json',len(files['journal-control.json']),sha(files['journal-control.json'])))
@@ -194,7 +196,8 @@ async def test_fresh_saved_after_collection_restores_exact_outcomes_and_preaccep
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('producer',['export_control','legacy_seed'])
-async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent(tmp_path,producer):
+@pytest.mark.parametrize('retirement_fails',[False,True])
+async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent(tmp_path,producer,retirement_fails):
     from dataclasses import replace
     from regional_knowledge.recovery_journal import JournalConflict
     p=prepared(tmp_path);store=p.store;key=p.prefix+'outcomes/new'
@@ -205,6 +208,10 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     assert await store.put_if_absent(p.prefix+'outcomes/collectable',encode(dict(sequence=8)))
     assert await store.put_if_absent(p.prefix+'accepted/sequences/8',encode(dict(manifest=dict(sha256='d'*64))))
     assert await store.put_if_absent(p.prefix+'accepted/manifests/'+'d'*64,b'accepted proof')
+    for index in range(129):
+        suffix='z-bounded-'+str(index)
+        assert await store.put_if_absent(p.prefix+'commands/'+suffix,b'duplicate binding')
+        assert await store.put_if_absent(p.prefix+'outcomes/'+suffix,encode(dict(sequence=8)))
     unindexed=p.prefix+'commands/legacy'
     assert await store.put_if_absent(unindexed,b'legacy command without accepted locator')
     assert await store.put_if_absent(p.prefix+'outcomes/legacy',b'legacy untyped outcome; keep its command')
@@ -268,6 +275,9 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
         db.execute('''CREATE TRIGGER record_covered_rewrite AFTER UPDATE ON rkb_dataset_recovery_objects
             WHEN OLD.covered_version IS NOT NULL BEGIN
             INSERT INTO redundant_coverage_writes VALUES(OLD.key); END''')
+    if retirement_fails:
+        with p.q.connect() as db:
+            db.execute("CREATE TRIGGER reject_cleanup BEFORE DELETE ON rkb_dataset_recovery_objects BEGIN SELECT RAISE(FAIL,'cleanup unavailable'); END")
     import tracemalloc
     tracemalloc.start()
     try:
@@ -277,7 +287,10 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     assert peak<len(journal)*1.5
     assert store.remote_durable(escaped,b'pending escaped key')
     assert store.remote_durable(key,b'captured') and store.latest_checkpoint==checkpoint
-    assert (await store.read(duplicate,max_bytes=100)) is not None
+    assert ((await store.read(duplicate,max_bytes=100)) is not None)==retirement_fails
+    with p.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_dataset_recovery_objects WHERE storage=? AND key LIKE ?',
+            (store.storage_identity,p.prefix+'commands/z-bounded-%')).fetchone()[0]==(129 if retirement_fails else 2)
     assert (await store.read(keep,max_bytes=100)) is not None
     assert (await store.read(unindexed,max_bytes=100)) is not None
     assert duplicate.encode() not in store.export_control()
@@ -286,6 +299,9 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     assert store.remote_durable(p.prefix+'commands/one',b'original accepted command')
     assert await store.compare_and_swap(key,b'after checkpoint',expected_token=captured.token,writer_generation='writer')
     store.promote(checkpoint,expected,manifest_ref=ref)  # Lost promotion ACK.
+    with p.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_dataset_recovery_objects WHERE storage=? AND key LIKE ?',
+            (store.storage_identity,p.prefix+'commands/z-bounded-%')).fetchone()[0]==(129 if retirement_fails else 2)
     assert not store.remote_durable(key,b'after checkpoint')
     assert not store.remote_durable(key,b'captured')
 

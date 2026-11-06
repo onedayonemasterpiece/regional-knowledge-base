@@ -35,3 +35,16 @@ forward. Never restore an older live SQLite copy or regenerate an accepted
 outcome. Original bytes remain available through the existing journal. Physical
 PostgreSQL restore still starts from verified Saved and only replays its unsaved
 suffix. A supported rollback must itself understand the nullable local format.
+
+## Redundant Dataset command bindings
+
+Verified Dataset promotion also retires at most128 local `commands/` bindings
+already excluded by the existing Dataset export policy. Their outcome, accepted
+sequence locator and accepted manifest must all be Dataset-covered. This runs
+after the existing promotion transaction commits; no additional worker or timer exists.
+A reclamation failure is logged and cannot roll back verified Saved.
+The sealed segments and exact outcomes stay unchanged, so original-command
+lookup and duplicate/conflict checks use the already supported addressed journal
+path. Pending or unindexed bindings remain. Lost promotion acknowledgment does
+not run another collection pass. This reduces a second local copy; it does not
+remove canonical journal provenance or shrink an existing SQLite file.
