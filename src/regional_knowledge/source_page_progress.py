@@ -155,19 +155,21 @@ def accepted_model_page(db, row, physical_index):
     from .source_batch_context import chunk_pages
     published = set()
     for item in db.execute(
-            "SELECT operation_key,command_bytes FROM rkb_control_operations "
+            "SELECT operation_key,"+progress_columns()+" FROM rkb_control_operations "
             "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' AND apply_state='APPLIED' "
             "AND (operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence DESC LIMIT 10000",
             (row['source_id'],row['person_id'],'source-stage:'+row['ingestion_id']+':%',
              'source-packet:'+row['ingestion_id']+':%:text')):
-        raw = base64.b64decode(json.loads(item['command_bytes'])['payload_b64'], validate=True)
-        packet = json.loads(raw)
+        packet, stage_sha = progress_packet(item)
         if packet.get('ingestion_id') != row['ingestion_id']: continue
         if not item['operation_key'].startswith('source-stage:'):
             published.add((packet.get('batch_index'), packet.get('last_batch_sha256')))
             continue
-        if (packet.get('batch_index'), hashlib.sha256(raw).hexdigest()) not in published: continue
-        model = packet.get('model_payload') or {}
+        if (packet.get('batch_index'), stage_sha) not in published: continue
+        if not any(p.get('physical_page_index') == physical_index for p in packet.get('model_payload',{}).get('pages',[])): continue
+        original = db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?',
+                              (item['operation_key'],)).fetchone()[0]
+        model = json.loads(base64.b64decode(json.loads(original)['payload_b64'],validate=True)).get('model_payload') or {}
         for page in model.get('pages', []):
             if page.get('physical_page_index') == physical_index:
                 return dict(page=page, chunks=[c for c in model.get('chunks', [])

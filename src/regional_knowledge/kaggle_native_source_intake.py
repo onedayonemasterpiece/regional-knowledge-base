@@ -446,7 +446,9 @@ class NativeSourceIntake:
                         facts.scope_sequence,facts.covered_sequence,facts.pending,continuation,facts.unknown,
                         self.spool.facts_current(facts))
                     raise _failure('source_history_unavailable')
-                try:entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
+                try:
+                    entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
+                    if entry is None:entry=await self.spool.get(key)
                 except sqlite3.OperationalError as error:
                     if kind=='stage' and getattr(error,'sqlite_errorcode',None)==sqlite3.SQLITE_BUSY:
                         raise _failure('source_stage_not_accepted_retry_same_stage') from None
