@@ -373,6 +373,25 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
 
 
 @pytest.mark.asyncio
+async def test_finalized_unpublished_rejected_text_is_not_done(watcher):
+    w=watcher
+    with w.queue.connect() as db:
+        raw=db.execute("SELECT command_bytes FROM rkb_control_operations WHERE operation_key LIKE '%:text'").fetchone()[0]
+        packet=json.loads(base64.b64decode(json.loads(raw)['payload_b64']))
+        packet['component']='semantic'
+        command=json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+        db.execute('INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)',
+            (w.source,w.actor,f'source-packet:{w.ingestion}:0:semantic',3,'ACCEPTED','APPLIED',command))
+        synthetic_page_records(db,w,batch=1,physical=9,sequence=4,text_state='REJECTED_PRECONDITION')
+        db.execute("UPDATE rkb_native_source_intake_state SET phase='finalized',batch_count=2,published_batch_count=2,enriched_batch_count=2,rejected_batch_index=1")
+        db.execute("UPDATE rkb_source_intake_control SET phase='finalized'")
+    before=read_timestamp(w)
+    result=(await get(w)).json()
+    assert (result['state'],result['next_action'],result['next_cursor'])==('staged','continue_pages','9')
+    assert result['accepted_pages']==2 and read_timestamp(w)==before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('rejected_phase',['stage','text','semantic'])
 async def test_rejected_packet_cursor_matches_native_without_skipping_unpublished_page(watcher,rejected_phase):
     w=watcher
