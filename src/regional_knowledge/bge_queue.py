@@ -1065,6 +1065,17 @@ class BgeQueue:
                     "SELECT 1 FROM jobs WHERE run_id=? AND state='claimed' LIMIT 1",(run_id,)).fetchone():
                 return False
             if run['status'] in ('starting','ready'):
+                actor='maintenance:'+run_id
+                capture=db.execute("SELECT json_extract(result,'$.value.handle'),json_extract(result,'$.value.status') FROM jobs WHERE actor=? "
+                    "AND kind='recovery_phase' AND state='done' AND json_extract(identity,'$.phase')='capture' "
+                    "ORDER BY rowid DESC LIMIT 1",(actor,)).fetchone()
+                status=db.execute("SELECT json_extract(result,'$.value.status') FROM jobs WHERE actor=? "
+                    "AND kind='recovery_phase' AND state='done' AND json_extract(identity,'$.phase')='snapshot_status' "
+                    "AND json_extract(identity,'$.arguments.handle')=? ORDER BY rowid DESC LIMIT 1",
+                    (actor,capture[0])).fetchone() if capture else None
+                if (capture and capture[1]=='rejected') or (status and status[0]=='rejected'):
+                    _LOG.warning('bge_planned_drain deferred run_id=%s reason=checkpoint_rejected',run_id)
+                    return False
                 db.execute("UPDATE runs SET status='draining' WHERE id=?",(run_id,))
                 _LOG.info('bge_planned_drain requested run_id=%s provider_version=%s',run_id,provider_version)
             return True
