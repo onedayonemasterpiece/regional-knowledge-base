@@ -87,6 +87,9 @@ class BgeQueue:
               unique(actor,idempotency));
             create index if not exists bge_pending on jobs(state,kind,created);
             create index if not exists bge_retention on jobs(state,kind,updated);
+            create index if not exists bge_read_retention on jobs(updated,id)
+              where state='done' and kind='recovery_phase'
+              and json_extract(identity,'$.phase') in ('snapshot_status','source_history','original_pages');
             create index if not exists bge_assigned on jobs(run_id,state);
             create index if not exists bge_live on jobs(kind,state,run_id) where state!='done';
             ''')
@@ -134,7 +137,7 @@ class BgeQueue:
                 # Existing databases need the same bounded maintenance/claim
                 # lookups as new ones; the schema fast path must not skip them.
                 indexes={row['name'] for row in db.execute('pragma index_list(jobs)')}
-                if not {'bge_retention','bge_assigned','bge_live'}<=indexes:
+                if not {'bge_retention','bge_assigned','bge_live','bge_read_retention'}<=indexes:
                     return False
             return True
         except sqlite3.OperationalError:
@@ -1123,6 +1126,13 @@ class BgeQueue:
                 "and json_extract(identity,'$.audit') is not null",
                 (now-DONE_AUDIT_RETENTION_SECONDS,),
             )
+            # Read-only results cannot be reused after their exact runtime ends.
+            retired=db.execute("DELETE FROM jobs WHERE id IN (SELECT id FROM jobs INDEXED BY bge_read_retention "
+                "WHERE state='done' AND kind='recovery_phase' AND updated<? "
+                "AND actor IN (SELECT 'maintenance:'||run_id FROM bge_provider_terminal_receipts) "
+                "AND json_extract(identity,'$.phase') IN ('snapshot_status','source_history','original_pages') "
+                "LIMIT 256)", (now-DONE_QUERY_RETENTION_SECONDS,)).rowcount
+            if retired:_LOG.info('bge_terminal_read_results_retired count=%s',retired)
             return [dict(row) for row in db.execute('select id,status,launch_state,provider_ref,provider_version from runs').fetchall()]
 
     def provider_reconciliation_page(self, *, limit=2):
