@@ -566,9 +566,12 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
     monkeypatch.setattr('regional_knowledge.kaggle_service_startup.current_binding',verified_binding)
     # The source-history cursor is already independently verified. Rebinding
     # its existing Dataset cursor must not reopen serving or start PG replay.
+    rebinds=[]
     async def coverage(binding):
         assert binding is new
         p.binding=binding;p.startup.binding=binding
+        rebinds.append(binding)
+        if identity_change=='coverage_cleared' and len(rebinds)==1:return None
         return p.proof
     p.startup._dataset_coverage=coverage
     observed=[]
@@ -586,6 +589,13 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
             await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
         assert not p.calls and not p.store.remote_durable(key,b'pending')
     else:
+        if identity_change=='coverage_cleared':
+            from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+            with pytest.raises(CheckpointPending):
+                await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
+            assert not p.calls and p.startup.coverage is None
+        # The existing heartbeat retries this same callback; 785 rebinds the
+        # cleared cursor again, then capture/readback settles the pending stop.
         assert await TargetServiceStartup.before_planned_stop(p.startup,'run',new.connection_generation)
         assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
         assert p.calls==['capture','finalize','verify'] and observed and all(b is new for b in observed)
