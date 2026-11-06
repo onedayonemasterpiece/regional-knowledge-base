@@ -60,15 +60,15 @@ def next_unaccepted(cursor, published):
 
 def enrichment_gaps(db, row):
     """Ordinary continuation excludes the latest unresolved SQL rollback."""
-    published, _ = publication_progress(db, row)
-    stages = {}; semantic = set(); latest = {}; retried = set()
+    published = set(); stages = {}; semantic = set(); latest = {}; retried = set()
     for item in db.execute(
             "SELECT operation_key,command_bytes,apply_state,outcome_bytes FROM rkb_control_operations "
             "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' "
             "AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
-            "AND (operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
+            "AND (((operation_key LIKE ? OR operation_key LIKE ?) AND apply_state='APPLIED') "
+            "OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
             (row['source_id'],row['person_id'],'source-stage:'+row['ingestion_id']+':%',
-             'source-packet:'+row['ingestion_id']+':%:semantic')):
+             'source-packet:'+row['ingestion_id']+':%:text','source-packet:'+row['ingestion_id']+':%:semantic')):
         raw = base64.b64decode(json.loads(item['command_bytes'])['payload_b64'], validate=True)
         packet = json.loads(raw)
         if packet.get('ingestion_id') != row['ingestion_id']: continue
@@ -76,6 +76,9 @@ def enrichment_gaps(db, row):
             if item['apply_state']=='APPLIED':
                 stages[packet['batch_index'],hashlib.sha256(raw).hexdigest()] = {
                     page['physical_page_index'] for page in packet['model_payload']['pages']}
+        elif packet.get('component')=='text':
+            if item['apply_state']=='APPLIED':
+                published.update(stages.get((packet['batch_index'],packet['last_batch_sha256']),set()))
         elif packet.get('component')=='semantic':
             pages = stages.get((packet['batch_index'],packet['last_batch_sha256']),set())
             reason = None
