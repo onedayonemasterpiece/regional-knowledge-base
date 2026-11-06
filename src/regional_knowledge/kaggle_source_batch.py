@@ -1,6 +1,7 @@
 """Packet-local preparation and BGE installation in the resident Kaggle worker."""
 import json
 import logging
+import re
 import time
 
 from .source_batch import validate_command
@@ -41,8 +42,10 @@ async def materialize_packet(worker, command, *, acquire, database):
                     raise failure('native_source_accepted_batch_missing')
                 try:
                     view=await load_current(connection,raw,source,text_only=part=='text')
-                except (ValueError,TypeError,KeyError):
-                    raise failure('native_source_packet_context_invalid') from None
+                except (ValueError,TypeError,KeyError) as error:
+                    # load_current raises fixed native_source_context_* labels; the model needs the exact one.
+                    exact=type(error) is ValueError and re.fullmatch(r'native_source_context_[a-z_]{1,40}',str(error))
+                    raise failure(str(error) if exact else 'native_source_packet_context_invalid') from None
     # An already applied historical command is an idempotent no-op. Do not
     # recompute it under the new compiler; only new/unapplied commands require
     # the exact current immutable materializer fingerprint.
