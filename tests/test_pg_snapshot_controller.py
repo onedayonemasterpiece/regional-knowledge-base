@@ -3,6 +3,7 @@ import base64
 from contextlib import asynccontextmanager
 from dataclasses import asdict,replace
 import json
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ import pytest
 
 from regional_knowledge.kaggle_apply import ApplyReceipt
 from regional_knowledge.kaggle_owned_pg import OwnedDatabase
-from regional_knowledge.kaggle_pg_snapshot_native import BlobRef,SnapshotError,encode,sha
+from regional_knowledge.kaggle_pg_snapshot_native import BlobRef,SnapshotError,SnapshotLimits,encode,sha
 from regional_knowledge.pg_snapshot_recovery import PhysicalSnapshotRecovery,S3SnapshotTransport
 from test_control_spool import env,accept,SOURCE,VERSIONS
 from test_source_history_verifier import Pg,verifier
@@ -68,6 +69,23 @@ def decoder(wire):
     value=dict(wire);outcome=base64.b64decode(value.pop('outcome_b64'))
     assert sha(outcome)==value['outcome_sha256']
     return ApplyReceipt(**value,outcome=outcome),{}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('size,level',[(79,logging.INFO),(80,logging.WARNING),(100,logging.WARNING)])
+async def test_snapshot_capture_reports_archive_capacity(env,monkeypatch,caplog,size,level):
+    pg=Pg();b=binding();history=verifier(env,pg,b,monkeypatch)
+    await history.establish_genesis(b)
+    blob=BlobRef(env.journal.prefix+'/snapshots/blobs/'+'a'*64,size,'a'*64,'"native-version-1"')
+    controller=PhysicalSnapshotRecovery(env.journal,Transport(blob),Native(env,blob),
+        registry=env.registry,history_verifier=history,maintenance_guard=guard,
+        current=lambda value:value is b,private_storage_current=lambda:True,
+        limits=SnapshotLimits(max_archive_bytes=100))
+    with caplog.at_level(logging.INFO,logger='regional_knowledge.pg_snapshot_recovery'):
+        await controller.create_base(b,versions=versions(),writer_generation='writer-1')
+    record=next(r for r in caplog.records if r.getMessage().startswith('snapshot_base_sealed '))
+    assert record.levelno==level
+    assert f'bytes={size} archive_limit_bytes=100 archive_ratio={size/100:.3f}' in record.getMessage()
 
 
 @pytest.mark.asyncio
