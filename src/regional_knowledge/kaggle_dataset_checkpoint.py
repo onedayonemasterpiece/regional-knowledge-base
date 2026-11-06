@@ -386,8 +386,6 @@ class SourceDatasetCheckpoints:
                 # A legacy checkpoint may predate outcome materialization. Its
                 # publication is real, but these bytes need the NEXT version.
                 unsettled+=1;continue
-            jobs=await spool._write(spool._settle_recovered_jobs,key)
-            for job in jobs:queue._notify_result(job)
         with queue.connect() as db:
             db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key=? AND version=?",
                 (operation,version))

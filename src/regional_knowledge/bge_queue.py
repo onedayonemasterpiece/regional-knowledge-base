@@ -959,7 +959,13 @@ class BgeQueue:
             now=self.clock()
             if not run or self._run_expired(run,now) or row['lease_until'] is None or now>=row['lease_until']:
                 state='pending'
-        return {'state':state,'result':json.loads(row['result']) if row['result'] else None,'identity':json.loads(row['identity'])}
+        result=json.loads(row['result']) if row['result'] else None
+        identity=json.loads(row['identity'])
+        if row['kind']=='source_command' and state=='done' and result.get('remote_outcome_durable') is False:
+            outcome=db.execute('SELECT 1 FROM rkb_control_receipts WHERE operation_key=?',
+                (identity['operation_key'],)).fetchone()
+            result['remote_outcome_durable']=outcome is not None
+        return {'state':state,'result':result,'identity':identity}
 
     def result(self, actor, job_id):
         with self.connect(write=False) as db:

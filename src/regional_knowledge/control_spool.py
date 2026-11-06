@@ -910,20 +910,14 @@ class ControlSpool:
             result=json.dumps(dict(command_sha256=row['command_sha256'],
                 remote_outcome_durable=covered is None),sort_keys=True)
             settled=[]
-            for job in db.execute("select * from jobs where actor=? and idempotency=? and kind='source_command'",
+            for job in db.execute("select * from jobs where actor=? and idempotency=? and kind='source_command' AND state='pending' AND result IS NULL",
                     (row['person_id'],'source-command:'+key)).fetchall():
-                if covered is not None and (job['state']!='pending' or job['result'] is not None):
-                    continue  # An in-flight or already settled claim retains its original result.
                 identity=json.loads(job['identity'])
                 if (job['actor']!=row['person_id'] or identity.get('command_sha256')!=row['command_sha256']
                         or identity.get('database_generation')!=row['database_generation']
                         or identity.get('sequence')!=row['sequence']
                         or covered is not None and job['idempotency']!='source-command:'+key):
                     raise SpoolConflict('recovered job differs from original accepted command')
-                if job['state']=='done' and job['result']!=result:
-                    pending_result=json.dumps(dict(command_sha256=row['command_sha256'],remote_outcome_durable=False),sort_keys=True)
-                    if job['result']!=pending_result:
-                        raise SpoolConflict('recovered job already has a different durable result')
                 db.execute("update jobs set state='done',result=?,updated=? where id=?",(result,self.clock(),job['id']))
                 settled.append(job['id'])
             return settled

@@ -182,8 +182,7 @@ async def test_source_publication_keeps_result_debt_until_channel_queues_ack(acc
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_pending_releases_assignment_without_saved_and_promotes_same_job_after_remote_receipt(accepted):
-    from regional_knowledge.control_spool import SpoolConflict
+async def test_checkpoint_pending_job_reads_saved_from_spool_without_rewriting_completed_job(accepted):
     e=accepted;s=e.s;job,work,frame=await dispatch(e)
     await release(e,work)
     await e.spool.record_apply(e.command.operation_key,native_receipt(e.command,e.handler))
@@ -192,13 +191,18 @@ async def test_checkpoint_pending_releases_assignment_without_saved_and_promotes
     assert status=='checkpoint_pending'
     pending=s.q.result(s.auth.p.owner.subject,job)
     assert pending['state']=='done' and pending['result']['remote_outcome_durable'] is False
-    with pytest.raises(SpoolConflict,match='durable outcome'):
-        e.spool._settle_recovered_jobs(e.command.operation_key)
+    with s.q.connect(write=False) as db:
+        original=dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())
     await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
-    assert e.spool._settle_recovered_jobs(e.command.operation_key)==[job]
     saved=s.q.result(s.auth.p.owner.subject,job)
     assert saved['result']['remote_outcome_durable'] is True
     assert saved['result']['command_sha256']==pending['result']['command_sha256']
+    with s.q.connect(write=False) as db:
+        assert dict(db.execute('SELECT * FROM jobs WHERE id=?',(job,)).fetchone())==original
+    # A compact receipt is authoritative even after future raw-prefix collection.
+    with s.q.connect() as db:
+        db.execute('DELETE FROM rkb_control_operations WHERE operation_key=?',(e.command.operation_key,))
+    assert s.q.result(s.auth.p.owner.subject,job)==saved
 
 
 @pytest.mark.asyncio
@@ -525,7 +529,7 @@ def test_native_apply_diagnostic_keeps_sqlstate_and_excludes_private_message(cap
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase',['applied','rejected_precondition','unknown','replayed_unclaimed','identity_mismatch'])
+@pytest.mark.parametrize('phase',['applied','rejected_precondition','unknown','replayed_unclaimed','identity_mismatch','saved'])
 async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblocks_next_accepted(
         accepted,phase,caplog):
     """Real auth/queue/spool/journal: exact native-applied job may complete without false Saved.
@@ -566,6 +570,8 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
         with s.q.connect() as db:
             db.execute("UPDATE jobs SET identity=json_set(identity,'$.command_sha256',?) WHERE id=?",
                 ('f'*64,first))
+    if phase=='saved':
+        await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
 
     successor=resolved(person_id=e.command.person_id,
         source_id='00000000-0000-0000-0000-000000000005',
@@ -590,17 +596,17 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
     observed=[record.getMessage() for record in caplog.records
         if record.name=='regional_knowledge.kaggle_service_startup'
         and record.message.startswith('source_recovered_queue_settled')]
-    assert len(observed)==int(phase in ('applied','rejected_precondition','replayed_unclaimed'))
+    assert len(observed)==int(phase in ('applied','rejected_precondition','replayed_unclaimed','saved'))
     if observed:
-        assert 'remote_outcome_durable=false' in observed[0] and 'count=1' in observed[0]
+        assert 'count=1' in observed[0]
         assert 'operation_key' not in observed[0] and 'command_b64' not in observed[0]
-    if phase in ('applied','rejected_precondition','replayed_unclaimed'):
+    if phase in ('applied','rejected_precondition','replayed_unclaimed','saved'):
         assert settled==(first,)
         old=s.q.result(s.auth.p.owner.subject,first)
         assert old['state']=='done'
         assert old['result']==dict(command_sha256=digest(e.command.encode()),
-            remote_outcome_durable=False)
-        assert (await e.spool.get(e.command.operation_key)).outcome_state=='NOT_SENT'
+            remote_outcome_durable=phase=='saved')
+        assert (await e.spool.get(e.command.operation_key)).outcome_state==('DURABLE' if phase=='saved' else 'NOT_SENT')
         assert not e.bridge.maintenance_blocks_dispatch()
         next_work=await s.a.next_channel_work(s.run,s.token,s.generation)
         assert next_work is not None and next_work.document_payload['id']==second
@@ -609,7 +615,6 @@ async def test_verified_recovered_terminal_source_job_checkpoint_pending_unblock
         s.a.discard_unsent(next_work)
         # Only the real existing remote outcome path can promote NOT_SENT.
         await e.spool.publish_outcome(e.command.operation_key,writer_generation='writer-1')
-        assert e.spool._settle_recovered_jobs(e.command.operation_key)==[first]
         durable=s.q.result(s.auth.p.owner.subject,first)
         assert durable['result']['remote_outcome_durable'] is True
         assert (await e.spool.get(e.command.operation_key)).outcome_state=='DURABLE'
