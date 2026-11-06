@@ -96,26 +96,41 @@ def enrichment_gaps(db, row):
 
 
 def accepted_model_page(db, row, physical_index):
-    """The latest APPLIED model page and its chunks: what a semantic retry must restage verbatim."""
+    """The model page whose TEXT packet is APPLIED: what a semantic retry must restage verbatim.
+
+    Newest first with an early return; a later stage with a rejected TEXT never wins.
+    """
     from .source_batch_context import chunk_pages
-    found = None
+    published = set()
     for item in db.execute(
-            "SELECT command_bytes FROM rkb_control_operations "
+            "SELECT operation_key,command_bytes FROM rkb_control_operations "
             "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' AND apply_state='APPLIED' "
-            "AND operation_key LIKE ? ORDER BY sequence LIMIT 10000",
-            (row['source_id'],row['person_id'],'source-stage:'+row['ingestion_id']+':%')):
-        packet = json.loads(base64.b64decode(json.loads(item['command_bytes'])['payload_b64'], validate=True))
+            "AND (operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence DESC LIMIT 10000",
+            (row['source_id'],row['person_id'],'source-stage:'+row['ingestion_id']+':%',
+             'source-packet:'+row['ingestion_id']+':%:text')):
+        raw = base64.b64decode(json.loads(item['command_bytes'])['payload_b64'], validate=True)
+        packet = json.loads(raw)
         if packet.get('ingestion_id') != row['ingestion_id']: continue
+        if not item['operation_key'].startswith('source-stage:'):
+            published.add((packet.get('batch_index'), packet.get('last_batch_sha256')))
+            continue
+        if (packet.get('batch_index'), hashlib.sha256(raw).hexdigest()) not in published: continue
         model = packet.get('model_payload') or {}
         for page in model.get('pages', []):
             if page.get('physical_page_index') == physical_index:
-                found = dict(page=page, chunks=[c for c in model.get('chunks', [])
-                                                if page.get('page_id') in chunk_pages(c, text_only=True)])
-    return found
+                return dict(page=page, chunks=[c for c in model.get('chunks', [])
+                                               if page.get('page_id') in chunk_pages(c, text_only=True)])
+    return None
 
 
 def read_accepted_model_page(queue, row, physical_index):
+    # Only a finalized book's semantic gap is restaged; ordinary reading pays one indexed row read.
     with queue.connect(write=False) as db:
+        state = db.execute('SELECT phase FROM rkb_native_source_intake_state WHERE ingestion_id=?',
+                           (row['ingestion_id'],)).fetchone()
+        finalized = 'finalized' in (row.get('phase'), state and state['phase'])  # as the activity reader
+        if not finalized or physical_index not in enrichment_gaps(db, row):
+            return None
         return accepted_model_page(db, row, physical_index)
 
 
