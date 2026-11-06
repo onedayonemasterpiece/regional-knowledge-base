@@ -744,7 +744,9 @@ async def test_174_page_original_resumes_44_small_packets_without_dev_graph_or_v
         assert (entry.command.schema_revision,entry.command.function_revision,entry.command.executor_revision) == ACTIVATION_REVISIONS.wire()
         assert doc['batch_index'] == ordinal and doc['previous_batch_sha256'] == previous
         assert doc['source']['metadata']['publication_year'] == 1901
-        assert doc['model_payload'] == payload and doc['research']['state'] == 'pending'
+        expected = copy.deepcopy(payload)
+        for page in expected['pages']: page['source_unit_version'] = 1
+        assert doc['model_payload'] == expected and doc['research']['state'] == 'pending'
         assert 'download_url' not in entry.command_bytes.decode() and 'private=fixture' not in entry.command_bytes.decode()
         previous = digest(entry.command.payload)
         seen.extend(p['physical_page_index'] for p in doc['model_payload']['pages'])
@@ -1170,7 +1172,7 @@ async def test_mcp_inline_stage_omits_absent_graph_and_rejects_malformed_graph(n
     stage_document = validate_stage_payload(entry.command.payload, source_id=result.document_id)
     assert "entity_candidates" not in stage_document["model_payload"]
     assert stage_document["model_payload"]["pages"] == [
-        StagePageInput.model_validate(page).model_dump(mode="json", exclude_none=True)
+        StagePageInput.model_validate({**page, "source_unit_version": 1}).model_dump(mode="json", exclude_none=True)
         for page in payload["pages"]
     ]
     assert stage_document["model_payload"]["chunks"] == [
@@ -1381,9 +1383,22 @@ async def test_status_releases_verified_upload_and_current_file_dedup_survives_o
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('component',['text','semantic'])
-async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intake,component):
+@pytest.mark.parametrize('legacy_unmarked',[False,True])
+async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intake,component,legacy_unmarked,monkeypatch):
     s=native_intake;book=await start(s);payload=batch(s,book,count=1)
-    assert (await stage(s,book,payload)).state=='processing'
+    import regional_knowledge.kaggle_native_source_bindings as bindings
+    original_builder = bindings.resolved_native_stage_command
+    def historical_builder(**values):
+        values['payload'] = copy.deepcopy(values['payload'])
+        for page in values['payload']['model_payload']['pages']: page.pop('source_unit_version', None)
+        return original_builder(**values)
+    # Build historical bytes at the real command boundary, never rewrite accepted rows.
+    with monkeypatch.context() as historical:
+        if legacy_unmarked:
+            historical.setattr(bindings, 'resolved_native_stage_command', historical_builder)
+        assert (await stage(s,book,payload)).state=='processing'
+    first_stage = await pending(s,book)
+    first_document = json.loads(first_stage.command.payload)
     await finish(s,book)
     assert (await call(s,book,'status')).state=='processing'
     if component=='semantic':
@@ -1399,7 +1414,15 @@ async def test_exact_packet_can_retry_after_terminal_rejection_only(native_intak
     assert retry.command.route==STAGE_ROUTE
     assert retry.command.sequence==rejected.command.sequence+1
     assert retry.command.operation_key!=rejected.command.operation_key
-    assert json.loads(retry.command.payload)['model_payload']==payload
+    retry_document = json.loads(retry.command.payload)
+    expected_model = copy.deepcopy(first_document['model_payload'])
+    assert expected_model['pages'][0].get('source_unit_version') == (None if legacy_unmarked else 1)
+    for page in expected_model['pages']: page['source_unit_version'] = 1
+    assert retry_document['model_payload'] == expected_model
+    assert retry_document['batch_index'] == first_document['batch_index'] + 1
+    assert retry_document['previous_batch_sha256'] == digest(first_stage.command.payload)
+    assert payload['pages'][0].get('source_unit_version') is None
+    assert (await s.spool.get(first_stage.command.operation_key)).command_bytes == first_stage.command_bytes
     assert operation_count(s)==before+1
     old=await s.spool.get(rejected.command.operation_key)
     assert old.command_bytes==rejected.command_bytes and old.apply_state=='REJECTED_PRECONDITION'

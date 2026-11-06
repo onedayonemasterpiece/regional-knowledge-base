@@ -191,6 +191,38 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
     def packet_mode(self):
         with self.queue.connect() as db:db.execute('UPDATE rkb_native_source_intake_state SET packet_mode=1')
 
+    async def test_new_stage_sets_current_unit_contract_and_lost_ack_retry_keeps_bytes(self):
+        self.packet_mode()
+        self.payload['pages'][0].pop('source_unit_version', None)
+        self.payload['chunks'][0]['article_id'] = 'article-p0'
+        self.spool.unknown_once = True
+        await self.stage()
+        frozen = self.pending().command.payload
+        doc = json.loads(frozen)
+        self.assertEqual(doc['model_payload']['pages'][0].get('source_unit_version'), 1)
+        self.assertEqual(doc['model_payload']['pages'][0]['regions'], self.payload['pages'][0]['regions'])
+        self.assertEqual(doc['model_payload']['chunks'], self.payload['chunks'])
+        self.assertNotIn('source_unit_version', self.payload['pages'][0])
+        await self.stage()
+        self.assertEqual(self.pending().command.payload, frozen)
+        self.assertEqual(len(self.spool.entries), 1)
+
+    async def test_legacy_unmarked_pending_stage_retry_does_not_upgrade_accepted_bytes(self):
+        self.packet_mode()
+        self.payload['pages'][0].pop('source_unit_version', None)
+        self.payload['chunks'][0]['article_id'] = 'article-p0'
+        legacy = batch(count=1)
+        legacy['model_payload'] = json.loads(canonical(self.payload))
+        self.spool.unknown_once = True
+        await self.helper._stage_exact(self.access, self.row, kind='stage',
+            key=self.helper._stage_key(self.row, self.state()), route=STAGE_ROUTE,
+            payload=legacy, builder=lambda **values: builder(STAGE_ROUTE, **values))
+        frozen = self.pending().command.payload
+        await self.stage()
+        self.assertEqual(self.pending().command.payload, frozen)
+        self.assertIsNone(json.loads(frozen)['model_payload']['pages'][0].get('source_unit_version'))
+        self.assertEqual(len(self.spool.entries), 1)
+
 
     async def test_packet_status_exposes_computed_tail_and_finalize_does_not_drop_it(self):
         from uuid import UUID,uuid5

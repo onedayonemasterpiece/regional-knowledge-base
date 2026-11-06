@@ -797,6 +797,10 @@ class NativeSourceIntake:
         pending=await self._entry(state['pending_operation_key'] or self._stage_key(row,state))
         if pending is not None and pending.command.route==STAGE_ROUTE and pending.outcome_state!='DURABLE':
             frozen=json.loads(pending.command.payload)
+            # This technical marker is filled by new intake, like the issued image hash.
+            for page, accepted in zip(payload['pages'], frozen['model_payload']['pages']):
+                if page.get('source_unit_version') is None and accepted.get('source_unit_version') == 1:
+                    page['source_unit_version'] = 1
             # The image checksum in accepted bytes is server-issued, never
             # a value the model must echo on an exact lost-ACK retry.
             def without_image_echo(model):
@@ -861,6 +865,8 @@ class NativeSourceIntake:
         # authenticated issuance; model-supplied hashes are not authority.
         for page,image in zip(payload['pages'],issued,strict=True):
             page['source_image_receipt_sha256']=image['source_image_receipt_sha256']
+            # New commands use the current unit contract; historical sealed bytes stay intact.
+            if page.get('source_unit_version') is None: page['source_unit_version'] = 1
         metadata=StartMetadataInput.model_validate_json(row['metadata_json']).model_dump(mode='json')
         bibliography='; '.join(filter(None,[', '.join(metadata['authors']),metadata['title'],
             str(metadata['publication_year']) if metadata['publication_year'] else None]))
