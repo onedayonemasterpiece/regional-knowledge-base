@@ -392,7 +392,7 @@ class TargetServiceStartup:
         if self.config.queue._source_commands is None:return
         with self.config.queue.connect(write=False) as db:
             recovered=db.execute(
-                "SELECT o.operation_key FROM jobs j INDEXED BY bge_pending "
+                "SELECT o.operation_key,o.outcome_state FROM jobs j INDEXED BY bge_pending "
                 "JOIN rkb_control_operations o ON o.operation_key=json_extract(j.identity,'$.operation_key') "
                 "WHERE j.state='pending' AND j.kind='source_command' AND j.result IS NULL "
                 "AND j.actor=o.person_id AND j.idempotency='source-command:'||o.operation_key "
@@ -401,16 +401,17 @@ class TargetServiceStartup:
                 "AND json_extract(j.identity,'$.sequence')=o.sequence "
                 "AND o.database_generation=? AND o.sequence<=? "
                 "AND o.seal_state='ACCEPTED' AND o.apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
-                "AND o.outcome_state='NOT_SENT' ORDER BY j.created,j.id LIMIT 16",
+                "AND o.outcome_state IN ('NOT_SENT','DURABLE') ORDER BY j.created,j.id LIMIT 16",
                 (coverage.database_generation,coverage.applied_sequence)).fetchall()
         settled=[]
         for row in recovered:
             settled.extend(await self.config.spool._write(
-                self.config.spool._settle_recovered_jobs,row['operation_key'],coverage))
+                self.config.spool._settle_recovered_jobs,row['operation_key'],
+                None if row['outcome_state']=='DURABLE' else coverage))
         for job in settled:self.config.queue._notify_result(job)
         if settled:
             self.config.queue.shared_reads.wake()
-            _LOG.info('source_recovered_queue_settled run_id=%s applied_seq=%s count=%s remote_outcome_durable=false',
+            _LOG.info('source_recovered_queue_settled run_id=%s applied_seq=%s count=%s',
                 coverage.binding.run_id,coverage.applied_sequence,len(settled))
         return tuple(settled)
 

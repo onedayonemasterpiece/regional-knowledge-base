@@ -480,6 +480,7 @@ async def test_saved_job_settlement_work_does_not_scan_completed_history(env,mon
         return steps
     small=measured()
     with e.q.connect() as db:
+        db.execute("UPDATE jobs SET state='pending',result=NULL WHERE id='original-job'")
         db.executemany("INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) VALUES(?,'other',?,'recovery_phase','[]','{}','done',0,0)",
             [(f'old-{i}',f'old-{i}') for i in range(2048)])
     assert measured()<=small*2
