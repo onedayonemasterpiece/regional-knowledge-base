@@ -1,5 +1,6 @@
 """Real canonical auth/spool/journal/dispatch, synthetic native reply only."""
 import asyncio
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -797,8 +798,11 @@ async def collected_operation(e,a,monkeypatch,*,remote=True):
 
 
 @pytest.mark.asyncio
-async def test_collected_operation_status_reopens_queue_and_proves_remote_saved_without_effect(env,auth,monkeypatch):
+@pytest.mark.parametrize('collect_binding',[False,True])
+async def test_collected_operation_status_reopens_queue_and_proves_remote_saved_without_effect(env,auth,monkeypatch,collect_binding):
     value,principal,c,native=await collected_operation(env,auth,monkeypatch)
+    if collect_binding:
+        env.store.objects.pop(env.journal.prefix+'/commands/'+hashlib.sha256(c.operation_key.encode()).hexdigest())
     version=env.store.version
     with capture_read_output() as calls:
         recovered=await value.disagreement_edit('operation_status',c.operation_key,principal,case_id=c.ids['case_id'])

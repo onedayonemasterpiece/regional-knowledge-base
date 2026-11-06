@@ -10,12 +10,14 @@ import base64
 import hashlib
 from io import BytesIO
 import json
+import logging
 import secrets
 
 from .kaggle_dataset_base import DatasetCheckpoint
 from .recovery_journal import StoredObject, JournalConflict, JournalLimit
 
 CONTROL_PAGE_SIZE = 16
+_LOG=logging.getLogger(__name__)
 
 
 class DatasetRecoveryStore:
@@ -195,6 +197,22 @@ class DatasetRecoveryStore:
                         f'dataset:{checkpoint.dataset_version}:{tag}',checkpoint.dataset_version))
             db.execute('UPDATE rkb_dataset_recovery_store SET latest_json=? WHERE storage=?',
                 (json.dumps(checkpoint.wire(),sort_keys=True,separators=(',',':')),self.storage_identity))
+            # Exact command bytes remain in sealed segments and the domain DB.
+            # Only a separately Saved outcome can locate that retained segment.
+            collected=db.execute('DELETE FROM rkb_dataset_recovery_objects AS command WHERE storage=? AND key LIKE ? '
+                'AND covered_version IS NOT NULL AND EXISTS (SELECT 1 FROM rkb_dataset_recovery_objects outcome '
+                'JOIN rkb_dataset_recovery_objects locator ON locator.storage=outcome.storage '
+                "AND locator.key=?||json_extract(CASE WHEN json_valid(CAST(outcome.data AS TEXT)) "
+                "THEN CAST(outcome.data AS TEXT) END,'$.sequence') "
+                'JOIN rkb_dataset_recovery_objects accepted ON accepted.storage=locator.storage '
+                "AND accepted.key=?||json_extract(CASE WHEN json_valid(CAST(locator.data AS TEXT)) "
+                "THEN CAST(locator.data AS TEXT) END,'$.manifest.sha256') "
+                'WHERE outcome.storage=command.storage AND outcome.key=?||substr(command.key,?) '
+                'AND outcome.covered_version IS NOT NULL AND locator.covered_version IS NOT NULL '
+                'AND accepted.covered_version IS NOT NULL)',
+                (self.storage_identity,self.prefix+'commands/%',self.prefix+'accepted/sequences/',
+                 self.prefix+'accepted/manifests/',self.prefix+'outcomes/',len(self.prefix+'commands/')+1)).rowcount
+        _LOG.info('dataset_duplicate_command_bindings_collected version=%s count=%s',checkpoint.dataset_version,collected)
 
     def allows_storage_transition(self,previous):
         if previous!=self.origin_storage_identity:return False

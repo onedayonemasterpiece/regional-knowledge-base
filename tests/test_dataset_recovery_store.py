@@ -143,6 +143,16 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     p=prepared(tmp_path);store=p.store;key=p.prefix+'outcomes/new'
     assert await store.compare_and_swap(key,b'captured',expected_token=None,writer_generation='writer')
     captured=await store.read(key,max_bytes=100)
+    duplicate=p.prefix+'commands/collectable'
+    assert await store.put_if_absent(duplicate,b'duplicate already retained in its sealed segment')
+    assert await store.put_if_absent(p.prefix+'outcomes/collectable',encode(dict(sequence=8)))
+    assert await store.put_if_absent(p.prefix+'accepted/sequences/8',encode(dict(manifest=dict(sha256='d'*64))))
+    assert await store.put_if_absent(p.prefix+'accepted/manifests/'+'d'*64,b'accepted proof')
+    unindexed=p.prefix+'commands/legacy'
+    assert await store.put_if_absent(unindexed,b'legacy command without accepted locator')
+    assert await store.put_if_absent(p.prefix+'outcomes/legacy',b'legacy untyped outcome; keep its command')
+    keep=p.prefix+'commands/not-yet-saved-outcome'
+    assert await store.put_if_absent(keep,b'accepted command whose outcome is not Saved')
     with p.q.connect() as db:
         db.executemany('INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,1)',
             [(store.storage_identity,p.prefix+'commands/covered-'+str(i),b'x'*16384,'token-'+str(i)) for i in range(128)])
@@ -165,6 +175,7 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
         seed.startup=NS(config=NS(spool=NS(journal=NS(store=LegacyStore()))))
         journal=await seed._journal_control()
     control=encode(dict(codec='rkb.source-base-control.v1',database_generation='db',sequence=8))
+    assert await store.put_if_absent(p.prefix+'outcomes/not-yet-saved-outcome',encode(dict(sequence=8)))
     manifest=encode(dict(database_generation='db',applied_sequence=8,
         blob=dict(size=p.checkpoint.archive.size,sha256=p.checkpoint.archive.sha256),
         source_control=dict(key=p.prefix+'source-base-control/'+sha(control),sha256=sha(control),length=len(control))))
@@ -185,6 +196,7 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     with pytest.raises(JournalConflict,match='native_snapshot_readback_changed'):
         store.promote(checkpoint,dict(expected,archive_sha256='0'*64),manifest_ref=ref)
     assert not store.remote_durable(key,b'captured') and store.latest_checkpoint.dataset_version==1
+    assert (await store.read(duplicate,max_bytes=100)) is not None
     valid_journal=journal
     for invalid_item in (None,dict(key=p.prefix+'commands/one',token='native-original-token',data_b64='not base64!')):
         document=json.loads(valid_journal);document['objects'][0]=invalid_item
@@ -208,6 +220,10 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     assert peak<len(journal)*1.5
     assert store.remote_durable(escaped,b'pending escaped key')
     assert store.remote_durable(key,b'captured') and store.latest_checkpoint==checkpoint
+    assert await store.read(duplicate,max_bytes=100) is None
+    assert (await store.read(keep,max_bytes=100)) is not None
+    assert (await store.read(unindexed,max_bytes=100)) is not None
+    assert duplicate.encode() not in store.export_control()
     with p.q.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM redundant_coverage_writes').fetchone()[0]==0
     assert store.remote_durable(p.prefix+'commands/one',b'original accepted command')

@@ -97,6 +97,19 @@ async def seal(journal, commands, predecessor=None, writer="writer-1"):
 
 
 @pytest.mark.asyncio
+async def test_collected_duplicate_command_cannot_resequence_a_saved_operation():
+    store,journal=fixture();original=command()
+    accepted=await seal(journal,[original])
+    await journal.record_outcome(accepted,command=original,database_generation='db-1',
+        outcome=b'committed once',writer_generation='writer-1')
+    del store.objects[journal.prefix+'/commands/'+hashlib.sha256(original.operation_key.encode()).hexdigest()]
+    assert await journal._accepted_command_bytes(original.operation_key)==original.encode()
+    with pytest.raises(JournalConflict):
+        await seal(journal,[replace(original,sequence=2)],predecessor=await journal.head())
+    assert (await journal.head()).reference==accepted.manifest
+
+
+@pytest.mark.asyncio
 async def test_executor_acceptance_proof_verifies_exact_published_command():
     store, journal = fixture()
     original = command()
