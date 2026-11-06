@@ -69,3 +69,13 @@ def test_only_a_finalized_semantic_gap_gets_the_projection():
 def test_another_owners_journal_is_ignored():
     queue = _Queue().stage(0, 'old', ['a']).stage(1, 'foreign', ['x'], owner=('s', 'other'))
     assert _text(queue) == ('old', ['a'])
+
+
+def test_accepted_page_result_withholds_the_next_cursor():
+    # The model must restage this gap page first; following next_cursor skipped page 49 of Bau.
+    from types import SimpleNamespace
+    from regional_knowledge.server import _book_page_tool_result
+    batch = SimpleNamespace(next_cursor='50', pages=[])
+    manifest = lambda accepted: json.loads(_book_page_tool_result('ing', batch, accepted).content[0].text)
+    assert manifest(None)['next_cursor'] == '50'
+    assert manifest({'page': {}, 'chunks': []})['next_cursor'] is None

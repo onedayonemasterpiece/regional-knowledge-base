@@ -110,8 +110,8 @@ _ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS = (
     "For next_action=wait, call status and retry the identical pending stage; never alter it. "
     "When status returns continue_pages for missing semantic packets after reading completion, "
     "resume only those pages with identical accepted text and corrected semantic input: "
-    "book_pages returns accepted_page for such a page; copy its page and chunks unchanged and "
-    "add only semantic candidates. "
+    "book_pages returns accepted_page for such a page; stage that same page now, copying its page "
+    "and chunks unchanged and adding only semantic candidates, then call status for the next page. "
     "Other finalized corrections remain sealed. "
 )
 
@@ -189,7 +189,9 @@ def _book_page_tool_result(ingestion_id, batch, accepted=None):
             'native_text_info': page.native_text_info} for page in batch.pages]}
     if accepted is not None:
         # This page's TEXT is already APPLIED: a semantic retry restages these exactly.
+        # No next_cursor: the model stages this page first, then status names the next gap.
         manifest['accepted_page'] = accepted
+        manifest['next_cursor'] = None
     content = [TextContent(type='text', text=json.dumps(manifest, ensure_ascii=False))]
     for page in batch.pages:
         content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
