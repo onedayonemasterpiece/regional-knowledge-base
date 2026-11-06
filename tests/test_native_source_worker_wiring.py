@@ -363,7 +363,8 @@ async def test_review_rejection_survives_real_apply_validation_and_unknown_reaso
     assert receipt.status == 'rejected_precondition'
     assert json.loads(base64.b64decode(outcome['result_b64'])) == {'reason': reason}
     assert len(inserts) == 1 and inserts[0][8] == receipt.outcome
-    for unknown in ('native_source_unknown_review', reason + ': private text'):
+    # Fixed snake_case labels are retained (one shared allowlist); free text never is.
+    for unknown in ('Native source unknown review', reason + ': private text'):
         with pytest.raises(ValueError, match='fixed internal source rejection reason'):
             await apply_accepted(object(), journal=value.journal, seal=value.seal,
                 command=value.command, database_generation=database.database_generation,
