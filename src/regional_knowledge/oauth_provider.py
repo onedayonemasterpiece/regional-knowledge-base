@@ -177,15 +177,12 @@ class _EncryptedStateStore:
 
     def try_read(self, callback):
         """Read-only final service fence: lock contention withholds output."""
-        if not self._lock.acquire(blocking=False):
-            return None
+        # The existing shared file lock permits readers and still excludes writers.
         try:
             with self._file_lock(exclusive=False, nonblocking=True):
                 return callback(self._read())
         except BlockingIOError:
             return None
-        finally:
-            self._lock.release()
 
     def mutate(self, callback: Callable[[dict[str, Any]], Any]) -> Any:
         with self._lock, self._file_lock(exclusive=True):
