@@ -106,13 +106,13 @@ class SnapshotIo:
         if operation.task.done():
             try:return dict(status='complete',value=operation.task.result())
             except Exception as error:
+                literal=(error.args[0] if type(error) is SnapshotError and len(error.args)==1
+                         and type(error.args[0]) is str else None)
+                code=_SNAPSHOT_FAILURE_CODES.get(literal,'unclassified')
                 if not operation.failure_logged:
                     operation.failure_logged=True
-                    literal=(error.args[0] if type(error) is SnapshotError and len(error.args)==1
-                             and type(error.args[0]) is str else None)
-                    LOG.warning('snapshot_io failed code=%s',
-                                _SNAPSHOT_FAILURE_CODES.get(literal,'unclassified'))
-                raise SnapshotError('snapshot_io_failed') from None
+                    LOG.warning('snapshot_io failed code=%s',code)
+                return dict(status='rejected',reason='snapshot_io_rejected',failure_code=code)
         return dict(status='upload_required' if operation.upload and operation.upload_task is None else 'pending',
                     handle=handle)
 
