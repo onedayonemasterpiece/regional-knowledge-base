@@ -354,7 +354,7 @@ async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(
     ('extra_args','unclassified'),
     ('other_exception','unclassified'),
 ])
-async def test_snapshot_io_failed_status_logs_only_exact_safe_code_once(caplog,cause,safe_code):
+async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_once(caplog,cause,safe_code):
     secret='postgres://fixture:DO_NOT_LOG@private.invalid/path?token=fixture'
     if cause=='unknown_snapshot':
         original=SnapshotError('snapshot_disk_budget '+secret)
@@ -377,8 +377,8 @@ async def test_snapshot_io_failed_status_logs_only_exact_safe_code_once(caplog,c
         await asyncio.gather(task,return_exceptions=True)
         with caplog.at_level('WARNING',logger='regional_knowledge.kaggle_snapshot_io'):
             for _ in range(3):
-                with pytest.raises(SnapshotError,match='^snapshot_io_failed$'):
-                    io.status(started['handle'],binding)
+                assert io.status(started['handle'],binding)==dict(
+                    status='rejected',reason='snapshot_io_rejected',failure_code=safe_code)
         records=[record.getMessage() for record in caplog.records
                  if record.name=='regional_knowledge.kaggle_snapshot_io']
         assert records==[f'snapshot_io failed code={safe_code}']
