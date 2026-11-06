@@ -361,6 +361,12 @@ async def test_i07_native_materializer_opt_in_accepts_existing_article_id_but_le
     region = page['regions'][0]
     original_text=region['source_text']
     page['source_unit_version'] = 1
+    # Current intake supplies the protocol marker without inventing source boundaries.
+    encoded=canonical(new)
+    current=await compiler.compile([encoded],source_id=STAGED_SOURCE,person_id=PERSON,
+                                   last_batch_sha256=digest(encoded))
+    assert current['passages'][0]['body']==original_text.strip()
+    assert not page.get('source_unit_boundaries')
     page['source_unit_boundaries']=[
         event('article-p0','start',region['region_key'],0,kind='article',title='Published article'),
         event('article-p0','end',region['region_key'],len(original_text)),
