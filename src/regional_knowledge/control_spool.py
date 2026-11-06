@@ -266,46 +266,36 @@ class ControlSpool:
                     'id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,accepted_sequence INTEGER NOT NULL,'
                     'operation_count INTEGER NOT NULL,pending_count INTEGER NOT NULL CHECK(pending_count>=0),'
                     'unknown_count INTEGER NOT NULL CHECK(unknown_count>=0))')
-                db.execute("""INSERT OR IGNORE INTO rkb_control_public_source_meta
-                    SELECT 1,coalesce(max(sequence),0),coalesce(max(CASE WHEN seal_state='ACCEPTED' THEN sequence ELSE 0 END),0),
-                    count(*),coalesce(sum(outcome_state<>'DURABLE'),0),
-                    coalesce(sum(seal_state='SENT_UNKNOWN' OR apply_state='SENT_UNKNOWN' OR outcome_state='SENT_UNKNOWN'),0)
-                    FROM rkb_control_operations WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source'""")
-                db.execute("""CREATE TRIGGER IF NOT EXISTS rkb_control_public_source_insert AFTER INSERT ON rkb_control_operations
-                    WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
-                    BEGIN UPDATE rkb_control_public_source_meta SET sequence=max(sequence,NEW.sequence),
-                    accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
-                    operation_count=operation_count+1,pending_count=pending_count+(NEW.outcome_state<>'DURABLE'),
-                    unknown_count=unknown_count+(NEW.seal_state='SENT_UNKNOWN' OR NEW.apply_state='SENT_UNKNOWN' OR NEW.outcome_state='SENT_UNKNOWN')
-                    WHERE id=1;END""")
-                db.execute("""CREATE TRIGGER IF NOT EXISTS rkb_control_public_source_update AFTER UPDATE OF seal_state,apply_state,outcome_state ON rkb_control_operations
-                    WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
-                    BEGIN UPDATE rkb_control_public_source_meta SET
-                    accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
-                    pending_count=pending_count+(NEW.outcome_state<>'DURABLE')-(OLD.outcome_state<>'DURABLE'),
-                    unknown_count=unknown_count+(NEW.seal_state='SENT_UNKNOWN' OR NEW.apply_state='SENT_UNKNOWN' OR NEW.outcome_state='SENT_UNKNOWN')
-                    -(OLD.seal_state='SENT_UNKNOWN' OR OLD.apply_state='SENT_UNKNOWN' OR OLD.outcome_state='SENT_UNKNOWN') WHERE id=1;END""")
-                # Rebuild only the derived read counters. Canonical intake and
-                # durability counters above keep their original semantics.
-                for name in ('rkb_control_public_source_insert','rkb_control_public_source_update'):
-                    db.execute('DROP TRIGGER IF EXISTS '+name)
-                db.execute(f'''UPDATE rkb_control_public_source_meta SET
-                    pending_count=(SELECT coalesce(sum({_read_pending_sql()}),0) FROM rkb_control_operations
-                        WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source'),
-                    unknown_count=(SELECT coalesce(sum({_read_unknown_sql()}),0) FROM rkb_control_operations
-                        WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source') WHERE id=1''')
-                db.execute(f'''CREATE TRIGGER rkb_control_public_source_insert AFTER INSERT ON rkb_control_operations
+                if db.execute('SELECT 1 FROM rkb_control_public_source_meta WHERE id=1').fetchone() is None:
+                    db.execute(f"""INSERT INTO rkb_control_public_source_meta
+                        SELECT 1,coalesce(max(sequence),0),coalesce(max(CASE WHEN seal_state='ACCEPTED' THEN sequence ELSE 0 END),0),
+                        count(*),coalesce(sum({_read_pending_sql()}),0),
+                        coalesce(sum({_read_unknown_sql()}),0)
+                        FROM rkb_control_operations WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source'""")
+                triggers=(f'''CREATE TRIGGER rkb_control_public_source_insert AFTER INSERT ON rkb_control_operations
                     WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
                     BEGIN UPDATE rkb_control_public_source_meta SET sequence=max(sequence,NEW.sequence),
                     accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
                     operation_count=operation_count+1,pending_count=pending_count+{_read_pending_sql('NEW.')},
-                    unknown_count=unknown_count+{_read_unknown_sql('NEW.')} WHERE id=1;END''')
-                db.execute(f'''CREATE TRIGGER rkb_control_public_source_update AFTER UPDATE OF seal_state,apply_state,outcome_state ON rkb_control_operations
+                    unknown_count=unknown_count+{_read_unknown_sql('NEW.')} WHERE id=1;END''',
+                    f'''CREATE TRIGGER rkb_control_public_source_update AFTER UPDATE OF seal_state,apply_state,outcome_state ON rkb_control_operations
                     WHEN json_extract(CAST(NEW.dependency_bytes AS TEXT),'$.scope_class')='public_source'
                     BEGIN UPDATE rkb_control_public_source_meta SET
                     accepted_sequence=max(accepted_sequence,CASE WHEN NEW.seal_state='ACCEPTED' THEN NEW.sequence ELSE 0 END),
                     pending_count=pending_count+{_read_pending_sql('NEW.')}-{_read_pending_sql('OLD.')},
                     unknown_count=unknown_count+{_read_unknown_sql('NEW.')}-{_read_unknown_sql('OLD.')} WHERE id=1;END''')
+                changed=False
+                for sql in triggers:
+                    name=sql.split()[2]
+                    old=db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",(name,)).fetchone()
+                    if old is not None and old[0]==sql:continue
+                    db.execute('DROP TRIGGER IF EXISTS '+name);db.execute(sql);changed=True
+                if changed:
+                    db.execute(f'''UPDATE rkb_control_public_source_meta SET
+                        pending_count=(SELECT coalesce(sum({_read_pending_sql()}),0) FROM rkb_control_operations
+                            WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source'),
+                        unknown_count=(SELECT coalesce(sum({_read_unknown_sql()}),0) FROM rkb_control_operations
+                            WHERE json_extract(CAST(dependency_bytes AS TEXT),'$.scope_class')='public_source') WHERE id=1''')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source ON rkb_control_operations(source_id,sequence DESC,operation_key)')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_source_state ON rkb_control_operations(source_id,sequence,seal_state,apply_state,outcome_state)')
                 db.execute('CREATE INDEX IF NOT EXISTS rkb_control_accepted ON rkb_control_operations(source_id,seal_state,sequence DESC,operation_key)')

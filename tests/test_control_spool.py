@@ -488,3 +488,36 @@ async def test_saved_job_settlement_work_does_not_scan_completed_history(env,mon
         row=db.execute("SELECT state,attempt,result FROM jobs WHERE id='original-job'").fetchone()
         assert row['state']=='done' and row['attempt']==7
         assert json.loads(row['result'])['remote_outcome_durable'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy',[False,True])
+async def test_reopen_preserves_current_read_counters_without_scanning_history_but_migrates_legacy(env,monkeypatch,legacy):
+    e=env
+    await stage(e)
+    e.spool.close()
+    if legacy:
+        with e.q.connect() as db:
+            db.execute('DROP TRIGGER rkb_control_public_source_update')
+            db.execute('CREATE TRIGGER rkb_control_public_source_update AFTER UPDATE ON rkb_control_operations BEGIN SELECT 1; END')
+            db.execute('UPDATE rkb_control_public_source_meta SET pending_count=0')
+    connect=ControlSpool._db
+    reads=[]
+    @contextmanager
+    def observed_connect(self,*,write=False):
+        with connect(self,write=write) as db:
+            def authorize(action,table,column,database,trigger):
+                if action==sqlite3.SQLITE_READ and table=='rkb_control_operations':
+                    reads.append(column)
+                    if not legacy:return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+            db.set_authorizer(authorize)
+            try:yield db
+            finally:db.set_authorizer(None)
+    with monkeypatch.context() as patch:
+        patch.setattr(ControlSpool,'_db',observed_connect)
+        e.spool=ControlSpool(e.q,e.p.registry,e.journal,e.registry)
+    with e.q.connect(write=False) as db:
+        counters=db.execute('SELECT sequence,operation_count,pending_count,unknown_count FROM rkb_control_public_source_meta').fetchone()
+        assert tuple(counters)==(1,1,1,0)
+    assert bool(reads)==legacy
