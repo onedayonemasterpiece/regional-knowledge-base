@@ -606,3 +606,38 @@ def test_startup_recovery_renews_existing_heartbeat_lease(tmp_path):
         assert queue._run_expired(dict(row,heartbeat=row['started']),now[0])
         assert queue._run_expired(row,now[0]+900.001)
         assert queue._run_expired(dict(row,started=now[0]-12*3600),now[0])
+
+
+@pytest.mark.parametrize('initial_refusal',[False,True])
+def test_planned_drain_defers_failed_capture_but_not_unrelated_page_io(tmp_path,initial_refusal):
+    q=BgeQueue(tmp_path/'checkpoint-drain.sqlite',clock=lambda:1000.)
+    q.request_startup();run,token=run_details(q)
+    q.launch_claim(run,provider_ref='owner/fixture')
+    nonce=q.prepare_channel(run)
+    q.launch_record(run,'owner/fixture',provider_version=12)
+    generation=q.attach_channel(run,token,nonce,'same-runtime')['connection_generation']
+    q.heartbeat(run,token,ready=True,connection_generation=generation)
+    def maintenance(key,phase,arguments,value):
+        with q.connect() as db:
+            db.execute('INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,result) '
+                "VALUES(?,?,?,'recovery_phase','[]',?,'done',1000,1000,?)",
+                (key,'maintenance:'+run,'recovery:'+key,
+                 json.dumps(dict(phase=phase,arguments=arguments)),json.dumps(dict(value=value))))
+    maintenance('capture','capture',{},dict(status='rejected',reason='snapshot_capture_rejected')
+                if initial_refusal else dict(status='pending',handle='snapshot'))
+    if not initial_refusal:
+        maintenance('failed','snapshot_status',dict(handle='snapshot'),
+                    dict(status='rejected',reason='snapshot_io_rejected'))
+    # A later successful page render does not clear the failed checkpoint.
+    maintenance('page','snapshot_status',dict(handle='page'),dict(status='complete',value={}))
+    assert not q.request_idle_drain(run,provider_ref='owner/fixture',provider_version=12)
+    assert q.channel_status(run,token,generation)['state']=='ready'
+    # A newly successful capture supersedes the rejected attempt naturally.
+    maintenance('capture2','capture',{},dict(status='pending',handle='snapshot2'))
+    maintenance('complete','snapshot_status',dict(handle='snapshot2'),dict(status='complete',value={}))
+    maintenance('late-failure','snapshot_status',dict(handle='snapshot'),
+                dict(status='rejected',reason='snapshot_io_rejected'))
+    assert q.request_idle_drain(run,provider_ref='owner/fixture',provider_version=12)
+    assert q.channel_status(run,token,generation)['state']=='draining'
+    with q.connect(write=False) as db:
+        assert not db.execute('SELECT 1 FROM bge_provider_terminal_receipts WHERE run_id=?',(run,)).fetchone()
