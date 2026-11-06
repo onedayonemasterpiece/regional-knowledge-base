@@ -109,7 +109,9 @@ _ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS = (
     "A correction adds a new accepted page interpretation; it never overwrites accepted bytes. "
     "For next_action=wait, call status and retry the identical pending stage; never alter it. "
     "When status returns continue_pages for missing semantic packets after reading completion, "
-    "resume only those pages with identical accepted text and corrected semantic input. "
+    "resume only those pages with identical accepted text and corrected semantic input: "
+    "book_pages returns accepted_page for such a page; copy its page and chunks unchanged and "
+    "add only semantic candidates. "
     "Other finalized corrections remain sealed. "
 )
 
@@ -179,12 +181,15 @@ async def _attach_story_extraction(
     return result.model_copy(update=update)
 
 
-def _book_page_tool_result(ingestion_id, batch):
+def _book_page_tool_result(ingestion_id, batch, accepted=None):
     manifest = {'ingestion_id': ingestion_id, 'next_cursor': batch.next_cursor,
         'pages': [{'page_id': page.page_id, 'physical_page_index': page.physical_page_index,
             'printed_page_number': page.printed_page_number, 'mime_type': page.mime_type,
             'native_text': page.native_text, 'native_blocks': list(page.native_blocks),
             'native_text_info': page.native_text_info} for page in batch.pages]}
+    if accepted is not None:
+        # This page's TEXT is already APPLIED: a semantic retry restages these exactly.
+        manifest['accepted_page'] = accepted
     content = [TextContent(type='text', text=json.dumps(manifest, ensure_ascii=False))]
     for page in batch.pages:
         content.append(Image(data=page.data, format=page.mime_type.removeprefix('image/')).to_image_content())
