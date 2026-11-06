@@ -698,9 +698,10 @@ class NativeSourceIntake:
             _, text_batches = await asyncio.to_thread(read_publication_progress, self.queue, row)
             await self._check(access, row)
             if state['rejected_batch_index'] not in text_batches:
-                return self.importer._output(row, 'needs_review',
-                    'Current TEXT packet was rejected; correct the unpublished page in this ingestion before finalizing.',
-                    'continue_pages', source_archive_status='verified',
+                reason=state.get('rejected_reason') or 'native_source_packet_requires_review'
+                return self.importer._output(row, 'staged',
+                    reason+': correct the unpublished page in this ingestion before finalizing.',
+                    'continue_pages', source_archive_status='verified', warnings=[reason],
                     next_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index']))
         if state.get('rejected_batch_index') is not None and state['phase']!='finalized':return None
         if state['packet_mode']:
