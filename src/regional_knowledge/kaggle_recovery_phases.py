@@ -171,7 +171,7 @@ class WorkerRecoveryPhases:
     async def wait_initialized(self,database,run_id,launch_nonce,runtime_incarnation):
         if database!=self.factory.database or (run_id,launch_nonce,runtime_incarnation)!=self.factory.identity:
             raise SnapshotError('recovery_runtime_identity_changed')
-        async with asyncio.timeout(900):await self._ready.wait()
+        await self._ready.wait()
         if self._initialization_error is not None:raise self._initialization_error
         # TargetRuntime verifies this retained capability immediately before
         # opening its reader pool; waiting must not repeat that native probe.

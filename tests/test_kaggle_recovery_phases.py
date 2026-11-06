@@ -183,6 +183,21 @@ async def test_failed_restore_releases_initialization_waiter_without_readiness(p
 
 
 @pytest.mark.asyncio
+async def test_initialization_wait_does_not_kill_progressing_recovery(monkeypatch):
+    native=object.__new__(NativeSnapshotFactory)
+    native.database=database();native.identity=('r','nonce','inc')
+    worker=WorkerRecoveryPhases(factory=native,download=lambda *_:None,workspace=lambda *_:None)
+    timeout=asyncio.timeout
+    # Compress the independent worker deadline; controller ownership remains
+    # responsible for expiry while accepted recovery can exceed fifteen minutes.
+    monkeypatch.setattr(asyncio,'timeout',lambda seconds:timeout(.01 if seconds==900 else seconds))
+    waiter=asyncio.create_task(worker.wait_initialized(native.database,*native.identity))
+    await asyncio.sleep(.03)
+    worker._initialized=object();worker._ready.set()
+    assert await waiter is worker._initialized
+
+
+@pytest.mark.asyncio
 async def test_capture_refusal_preserves_native_owner_for_following_readback():
     native=object.__new__(NativeSnapshotFactory)
     native.database=database();native.identity=('r','nonce','inc')
