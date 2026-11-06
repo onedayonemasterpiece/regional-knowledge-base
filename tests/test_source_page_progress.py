@@ -3,8 +3,34 @@ import base64
 import hashlib
 import json
 import sqlite3
+import pytest
 
 from regional_knowledge.source_page_progress import enrichment_gaps
+
+
+def test_empty_precondition_result_keeps_the_semantic_gap_readable():
+    db = sqlite3.connect(':memory:')
+    db.row_factory = sqlite3.Row
+    db.execute('CREATE TABLE rkb_control_operations(sequence INTEGER,operation_key TEXT,source_id TEXT,'
+               'person_id TEXT,seal_state TEXT,apply_state TEXT,command_bytes BLOB,outcome_bytes BLOB)')
+    stage = json.dumps({'ingestion_id':'ing','batch_index':0,
+                       'model_payload':{'pages':[{'physical_page_index':4}]}}).encode()
+    sha = hashlib.sha256(stage).hexdigest()
+    for sequence, component, state, payload, outcome in (
+            (1, 'stage', 'APPLIED', stage, None),
+            (2, 'text', 'APPLIED', None, None),
+            (3, 'semantic', 'REJECTED_PRECONDITION', None, json.dumps({'result_b64':''}))):
+        payload = payload or json.dumps({'ingestion_id':'ing','batch_index':0,
+                                        'component':component,'last_batch_sha256':sha}).encode()
+        key = 'source-stage:ing:0' if component == 'stage' else 'source-packet:ing:0:'+component
+        command = json.dumps({'payload_b64':base64.b64encode(payload).decode()})
+        db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?,?)',
+                   (sequence,key,'s','u','ACCEPTED',state,command,outcome))
+    assert enrichment_gaps(db, {'source_id':'s','person_id':'u','ingestion_id':'ing'}) == {4}
+    db.execute("UPDATE rkb_control_operations SET outcome_bytes=? WHERE sequence=3",
+               (json.dumps({'result_b64':base64.b64encode(b'broken').decode()}),))
+    with pytest.raises(json.JSONDecodeError):
+        enrichment_gaps(db, {'source_id':'s','person_id':'u','ingestion_id':'ing'})
 
 
 def test_gap_projection_reads_each_stage_once_and_keeps_component_receipts():

@@ -85,7 +85,8 @@ def enrichment_gaps(db, row):
             if item['apply_state']=='APPLIED': semantic.update(pages)
             elif item['outcome_bytes']:
                 outcome = json.loads(item['outcome_bytes'])
-                body = json.loads(base64.b64decode(outcome['result_b64'],validate=True))
+                result = base64.b64decode(outcome['result_b64'],validate=True)
+                body = json.loads(result) if result else {}
                 reason = body.get('reason')
                 # Before 798 a fixed model rejection was retained as a SQL rollback with a
                 # Python error type and no SQLSTATE. Such a page gets one ordinary retry.
