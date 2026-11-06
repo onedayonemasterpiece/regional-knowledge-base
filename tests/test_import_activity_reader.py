@@ -419,3 +419,20 @@ async def test_completion_intent_without_work_allows_reader_to_resume_finalize(w
     assert read_timestamp(w) == original
     with w.queue.connect(write=False) as db:
         assert db.execute("SELECT read_completion_requested FROM rkb_native_source_intake_state").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_activity_credential_checks_run_off_the_event_loop(watcher, monkeypatch):
+    """Each check decrypts the OAuth state file; on the loop it stalls WSS and other requests."""
+    import threading
+    provider = watcher.auth.provider
+    seen = []
+    for name in ("verify_service_credential", "service_credential_current"):
+        original = getattr(provider, name)
+        def wrapped(*args, _original=original, _name=name, **kwargs):
+            seen.append((_name, threading.current_thread() is threading.main_thread()))
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(provider, name, wrapped)
+    assert (await get(watcher)).status_code == 200
+    assert {name for name, _ in seen} == {"verify_service_credential", "service_credential_current"}
+    assert not any(on_loop for _, on_loop in seen)

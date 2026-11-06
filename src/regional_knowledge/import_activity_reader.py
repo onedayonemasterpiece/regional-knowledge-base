@@ -152,23 +152,32 @@ class ImportActivityReader:
                 or request.headers.get("x-rkb-service-epoch") != str(self.credential_epoch)
                 or not 32 <= len(token) <= 128):
             return JSONResponse({"error": "service_scope_required"}, status_code=403)
-        service = self.provider.verify_service_credential(
-            token, service_id=self.service_id, credential_id=self.credential_id,
-            epoch=self.credential_epoch, operation="import_activity",
-        )
-        if service is None:
-            return JSONResponse({"error": "service_scope_required"}, status_code=403)
         params = list(request.query_params.multi_items())
-        if len(params) != 1 or params[0][0] != "ingestion_id" or not _uuid(params[0][1]):
-            return JSONResponse({"error": "invalid_ingestion_id"}, status_code=422)
+        valid = len(params) == 1 and params[0][0] == "ingestion_id" and _uuid(params[0][1])
+
+        def serve():
+            # Credential checks read and decrypt the OAuth state file: keep them, like the
+            # snapshot, off the event loop that also carries other requests and WSS heartbeats.
+            service = self.provider.verify_service_credential(
+                token, service_id=self.service_id, credential_id=self.credential_id,
+                epoch=self.credential_epoch, operation="import_activity",
+            )
+            if service is None:
+                raise PermissionError
+            if not valid:
+                return "invalid"
+            result = self.snapshot(params[0][1], service.scope_owner_person_id)
+            if not self.current() or not self.provider.service_credential_current(service):
+                raise PermissionError
+            return result
         try:
-            result = await asyncio.to_thread(self.snapshot, params[0][1], service.scope_owner_person_id)
+            result = await asyncio.to_thread(serve)
         except PermissionError:
             return JSONResponse({'error': 'service_scope_required'}, status_code=403)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return JSONResponse({"error": "activity_unavailable"}, status_code=503)
-        if not self.current() or not self.provider.service_credential_current(service):
-            return JSONResponse({"error": "service_scope_required"}, status_code=403)
+        if result == "invalid":
+            return JSONResponse({"error": "invalid_ingestion_id"}, status_code=422)
         if result is None:
             return JSONResponse({"error": "ingestion_not_found"}, status_code=404)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
