@@ -1,87 +1,71 @@
 import base64
+import contextlib
 import hashlib
 import json
+import sqlite3
 
-from regional_knowledge.source_page_progress import accepted_model_page, read_accepted_model_page
+from regional_knowledge.source_page_progress import read_accepted_model_page
 
-
-def _stage(index, page_index, text, chunks):
-    page_id = f'p{page_index}'
-    return {'ingestion_id': 'ing', 'batch_index': index, 'model_payload': {
-        'pages': [{'page_id': page_id, 'physical_page_index': page_index,
-                   'regions': [{'region_key': 'r1', 'source_text': text}]}],
-        'chunks': [{'chunk_key': key, 'region_refs': [{'page_id': page_id, 'region_key': 'r1'}]}
-                   for key in chunks]}}
-
-
-def _row(key, packet, state='APPLIED'):
-    raw = json.dumps(packet).encode()
-    return {'operation_key': key, 'apply_state': state, 'outcome_bytes': None,
-            'command_bytes': json.dumps({'payload_b64': base64.b64encode(raw).decode()})}, hashlib.sha256(raw).hexdigest()
-
-
-def _journal(*stages):
-    """stages: (index, page, text, chunks, text_state, semantic_state|None) in journal order."""
-    rows = []
-    for index, page, text, chunks, text_state, semantic_state in stages:
-        stage, sha = _row(f'source-stage:ing:{index}:{text}', _stage(index, page, text, chunks))
-        rows.append(stage)
-        for component, state in (('text', text_state), ('semantic', semantic_state)):
-            if state:
-                rows.append(_row(f'source-packet:ing:{index}:{text}:{component}', {
-                    'ingestion_id': 'ing', 'batch_index': index, 'component': component,
-                    'last_batch_sha256': sha}, state)[0])
-    return rows
-
-
-class _Db:
-    def __init__(self, rows, phase='finalized'):
-        self.rows, self.phase = rows, phase
-
-    def execute(self, sql, params):
-        if 'rkb_native_source_intake_state' in sql:
-            return _Result([{'phase': self.phase}])
-        rows = [r for r in self.rows
-                if any(r['operation_key'].startswith(p.rstrip('%').split('%')[0]) and
-                       r['operation_key'].endswith(p.split('%')[-1]) for p in params[2:])
-                and ('APPLIED' == r['apply_state'] or "REJECTED_PRECONDITION" in sql)]
-        return list(reversed(rows)) if 'DESC' in sql else rows
-
-
-class _Result(list):
-    def fetchone(self):
-        return self[0] if self else None
-
-
-class _Queue:
-    def __init__(self, db):
-        self.db = db
-
-    def connect(self, write):
-        import contextlib
-        return contextlib.nullcontext(self.db)
-
-
+# Columns of ControlSpool's rkb_control_operations read by source_page_progress; the SQL runs for real.
+SCHEMA = '''CREATE TABLE rkb_control_operations(operation_key TEXT PRIMARY KEY,command_bytes BLOB NOT NULL,
+    sequence INTEGER NOT NULL UNIQUE,source_id TEXT NOT NULL,person_id TEXT NOT NULL,
+    seal_state TEXT NOT NULL,apply_state TEXT NOT NULL,outcome_bytes BLOB);
+    CREATE TABLE rkb_native_source_intake_state(ingestion_id TEXT PRIMARY KEY,phase TEXT NOT NULL);'''
 ROW = {'source_id': 's', 'person_id': 'u', 'ingestion_id': 'ing', 'phase': 'staging'}
 
 
+class _Queue:
+    def __init__(self, phase='finalized'):
+        self.db = sqlite3.connect(':memory:')
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript(SCHEMA)
+        self.db.execute('INSERT INTO rkb_native_source_intake_state VALUES(?,?)', ('ing', phase))
+        self.sequence = 0
+
+    def connect(self, write):
+        return contextlib.nullcontext(self.db)
+
+    def add(self, key, packet, state='APPLIED', owner=('s', 'u')):
+        raw = json.dumps(packet).encode()
+        self.sequence += 1
+        self.db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?,?)', (
+            key, json.dumps({'payload_b64': base64.b64encode(raw).decode()}), self.sequence,
+            *owner, 'ACCEPTED', state, None))
+        return hashlib.sha256(raw).hexdigest()
+
+    def stage(self, index, text, chunks, text_state='APPLIED', semantic_state=None, owner=('s', 'u')):
+        page = {'page_id': 'p49', 'physical_page_index': 49,
+                'regions': [{'region_key': 'r1', 'source_text': text}]}
+        sha = self.add(f'source-stage:ing:{index}:{owner[1]}', {'ingestion_id': 'ing', 'batch_index': index, 'model_payload': {
+            'pages': [page], 'chunks': [{'chunk_key': key, 'region_refs': [{'page_id': 'p49', 'region_key': 'r1'}]}
+                                        for key in chunks]}}, owner=owner)
+        for component, state in (('text', text_state), ('semantic', semantic_state)):
+            if state:
+                self.add(f'source-packet:ing:{index}:{owner[1]}:{component}', {'ingestion_id': 'ing',
+                         'batch_index': index, 'component': component, 'last_batch_sha256': sha}, state, owner)
+        return self
+
+
+def _text(queue, index=49):
+    found = read_accepted_model_page(queue, ROW, index)
+    return found and (found['page']['regions'][0]['source_text'], [c['chunk_key'] for c in found['chunks']])
+
+
 def test_newer_stage_with_rejected_text_does_not_replace_the_published_page():
-    db = _Db(_journal((0, 49, 'old', ['a'], 'APPLIED', None),
-                      (1, 49, 'new', ['b'], 'REJECTED_PRECONDITION', None)))
-    found = accepted_model_page(db, ROW, 49)
-    assert found['page']['regions'][0]['source_text'] == 'old'
-    assert [c['chunk_key'] for c in found['chunks']] == ['a']
+    queue = _Queue().stage(0, 'old', ['a']).stage(1, 'new', ['b'], text_state='REJECTED_PRECONDITION')
+    assert _text(queue) == ('old', ['a'])
 
 
 def test_latest_text_applied_stage_wins():
-    db = _Db(_journal((0, 49, 'old', ['a'], 'APPLIED', None), (1, 49, 'accepted', ['c', 'd'], 'APPLIED', None)))
-    assert [c['chunk_key'] for c in accepted_model_page(db, ROW, 49)['chunks']] == ['c', 'd']
+    assert _text(_Queue().stage(0, 'old', ['a']).stage(1, 'accepted', ['c', 'd'])) == ('accepted', ['c', 'd'])
 
 
 def test_only_a_finalized_semantic_gap_gets_the_projection():
-    gap = _journal((0, 49, 'old', ['a'], 'APPLIED', None))
-    assert read_accepted_model_page(_Queue(_Db(gap)), ROW, 49)['page']['page_id'] == 'p49'
-    assert read_accepted_model_page(_Queue(_Db(gap, phase='staging')), ROW, 49) is None
-    done = _journal((0, 49, 'old', ['a'], 'APPLIED', 'APPLIED'))
-    assert read_accepted_model_page(_Queue(_Db(done)), ROW, 49) is None
-    assert read_accepted_model_page(_Queue(_Db(gap)), ROW, 50) is None
+    assert _text(_Queue(phase='staging').stage(0, 'old', ['a'])) is None
+    assert _text(_Queue().stage(0, 'old', ['a'], semantic_state='APPLIED')) is None
+    assert _text(_Queue().stage(0, 'old', ['a']), index=50) is None
+
+
+def test_another_owners_journal_is_ignored():
+    queue = _Queue().stage(0, 'old', ['a']).stage(1, 'foreign', ['x'], owner=('s', 'other'))
+    assert _text(queue) == ('old', ['a'])
