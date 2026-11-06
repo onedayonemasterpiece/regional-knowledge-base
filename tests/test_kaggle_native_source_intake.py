@@ -301,6 +301,24 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         result=await self.helper.status(self.access,self.row)
         self.assertEqual((result.state,result.next_action),('finalized','done'))
 
+    async def test_finalized_rejected_correction_keeps_semantic_gap_continuation(self):
+        self.packet_mode();await self.stage();self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row);self.finish()
+        await self.helper.finalize(self.access,self.row);self.finish()
+        await self.helper.status(self.access,self.row)
+        self.helper._update(self.row,rejected_batch_index=0,rejected_reason='packet_requires_review')
+        commands=len(self.spool.entries)
+        with patch.object(sys.modules['regional_knowledge.source_page_progress'],
+                          'read_enrichment_gaps',return_value={4}):
+            result=await self.helper.status(self.access,self.row)
+        self.assertEqual((result.state,result.next_action,getattr(result,'next_cursor',None)),
+                         ('needs_review','continue_pages','4'))
+        self.assertEqual(len(self.spool.entries),commands)
+        self.assertEqual(self.state()['phase'],'finalized')
+        result=await self.helper.status(self.access,self.row)
+        self.assertEqual((result.state,result.next_action),('finalized','done'))
+
     async def test_tail_query_failure_still_rechecks_revoked_actor(self):
         self.packet_mode();await self.stage();self.finish()
         await self.helper.status(self.access,self.row);self.finish()
