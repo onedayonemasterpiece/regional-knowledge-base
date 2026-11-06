@@ -691,9 +691,18 @@ class NativeSourceIntake:
 
     async def _tail_output(self, access, row, state):
         if (not state['batch_count'] or state['pending_operation_key']
-                or (state.get('rejected_batch_index') is not None and state['phase']!='finalized')
                 or state['phase'] not in ('staging','finalized')):
             return None
+        if state['packet_mode'] and state.get('rejected_batch_index') is not None:
+            from .source_page_progress import read_publication_progress
+            _, text_batches = await asyncio.to_thread(read_publication_progress, self.queue, row)
+            await self._check(access, row)
+            if state['rejected_batch_index'] not in text_batches:
+                return self.importer._output(row, 'needs_review',
+                    'Current TEXT packet was rejected; correct the unpublished page in this ingestion before finalizing.',
+                    'continue_pages', source_archive_status='verified',
+                    next_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index']))
+        if state.get('rejected_batch_index') is not None and state['phase']!='finalized':return None
         if state['packet_mode']:
             from .source_page_progress import read_enrichment_gaps
             missing = await asyncio.to_thread(read_enrichment_gaps, self.queue, row)
@@ -843,7 +852,9 @@ class NativeSourceIntake:
         semantic, _ = await asyncio.to_thread(read_publication_progress, self.queue, row, 'semantic') if selected<=published else (set(),set())
         missing = published - semantic if selected<=published else set()
         await self._check(access,row)
-        if state['phase']=='finalized' and not selected<=missing:
+        rejected_text = (state.get('rejected_batch_index') is not None
+            and state['rejected_batch_index'] not in text_batches and selected.isdisjoint(published))
+        if state['phase']=='finalized' and not (selected<=missing or rejected_text):
             raise _failure('native_candidate_already_sealed',status='invalid_query')
         retry_semantic=(bool(selected & missing) or state.get('rejected_batch_index') in text_batches or
             state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
@@ -860,7 +871,7 @@ class NativeSourceIntake:
         if state.get('rejected_batch_index') is not None and not retry_semantic:
             retry_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
             if retry_cursor is not None and str(payload['pages'][0]['physical_page_index'])!=retry_cursor:
-                return self._output(row,state,rejected_next_cursor=retry_cursor)
+                return await self._tail_output(access,row,state) or self._output(row,state,rejected_next_cursor=retry_cursor)
         selections=tuple((p['physical_page_index'],None) for p in payload['pages'])
         issued=await self.importer.originals.selected_image_receipts(access.context,row['ingestion_id'],selections)
         await self._check(access,row)
