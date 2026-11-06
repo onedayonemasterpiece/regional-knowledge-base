@@ -52,3 +52,23 @@ async def test_context_rejection_names_the_exact_missing_reference(monkeypatch, 
 @pytest.mark.parametrize('error', [ValueError('private text'), KeyError('chunks'), TypeError('x')])
 async def test_other_context_errors_keep_the_generic_reason(monkeypatch, error):
     assert await _materialize(monkeypatch, error) == 'native_source_packet_context_invalid'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['native_source_context_chunk_missing', 'finding_requires_source_passage',
+                                    'native_source_packet_context_invalid'])
+async def test_apply_retains_fixed_model_rejection_instead_of_sql_rollback(reason):
+    # A fixed label must pass apply's allowlist; otherwise the worker retries as native_source_sql_rolled_back.
+    from regional_knowledge.kaggle_apply import apply_accepted
+    with pytest.raises(Exception) as raised:
+        await apply_accepted(None, journal=None, seal=None, command=None, database_generation='g',
+                             writer_generation='w', registry=None, reject_reason=reason)
+    assert str(raised.value) != 'fixed internal source rejection reason required'
+
+
+@pytest.mark.asyncio
+async def test_apply_still_rejects_free_text_reason():
+    from regional_knowledge.kaggle_apply import apply_accepted
+    with pytest.raises(ValueError, match='fixed internal source rejection reason required'):
+        await apply_accepted(None, journal=None, seal=None, command=None, database_generation='g',
+                             writer_generation='w', registry=None, reject_reason='Private text: x')
