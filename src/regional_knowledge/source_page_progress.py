@@ -61,7 +61,7 @@ def next_unaccepted(cursor, published):
 def enrichment_gaps(db, row):
     """Ordinary continuation excludes the latest unresolved SQL rollback."""
     published, _ = publication_progress(db, row)
-    stages = {}; semantic = set(); latest = {}
+    stages = {}; semantic = set(); latest = {}; retried = set()
     for item in db.execute(
             "SELECT operation_key,command_bytes,apply_state,outcome_bytes FROM rkb_control_operations "
             "WHERE source_id=? AND person_id=? AND seal_state='ACCEPTED' "
@@ -82,7 +82,14 @@ def enrichment_gaps(db, row):
             if item['apply_state']=='APPLIED': semantic.update(pages)
             elif item['outcome_bytes']:
                 outcome = json.loads(item['outcome_bytes'])
-                reason = json.loads(base64.b64decode(outcome['result_b64'],validate=True)).get('reason')
+                body = json.loads(base64.b64decode(outcome['result_b64'],validate=True))
+                reason = body.get('reason')
+                # Before 798 a fixed model rejection was retained as a SQL rollback with a
+                # Python error type and no SQLSTATE. Such a page gets one ordinary retry.
+                if (reason=='native_source_sql_rolled_back' and body.get('sqlstate') is None
+                        and body.get('error_type') in ('ValueError','SourceMaterializationRejected')):
+                    if not pages & retried: reason = 'masked_model_rejection'
+                    retried.update(pages)
             latest.update((page,reason) for page in pages)
     return published - semantic - {page for page,reason in latest.items()
                                   if reason=='native_source_sql_rolled_back'}

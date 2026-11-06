@@ -410,7 +410,7 @@ def operation_count(s):
         return db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0]
 
 
-async def finish(s, result, *, publish=True, total_inputs=2, status='applied', reason=None):
+async def finish(s, result, *, publish=True, total_inputs=2, status='applied', reason=None, diagnostic=None):
     """Synthetic worker result; actual ControlSpool/RecoveryJournal durability."""
     entry = await pending(s,result)
     command = entry.command
@@ -433,6 +433,7 @@ async def finish(s, result, *, publish=True, total_inputs=2, status='applied', r
         assert command.route == ACTIVATE_ROUTE
         output = dict(source_id=result.document_id,accepted=True,knowledge_sha256='e'*64)
     if reason is not None: output['reason']=reason
+    if diagnostic: output.update(diagnostic)
     raw = canonical(output)
     outcome = canonical(dict(codec='rkb.applied-outcome.v1',operation_key=command.operation_key,
         command_sha256=entry.command_sha256,cursor=command.sequence,status=status,ids=dict(command.ids),
@@ -2020,6 +2021,27 @@ async def test_completion_resumes_older_rejected_semantic_packet(native_intake, 
         await finish(s, book)
     completed = await call(s, book, 'status')
     assert (completed.state, completed.next_action) == ('finalized', 'done')
+
+
+@pytest.mark.asyncio
+async def test_legacy_masked_rollback_gets_one_ordinary_retry(native_intake):
+    """Before 798 a fixed model rejection was stored as a SQL rollback without SQLSTATE."""
+    s = native_intake
+    book = await start(s)
+    await stage(s, book, batch(s, book, first=0, count=1))
+    await finish(s, book)
+    await call(s, book, 'status')
+    await finish(s, book)
+    await call(s, book, 'status')
+    masked = dict(error_type='ValueError', sqlstate=None)
+    await finish(s, book, status='rejected_precondition', reason='native_source_sql_rolled_back', diagnostic=masked)
+    await call(s, book, 'status')
+    await stage(s, book, batch(s, book, first=1, count=1))
+    for _ in range(3):
+        await finish(s, book)
+        await call(s, book, 'status')
+    result = await call(s, book, 'finalize')
+    assert (result.next_action, result.next_cursor) == ('continue_pages', '0')
 
 
 @pytest.mark.asyncio
