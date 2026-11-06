@@ -449,3 +449,41 @@ async def test_recovered_job_settlement_requires_exact_remote_durability(env):
         e.spool._settle_recovered_jobs(e.cmd.operation_key)
     with e.q.connect(write=False) as db:
         assert db.execute('select outcome_state from rkb_control_operations').fetchone()[0]=='NOT_SENT'
+
+
+@pytest.mark.asyncio
+async def test_saved_job_settlement_work_does_not_scan_completed_history(env,monkeypatch):
+    e=env
+    await accept(e)
+    await e.spool.record_apply(e.cmd.operation_key,receipt(e.cmd))
+    await e.spool.publish_outcome(e.cmd.operation_key,writer_generation='writer-1')
+    identity=json.dumps(dict(operation_key=e.cmd.operation_key,command_sha256=hashlib.sha256(e.cmd.encode()).hexdigest(),
+        database_generation='db-source',sequence=e.cmd.sequence))
+    with e.q.connect() as db:
+        db.execute("INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated,attempt) VALUES(?,?,?,'source_command','[]',?,'pending',0,0,7)",
+            ('original-job',e.cmd.person_id,'source-command:'+e.cmd.operation_key,identity))
+    original=e.spool._db
+    def measured():
+        steps=0
+        def progress():
+            nonlocal steps
+            steps+=1
+        @contextmanager
+        def connect(**kwargs):
+            with original(**kwargs) as db:
+                db.set_progress_handler(progress,1)
+                try:yield db
+                finally:db.set_progress_handler(None,0)
+        with monkeypatch.context() as patch:
+            patch.setattr(e.spool,'_db',connect)
+            assert e.spool._settle_recovered_jobs(e.cmd.operation_key)==['original-job']
+        return steps
+    small=measured()
+    with e.q.connect() as db:
+        db.executemany("INSERT INTO jobs(id,actor,idempotency,kind,texts,identity,state,created,updated) VALUES(?,'other',?,'recovery_phase','[]','{}','done',0,0)",
+            [(f'old-{i}',f'old-{i}') for i in range(2048)])
+    assert measured()<=small*2
+    with e.q.connect(write=False) as db:
+        row=db.execute("SELECT state,attempt,result FROM jobs WHERE id='original-job'").fetchone()
+        assert row['state']=='done' and row['attempt']==7
+        assert json.loads(row['result'])['remote_outcome_durable'] is True

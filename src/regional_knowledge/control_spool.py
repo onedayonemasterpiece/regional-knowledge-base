@@ -910,7 +910,8 @@ class ControlSpool:
             result=json.dumps(dict(command_sha256=row['command_sha256'],
                 remote_outcome_durable=covered is None),sort_keys=True)
             settled=[]
-            for job in db.execute("select * from jobs where kind='source_command' and json_extract(identity,'$.operation_key')=?",(key,)).fetchall():
+            for job in db.execute("select * from jobs where actor=? and idempotency=? and kind='source_command'",
+                    (row['person_id'],'source-command:'+key)).fetchall():
                 if covered is not None and (job['state']!='pending' or job['result'] is not None):
                     continue  # An in-flight or already settled claim retains its original result.
                 identity=json.loads(job['identity'])
