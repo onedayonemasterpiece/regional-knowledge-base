@@ -24,7 +24,13 @@ async def test_saved_raw_retirement_keeps_duplicate_exact_and_unsaved_suffix(nat
     latest = state(s, book)['pending_operation_key']
     s.spool.clock = lambda: 10**12
     saved = NS(base_sequence=3, database_generation='synthetic-db')
-    assert s.spool._retire_raw(saved, 16) == 3
+    with s.t.queue.connect() as db:
+        db.execute("UPDATE rkb_control_operations SET seal_state='SENT_UNKNOWN' WHERE sequence=1")
+    assert s.spool._retire_raw(saved,16)==2
+    with s.t.queue.connect() as db:
+        assert db.execute('SELECT command_bytes FROM rkb_control_operations WHERE sequence=1').fetchone()[0] is not None
+        db.execute("UPDATE rkb_control_operations SET seal_state='ACCEPTED' WHERE sequence=1")
+    assert s.spool._retire_raw(saved,16)==1
     with s.t.queue.connect(write=False) as db:
         rows = db.execute('SELECT * FROM rkb_control_operations ORDER BY sequence').fetchall()
         assert all(r['command_bytes'] is None and r['outcome_bytes'] is None for r in rows[:3])

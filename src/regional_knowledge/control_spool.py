@@ -771,7 +771,7 @@ class ControlSpool:
         with self._db(write=True) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_native_source_intake_state'").fetchone():return 0
             predicate=("database_generation=? AND updated<? AND sequence<=? AND command_bytes IS NOT NULL "
-                "AND progress_json IS NOT NULL AND outcome_state='DURABLE' AND apply_state='APPLIED'")
+                "AND progress_json IS NOT NULL AND seal_state='ACCEPTED' AND outcome_state='DURABLE' AND apply_state='APPLIED'")
             params=(checkpoint.database_generation,self.clock()-self.raw_retention_seconds,checkpoint.base_sequence)
             if not db.execute('SELECT 1 FROM rkb_control_operations WHERE '+predicate+' LIMIT 1',params).fetchone():return 0
             protected=protected_raw(db)
