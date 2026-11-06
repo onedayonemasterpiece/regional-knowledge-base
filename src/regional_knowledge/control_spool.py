@@ -259,6 +259,8 @@ class ControlSpool:
                     apply_bytes BLOB,outcome_bytes BLOB,outcome_sha256 TEXT,
                     outcome_state TEXT NOT NULL CHECK(outcome_state IN ('NOT_SENT','SENT_UNKNOWN','DURABLE')),
                     remote_receipt_bytes BLOB)''')
+                from .source_page_progress import initialize_progress_receipts
+                initialize_progress_receipts(db)
                 # Derived counters for independent public-source reads. The
                 # global stream meta remains the only sequence/intake authority.
                 # Private/case/GEO pending operations do not imply a book write.
@@ -612,6 +614,7 @@ class ControlSpool:
             (SELECT coalesce(sum(reserved_bytes),0) FROM rkb_control_source_heads)''').fetchone()[0]
 
     def _stage(self,command,data,handler,database_generation):
+        from .source_page_progress import compact_progress
         dependency=_json(None if handler.dependency is None else handler.dependency.wire())
         # Reserve post-acceptance outcome and bounded native receipt/head/seal
         # metadata now, so budget exhaustion cannot strand a newly accepted op.
@@ -630,9 +633,9 @@ class ControlSpool:
             now=self.clock()
             db.execute('''INSERT INTO rkb_control_operations(operation_key,command_bytes,command_sha256,sequence,
                 source_id,person_id,database_generation,dependency_bytes,handler_sha256,reserved_bytes,created,updated,
-                seal_state,apply_state,outcome_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'NOT_SENT','NOT_SENT','NOT_SENT')''',
+                seal_state,apply_state,outcome_state,progress_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'NOT_SENT','NOT_SENT','NOT_SENT',?)''',
                 (command.operation_key,data,_hash(data),command.sequence,self._resource_key(command,handler.dependency),command.person_id,
-                 database_generation,dependency,handler.fingerprint,reserved,now,now))
+                 database_generation,dependency,handler.fingerprint,reserved,now,now,compact_progress(command.operation_key,data)))
             db.execute('UPDATE rkb_control_spool_meta SET sequence=max(sequence,?) WHERE id=1',(command.sequence,))
             return self._entry(db.execute('SELECT * FROM rkb_control_operations WHERE operation_key=?',(command.operation_key,)).fetchone())
 
@@ -816,6 +819,7 @@ class ControlSpool:
         self._active();await self._write(self._apply_sent,key)
 
     def _record_apply(self,key,receipt):
+        from .source_page_progress import progress_outcome
         if not isinstance(receipt,ApplyReceipt) or receipt.status not in {'applied','rejected_precondition'}:
             raise TypeError('exact native apply receipt required')
         if not isinstance(receipt.outcome,bytes) or len(receipt.outcome)>self.max_outcome_bytes or _hash(receipt.outcome)!=receipt.outcome_sha256:
@@ -828,8 +832,8 @@ class ControlSpool:
                 raise SpoolConflict('apply receipt does not bind the original accepted operation/database')
             if row['apply_bytes'] is not None and (bytes(row['apply_bytes'])!=data or bytes(row['outcome_bytes'])!=receipt.outcome):
                 raise SpoolConflict('exact committed outcome differs')
-            db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?
-                WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),key))
+            db.execute('''UPDATE rkb_control_operations SET apply_state=?,apply_bytes=?,outcome_bytes=?,outcome_sha256=?,updated=?,progress_json=?
+                WHERE operation_key=?''',('APPLIED' if receipt.status=='applied' else 'REJECTED_PRECONDITION',data,receipt.outcome,receipt.outcome_sha256,self.clock(),progress_outcome(row['progress_json'],receipt.outcome),key))
         if row['apply_bytes'] is None:
             self._observe_command(key,row['sequence'],'dispatch',
                 'applied' if receipt.status=='applied' else 'rejected')

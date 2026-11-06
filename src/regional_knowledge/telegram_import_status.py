@@ -1,7 +1,7 @@
 """Telegram captions are a projection of existing started-import receipts."""
-import base64
-import hashlib
 import json
+
+from .source_page_progress import progress_columns, progress_packet
 
 
 def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
@@ -27,19 +27,18 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
             if synced and synced.get(row['ingestion_id'],(None,))[0]==stamp:continue
             stages={}; text=set(); semantic=set()
             for op in db.execute(
-                "SELECT operation_key,command_bytes,apply_state FROM rkb_control_operations "
+                "SELECT operation_key,apply_state,"+progress_columns()+" FROM rkb_control_operations "
                 "WHERE source_id=? AND person_id=? AND "
                 "(operation_key LIKE ? OR operation_key LIKE ?) ORDER BY sequence LIMIT 10000",
                 (row['source_id'],actor,'source-stage:'+row['ingestion_id']+':%',
                  'source-packet:'+row['ingestion_id']+':%')):
                 if op['apply_state']!='APPLIED':continue
-                payload=base64.b64decode(json.loads(op['command_bytes'])['payload_b64'],validate=True)
-                packet=json.loads(payload)
+                packet,stage_sha=progress_packet(op)
                 if packet.get('ingestion_id')!=row['ingestion_id']:continue
                 index=packet.get('batch_index')
                 if op['operation_key'].startswith('source-stage:'):
                     pages=packet.get('model_payload',{}).get('pages',[])
-                    stages[index,hashlib.sha256(payload).hexdigest()]={
+                    stages[index,stage_sha]={
                         page['physical_page_index'] for page in pages}
                 else:
                     pages=stages.get((index,packet.get('last_batch_sha256')),set())

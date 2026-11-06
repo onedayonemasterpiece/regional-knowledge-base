@@ -32,7 +32,7 @@ def _status(page_count, text_pages, semantic_pages, *, finished=False,
             ingestion_id TEXT, actor TEXT, receipt_json TEXT, telegram_locator_json TEXT);
         CREATE TABLE rkb_control_operations (
             operation_key TEXT, command_bytes TEXT, apply_state TEXT,
-            source_id TEXT, person_id TEXT, sequence INTEGER);
+            source_id TEXT, person_id TEXT, sequence INTEGER,progress_json TEXT);
     """)
     locator = json.dumps({"chat_id": -100123, "message_id": 42}) if prior_failed else None
     if prior_failed:
@@ -57,7 +57,7 @@ def _status(page_count, text_pages, semantic_pages, *, finished=False,
         sequence += 1
         command = json.dumps({"payload_b64": base64.b64encode(
             json.dumps(packet).encode()).decode()})
-        db.execute("INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?)",
+        db.execute("INSERT INTO rkb_control_operations(operation_key,command_bytes,apply_state,source_id,person_id,sequence) VALUES(?,?,?,?,?,?)",
                    (key, command, state, "src", "actor", sequence))
 
     for i in range(rejections):

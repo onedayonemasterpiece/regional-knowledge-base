@@ -279,3 +279,32 @@ async def test_accepted_pending_stage_returns_next_read_cursor_without_status_po
     assert (result.next_action,result.next_cursor)==('continue_tail','1')
     assert [tail.model_dump() for tail in result.tail_refs]==[ref]
     assert tail_calls==[INGESTION]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_packet_apply_records_compact_progress_without_raw_reader_decode(packet):
+    from regional_knowledge.source_page_progress import publication_progress, enrichment_gaps
+    e=packet
+    e.allow_native.set()
+    e.bridge._packet_settled(e.parent)
+    async def finished():
+        while e.helper._state(e.row)['enriched_batch_count']!=1:
+            await asyncio.sleep(.01)
+    await asyncio.wait_for(finished(),10)
+    assert e.settled == ['stage','text','semantic']
+    with e.q.connect(write=False) as db:
+        rows=db.execute('SELECT command_bytes,progress_json FROM rkb_control_operations ORDER BY sequence').fetchall()
+        assert all(row['progress_json'] for row in rows)
+        first=json.loads(rows[0]['progress_json'])
+        assert first['stage_sha256'] == digest(e.parent.command.payload)
+        expected={p['physical_page_index'] for p in json.loads(e.parent.command.payload)['model_payload']['pages']}
+        assert publication_progress(db,e.row)[0] == expected
+        assert publication_progress(db,e.row,'semantic')[0] == expected
+        assert enrichment_gaps(db,e.row) == set()
+        # SQL evaluates CASE lazily: hydrated rows do not read the content column.
+        calls=[]
+        db.create_function('raw_payload_must_not_be_read',1,lambda value:calls.append(value))
+        db.execute('SELECT CASE WHEN progress_json IS NULL THEN command_bytes END FROM '
+                   '(SELECT progress_json,raw_payload_must_not_be_read(command_bytes) command_bytes '
+                   'FROM rkb_control_operations)').fetchall()
+        assert calls == []

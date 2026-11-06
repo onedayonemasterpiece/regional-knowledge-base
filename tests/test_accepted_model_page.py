@@ -9,7 +9,7 @@ from regional_knowledge.source_page_progress import read_accepted_model_page
 # Columns of ControlSpool's rkb_control_operations read by source_page_progress; the SQL runs for real.
 SCHEMA = '''CREATE TABLE rkb_control_operations(operation_key TEXT PRIMARY KEY,command_bytes BLOB NOT NULL,
     sequence INTEGER NOT NULL UNIQUE,source_id TEXT NOT NULL,person_id TEXT NOT NULL,
-    seal_state TEXT NOT NULL,apply_state TEXT NOT NULL,outcome_bytes BLOB);
+    seal_state TEXT NOT NULL,apply_state TEXT NOT NULL,outcome_bytes BLOB,progress_json TEXT);
     CREATE TABLE rkb_native_source_intake_state(ingestion_id TEXT PRIMARY KEY,phase TEXT NOT NULL);'''
 ROW = {'source_id': 's', 'person_id': 'u', 'ingestion_id': 'ing', 'phase': 'staging'}
 
@@ -28,7 +28,7 @@ class _Queue:
     def add(self, key, packet, state='APPLIED', owner=('s', 'u')):
         raw = json.dumps(packet).encode()
         self.sequence += 1
-        self.db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?,?)', (
+        self.db.execute('INSERT INTO rkb_control_operations(operation_key,command_bytes,sequence,source_id,person_id,seal_state,apply_state,outcome_bytes) VALUES(?,?,?,?,?,?,?,?)', (
             key, json.dumps({'payload_b64': base64.b64encode(raw).decode()}), self.sequence,
             *owner, 'ACCEPTED', state, None))
         return hashlib.sha256(raw).hexdigest()

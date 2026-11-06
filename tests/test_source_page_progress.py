@@ -12,7 +12,7 @@ def test_empty_precondition_result_keeps_the_semantic_gap_readable():
     db = sqlite3.connect(':memory:')
     db.row_factory = sqlite3.Row
     db.execute('CREATE TABLE rkb_control_operations(sequence INTEGER,operation_key TEXT,source_id TEXT,'
-               'person_id TEXT,seal_state TEXT,apply_state TEXT,command_bytes BLOB,outcome_bytes BLOB)')
+               'person_id TEXT,seal_state TEXT,apply_state TEXT,command_bytes BLOB,outcome_bytes BLOB,progress_json TEXT)')
     stage = json.dumps({'ingestion_id':'ing','batch_index':0,
                        'model_payload':{'pages':[{'physical_page_index':4}]}}).encode()
     sha = hashlib.sha256(stage).hexdigest()
@@ -24,7 +24,7 @@ def test_empty_precondition_result_keeps_the_semantic_gap_readable():
                                         'component':component,'last_batch_sha256':sha}).encode()
         key = 'source-stage:ing:0' if component == 'stage' else 'source-packet:ing:0:'+component
         command = json.dumps({'payload_b64':base64.b64encode(payload).decode()})
-        db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?,?)',
+        db.execute('INSERT INTO rkb_control_operations(sequence,operation_key,source_id,person_id,seal_state,apply_state,command_bytes,outcome_bytes) VALUES(?,?,?,?,?,?,?,?)',
                    (sequence,key,'s','u','ACCEPTED',state,command,outcome))
     assert enrichment_gaps(db, {'source_id':'s','person_id':'u','ingestion_id':'ing'}) == {4}
     db.execute("UPDATE rkb_control_operations SET outcome_bytes=? WHERE sequence=3",
@@ -37,14 +37,14 @@ def test_gap_projection_reads_each_stage_once_and_keeps_component_receipts():
     db = sqlite3.connect(':memory:')
     db.row_factory = sqlite3.Row
     db.execute('CREATE TABLE rkb_control_operations(sequence INTEGER,operation_key TEXT,source_id TEXT,'
-               'person_id TEXT,seal_state TEXT,apply_state TEXT,command_bytes BLOB,outcome_bytes BLOB)')
+               'person_id TEXT,seal_state TEXT,apply_state TEXT,command_bytes BLOB,outcome_bytes BLOB,progress_json TEXT)')
     seq = 0
     def add(key, doc, state='APPLIED', outcome=None, owner='u'):
         nonlocal seq
         seq += 1
         raw = json.dumps(doc).encode()
         result = None if outcome is None else json.dumps({'result_b64':base64.b64encode(json.dumps(outcome).encode()).decode()})
-        db.execute('INSERT INTO rkb_control_operations VALUES(?,?,?,?,?,?,?,?)', (
+        db.execute('INSERT INTO rkb_control_operations(sequence,operation_key,source_id,person_id,seal_state,apply_state,command_bytes,outcome_bytes) VALUES(?,?,?,?,?,?,?,?)', (
             seq,key,'s',owner,'ACCEPTED',state,json.dumps({'payload_b64':base64.b64encode(raw).decode()}),result))
         return hashlib.sha256(raw).hexdigest()
     def packet(i, page, text='APPLIED', semantic=None, reason=None, owner='u'):
