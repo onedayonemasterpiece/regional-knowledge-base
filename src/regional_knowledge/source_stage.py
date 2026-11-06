@@ -20,6 +20,8 @@ STAGE_REVISIONS = ('rkb-v4-sql001-013-v1', 'rkb-v4-source-stage-v1', 'rkb-python
 BATCH_CODEC = 'rkb.source-stage-batch.v1'
 SEAL_CODEC = 'rkb.source-stage-seal.v1'
 ZERO_HASH = '0' * 64
+# One fixed internal rejection label, shared by native apply, native materializer and API status.
+FIXED_REJECTION_PATTERN = r'[a-z0-9_]{1,64}'
 SOURCE_COVERAGE_REJECTION_PATTERN = (
     r"native_source_stage_requires_review:(?:missing_chunk_coverage|missing_figure_review):physical_page_index/region_key="
     r"[0-9]{1,4}/[A-Za-z0-9][A-Za-z0-9._:-]{0,79}"

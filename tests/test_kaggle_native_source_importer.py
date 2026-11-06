@@ -1576,10 +1576,9 @@ async def test_masked_packet_rejection_logs_origin_and_retains_safe_diagnostic(n
     with caplog.at_level(logging.WARNING,logger='regional_knowledge.kaggle_source_commands'):
         receipt,_=decode_receipt(await worker(frame))
     body=json.loads(base64.b64decode(json.loads(receipt.outcome)['result_b64']))
-    # The invalid fixed reason is refused by apply before its canonical SQL rollback receipt.
-    assert body=={'reason':'native_source_sql_rolled_back',
-        'error_type':'RejectedSql' if postgres and not masked else 'ValueError',
-        'sqlstate':'22023' if postgres and not masked else None}
+    # A fixed model-correctable label is retained exactly; a raw exception remains a SQL rollback.
+    assert body==({'reason':'native_source_packet_input_invalid'} if masked else {'reason':'native_source_sql_rolled_back',
+        'error_type':'RejectedSql' if postgres else 'ValueError','sqlstate':'22023' if postgres else None})
     assert ('error_type=RejectedSql' if postgres else 'error_type=ValueError') in caplog.text
     assert 'invalid_model_field:' in caplog.text
     if postgres:assert 'rkb_v4.prepare_source_batch_v1:57' in caplog.text
@@ -1656,7 +1655,8 @@ async def test_missing_region_diagnostic_crosses_native_receipt_to_status(native
         compute_claim='synthetic-compute',dispatch_generation=s.t.generation)
     expected=('native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key='
         '123/r123_05;123/r123_18:fix=add_chunk_region_refs_or_span_refs')
-    for unsafe in ('unknown_private_reason',expected+':'+private):
+    # Fixed snake_case labels are retained (one shared allowlist); free text never is.
+    for unsafe in ('Unknown private reason',expected+':'+private):
         override=unsafe
         with pytest.raises(ValueError,match='fixed internal source rejection reason'):
             await apply_module.apply_accepted(connection,journal=s.spool.journal,seal=entry.accepted,
