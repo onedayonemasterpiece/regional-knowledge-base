@@ -207,6 +207,19 @@ async def put_control(p,name='one',data=b'pending'):
 
 
 @pytest.mark.asyncio
+async def test_planned_stop_without_coverage_does_not_release_unsaved_prefix(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch)
+    with p.q.connect() as db:
+        db.execute('UPDATE rkb_control_spool_meta SET sequence=8 WHERE id=1')
+    p.startup.coverage=None
+    assert not await p.owner.refresh(p.binding)  # Ordinary startup can await coverage.
+    with pytest.raises(CheckpointPending):
+        await p.owner.before_stop(p.binding)
+    assert p.store.latest_checkpoint.base_sequence==7 and not p.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('unknown_field',[None,'seal_state','apply_state','outcome_state'])
 async def test_stop_checkpoint_uses_canonical_unknown_not_stale_source_head(tmp_path,monkeypatch,unknown_field):
     from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending

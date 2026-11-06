@@ -330,6 +330,8 @@ class SourceDatasetCheckpoints:
             late_outcomes=self.store.pending_outcomes()
             try:control=self.store.pending_control()
             except Exception as exc:raise CheckpointPending(type(exc).__name__) from exc
+            if planned_stop and proof is None:
+                raise CheckpointPending('dataset_checkpoint_coverage_pending')
             if (proof is None or proof.applied_sequence<latest.base_sequence
                     or proof.applied_sequence==latest.base_sequence and not (late_outcomes or control)):
                 self.dirty_since=None;self.last_control=None;return False
