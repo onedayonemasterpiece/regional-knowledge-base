@@ -688,8 +688,8 @@ class NativeSourceIntake:
         return self._output(row,state)
 
     async def _tail_output(self, access, row, state):
-        if (not state['batch_count']
-                or state['pending_operation_key'] or state.get('rejected_batch_index') is not None
+        if (not state['batch_count'] or state['pending_operation_key']
+                or (state.get('rejected_batch_index') is not None and state['phase']!='finalized')
                 or state['phase'] not in ('staging','finalized')):
             return None
         if state['packet_mode']:
@@ -701,6 +701,7 @@ class NativeSourceIntake:
                     'Continue the existing import on pages without an APPLIED semantic packet; '
                     'retain exact text and correct the reviewed semantic input, then finalize.',
                     'continue_pages', next_cursor=str(min(missing)), source_archive_status='verified')
+        if state.get('rejected_batch_index') is not None:return None
         await self._check(access,row)
         restorer=getattr(self.startup,'restorer',None)
         if restorer is not None and not restorer.complete:
