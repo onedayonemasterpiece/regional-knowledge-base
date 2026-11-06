@@ -136,6 +136,63 @@ async def test_dataset_transport_requires_exact_archive_pin(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fresh_saved_after_collection_restores_exact_outcomes_and_preaccepted_tail(tmp_path):
+    from dataclasses import replace
+    from regional_knowledge.recovery_journal import RecoveryJournal,JournalConflict
+    from test_recovery_journal import command
+
+    p=prepared(tmp_path);journal=RecoveryJournal(p.store,stream='stream')
+    commands=[command(n) for n in range(1,9)]
+    accepted=await journal.seal(commands,predecessor=None,writer_generation='writer')
+    for cmd in commands[:7]:
+        with pytest.raises(JournalUnknown,match='outcome_pending_dataset_checkpoint'):
+            await journal.record_outcome(accepted,command=cmd,database_generation='db',
+                outcome=b'exact committed outcome',writer_generation='writer')
+    files={name:p.publisher.read_control(file,version=1) for name,file in (
+        ('base-manifest.json',p.checkpoint.manifest),('source-control.json',p.checkpoint.control))}
+    files['journal-control.json']=p.store.export_control()
+    class Published:
+        ref=p.publisher.ref
+        def read_control(self,file,*,version):
+            return files[file.name]
+    publisher=Published();p.store.publisher=publisher
+    checkpoint=replace(p.checkpoint,dataset_version=2,
+        journal=DatasetFile('journal-control.json',len(files['journal-control.json']),sha(files['journal-control.json'])))
+    native=dict(dataset_ref=publisher.ref,dataset_version=2,base_sequence=7,
+        archive_sha256=checkpoint.archive.sha256,archive_size=checkpoint.archive.size)
+    p.store.promote(checkpoint,native,manifest_ref=p.ref)
+    assert await p.store.read(p.prefix+'commands/'+sha(commands[0].operation_key.encode()),max_bytes=10000) is not None
+    # The next Saved omits covered duplicate bindings, without local DELETE.
+    files['journal-control.json']=p.store.export_control()
+    checkpoint=replace(checkpoint,dataset_version=3,
+        journal=DatasetFile('journal-control.json',len(files['journal-control.json']),sha(files['journal-control.json'])))
+    queue=Queue(tmp_path/'fresh-restore.sqlite')
+    with queue.connect() as db:
+        db.execute('CREATE TABLE rkb_writer_control(id INTEGER PRIMARY KEY,storage_sha256 TEXT)')
+        db.execute("INSERT INTO rkb_writer_control VALUES(1,'original-s3-authority')")
+    restored_store=DatasetRecoveryStore(queue,checkpoint=checkpoint,manifest_ref=p.ref,
+        publisher=publisher,writer_guard=p.guard,stream='stream')
+    restored=RecoveryJournal(restored_store,stream='stream')
+    assert await restored_store.read(p.prefix+'commands/'+sha(commands[0].operation_key.encode()),max_bytes=10000) is None
+    for cmd in commands[:7]:
+        original=await journal.record_outcome(accepted,command=cmd,database_generation='db',
+            outcome=b'exact committed outcome',writer_generation='writer')
+        replay=await restored.record_outcome(accepted,command=cmd,database_generation='db',
+            outcome=b'exact committed outcome',writer_generation='writer')
+        assert replay==original
+    with pytest.raises(JournalConflict):
+        await restored.seal([replace(commands[0],sequence=9)],predecessor=await restored.head(),writer_generation='writer')
+    # The tail was accepted before collection, but its committed result arrived
+    # after Saved. Both original and fresh restore retain exactly those bytes.
+    for target in (journal,restored):
+        with pytest.raises(JournalUnknown,match='outcome_pending_dataset_checkpoint'):
+            await target.record_outcome(accepted,command=commands[-1],database_generation='db',
+                outcome=b'exact later tail outcome',writer_generation='writer')
+    key=p.prefix+'outcomes/'+sha(commands[-1].operation_key.encode())
+    assert (await p.store.read(key,max_bytes=10000)).data==(await restored_store.read(key,max_bytes=10000)).data
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('producer',['export_control','legacy_seed'])
 async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and_lost_ack_is_idempotent(tmp_path,producer):
     from dataclasses import replace
@@ -220,7 +277,7 @@ async def test_native_verified_checkpoint_promotes_only_exact_captured_bytes_and
     assert peak<len(journal)*1.5
     assert store.remote_durable(escaped,b'pending escaped key')
     assert store.remote_durable(key,b'captured') and store.latest_checkpoint==checkpoint
-    assert await store.read(duplicate,max_bytes=100) is None
+    assert (await store.read(duplicate,max_bytes=100)) is not None
     assert (await store.read(keep,max_bytes=100)) is not None
     assert (await store.read(unindexed,max_bytes=100)) is not None
     assert duplicate.encode() not in store.export_control()
