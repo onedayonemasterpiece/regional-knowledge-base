@@ -76,6 +76,26 @@ async def test_genesis_requires_empty_native_and_remote_and_immutable_exact_chec
 
 
 @pytest.mark.asyncio
+async def test_raw_retirement_preserves_read_facts_but_source_write_invalidates(env,monkeypatch):
+    from types import SimpleNamespace
+    from regional_knowledge.dataset_recovery_store import DatasetRecoveryStore
+    pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
+    await v.establish_genesis(b)
+    facts=await env.spool.read_facts(None)
+    assert env.spool.facts_current(facts)
+    # The real maintenance entry point and SQLite transaction, with no eligible
+    # rows: even an empty periodic pass must not revoke unchanged source facts.
+    store=object.__new__(DatasetRecoveryStore)
+    monkeypatch.setattr(DatasetRecoveryStore,'latest_checkpoint',property(
+        lambda self:SimpleNamespace(base_sequence=0,database_generation='db-source')))
+    env.spool.journal.store=store
+    assert await env.spool.retire_raw()==0
+    assert env.spool.facts_current(facts)
+    await stage(env)
+    assert not env.spool.facts_current(facts)
+
+
+@pytest.mark.asyncio
 async def test_restore_replays_full_classified_chain_and_keeps_unapplied_restriction(env,monkeypatch):
     pg=Pg();b=binding();v=verifier(env,pg,b,monkeypatch)
     await v.establish_genesis(b)

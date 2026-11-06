@@ -788,7 +788,7 @@ class ControlSpool:
         if type(self.journal.store) is not DatasetRecoveryStore:return 0
         async with self._lock:
             checkpoint=self.journal.store.latest_checkpoint
-            count=await self._write(self._retire_raw,checkpoint,128)
+            count=await _database(self._retire_raw,checkpoint,128)
         if count:_LOG.info('control_raw_retired base_sequence=%s rows=%s',checkpoint.base_sequence,count)
         return count
 
