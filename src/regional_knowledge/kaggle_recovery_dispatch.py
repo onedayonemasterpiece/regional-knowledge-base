@@ -162,8 +162,6 @@ class RecoveryPhaseDispatch:
             handle=value.get('handle')
             if not isinstance(handle,str):raise SnapshotError('snapshot_io_receipt_invalid')
             async with asyncio.timeout(self.timeout):
-                if phase == 'original_pages':
-                    await asyncio.sleep(18)
                 while True:
                     status=await self.request(binding,'snapshot_status',dict(handle=handle),
                         operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
@@ -173,7 +171,7 @@ class RecoveryPhaseDispatch:
                             operation_key=operation_key+':upload')
                         if upload!={'status':'started'}:raise SnapshotError('snapshot_io_upload_pending')
                     elif status.get('status')!='pending':raise SnapshotError('snapshot_io_pending_reconciliation')
-                    await asyncio.sleep(20 if phase == 'original_pages' else 2)
+                    await asyncio.sleep(2)
         return value
 
 

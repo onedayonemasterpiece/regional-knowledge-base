@@ -11,8 +11,8 @@ from regional_knowledge.kaggle_pg_snapshot_native import SnapshotError
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("render_seconds", [16, 35])
-async def test_page_render_uses_at_most_two_channel_status_polls(monkeypatch, render_seconds):
+@pytest.mark.parametrize("render_seconds", [0, 3, 16, 35])
+async def test_page_render_delivered_within_existing_two_second_poll_interval(monkeypatch, render_seconds):
     elapsed = 0
     polls = []
 
@@ -52,7 +52,9 @@ async def test_page_render_uses_at_most_two_channel_status_polls(monkeypatch, re
 
     page = await bridge.request(object(), "original_pages", {"index": 0}, operation_key="page-0")
     assert page == {"physical_page_index": 0}
-    assert 1 <= len(polls) <= 2, polls
+    assert render_seconds <= elapsed <= render_seconds + 2, polls
+    assert polls[0] == 0
+    assert all(b - a == 2 for a,b in zip(polls,polls[1:]))
 
 
 @pytest.mark.asyncio
