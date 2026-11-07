@@ -60,8 +60,11 @@ def test_latest_text_applied_stage_wins():
     assert _text(_Queue().stage(0, 'old', ['a']).stage(1, 'accepted', ['c', 'd'])) == ('accepted', ['c', 'd'])
 
 
-def test_only_a_finalized_semantic_gap_gets_the_projection():
-    assert _text(_Queue(phase='staging').stage(0, 'old', ['a'])) is None
+def test_staging_semantic_gap_gets_the_projection_before_finalize():
+    assert _text(_Queue(phase='staging').stage(0, 'old', ['a'])) == ('old', ['a'])
+
+
+def test_only_a_semantic_gap_gets_the_projection():
     assert _text(_Queue().stage(0, 'old', ['a'], semantic_state='APPLIED')) is None
     assert _text(_Queue().stage(0, 'old', ['a']), index=50) is None
 
