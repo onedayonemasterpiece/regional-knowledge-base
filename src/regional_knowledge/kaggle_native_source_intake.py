@@ -438,14 +438,15 @@ class NativeSourceIntake:
                         or facts.database_generation!=access.binding.database_generation
                         or facts.scope_sequence>facts.covered_sequence or (facts.pending and not continuation) or facts.unknown
                         or not self.spool.facts_current(facts)):
-                    _LOG.warning('native_intake_admission reason=history_proof kind=%s reads_current=%s imports_current=%s '
+                    reason=('prior_write_pending' if facts.unknown or (facts.pending and not continuation) else 'source_history_unavailable')
+                    _LOG.warning('native_intake_admission reason=%s kind=%s reads_current=%s imports_current=%s '
                         'anchor_current=%s binding_current=%s database_current=%s scope_sequence=%s covered_sequence=%s '
-                        'pending=%s continuation=%s unknown=%s facts_current=%s',kind,self.startup.reads_current(),
+                        'pending=%s continuation=%s unknown=%s facts_current=%s',reason,kind,self.startup.reads_current(),
                         self.startup.imports_current(),self.startup.coverage is self.spool._source_anchor,
                         self.startup.binding==access.binding,facts.database_generation==access.binding.database_generation,
                         facts.scope_sequence,facts.covered_sequence,facts.pending,continuation,facts.unknown,
                         self.spool.facts_current(facts))
-                    raise _failure('source_history_unavailable')
+                    raise _failure(reason)
                 try:
                     entry=await self.spool._write(self.spool._stage,frozen,data,handler,access.binding.database_generation)
                     if entry is None:entry=await self.spool.get(key)
