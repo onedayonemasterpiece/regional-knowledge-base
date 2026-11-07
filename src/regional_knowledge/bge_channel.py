@@ -616,10 +616,13 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         else:
                             timings=frame.get('timings',{})
                             seconds=timings.get('native_work_seconds') if type(timings) is dict else None
-                            if (type(timings) is dict and set(timings)=={'native_work_seconds'} and type(seconds) in (int,float)
+                            if (type(timings) is dict and set(timings)<={'native_work_seconds','encode_seconds','encoded_count','reused_count','materialize_seconds'} and type(seconds) in (int,float)
                                     and 0<=seconds<=86_400 and math.isfinite(seconds)):
                                 logger.info(json.dumps(dict(event='native_source_work_timing',run_id=run_id,
-                                    connection_generation=generation,job_id=frame['job_id'],native_work_seconds=seconds)))
+                                    connection_generation=generation,job_id=frame['job_id'],native_work_seconds=seconds,
+                                    **{k:v for k,v in timings.items() if k!='native_work_seconds' and type(v) in (int,float)
+                                        and (not k.endswith('_count') or type(v) is int)
+                                        and 0<=v<=86_400 and math.isfinite(v)})))
                         if settled is None:
                             await send('RESULT_ACK',job_id=frame['job_id'],claim=frame['claim'],status='apply_received')
                         else:
