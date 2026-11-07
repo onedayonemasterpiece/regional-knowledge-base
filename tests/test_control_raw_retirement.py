@@ -2,6 +2,7 @@
 from types import SimpleNamespace as NS
 from dataclasses import replace
 import sqlite3
+import json
 import pytest
 from regional_knowledge.recovery_journal import JournalUnknown
 from test_kaggle_native_source_importer import (
@@ -35,6 +36,11 @@ async def test_saved_raw_retirement_keeps_duplicate_exact_and_unsaved_suffix(nat
         rows = db.execute('SELECT * FROM rkb_control_operations ORDER BY sequence').fetchall()
         assert all(r['command_bytes'] is None and r['outcome_bytes'] is None for r in rows[:3])
         assert rows[3]['operation_key'] == latest and rows[3]['command_bytes'] is not None
+    from regional_knowledge.source_page_progress import read_accepted_model_page
+    accepted = await read_accepted_model_page(s.t.queue, dict(ingestion_id=book.ingestion_id,
+        source_id=book.document_id, person_id=originals[0].command.person_id), 0, s.spool)
+    original_model = json.loads(originals[0].command.payload)['model_payload']
+    assert accepted == dict(page=original_model['pages'][0], chunks=original_model['chunks'])
     for old in originals:
         got = await s.spool.get(old.command.operation_key)
         assert got == old
