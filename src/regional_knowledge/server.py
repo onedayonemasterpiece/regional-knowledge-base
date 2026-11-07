@@ -1984,6 +1984,7 @@ def main(*,target_startup=None,projects_hub_receiver=None,import_activity_receiv
     logging.getLogger("regional_knowledge.reads").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.kaggle_recovery_dispatch").setLevel(logging.INFO)
     logging.getLogger("regional_knowledge.kaggle_importer").setLevel(logging.INFO)
+    logging.getLogger("regional_knowledge.dataset_recovery_store").setLevel(logging.INFO)
     profile = os.getenv("RKB_MCP_PROFILE", "full").strip().lower()
     if profile not in {"full", "live", "story_reader", "story_contributor", "story_editor"}:
         raise RuntimeError("RKB_MCP_PROFILE must be full, live or an enabled story capability bundle")
