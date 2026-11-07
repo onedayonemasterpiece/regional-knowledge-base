@@ -338,14 +338,14 @@ class ControlSpool:
         elif self._loop is not loop:raise SpoolError('one controller event loop required')
 
     @contextmanager
-    def _db(self,*,write=False):
+    def _db(self,*,write=False,immediate=True):
         # Same existing queue database, with FULL configured BEFORE beginning a
         # mutation transaction. No provider/model operation runs under this lock.
         db=sqlite3.connect(self.queue.path,timeout=5,isolation_level=None)
         db.row_factory=sqlite3.Row
         try:
             db.execute('PRAGMA synchronous=FULL' if write else 'PRAGMA query_only=ON')
-            db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
+            db.execute('BEGIN IMMEDIATE' if write and immediate else 'BEGIN')
             yield db
             if db.in_transaction:db.commit()
         except BaseException:
@@ -768,7 +768,9 @@ class ControlSpool:
 
     def _retire_raw(self,checkpoint,limit):
         from .control_raw_retention import protected_raw
-        with self._db(write=True) as db:
+        # Keep one snapshot without excluding heartbeats during the metadata fold.
+        # A raced writer aborts reclamation; the existing next tick tries again.
+        with self._db(write=True,immediate=False) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='rkb_native_source_intake_state'").fetchone():return 0
             predicate=("database_generation=? AND updated<? AND sequence<=? AND command_bytes IS NOT NULL "
                 "AND progress_json IS NOT NULL AND seal_state='ACCEPTED' AND outcome_state='DURABLE' AND apply_state='APPLIED'")

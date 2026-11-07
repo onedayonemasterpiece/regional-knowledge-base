@@ -171,3 +171,50 @@ async def test_populated_legacy_schema_upgrade_keeps_exact_records_and_public_co
         assert [tuple(r) for r in db.execute('SELECT * FROM rkb_control_operations ORDER BY sequence')]==before
         assert tuple(db.execute('SELECT * FROM rkb_control_public_source_meta').fetchone())==counters
     assert (await s.spool.get(before[0][0])).command_bytes==before[0][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('complete_packet', [False, True])
+async def test_retirement_fold_does_not_hold_writer_and_snapshot_change_keeps_raw(native_intake, monkeypatch, complete_packet):
+    """Actual WAL contention: unrelated heartbeat commits while protection is folded."""
+    import concurrent.futures
+    import threading
+    from regional_knowledge import control_raw_retention
+    s = native_intake
+    book = await start(s)
+    await stage(s, book, batch(s, book, count=1))
+    for _ in range(3 if complete_packet else 1):
+        await finish(s, book)
+        await call(s, book, 'status')
+    s.spool.clock = lambda: 10**12
+    saved = NS(base_sequence=3 if complete_packet else 1, database_generation='synthetic-db')
+    with s.t.queue.connect() as db:
+        db.execute('CREATE TABLE unrelated_heartbeat(tick INTEGER)')
+        db.execute('INSERT INTO unrelated_heartbeat VALUES(0)')
+    entered, release = threading.Event(), threading.Event()
+    original = control_raw_retention.protected_raw
+    def paused(db):
+        entered.set()
+        assert release.wait(3)
+        return original(db)
+    monkeypatch.setattr(control_raw_retention, 'protected_raw', paused)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        attempt = executor.submit(s.spool._retire_raw, saved, 16)
+        assert entered.wait(3)
+        try:
+            with sqlite3.connect(s.t.queue.path, timeout=.05) as heartbeat:
+                heartbeat.execute('UPDATE unrelated_heartbeat SET tick=tick+1')
+        finally:
+            release.set()
+        if complete_packet:
+            with pytest.raises(sqlite3.OperationalError) as failure:
+                attempt.result(timeout=3)
+            assert failure.value.sqlite_errorname == 'SQLITE_BUSY_SNAPSHOT'
+        else:
+            assert attempt.result(timeout=3) == 0
+    with s.t.queue.connect(write=False) as db:
+        assert db.execute('SELECT tick FROM unrelated_heartbeat').fetchone()[0] == 1
+        assert db.execute('SELECT count(*) FROM rkb_control_operations WHERE command_bytes IS NULL').fetchone()[0] == 0
+    monkeypatch.setattr(control_raw_retention, 'protected_raw', original)
+    # The unchanged ordinary next pass reclaims eligible bodies after contention.
+    assert s.spool._retire_raw(saved, 16) == (2 if complete_packet else 0)
