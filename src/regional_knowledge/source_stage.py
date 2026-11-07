@@ -28,7 +28,7 @@ SOURCE_COVERAGE_REJECTION_PATTERN = (
     r"(?:;[0-9]{1,4}/[A-Za-z0-9][A-Za-z0-9._:-]{0,79}){0,39}:fix=(?:add_chunk_region_refs_or_span_refs|stage_illustrations_for_each_figure_region)")
 # Leaves room for ExactCommand's base64 payload and bounded identity metadata.
 MAX_BATCH_BYTES = 700 * 1024
-MAX_BATCH_PAGES = 8
+MAX_BATCH_PAGES = 10
 MAX_SOURCE_PAGES = 2500  # Existing verified-original limit, not a batch limit.
 MODEL_KEYS = frozenset({'pages', 'chunks', 'story_candidates', 'entity_candidates',
                         'poi_facts', 'poi_media_links'})
@@ -161,7 +161,7 @@ public activation. No successful result here means "imported" or "searchable".
         pages = model['pages']; images = doc['issued_images_b64']
         if (type(pages) is not list or not 1 <= len(pages) <= MAX_BATCH_PAGES
                 or type(images) is not list or len(images) != len(pages)):
-            raise ValueError('one to eight selected issued pages required')
+            raise ValueError('one to ten selected issued pages required')
         for key, limit in (('chunks', 100), ('story_candidates', 12), ('poi_facts', 32), ('poi_media_links', 32)):
             if key in model and (type(model[key]) is not list or len(model[key]) > limit):
                 raise ValueError('per-batch model input bound exceeded')

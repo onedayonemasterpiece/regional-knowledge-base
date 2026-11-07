@@ -8,6 +8,7 @@ from uuid import UUID, uuid5
 from pydantic import BaseModel, Field, model_validator
 
 from .entity_graph import GraphBundle,validate_staged_bundle,digest
+from .source_stage import MAX_BATCH_PAGES
 
 from .contracts import (
     BBox,
@@ -124,7 +125,7 @@ class StagedPoiMediaLink(BaseModel):
 
 
 class IngestStagePayload(BaseModel):
-    pages: list[StagedPage] = Field(default_factory=list, max_length=8)
+    pages: list[StagedPage] = Field(default_factory=list, max_length=MAX_BATCH_PAGES)
     relations: list[StagedRelation] = Field(default_factory=list, max_length=2_000)
     illustrations: list[StagedIllustration] = Field(default_factory=list, max_length=200)
     chunks: list[StagedChunk] = Field(default_factory=list, max_length=500)

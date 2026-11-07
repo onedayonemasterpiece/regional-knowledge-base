@@ -333,7 +333,7 @@ async def test_concurrent_import_calls_keep_their_own_trace_and_ingestion(monkey
     assert len({r['ingestion_ref'] for r in records})==2
 
 
-@pytest.mark.parametrize('count', [8, 9])
+@pytest.mark.parametrize('count', [10, 11])
 def test_import_packet_indices_reuse_native_page_bound(count):
     record = dict(event(event='import.call', phase='stage'))
     token = telemetry._import_call.set(record)
@@ -342,4 +342,4 @@ def test_import_packet_indices_reuse_native_page_bound(count):
     finally:
         telemetry._import_call.reset(token)
     clean = telemetry._clean(record, 'standard')
-    assert clean.get('physical_page_indices') == (list(range(count)) if count == 8 else None)
+    assert clean.get('physical_page_indices') == (list(range(count)) if count == 10 else None)

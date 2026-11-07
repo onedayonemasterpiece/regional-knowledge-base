@@ -380,3 +380,28 @@ async def test_current_packet_preserves_language_with_simple_fallback(
             'SELECT passage_id FROM rkb_v4.lexical_candidates(%s,20)',
             ('synthetic',))).fetchall()
         assert row[2] in {hit[0] for hit in hits}
+
+
+@PG
+@pytest.mark.asyncio
+async def test_ten_page_native_packet_preserves_all_issued_source_and_semantics(image_pg_sql18):
+    env = image_pg_sql18
+    doc = exact_batch(count=10)
+    frozen = canonical(doc)
+    assert (await accepted(env, stage_command(doc, 1))).status == 'applied'
+    prepare, _ = native(env)
+    for component in ('text', 'semantic'):
+        command = packet(env, doc, component)
+        await prepare(command)
+        assert (await accepted(env, command)).status == 'applied'
+        assert (await accepted(env, command)).duplicate
+    async with env['connection'].transaction():
+        assert (await (await env['connection'].execute(
+            'SELECT payload_bytes FROM rkb_v4.source_stage_batches WHERE source_id=%s',
+            (SOURCE,))).fetchone())[0] == frozen
+        assert (await (await env['connection'].execute(
+            'SELECT count(*) FROM rkb_v4.source_stage_pages WHERE source_id=%s',
+            (SOURCE,))).fetchone())[0] == 10
+        assert (await (await env['connection'].execute(
+            'SELECT count(*) FROM rkb_v4.passage_search WHERE source_id=%s',
+            (SOURCE,))).fetchone())[0] == 10
