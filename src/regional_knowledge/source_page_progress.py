@@ -3,6 +3,7 @@
 The existing ordered ControlSpool is authoritative; stage APPLIED alone is not
 publication, and compact native counters are not page-acceptance receipts.
 """
+import asyncio
 import base64
 import hashlib
 import json
@@ -147,12 +148,8 @@ def enrichment_gaps(db, row):
                                   if reason=='native_source_sql_rolled_back'}
 
 
-def accepted_model_page(db, row, physical_index):
-    """The model page whose TEXT packet is APPLIED: what a semantic retry must restage verbatim.
-
-    Newest first with an early return; a later stage with a rejected TEXT never wins.
-    """
-    from .source_batch_context import chunk_pages
+def _accepted_model_key(db, row, physical_index):
+    """Newest stage bound to TEXT APPLIED; rejected TEXT never replaces it."""
     published = set()
     for item in db.execute(
             "SELECT operation_key,"+progress_columns()+" FROM rkb_control_operations "
@@ -166,23 +163,37 @@ def accepted_model_page(db, row, physical_index):
             published.add((packet.get('batch_index'), packet.get('last_batch_sha256')))
             continue
         if (packet.get('batch_index'), stage_sha) not in published: continue
-        if not any(p.get('physical_page_index') == physical_index for p in packet.get('model_payload',{}).get('pages',[])): continue
-        original = db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?',
-                              (item['operation_key'],)).fetchone()[0]
-        model = json.loads(base64.b64decode(json.loads(original)['payload_b64'],validate=True)).get('model_payload') or {}
-        for page in model.get('pages', []):
-            if page.get('physical_page_index') == physical_index:
-                return dict(page=page, chunks=[c for c in model.get('chunks', [])
-                                               if page.get('page_id') in chunk_pages(c, text_only=True)])
+        if any(p.get('physical_page_index') == physical_index for p in packet.get('model_payload',{}).get('pages',[])):
+            return item['operation_key']
     return None
 
 
-def read_accepted_model_page(queue, row, physical_index):
-    # Semantic gaps also block finalization; their accepted input must be available before it.
-    with queue.connect(write=False) as db:
-        if physical_index not in enrichment_gaps(db, row):
-            return None
-        return accepted_model_page(db, row, physical_index)
+def _model_page(payload, physical_index):
+    from .source_batch_context import chunk_pages
+    model = payload.get('model_payload') or {}
+    for page in model.get('pages', []):
+        if page.get('physical_page_index') == physical_index:
+            return dict(page=page, chunks=[c for c in model.get('chunks', [])
+                                           if page.get('page_id') in chunk_pages(c, text_only=True)])
+    return None
+
+
+def accepted_model_page(db, row, physical_index):
+    key = _accepted_model_key(db, row, physical_index)
+    if key is None: return None
+    original = db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?', (key,)).fetchone()[0]
+    return _model_page(json.loads(base64.b64decode(json.loads(original)['payload_b64'],validate=True)), physical_index)
+
+
+async def read_accepted_model_page(queue, row, physical_index, spool):
+    # SEM APPLIED can still leave source tails; retired originals use the existing journal.
+    def key():
+        with queue.connect(write=False) as db:
+            return _accepted_model_key(db, row, physical_index)
+    operation_key = await asyncio.to_thread(key)
+    if operation_key is None: return None
+    entry = await spool.get(operation_key)
+    return _model_page(json.loads(entry.command.payload), physical_index)
 
 
 def read_enrichment_gaps(queue, row):

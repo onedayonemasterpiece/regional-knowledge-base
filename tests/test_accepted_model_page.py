@@ -1,13 +1,15 @@
+import asyncio
 import base64
 import contextlib
 import hashlib
 import json
 import sqlite3
+from types import SimpleNamespace
 
 from regional_knowledge.source_page_progress import read_accepted_model_page
 
 # Columns of ControlSpool's rkb_control_operations read by source_page_progress; the SQL runs for real.
-SCHEMA = '''CREATE TABLE rkb_control_operations(operation_key TEXT PRIMARY KEY,command_bytes BLOB NOT NULL,
+SCHEMA = '''CREATE TABLE rkb_control_operations(operation_key TEXT PRIMARY KEY,command_bytes BLOB,
     sequence INTEGER NOT NULL UNIQUE,source_id TEXT NOT NULL,person_id TEXT NOT NULL,
     seal_state TEXT NOT NULL,apply_state TEXT NOT NULL,outcome_bytes BLOB,progress_json TEXT);
     CREATE TABLE rkb_native_source_intake_state(ingestion_id TEXT PRIMARY KEY,phase TEXT NOT NULL);'''
@@ -16,22 +18,29 @@ ROW = {'source_id': 's', 'person_id': 'u', 'ingestion_id': 'ing', 'phase': 'stag
 
 class _Queue:
     def __init__(self, phase='finalized'):
-        self.db = sqlite3.connect(':memory:')
+        self.db = sqlite3.connect(':memory:', check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self.db.execute('INSERT INTO rkb_native_source_intake_state VALUES(?,?)', ('ing', phase))
         self.sequence = 0
+        self.originals = {}
+        self.read_keys = []
 
     def connect(self, write):
         return contextlib.nullcontext(self.db)
 
     def add(self, key, packet, state='APPLIED', owner=('s', 'u')):
         raw = json.dumps(packet).encode()
+        self.originals[key] = raw
         self.sequence += 1
         self.db.execute('INSERT INTO rkb_control_operations(operation_key,command_bytes,sequence,source_id,person_id,seal_state,apply_state,outcome_bytes) VALUES(?,?,?,?,?,?,?,?)', (
             key, json.dumps({'payload_b64': base64.b64encode(raw).decode()}), self.sequence,
             *owner, 'ACCEPTED', state, None))
         return hashlib.sha256(raw).hexdigest()
+
+    async def get(self, key):
+        self.read_keys.append(key)
+        return SimpleNamespace(command=SimpleNamespace(payload=self.originals[key]))
 
     def stage(self, index, text, chunks, text_state='APPLIED', semantic_state=None, owner=('s', 'u')):
         page = {'page_id': 'p49', 'physical_page_index': 49,
@@ -47,7 +56,7 @@ class _Queue:
 
 
 def _text(queue, index=49):
-    found = read_accepted_model_page(queue, ROW, index)
+    found = asyncio.run(read_accepted_model_page(queue, ROW, index, queue))
     return found and (found['page']['regions'][0]['source_text'], [c['chunk_key'] for c in found['chunks']])
 
 
@@ -64,8 +73,9 @@ def test_staging_semantic_gap_gets_the_projection_before_finalize():
     assert _text(_Queue(phase='staging').stage(0, 'old', ['a'])) == ('old', ['a'])
 
 
-def test_only_a_semantic_gap_gets_the_projection():
-    assert _text(_Queue().stage(0, 'old', ['a'], semantic_state='APPLIED')) is None
+def test_semantic_receipt_keeps_exact_input_available_for_uncovered_source_tails():
+    # SEM APPLIED is not proof that every source span is covered (ordinary E page322).
+    assert _text(_Queue().stage(0, 'old', ['a'], semantic_state='APPLIED')) == ('old', ['a'])
     assert _text(_Queue().stage(0, 'old', ['a']), index=50) is None
 
 
@@ -82,3 +92,14 @@ def test_accepted_page_result_withholds_the_next_cursor():
     manifest = lambda accepted: json.loads(_book_page_tool_result('ing', batch, accepted).content[0].text)
     assert manifest(None)['next_cursor'] == '50'
     assert manifest({'page': {}, 'chunks': []})['next_cursor'] is None
+
+
+def test_retired_local_body_uses_the_same_accepted_journal_stage():
+    from regional_knowledge.source_page_progress import compact_progress
+    queue = _Queue().stage(0, 'old', ['a'], semantic_state='APPLIED')
+    for row in list(queue.db.execute('SELECT operation_key,command_bytes FROM rkb_control_operations')):
+        queue.db.execute('UPDATE rkb_control_operations SET progress_json=? WHERE operation_key=?',
+                         (compact_progress(row['operation_key'], row['command_bytes']), row['operation_key']))
+    queue.db.execute("UPDATE rkb_control_operations SET command_bytes=NULL WHERE operation_key LIKE 'source-stage:%'")
+    assert _text(queue) == ('old', ['a'])
+    assert queue.read_keys == ['source-stage:ing:0:u']
