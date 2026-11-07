@@ -1805,6 +1805,35 @@ async def test_semantic_retry_reuses_existing_chunk_identities_before_new_stage(
 
 
 @pytest.mark.asyncio
+async def test_semantic_retry_allows_changed_selection_with_new_chunk_key(native_intake):
+    s=native_intake;book=await start(s)
+    payload=batch(s,book,first=0,count=1)
+    chunk=payload['chunks'][0]
+    chunk['region_refs'].append(copy.deepcopy(chunk['region_refs'][0]))
+    await stage(s,book,payload)
+    for _ in ('stage','text'):
+        await finish(s,book);await call(s,book,'status')
+    await finish(s,book,status='rejected_precondition');await call(s,book,'status')
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
+    corrected=copy.deepcopy(payload)
+    corrected['chunks'][0]['region_refs'].pop()
+    corrected['chunks'][0]['chunk_key']='corrected-source-selection'
+    assert corrected['pages']==payload['pages']
+    from regional_knowledge.source_page_progress import accepted_model_page
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    with s.t.queue.connect(write=False) as db:
+        accepted=accepted_model_page(db,row,0)
+    assert accepted['chunks'] and len(accepted['chunks'][0]['region_refs'])==2
+    assert corrected['pages'][0]['regions']==accepted['page']['regions']
+    assert (await stage(s,book,corrected)).state=='processing'
+    with s.t.queue.connect(write=False) as db:
+        after=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
+    assert after[:len(before)]==before
+    assert len(after)==len(before)+1
+
+
+@pytest.mark.asyncio
 async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(native_intake):
     s=native_intake;book=await start(s)
     payload=batch(s,book,first=0,count=1)
