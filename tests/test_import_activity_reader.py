@@ -347,7 +347,9 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
     w.importer._check=check
     w.importer._reply=reply
     w.importer.originals=SimpleNamespace(pages=pages)
-    w.importer.native_intake=SimpleNamespace(stage=stage)
+    async def journal_get(_key):
+        pytest.fail('An unpublished page must not read an accepted journal stage')
+    w.importer.native_intake=SimpleNamespace(stage=stage,spool=SimpleNamespace(get=journal_get))
     w.importer._native_status=stage
     with w.queue.connect() as db:
         db.execute('UPDATE rkb_source_intake_control SET last_operation_at=? WHERE ingestion_id=?',
