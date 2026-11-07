@@ -31,9 +31,10 @@ async def applied_candidate(people,tmp_path):
     registry=current_registry();spool=ControlSpool(q,people.registry,journal,registry)
     native=pair(NS(q=q,spool=spool,registry=registry,journal=journal),extra_routes=('source.import','story.edit'))
     async def check(*args):pass
+    async def captions(*args):pass
     startup=NS(config=NS(writer_generation='writer-1'),coverage=None)
     importer=NS(import_revisions=ACTIVATION_REVISIONS,queue=q,spool=spool,startup=startup,_check=check,
-        _revisions=lambda binding:ACTIVATION_REVISIONS,
+        _sync_import_captions=captions,_revisions=lambda binding:ACTIVATION_REVISIONS,
         _intake_coverage_current=lambda binding:native.v._coverage.current())
     helper=NativeSourceIntake(importer)
     row=dict(ingestion_id=INGESTION,source_id=SOURCE,person_id=people.owner.subject,request_id=REQUEST)

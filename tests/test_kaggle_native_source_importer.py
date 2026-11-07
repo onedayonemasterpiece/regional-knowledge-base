@@ -1904,7 +1904,8 @@ async def test_entity_validation_distinguishes_missing_and_overlong_field_withou
 
 
 @pytest.mark.asyncio
-async def test_caption_only_at_book_start_and_applied_finish(native_intake,monkeypatch):
+@pytest.mark.parametrize('semantic_pages', [{0, 1}, {0}])
+async def test_caption_only_at_book_start_and_applied_finish(native_intake,monkeypatch,semantic_pages):
     s=native_intake
     edits=[]
     last=''
@@ -1917,6 +1918,13 @@ async def test_caption_only_at_book_start_and_applied_finish(native_intake,monke
         return dict(owned=True,editable=True,caption=last,updated=caption is not None)
     monkeypatch.setattr(s.originals,'caption',caption)
     book=await start(s)
+    # SQLite receipt projection is already independently covered; exercise its
+    # truthful result through the actual APPLIED finish boundary and Telegram.
+    from test_telegram_import_status_counts import _status
+    import regional_knowledge.telegram_import_status as projection
+    expected=_status(2, {0, 1}, semantic_pages, finished=True)
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    monkeypatch.setattr(projection,'started_statuses',lambda *args,**kwargs:[(row,expected)])
     assert len(edits)==1 and 'Synthetic 174-page scanned source' in edits[0]
     await call(s,book,'status')
     await stage(s,book,batch(s,book,count=1))
@@ -1931,7 +1939,7 @@ async def test_caption_only_at_book_start_and_applied_finish(native_intake,monke
         output=await call(s,book,'status')
         if output.state=='finalized':break
     assert output.state=='finalized'
-    assert len(edits)==2 and edits[-1].startswith('РКБ: ✅ Импорт завершён\n')
+    assert len(edits)==2 and edits[-1].startswith('РКБ: '+expected+'\n')
     assert edits[-1].count('РКБ:')==1
     s.importer._caption_synced.clear()
     await call(s,book,'status')

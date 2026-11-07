@@ -332,6 +332,18 @@ class KaggleSourceImporter:
             _LOG.warning('original_caption state=unavailable ingestion_id=%s error_class=%s',
                 row['ingestion_id'],type(exc).__name__)
 
+    async def _sync_import_captions(self, access, ingestion_id):
+        # Only this book's APPLIED finish boundary; no per-ingest history scan.
+        try:
+            from .telegram_import_status import started_statuses
+            rows=await asyncio.to_thread(started_statuses,self.queue,access.authority.person_id,
+                preferred=ingestion_id,limit=1)
+            for row,status in rows:
+                if row['ingestion_id']==ingestion_id:
+                    await self._caption_original(access,row,status=status)
+        except Exception as error:
+            _LOG.warning('original_caption state=projection_unavailable error_class=%s',type(error).__name__)
+
     async def _start(self, access, *, file, metadata, source_import):
         if file is None:
             raise failure('attached_source_required', status='invalid_query')
@@ -910,7 +922,7 @@ class KaggleSourceImporter:
             state = 'finalized' if entry.apply_receipt.status == 'applied' else 'failed'
             row = await asyncio.to_thread(self._save, row, phase=state)
             if state == 'finalized':
-                await self._caption_original(access,row,status='✅ Импорт завершён')
+                await self._sync_import_captions(access,row['ingestion_id'])
             _LOG.info('source_import_terminal ingestion_id=%s state=%s command_sha256=%s',
                 row['ingestion_id'], state, entry.command_sha256)
             accepted = json.loads(entry.command.payload)

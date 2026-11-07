@@ -557,7 +557,7 @@ class NativeSourceIntake:
         else: raise _failure('native_pending_operation_invalid')
         updated=await asyncio.to_thread(self._update,row,**changes)
         if kind=='finish':
-            await self.importer._caption_original(access,row,status='✅ Импорт завершён')
+            await self.importer._sync_import_captions(access,row['ingestion_id'])
             # Reading completion is APPLIED in native PG, not yet Dataset
             # Saved. Schedule the existing capture owner, never wait for it
             # in the import tool call or manufacture an outcome receipt.
