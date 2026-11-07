@@ -27,7 +27,7 @@ from regional_knowledge.original_intake_controller import OriginalIntakeControll
 from regional_knowledge.read_issuance import capture_read_output
 from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS, ACTIVATE_ROUTE, MATERIALIZE_ROUTE
-from regional_knowledge.source_stage import STAGE_ROUTE, SEAL_ROUTE, ZERO_HASH, canonical, digest, validate_stage_payload
+from regional_knowledge.source_stage import STAGE_ROUTE, SEAL_ROUTE, ZERO_HASH, canonical, digest, validate_stage_payload, MAX_BATCH_PAGES
 from test_kaggle_public_backend import target
 from test_kaggle_service_startup import HistoryAdapter
 from test_kaggle_source_importer import options
@@ -83,7 +83,7 @@ async def native_intake(target, tmp_path):
 
     async def selected_image_receipts(self, context, ingestion_id, selections):
         assert context.route == 'owner' and context.principal.subject == t.auth.p.owner.subject
-        assert 1 <= len(selections) <= 8
+        assert 1 <= len(selections) <= MAX_BATCH_PAGES
         self.selections.append((ingestion_id,selections))
         values=[]
         for index,expected in selections:
@@ -276,12 +276,12 @@ def batch(s, result, *, first=0, count=4):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('count', [5, 8, 9])
-async def test_stage_reuses_native_eight_page_envelope_bound(native_intake, count):
+@pytest.mark.parametrize('count', [8, 10, 11])
+async def test_stage_reuses_native_ten_page_envelope_bound(native_intake, count):
     s = native_intake
     book = await start(s)
     payload = batch(s, book, count=count)
-    if count == 9:
+    if count == 11:
         with pytest.raises(ToolError, match='bounded_model_authored_selected_pages_required'):
             await stage(s, book, payload)
         assert operation_count(s) == 0
