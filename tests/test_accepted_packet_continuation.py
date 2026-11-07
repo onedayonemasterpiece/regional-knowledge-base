@@ -308,3 +308,27 @@ async def test_ordinary_packet_apply_records_compact_progress_without_raw_reader
                    '(SELECT progress_json,raw_payload_must_not_be_read(command_bytes) command_bytes '
                    'FROM rkb_control_operations)').fetchall()
         assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('authored_cursor,expected',[('0','2'),('1','2'),('4','4')])
+async def test_accepted_stage_skips_published_and_current_pages(packet,monkeypatch,authored_cursor,expected):
+    e=packet;e.importer._output=KaggleSourceImporter._output
+    e.bridge._packet_settled(e.parent);e.allow_native.set()
+    async def published():
+        while e.helper._state(e.row)['enriched_batch_count']!=1:
+            await asyncio.sleep(.01)
+    await asyncio.wait_for(published(),10)
+    from regional_knowledge.source_page_progress import read_publication_progress
+    assert read_publication_progress(e.q,e.row)[0]=={0}
+    # A synthetic newly accepted page follows the actual published fixture page.
+    # Its publication is still pending; neither page should be sent to the reader again.
+    doc=json.loads(e.parent.command.payload)
+    doc['model_payload']['pages'][0]['physical_page_index']=1
+    doc['research']['continuation']['arguments']['cursor']=authored_cursor
+    parent=replace(e.parent,command_bytes=replace(e.parent.command,payload=canonical(doc)).encode())
+    async def entry(_):return parent
+    monkeypatch.setattr(e.helper,'_entry',entry)
+    state=e.helper._state(e.row)|dict(batch_count=2,pending_operation_key='next-stage',pending_kind='stage')
+    result=await e.helper._accepted_stage_output(None,e.row,state,parent.command.operation_key)
+    assert (result.state,result.next_action,result.next_cursor)==('processing','continue_pages',expected)

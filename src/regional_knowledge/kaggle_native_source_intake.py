@@ -682,6 +682,9 @@ class NativeSourceIntake:
             pages=doc['model_payload']['pages']
             cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
             next_page=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
+            from .source_page_progress import read_publication_progress,next_unaccepted
+            published,_=await asyncio.to_thread(read_publication_progress,self.queue,row)
+            next_page=next_unaccepted(next_page,published|{page['physical_page_index'] for page in pages})
             return self.importer._output(row,'processing' if pending else 'staged',
                 'Stage input accepted; continue reading without resending these pages. '
                 'Retain unfinished passages and current tail context for the next reviewed page. '

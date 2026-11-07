@@ -3,9 +3,11 @@
 An accepted visual stage authorizes deterministic publication of that exact
 packet's text and semantic components. Their existing source-command settlement
 wakes the next component without another client status call. An accepted stage
-reply permits reading the next cursor from its frozen page packet while
-publication remains processing; retain unfinished passages and current tail
-context. Once current packet progress permits the existing native tail query,
+reply permits reading the next cursor while publication remains processing,
+skipping already published pages and the just accepted pages. Unpublished
+reverse/gap cursors remain available; semantic and tail continuation take precedence.
+Retain unfinished passages and current tail context. Once current packet
+progress permits the existing native tail query,
 known tails retain their exact `continue_tail` response and refs. A failed tail
 hint query supplies no hint: status and finalize follow their ordinary paths,
 including `finalized/done` for a completed book. Log the fixed `SpoolConflict`
