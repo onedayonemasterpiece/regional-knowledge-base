@@ -717,6 +717,9 @@ class NativeSourceIntake:
                     'retain exact text and correct the reviewed semantic input, then finalize.',
                     'continue_pages', next_cursor=str(min(missing)), source_archive_status='verified')
         if state.get('rejected_batch_index') is not None:return None
+        return await self._source_tail_output(access,row,state)
+
+    async def _source_tail_output(self, access, row, state):
         await self._check(access,row)
         restorer=getattr(self.startup,'restorer',None)
         if restorer is not None and not restorer.complete:
@@ -864,7 +867,8 @@ class NativeSourceIntake:
             state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
                 any(graph.get(key) for key in ('entities','relations','entity_refs'))))
         if selected and selected<=published and not retry_semantic:
-            tail = await self._tail_output(access, row, state)
+            # Accepted source tails survive rejection of a corrective packet.
+            tail = await self._source_tail_output(access, row, state)
             retry_semantic = bool(tail and any(ref.physical_page_index in selected for ref in tail.tail_refs))
         if selected and selected<=published and not retry_semantic:
             if state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count']:

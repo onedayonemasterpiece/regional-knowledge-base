@@ -2164,3 +2164,11 @@ async def test_accepted_text_stage_can_complete_its_reported_source_tail(native_
     assert (operation_count(s) > before) is with_tail, response.message
     if with_tail:
         assert response.state == 'processing'
+        await finish(s,book);await call(s,book,'status')
+        await finish(s,book,status='rejected_precondition',reason='native_source_stage_requires_review:missing_chunk_coverage:physical_page_index/region_key=0/body:fix=add_chunk_region_refs_or_span_refs')
+        await call(s,book,'status')
+        before_retry=operation_count(s)
+        response=await stage(s,book,payload)
+        assert operation_count(s)>before_retry, response.message
+        assert response.state=='processing'
+        assert json.loads((await pending(s,book)).command.payload)['batch_index']==2
