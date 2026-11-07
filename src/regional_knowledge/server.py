@@ -105,6 +105,8 @@ _ACCEPTED_PAGE_CORRECTION_INSTRUCTIONS = (
     "For the new text update chunk references/span offsets and cover all source regions. "
     "For rejected SEMANTIC enrichment after TEXT APPLIED, use identical accepted text "
     "and corrected candidates rather than replaying accepted text commands. "
+    "For a confirmed change to a chunk's region/span/footnote selection, keep accepted regions unchanged "
+    "and assign only that changed selection a NEW chunk_key; an unchanged selection retains its accepted key. "
     "State the correction reason in source_review_note (1-500 characters). "
     "A correction adds a new accepted page interpretation; it never overwrites accepted bytes. "
     "For next_action=wait, call status and retry the identical pending stage; never alter it. "
