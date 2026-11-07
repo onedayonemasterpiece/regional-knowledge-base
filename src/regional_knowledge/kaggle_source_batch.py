@@ -9,6 +9,7 @@ from .source_stage import canonical, digest, load_stage_batch
 from .source_batch_context import load_current
 from .source_activation import knowledge_bytes
 from .bge_contract import validate_vector
+from .query_telemetry import SOURCE_WORK
 
 LOG = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ async def materialize_packet(worker, command, *, acquire, database):
             raise
     else:
         knowledge = prepared[0]
-    encoded = 0; reused = 0
+    encoded = 0; reused = 0; encode_seconds = 0.
     for ident, text in inputs(knowledge):
         worker._current(); h = digest(text.encode())
         async with acquire() as connection:
@@ -83,7 +84,9 @@ async def materialize_packet(worker, command, *, acquire, database):
                     WHERE source_id=%s AND input_id=%s AND input_sha256=%s ORDER BY batch_index DESC LIMIT 1''',
                     (source,ident,h))).fetchone()
         if row is None:
+            before = time.monotonic()
             vector = validate_vector(await worker.encode(text)); encoded += 1
+            encode_seconds += time.monotonic()-before
         else:
             vector = validate_vector(row[0]); reused += 1
         worker._current()
@@ -95,5 +98,9 @@ async def materialize_packet(worker, command, *, acquire, database):
                     (source,idx,part,ident,h,json.dumps(vector,allow_nan=False),database.database_generation,
                         database.writer_generation))).fetchone()
                 if row != (h,): raise failure('native_source_packet_vector_binding')
+    observations = SOURCE_WORK.get()
+    if observations is not None:
+        observations.update(encode_seconds=encode_seconds, encoded_count=encoded, reused_count=reused,
+            materialize_seconds=time.monotonic()-started)
     LOG.info('native_source_packet state=prepared sequence=%s batch_index=%s component=%s encoded=%s reused=%s elapsed_seconds=%.3f',
         command.sequence,idx,part,encoded,reused,time.monotonic()-started)
