@@ -203,30 +203,78 @@ def test_actual_wss_reconnect_from_stale_ready_reproves_before_search(shared_cha
 
 
 def test_model_only_ready_does_not_promote_target_channel(shared_channel_run):
+    """Synchronize the WSS worker control baseline and each READY proof.
+
+    Dispatch and receiver may both call promote(). READY_ACK has no per-proof
+    correlation key: an unacknowledged control frame can leave a previous
+    negative ACK pending when the test sends a subsequent valid proof.
+    """
     queue, ident, token, nonce = shared_channel_run
     with TestClient(Starlette(routes=[channel_route(queue)])) as app:
         with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer ' + token}) as socket:
             socket.send_json(dict(type='ATTACH', protocol_version=2, run_id=ident,
                 launch_nonce=nonce, runtime_incarnation='incarnation'))
-            generation = socket.receive_json()['connection_generation']
-            socket.send_json(dict(type='RESOURCE_STATE',protocol_version=2,
-                connection_generation=generation,state='idle'))
+            welcome = socket.receive_json()
+            assert welcome['type'] == 'WELCOME'
+            generation = welcome['connection_generation']
+
+            def message(kind, **fields):
+                socket.send_json(dict(type=kind, protocol_version=2,
+                    connection_generation=generation, **fields))
+
+            def barrier():
+                # An existing HEARTBEAT_ACK is ordered after prior frames in
+                # the same WSS receiver. No arbitrary sleeps or repeated
+                # READY requests; unexpected stale ACKs still fail strictly.
+                message('HEARTBEAT')
+                response = socket.receive_json()
+                if response['type'] == 'RESOURCE_PROBE':
+                    # A reconnect may require exact fresh idle proof rather
+                    # than an earlier unchallenged RESOURCE_STATE.
+                    probe = response['probe_nonce']
+                    assert isinstance(probe, str) and probe
+                    message('RESOURCE_STATE', state='idle', probe_nonce=probe)
+                    response = socket.receive_json()
+                    assert response['type'] == 'HEARTBEAT_ACK', response
+                    message('HEARTBEAT')
+                    response = socket.receive_json()
+                assert response['type'] == 'HEARTBEAT_ACK', response
+
+            message('RESOURCE_STATE', state='idle')
+            barrier()
+            assert queue.shared_reads.status()['state'] == 'idle'
+            assert not queue.channel_status(ident, token, generation)['ready']
 
             def ready(payload=None):
-                fields = {} if payload is None else {'runtime_readiness': payload}
-                socket.send_json(dict(type='READY', protocol_version=2, connection_generation=generation,
-                    model_revision=REVISION, space=SPACE, **fields))
+                message('READY', model_revision=REVISION, space=SPACE,
+                    **({} if payload is None else {'runtime_readiness': payload}))
                 return socket.receive_json()
 
-            assert ready()['status'] == 'runtime_not_ready'
+            model_only = ready()
+            assert model_only['type'] == 'READY_ACK', model_only
+            assert model_only['status'] == 'runtime_not_ready', model_only
+            assert 'runtime_readiness_required' in model_only['reasons']
             assert not queue.channel_status(ident, token, generation)['ready']
-            assert ready(observation(database_generation='wrong'))['status'] == 'runtime_not_ready'
-            assert ready(observation())['status'] == 'ready'
-            assert queue.channel_status(ident, token, generation)['runtime_verified']
-            # No original canonical import authority was restored for the
-            # fixture document. READY cannot authorize that durable work.
-            assert queue.shared_reads.status()['document_contexts']==0
+            assert not queue.channel_status(ident, token, generation)['runtime_verified']
+            barrier()
 
+            mismatch = ready(observation(database_generation='wrong'))
+            assert mismatch['type'] == 'READY_ACK', mismatch
+            assert mismatch['status'] == 'runtime_not_ready', mismatch
+            assert 'database_generation_mismatch' in mismatch['reasons']
+            assert not queue.channel_status(ident, token, generation)['ready']
+            assert not queue.channel_status(ident, token, generation)['runtime_verified']
+            barrier()
+
+            accepted = ready(observation())
+            assert accepted['type'] == 'READY_ACK', (
+                accepted, queue.channel_status(ident, token, generation))
+            assert accepted['status'] == 'ready', (
+                accepted, queue.channel_status(ident, token, generation))
+            assert queue.channel_status(ident, token, generation)['runtime_verified']
+            assert queue.channel_status(ident, token, generation)['ready']
+            # No canonical original import grant was restored in this fixture.
+            assert queue.shared_reads.status()['document_contexts'] == 0
 
 @pytest.mark.parametrize('changed', [None, observation(database_generation='other')])
 def test_promoted_target_rejects_changed_or_missing_runtime_proof(shared_channel_run, changed):
