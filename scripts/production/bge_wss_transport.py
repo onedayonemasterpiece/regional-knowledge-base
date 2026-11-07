@@ -278,10 +278,10 @@ class BgeWssTransport:
             raise ValueError('query result bound/mode')
         return result
 
-    def _start_read(self, frame, *, received_at):
+    def _start_read(self, frame, *, received_at=None):
         resource = self._claim_resource(frame, 'read')
         read=dict(frame=frame,resource=resource,pending=None,cancelled=False,discard=False,released=False,
-                  received_at=received_at)
+                  received_at=time.monotonic() if received_at is None else received_at)
         self.reads[self._read_identity(frame)]=read
         async def consume():
             async def encode(text):
