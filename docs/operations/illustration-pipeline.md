@@ -61,9 +61,9 @@ Only GEO migrates. Old book/figure/chunk/vector projections are rebuilt by fresh
 ## Public preview rendering
 
 Public `illustration_fetch` reads the accepted figure and physical page through
-the existing source-read channel, renders that page with the same verified
-original renderer as `book_pages`, then returns only the accepted figure crop
-as actual JPEG ImageContent. The complete page stays internal. Ordinary source
+the existing source-read channel, reuses that page's previously issued immutable
+archive bytes when available, and otherwise uses the same verified original
+renderer as `book_pages`. It returns only the accepted figure crop as actual JPEG ImageContent. The complete page stays internal. Ordinary source
 authorization and withdrawal checks apply through the existing read issuer.
 The image path does not require a Telegram mirror, registration, media hash or
 archive availability state. Original acquisition/storage integrity remains separate from derivative-media
