@@ -449,11 +449,22 @@ class KaggleSourceImporter:
 
     async def _native_status(self, access, row):
         output=await self.native_intake.status(access,row)
-        if output.state=='staged' and output.next_action=='continue_pages' and not output.warnings:
-            output=await self._native_research_status(access,row,output)
+        if ((output.state,output.next_action) in (('staged','continue_pages'),('finalized','done'))
+                and not output.warnings):
+            from .source_page_progress import read_publication_progress
+            published,_=await asyncio.to_thread(read_publication_progress,self.queue,row)
+            await self._check(access.authority,access.context,access.binding)
+            if output.state=='staged':
+                output=await self._native_research_status(access,row,output,published=published)
+            original=await self._receipt(access,row) if output.state=='finalized' else None
+            upper=original.page_count if original else max(published,default=-1)+1
+            missing=next((n for n in range(upper) if n not in published),None)
+            if missing is not None:
+                output=output.model_copy(update={'warnings':[*output.warnings,f'unpublished_physical_page:{missing}'],
+                    'message':output.message+f'; physical page {missing} is not TEXT APPLIED; authored cursor unchanged'})
         return output
 
-    async def _native_research_status(self, access, row, output):
+    async def _native_research_status(self, access, row, output, *, published):
         """Expose the SAME accepted model's exact page continuation on status.
 
         A finalized source is not automatically a completed investigation.
@@ -494,8 +505,7 @@ class KaggleSourceImporter:
         if output.next_cursor is not None: cursor=output.next_cursor  # a packet retry or tail page wins
         elif cursor is None and output.state=='staged': cursor=await self.native_intake.applied_page_cursor(access,current)
         if output.state=='staged' and output.next_action=='continue_pages':
-            from .source_page_progress import read_publication_progress,next_unaccepted
-            published,_=await asyncio.to_thread(read_publication_progress,self.queue,current)
+            from .source_page_progress import next_unaccepted
             cursor=next_unaccepted(cursor,published)
         await self._check(access.authority, access.context, access.binding)
         return output.model_copy(update={

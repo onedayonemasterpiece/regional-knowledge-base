@@ -520,6 +520,52 @@ async def test_optional_semantic_rejection_allows_the_reported_next_new_page(nat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('kind,order,stage_gap,final_gap',[
+    ('interior',(0,2),1,1),
+    ('trailing_partial',(0,1),None,2),
+    ('blank_published',(0,1,2),None,3),
+    ('figure_published',(0,1,2),None,3),
+    ('reverse',(2,0),1,1),
+])
+async def test_status_names_unpublished_physical_page_without_overriding_authored_cursor(
+        native_intake,kind,order,stage_gap,final_gap):
+    s=native_intake;book=await start(s)
+    for index in order:
+        payload=batch(s,book,first=index,count=1)
+        if index==1 and kind in ('blank_published','figure_published'):
+            payload['chunks']=[]
+            if kind=='blank_published':
+                payload['pages'][0]['regions']=[]
+            else:
+                region=payload['pages'][0]['regions'][0]
+                region.update(kind='figure',source_text='',normalized_text='')
+                payload['pages'][0]['illustrations']=[dict(
+                    illustration_key='figure-1',source_region_key='body',kind='drawing',
+                    visual_description='Synthetic model-observed drawing without printed text')]
+        source_import=options(research=True,ingestion_id=book.ingestion_id,state='pending')
+        source_import.research.continuation['arguments']['cursor']=str(index+1)
+        assert (await call(s,book,'stage',payload=payload,source_import=source_import)).state=='processing'
+        for _ in range(3):
+            await finish(s,book)
+            await call(s,book,'status')
+    staged=await call(s,book,'status')
+    assert staged.state=='staged' and staged.next_action=='continue_pages'
+    assert staged.next_cursor==str(order[-1]+1)  # Author's order, never a forced earliest-page override.
+    if stage_gap is None:
+        assert not any(w.startswith('unpublished_physical_page:') for w in staged.warnings)
+    else:
+        assert f'unpublished_physical_page:{stage_gap}' in staged.warnings
+        assert f'physical page {stage_gap} is not TEXT APPLIED' in staged.message
+    before=operation_count(s)
+    assert (await call(s,book,'finalize')).state=='processing'
+    await finish(s,book)
+    done=await call(s,book,'status')
+    assert (done.state,done.next_action)==('finalized','done')  # End of reading, not full coverage.
+    assert f'unpublished_physical_page:{final_gap}' in done.warnings
+    assert operation_count(s)==before+1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('authored_cursor',[None,'4'])
 async def test_status_after_pause_returns_next_unaccepted_physical_page(native_intake,authored_cursor):
     s=native_intake
