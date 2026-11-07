@@ -413,5 +413,29 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             await self.helper.stage(self.access,{**self.row,'person_id':'other'},self.payload,None)
         self.assertFalse(self.spool.entries)
 
+    async def test_catalog_late_pending_facts_keep_the_existing_pending_reason(self):
+        # Another accepted write can become unresolved during awaited admission
+        # checks. Its pending outcome is not missing source history.
+        self.spool._source_anchor=object()
+        self.helper.startup.coverage=self.spool._source_anchor
+        self.helper.startup.binding=self.access.binding
+        self.helper.startup.imports_current=lambda:True
+        for pending,unknown,current,reason in (
+                (False,True,True,'prior_write_pending'),
+                (True,False,True,'prior_write_pending'),
+                (False,False,False,'source_history_unavailable')):
+            with self.subTest(pending=pending,unknown=unknown,current=current):
+                async def facts(scope):
+                    return NS(database_generation='db',scope_sequence=0,
+                        covered_sequence=0,pending=pending,unknown=unknown)
+                self.spool.read_facts=facts
+                self.importer._intake_coverage_current=lambda binding:current
+                with self.assertRaisesRegex(IntakeFailure,'^'+reason+'$'):
+                    await self.helper._stage_exact(self.access,self.row,kind='catalog',
+                        key='synthetic-catalog',route='source.catalog.v1',payload={},
+                        builder=lambda **kw:builder('source.catalog.v1',**kw))
+                self.assertFalse(self.spool.entries)
+                self.assertFalse(self.spool.seals)
+
 
 if __name__=='__main__': unittest.main()
