@@ -177,7 +177,7 @@ async def test_activity_199_page_journal_skips_stale_140_not_rejected_198(watche
     result=(await get(w)).json()
     elapsed_ms=round(1000*(clock.perf_counter()-begin),2)
     print(f"synthetic 199 TEXT APPLIED pages + 1 rejected duplicate: watch={elapsed_ms} ms")
-    assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"199")
+    assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"198")
 
 
 @pytest.mark.parametrize('rejected',[None,31])
@@ -375,7 +375,7 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("physical,cursor", [(9,"9"),(3,"4")])
+@pytest.mark.parametrize("physical,cursor", [(9,"9"),(3,"3")])
 async def test_finalized_unpublished_rejected_text_is_not_done(watcher,physical,cursor):
     w=watcher
     with w.queue.connect() as db:
@@ -476,3 +476,26 @@ async def test_activity_credential_checks_run_off_the_event_loop(watcher, monkey
     assert (await get(watcher)).status_code == 200
     assert {name for name, _ in seen} == {"verify_service_credential", "service_credential_current"}
     assert not any(on_loop for _, on_loop in seen)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text_state,cursor',[('REJECTED_PRECONDITION','3'),('APPLIED','4')])
+async def test_corrective_packet_keeps_its_page_until_matching_text_applies(watcher,text_state,cursor):
+    """Earlier TEXT for a page does not apply its later corrective packet."""
+    from regional_knowledge.kaggle_native_source_intake import NativeSourceIntake
+    w=watcher
+    with w.queue.connect() as db:
+        synthetic_page_records(db,w,batch=1,physical=3,sequence=3,text_state=text_state)
+        db.execute('UPDATE rkb_native_source_intake_state SET rejected_batch_index=1')
+    helper=object.__new__(NativeSourceIntake);helper.queue=w.queue
+    async def entry(key):
+        with w.queue.connect(write=False) as db:
+            command=json.loads(db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?',(key,)).fetchone()[0])
+        return SimpleNamespace(command=SimpleNamespace(payload=base64.b64decode(command['payload_b64'])))
+    async def check(*args): pass
+    helper._entry=entry;helper._check=check
+    before=read_timestamp(w)
+    row=dict(ingestion_id=w.ingestion,source_id=w.source,person_id=w.actor)
+    native=await helper.applied_page_cursor(object(),row,rejected_batch=1)
+    activity=(await get(w)).json()
+    assert (native,activity['next_cursor'])==(cursor,cursor)
+    assert activity['accepted_pages']==2 and read_timestamp(w)==before

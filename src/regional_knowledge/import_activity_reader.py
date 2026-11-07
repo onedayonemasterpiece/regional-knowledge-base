@@ -135,7 +135,7 @@ class ImportActivityReader:
                 cursor = None
             if type(cursor) is not str or not cursor.isdecimal() or len(cursor) > 4 or int(cursor) > 2499:
                 cursor = None
-            else:
+            elif not unpublished_rejection:
                 cursor = next_unaccepted(cursor,accepted)
         if missing_semantic and not unpublished_rejection and not pending and state != 'failed':
             cursor = str(min(missing_semantic))
