@@ -956,3 +956,71 @@ async def test_backpressure_late_result_survives_new_read_pruning(monkeypatch):
                 assert response['request_id']==name and release['compute_claim']=='claim-'+name
             assert len(peer.frames('QUERY_RESULT'))==9
     finally:early.set();late.set();resume_writer.set();resume_states.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('diagnostics', [True, False])
+async def test_read_transport_timing_includes_wait_behind_busy_writer(diagnostics):
+    from regional_knowledge.query_telemetry import (
+        NativeReadTelemetry, ReadRuntime, bind_read_runtime,
+        clean_native_read_events, drain_native_read_events,
+    )
+
+    blocked, release, handled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    second_handled = asyncio.Event()
+
+    class HeldWriterPeer(Peer):
+        @asynccontextmanager
+        async def connect(self):
+            async with super().connect() as wire:
+                class Socket:
+                    async def send(self, raw):
+                        if json.loads(raw)['type'] == 'HEARTBEAT' and not blocked.is_set():
+                            blocked.set()
+                            await release.wait()
+                        await wire.send(raw)
+
+                    async def receive(self):
+                        return await wire.receive()
+                yield Socket()
+
+    peer = HeldWriterPeer()
+    collector = asyncio.Queue(maxsize=8)
+
+    async def handler(frame, *, encode):
+        answer = result(frame)
+        if diagnostics:
+            incarnation = peer.frames('ATTACH')[0]['runtime_incarnation']
+            with bind_read_runtime(ReadRuntime(CONFIG['run_id'], incarnation)):
+                with NativeReadTelemetry(collector, frame) as observation:
+                    observation.finish(answer)
+            answer['read_events'] = drain_native_read_events(collector, answer)
+        handled.set()
+        if frame['request_id'] == 'read-2':
+            second_handled.set()
+        return answer
+
+    try:
+        async with running(handler, peer=peer):
+            await asyncio.wait_for(blocked.wait(), 1)
+            frame = query()
+            await peer.put(frame)
+            await asyncio.wait_for(handled.wait(), 1)
+            await asyncio.sleep(.03)  # Actual reply waits behind an existing socket write.
+            await peer.put(query(request='read-2', claim='read-claim-2'))
+            await asyncio.wait_for(second_handled.wait(), 1)
+            release.set()
+            answer = await peer.wait('QUERY_RESULT', predicate=lambda f: f['request_id'] == 'read-1')
+            assert {k: v for k, v in answer.items() if k != 'read_events'} == result(frame)
+            if diagnostics:
+                events = clean_native_read_events(answer['read_events'],
+                    request_id=frame['request_id'], run_id=CONFIG['run_id'],
+                    runtime_incarnation=peer.frames('ATTACH')[0]['runtime_incarnation'],
+                    connection_generation=1, turn_generation=1)
+                timing = events[0]['stages_ms']
+                assert timing['transport_ms'] >= 20
+                assert timing['transport_ms'] > timing['adapter_ms']
+            else:
+                assert 'read_events' not in answer
+    finally:
+        release.set()
