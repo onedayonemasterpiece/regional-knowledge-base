@@ -126,7 +126,6 @@ class KaggleSourceImporter:
         self._lock = asyncio.Lock()
         self._ingestion_locks = {}
         self._caption_synced = {}
-        self._caption_task = None
         self.output_gate = OwnerImportOutputGate(self)
         with self.queue.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS rkb_source_intake_control(
@@ -333,23 +332,6 @@ class KaggleSourceImporter:
             _LOG.warning('original_caption state=unavailable ingestion_id=%s error_class=%s',
                 row['ingestion_id'],type(exc).__name__)
 
-    async def _sync_import_captions(self, access, ingestion_id):
-        # Piggyback on normal owner import traffic; no timer, service or operator.
-        # One changed caption per call bounds optional Telegram work. Restart
-        # reconstructs the projection from the journal, including completed books.
-        try:
-            from .telegram_import_status import started_statuses
-            rows=await asyncio.to_thread(started_statuses,self.queue,access.authority.person_id,
-                synced=self._caption_synced,preferred=ingestion_id,limit=2)
-            rows.sort(key=lambda item:item[0]['ingestion_id']==ingestion_id)
-            async with asyncio.timeout(2):
-                for row,status in rows:
-                    if await self._caption_original(access,row,status=status):break
-        except TimeoutError:
-            _LOG.info('original_caption state=pending')
-        except Exception as error:
-            _LOG.warning('original_caption state=projection_unavailable error_class=%s',type(error).__name__)
-
     async def _start(self, access, *, file, metadata, source_import):
         if file is None:
             raise failure('attached_source_required', status='invalid_query')
@@ -412,8 +394,8 @@ class KaggleSourceImporter:
         receipt = await self._receipt(access, row)
         if receipt is None:
             return await self._original_pending(row,status)
-        await self._caption_original(access,row)
         if row['phase'] == 'acquiring':
+            await self._caption_original(access,row)
             row = await asyncio.to_thread(self._save, row, phase='staging')
         if prior is not None and prior['phase']!='acquiring' and self.native_intake is not None:
             return await self._native_status(access,row)
@@ -927,6 +909,8 @@ class KaggleSourceImporter:
         if entry.outcome_state == 'DURABLE':
             state = 'finalized' if entry.apply_receipt.status == 'applied' else 'failed'
             row = await asyncio.to_thread(self._save, row, phase=state)
+            if state == 'finalized':
+                await self._caption_original(access,row,status='✅ Импорт завершён')
             _LOG.info('source_import_terminal ingestion_id=%s state=%s command_sha256=%s',
                 row['ingestion_id'], state, entry.command_sha256)
             accepted = json.loads(entry.command.payload)
@@ -1019,8 +1003,6 @@ class KaggleSourceImporter:
                 from .product_telemetry import import_metadata
                 import_metadata(ingestion_id=output.ingestion_id,result_state=output.state,next_action=output.next_action)
                 output = await self._reply(access, output)
-                if self._caption_task is None or self._caption_task.done():
-                    self._caption_task = asyncio.create_task(self._sync_import_captions(access,output.ingestion_id))
                 return output
         except ToolError:
             raise

@@ -124,8 +124,6 @@ async def native_intake(target, tmp_path):
     value = SimpleNamespace(t=t,startup=startup,spool=spool,store=store,originals=originals,
         importer=startup.importer,principal=principal,token_calls=token_calls,geo_state=geo_state)
     yield value
-    if task := getattr(startup.importer,'_caption_task',None):
-        await task
     await startup.source_dispatch.aclose()
     spool.close()
 
@@ -1906,70 +1904,39 @@ async def test_entity_validation_distinguishes_missing_and_overlong_field_withou
 
 
 @pytest.mark.asyncio
-async def test_normal_import_updates_caption_history_and_recovers_restart(native_intake,monkeypatch):
-    from regional_knowledge.telegram_import_status import started_statuses
-    from uuid import uuid4
+async def test_caption_only_at_book_start_and_applied_finish(native_intake,monkeypatch):
     s=native_intake
-    book=await start(s)
-    # Original receipt metadata exists in production; the importer fixture uses
-    # an in-memory original provider instead of OriginalIntakeController tables.
-    with s.t.queue.connect() as db:
-        actor=db.execute('SELECT person_id FROM rkb_source_intake_control WHERE ingestion_id=?',(book.ingestion_id,)).fetchone()[0]
-    with s.t.queue.connect() as db:
-        db.execute('CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,receipt_json TEXT,telegram_locator_json TEXT)')
-        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
-                   (book.ingestion_id,actor,json.dumps({'page_count':1})))
-    captions={book.ingestion_id:'Original caption with user notes\nRKB-original '+book.ingestion_id}
     edits=[]
+    last=''
     async def caption(context,ingestion_id,*,caption=None):
+        nonlocal last
         assert context.route=='owner'
         if caption is not None:
-            captions[ingestion_id]=caption;edits.append(caption)
-        return dict(owned=True,editable=True,caption=captions[ingestion_id],updated=caption is not None)
+            last=caption
+            edits.append(caption)
+        return dict(owned=True,editable=True,caption=last,updated=caption is not None)
     monkeypatch.setattr(s.originals,'caption',caption)
-    unstarted=await start(s,file_id='not-read-yet')
-    edits.clear()
-    with s.t.queue.connect() as db:
-        db.execute('INSERT INTO rkb_original_intakes(ingestion_id,actor,receipt_json) VALUES(?,?,?)',
-                   (unstarted.ingestion_id,actor,json.dumps({'page_count':1})))
-    # No native stage: merely preparing a future book does not mark it.
-    assert started_statuses(s.t.queue,actor)==[]
-    await stage(s,book,batch(s,book,first=0,count=1))
-    await s.importer._caption_task
-    assert edits[-1].startswith('РКБ: ⏳')
-    assert 'Original caption with user notes' in edits[-1]
+    book=await start(s)
+    assert len(edits)==1 and 'Synthetic 174-page scanned source' in edits[0]
     await call(s,book,'status')
-    await s.importer._caption_task
+    await stage(s,book,batch(s,book,count=1))
     await call(s,book,'status')
-    await s.importer._caption_task
-    assert len(edits)==1  # Repeated status does not hit Telegram.
+    assert len(edits)==1
     for _ in range(3):
         await finish(s,book)
         await call(s,book,'status')
-        await s.importer._caption_task
     await call(s,book,'finalize')
     await finish(s,book)
     for _ in range(8):
         output=await call(s,book,'status')
-        await s.importer._caption_task
         if output.state=='finalized':break
     assert output.state=='finalized'
-    assert edits[-1].startswith('РКБ: ✅ Импорт завершён\n')
+    assert len(edits)==2 and edits[-1].startswith('РКБ: ✅ Импорт завершён\n')
     assert edits[-1].count('РКБ:')==1
-    assert started_statuses(s.t.queue,str(uuid4()))==[]
-    # Canonical finish is insufficient if the original includes an unread leaf.
-    with s.t.queue.connect() as db:
-        db.execute('UPDATE rkb_original_intakes SET receipt_json=? WHERE ingestion_id=?',
-                   (json.dumps({'page_count':2}),book.ingestion_id))
-    await call(s,book,'status')
-    await s.importer._caption_task
-    assert edits[-1].startswith('РКБ: 🏁⚠️')
-    assert all('not-read-yet' not in value for value in edits)
-    # Restart loses only the optimization, not status. Idempotent exact update.
     s.importer._caption_synced.clear()
     await call(s,book,'status')
-    await s.importer._caption_task
-    assert edits[-1].startswith('РКБ: 🏁⚠️')
+    await start(s)
+    assert len(edits)==2
 
 @pytest.mark.asyncio
 async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(native_intake):
@@ -2003,30 +1970,14 @@ async def test_telegram_caption_tracks_actual_rejection_without_blocking_reader(
     assert projected[0][1]=='⏳ Импортируется · страниц 0/1'
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('provider_fails',[False,True])
-async def test_caption_provider_wait_is_after_reader_reply(native_intake,monkeypatch,provider_fails):
-    s=native_intake;book=await start(s)
-    row=s.importer._row(s.principal.subject,book.ingestion_id)
-    entered=asyncio.Event();release=asyncio.Event();edits=[]
-    def projection(*args,**kwargs):return [(row,'⏳ Импортируется')]
-    async def caption(context,ingestion_id,*,caption=None):
-        entered.set();await release.wait()
-        if provider_fails:raise OriginalIntakeError('synthetic caption failure')
-        if caption is not None:edits.append(caption)
-        return dict(owned=True,updated=caption is not None,caption=caption or 'Existing note')
-    monkeypatch.setattr('regional_knowledge.telegram_import_status.started_statuses',projection)
-    monkeypatch.setattr(s.originals,'caption',caption)
-    try:
-        output=await asyncio.wait_for(call(s,book,'status'),.25)
-        assert output.ingestion_id==book.ingestion_id
-        await asyncio.wait_for(entered.wait(),.25)
-        assert not edits
-    finally:
-        release.set()
-        task=getattr(s.importer,'_caption_task',None)
-        if task is not None:await task
-    if provider_fails:assert not edits
-    else:assert edits and edits[-1].startswith('РКБ: ⏳ Импортируется\nExisting note')
+async def test_normal_import_calls_do_not_schedule_caption_work(native_intake):
+    s = native_intake
+    book = await start(s)
+    assert len(s.originals.captions) == 1  # Start caption.
+    await call(s, book, 'status')
+    await stage(s, book, batch(s, book, count=1))
+    assert not hasattr(s.importer, '_caption_task')
+    assert len(s.originals.captions) == 1
 
 
 @pytest.mark.asyncio
@@ -2154,23 +2105,6 @@ async def test_legacy_masked_rollback_gets_one_ordinary_retry(native_intake):
     result = await call(s, book, 'finalize')
     assert (result.next_action, result.next_cursor) == ('continue_pages', '0')
 
-
-@pytest.mark.asyncio
-async def test_changed_active_caption_does_not_starve_finished_book(native_intake, monkeypatch):
-    import regional_knowledge.telegram_import_status as projection
-    s = native_intake
-    calls = []
-    monkeypatch.setattr(projection, 'started_statuses', lambda *_, **__: [
-        ({'ingestion_id': 'current'}, 'active page changed again'),
-        ({'ingestion_id': 'finished'}, 'finished save has settled'),
-    ])
-    async def caption(access, row, *, status):
-        calls.append(row['ingestion_id'])
-        return True
-    monkeypatch.setattr(s.importer, '_caption_original', caption)
-    await s.importer._sync_import_captions(
-        SimpleNamespace(authority=SimpleNamespace(person_id='synthetic-owner')), 'current')
-    assert calls == ['finished']
 
 
 @pytest.mark.asyncio

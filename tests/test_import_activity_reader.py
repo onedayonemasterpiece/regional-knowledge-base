@@ -69,7 +69,6 @@ def watcher(tmp_path, auth):
     importer = object.__new__(KaggleSourceImporter)
     importer.queue, importer.startup = queue, startup
     importer._lock = asyncio.Lock()
-    importer._caption_task = None
     importer._ingestion_locks = {}
     startup.importer = importer
     ident, token = new_service_token()
@@ -372,8 +371,6 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
     assert after_pages>before
     await w.importer.book_ingest(command="stage",principal=object(),
                                  ingestion_id=w.ingestion,payload={"pages":[]})
-    if w.importer._caption_task is not None:
-        await w.importer._caption_task
     after_stage=read_timestamp(w)
     assert after_stage>after_pages
     result=(await get(w)).json()
