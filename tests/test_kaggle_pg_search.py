@@ -56,6 +56,60 @@ class FixtureConnection:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('observe', [False, True])
+async def test_exact_duplicate_evidence_keeps_distinct_provenance_and_images(monkeypatch, observe):
+    from uuid import UUID
+    from regional_knowledge.kaggle_protocol import QueryFilters
+    from regional_knowledge.kaggle_search import acceptance_search
+    from regional_knowledge import kaggle_passage_illustrations
+
+    ids = [UUID(int=n) for n in range(1, 11)]
+    source = UUID(int=100)
+    base = [ids[0], source, 1, 'page 7', 'synthetic harbour', 'fixture book',
+            {'catalog': {'title': 'fixture'}}, True]
+    rows = [base.copy() for _ in ids]
+    for row, passage in zip(rows, ids):
+        row[0] = passage
+    # Only row 1 is a duplicate. Every other changed evidence field matters.
+    for row, index, value in zip(rows[2:8], [1, 2, 3, 4, 5, 6],
+            [UUID(int=101), 2, 'page 8', 'another harbour', 'other edition',
+             {'catalog': {'title': 'corrected title'}}]):
+        row[index] = value
+
+    class SearchRows(FixtureConnection):
+        async def fetchall(self):
+            if 'candidates' in self.statement:
+                return [(passage, 1) for passage in ids]
+            return [rows[ids.index(passage)] for passage in self.statements[-1][1][0]]
+
+    async def illustrations(cursor, execute, **kwargs):
+        return {str(ids[-2]): (({'image_id': 'different image'},), False),
+                str(ids[-1]): ((), True)}
+
+    monkeypatch.setattr(kaggle_passage_illustrations, 'read_passage_illustrations_batch', illustrations)
+
+    async def encode(query):
+        return [1] + [0] * 1023
+
+    connection = SearchRows()
+    if observe:
+        result = await acceptance_search(connection, 'harbour', encode=encode,
+            filters=QueryFilters(source_ids=(str(source), str(UUID(int=101))), kinds=('source',)),
+            timeout_seconds=2, snapshot_guard=None, snapshot_finish=None)
+    else:
+        result = await fused_search(connection, 'harbour', encode=encode, top_k=10)
+    expected = ids if observe else [ids[0], *ids[2:]]
+    assert [item.passage_id for item in result.evidence] == list(map(str, expected))
+    assert result.evidence[-2].illustrations == ({'image_id': 'different image'},)
+    assert result.evidence[-1].illustrations_has_more
+    assert len([sql for sql, _ in connection.statements if 'WITH ORDINALITY h' in sql]) == 1
+    if observe:
+        assert result.branch_ranks == (tuple(map(str, ids)),) * 3
+    else:
+        assert result.branch_ranks is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("caller_cancel", [False, True])
 async def test_deadline_or_caller_cancel_cleans_transaction(caller_cancel):
     connection = FixtureConnection()

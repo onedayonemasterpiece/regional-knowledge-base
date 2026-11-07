@@ -5,7 +5,7 @@ import asyncio
 import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from psycopg.errors import QueryCanceled
@@ -264,10 +264,18 @@ async def _search(connection, query, *, encode, top_k, candidate_budget,
                             passage_ids=[str(r[0]) for r in linked_rows],
                             source_ids=[str(r[1]) for r in linked_rows],
                             limit=5)
-                    result = SearchResult(tuple(StorySearchEvidence(r[1]) if story else
+                    evidence = tuple(StorySearchEvidence(r[1]) if story else
                                               SearchEvidence(str(r[0]), str(r[1]), *r[2:7],
                                                   *links.get(str(r[0]), ((), False)))
-                                              for r in rows if not story or r[1] is not None), limitation=(
+                                              for r in rows if not story or r[1] is not None)
+                    if not story and not observe:
+                        unique = []
+                        for item in evidence:
+                            # Preserve the best-ranked citation and every distinct source/image fact.
+                            if not any(item == replace(prior, passage_id=item.passage_id) for prior in unique):
+                                unique.append(item)
+                        evidence = tuple(unique)
+                    result = SearchResult(evidence, limitation=(
                         "bounded_candidate_fusion_unverified" if source_ids is not None
                         else "bounded_ann_recall_unverified"), branch_ranks=ranks)
                     if snapshot_finish is not None:

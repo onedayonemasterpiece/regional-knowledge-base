@@ -432,7 +432,7 @@ async def test_long_unicode_combined_wire_bounds_and_real_reauthorizing_continua
             await admin.execute("""INSERT INTO rkb_v4.passage_search
                 (passage_id,source_id,revision,ordinal,locator,body,language,config,embedding)
                 VALUES (%s,%s,1,%s,%s,%s,'simple','pg_catalog.simple',%s::vector)""",
-                (f"10000000-0000-0000-0000-{i+1:012d}", SOURCE, i, "𐀀" * 1000, body,
+                (f"10000000-0000-0000-0000-{i+1:012d}", SOURCE, i, str(i) + "𐀀" * 999, body,
                  "[" + ",".join(map(str, VECTOR)) + "]"))
         await admin.execute("UPDATE rkb_v4.recovery_state SET applied_seq=6")
     await publish(env, 6)
