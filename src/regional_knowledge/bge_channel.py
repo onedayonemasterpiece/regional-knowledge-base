@@ -617,7 +617,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             timings=frame.get('timings',{})
                             seconds=timings.get('native_work_seconds') if type(timings) is dict else None
                             if (type(timings) is dict and set(timings)=={'native_work_seconds'} and type(seconds) in (int,float)
-                                    and math.isfinite(seconds) and 0<=seconds<=86_400):
+                                    and 0<=seconds<=86_400 and math.isfinite(seconds)):
                                 logger.info(json.dumps(dict(event='native_source_work_timing',run_id=run_id,
                                     connection_generation=generation,job_id=frame['job_id'],native_work_seconds=seconds)))
                         if settled is None:

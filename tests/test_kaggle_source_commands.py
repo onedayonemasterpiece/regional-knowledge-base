@@ -304,7 +304,7 @@ async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes
 
 @pytest.mark.parametrize('timings', [None, {'native_work_seconds': .125},
     {'native_work_seconds': -1}, {'native_work_seconds': True}, 'malformed', {'private': 3},
-    {'native_work_seconds': 86_401}, {'native_work_seconds': 1e100}])
+    {'native_work_seconds': 86_401}, {'native_work_seconds': 1e100}, {'native_work_seconds': 10**1000}])
 def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer, caplog, timings):
     caplog.set_level('INFO', logger='regional_knowledge.bge_channel')
     from test_bge_shared_channel import connect,attach,ready,receive_expected,send,release as wire_release
