@@ -33,6 +33,7 @@ from .kaggle_public_backend import current_binding, TargetUnavailable
 from .original_intake import OriginalIntakeError, TERMINAL_REJECTIONS, VerifiedOriginalReceipt
 from .participants import RequestAuthority
 from .source_import import MAX_IMPORT_BYTES
+from .source_stage import MAX_BATCH_PAGES
 from .source_import_v2 import IMPORT_V2_DEPENDENCY, SOURCE_IMPORT_V2, STORY_REVISIONS, resolved_import_v2_command
 from .source_import_v3 import IMPORT_V3_DEPENDENCY, SOURCE_IMPORT_V3, FACT_REVISIONS, resolved_import_v3_command
 from .source_import_v4 import IMPORT_V4_DEPENDENCY, SOURCE_IMPORT_V4, resolved_import_v4_command
@@ -41,7 +42,8 @@ from .kaggle_domain_bindings import DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS,resolve
 from .story_contracts import StageStoryCandidateInput
 from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate_graph
 
-_NATIVE_STAGE_INPUT_GUIDE = ("For a newly visually reviewed, unaccepted page, use page_id, physical_page_index, source_material='visual_reviewed', source_review_note (1-500 characters), and regions. "
+_NATIVE_STAGE_INPUT_GUIDE = (f"Current native stage packets allow 1-{MAX_BATCH_PAGES} issued, visually reviewed pages; this is separate from the book_pages request size, so reviewed pages from several responses may share one stage packet within existing payload and chunk bounds. "
+    "For a newly visually reviewed, unaccepted page, use page_id, physical_page_index, source_material='visual_reviewed', source_review_note (1-500 characters), and regions. "
     "Each region needs region_key, kind (heading, body, caption, footnote, figure, table, header, footer, page_number or marginalia), bbox={left,top,right,bottom} with integer coordinates 0..1000 and left<right/top<bottom, and reading_order unique within its page; put verbatim text in source_text. "
     "Each chunk needs chunk_key and title with region_refs=[{page_id,region_key}] OR exact span_refs, never both. source_image_receipt_sha256 is optional: native stage resolves its previously issued owned receipt without another image read. ")
 _LOG = logging.getLogger(__name__)
