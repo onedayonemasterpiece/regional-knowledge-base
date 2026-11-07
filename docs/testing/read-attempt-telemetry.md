@@ -25,6 +25,15 @@ Timing fields are local monotonic durations. `total_ms`, `search_ms` and their
 components overlap; `timing_semantics=overlapping_do_not_sum` forbids summing
 them. Neither host wall clocks nor separate stage percentiles establish E2E.
 
+The outbound worker adds `transport_ms` to the existing adapter event immediately
+before writing its result to the socket. It measures local receive-to-write
+duration, including adapter work and waiting behind earlier writes. It overlaps
+`adapter_ms`; it excludes socket-send duration and both network legs. The
+timestamp travels with the existing outbound queue item, so releasing/pruning a
+completed read cannot lose the observation. Missing diagnostics leave the reply
+unchanged. This measurement becomes live with the next ordinary worker release;
+it is not evidence that latency has improved.
+
 Both collectors remain finite and lossy. They use nonblocking enqueue, never
 per-read durable storage or awaited logging. The next successfully enqueued
 event carries cumulative `loss_before` counters and becomes `inconclusive`

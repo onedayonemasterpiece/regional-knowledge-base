@@ -278,9 +278,10 @@ class BgeWssTransport:
             raise ValueError('query result bound/mode')
         return result
 
-    def _start_read(self, frame):
+    def _start_read(self, frame, *, received_at=None):
         resource = self._claim_resource(frame, 'read')
-        read=dict(frame=frame,resource=resource,pending=None,cancelled=False,discard=False,released=False)
+        read=dict(frame=frame,resource=resource,pending=None,cancelled=False,discard=False,released=False,
+                  received_at=time.monotonic() if received_at is None else received_at)
         self.reads[self._read_identity(frame)]=read
         async def consume():
             async def encode(text):
@@ -462,16 +463,23 @@ class BgeWssTransport:
         order = 0
         read_sent = set()
 
-        async def put(frame, priority=0):
+        async def put(frame, priority=0, received_at=None):
             nonlocal order
             order += 1
-            await outbound.put((priority, order, {'connection_generation': generation, **frame}))
+            await outbound.put((priority, order, {'connection_generation': generation, **frame}, received_at))
 
         async def writer():
             while True:
-                _, _, frame = await outbound.get()
+                _, _, frame, received_at = await outbound.get()
                 if frame.get('type') == 'QUERY_RESULT' and frame.get('connection_generation') != generation:
                     continue
+                try:
+                    for event in frame.get('read_events', ()):
+                        if received_at is not None and event.get('event') == 'kaggle_read_adapter_terminal':
+                            # Inclusive receive-to-write time; overlaps adapter_ms.
+                            event['stages_ms']['transport_ms'] = (time.monotonic() - received_at) * 1000
+                except Exception:
+                    pass  # Optional timing cannot prevent an existing reply.
                 await send(frame)
 
         async def queue_read_result():
@@ -479,7 +487,7 @@ class BgeWssTransport:
                 result=read['pending'];key=read['resource']['compute_claim']
                 if result is not None and key not in read_sent:
                     read_sent.add(key)
-                    await put(result,priority=0)
+                    await put(result,priority=0,received_at=read['received_at'])
                     if read['pending'] is result:read['pending']=None
 
         ready_confirmed=False
@@ -547,6 +555,7 @@ class BgeWssTransport:
             nonlocal ready_confirmed, telegram_request_pending
             while True:
                 frame = await receive()
+                received_at = time.monotonic()
                 if type(frame.get('connection_generation')) is not int:
                     raise ValueError('integer channel generation required')
                 if frame['connection_generation'] != generation:
@@ -574,7 +583,7 @@ class BgeWssTransport:
                     if any(r['frame']['compute_claim']==frame['compute_claim'] for r in self.reads.values()):
                         raise ValueError('ephemeral QUERY cannot replay across sessions')
                     await queue_read_result()
-                    self._start_read(frame)
+                    self._start_read(frame, received_at=received_at)
                 elif kind == 'SNAPSHOT_UPLOAD_TICKET':
                     if (self.snapshot_channel is None or set(frame)!={'type','protocol_version',
                             'connection_generation','request_id','ticket'}):
