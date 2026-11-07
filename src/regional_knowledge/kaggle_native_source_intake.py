@@ -889,9 +889,9 @@ class NativeSourceIntake:
             from .source_batch_context import chunk_pages
             def reuses_chunks():
                 def selection(chunk):
-                    return [(field,[tuple(ref.get(k) for k in ('page_id','region_key','start','end'))
-                                    for ref in chunk.get(field,[])])
-                            for field in ('region_refs','span_refs','footnote_refs')]
+                    return tuple((field,tuple(tuple(ref.get(k) for k in ('page_id','region_key','start','end'))
+                                              for ref in chunk.get(field,[])))
+                                 for field in ('region_refs','span_refs','footnote_refs'))
                 with self.queue.connect(write=False) as db:
                     for physical in selected:
                         accepted=accepted_model_page(db,row,physical)
@@ -899,8 +899,9 @@ class NativeSourceIntake:
                         if (accepted and accepted['chunks']
                                 and page['regions']==accepted['page']['regions']):
                             keys={c['chunk_key'] for c in accepted['chunks']}
+                            selections={selection(c) for c in accepted['chunks']}
                             if any(c['chunk_key'] not in keys
-                                   and any(selection(c)==selection(old) for old in accepted['chunks'])
+                                   and selection(c) in selections
                                    for c in payload.get('chunks',[])
                                    if accepted['page']['page_id'] in chunk_pages(c,text_only=True)):
                                 return False
