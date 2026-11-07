@@ -119,6 +119,7 @@ async def test_preview_uses_exact_accepted_ingestion_when_source_has_stale_recei
     with connect() as db:
         db.execute('''CREATE TABLE rkb_original_intakes(ingestion_id TEXT,actor TEXT,
             spec_json TEXT,receipt_json TEXT,storage_sha256 TEXT,acquisition_json TEXT)''')
+        db.execute('CREATE TABLE rkb_original_image_issuance(ingestion_id TEXT,physical_page_index INTEGER,receipt_json TEXT)')
         for item,handle in ((stale,'stale'),(receipt,'current')):
             db.execute('INSERT INTO rkb_original_intakes VALUES(?,?,?,?,?,?)',(
                 item.ingestion_id,'import-owner',json.dumps(dict(source_id=item.source_id)),

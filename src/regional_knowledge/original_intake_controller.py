@@ -410,6 +410,12 @@ class OriginalIntakeController:
             if 'preview_render' in page['native_text_info']:page['native_text_info']['preview_render']=prior['preview_render']
             page['page_receipt_sha256']=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))
         started=time.monotonic()
+        data=await self._image_data(native,page)
+        _LOG.info('original_page_read stage=image_downloaded run_id=%s ingestion_id=%s page_index=%s image_bytes=%s elapsed_ms=%.3f',
+            binding.run_id,record['spec']['ingestion_id'],index,len(data),(time.monotonic()-started)*1000)
+        return record,page,data
+
+    async def _image_data(self,native,page):
         def derivative():
             result=self.store.client.get_object(Bucket=self.store.bucket,Key=native['key'],IfMatch=native['native_version'])
             body=result['Body']
@@ -421,10 +427,7 @@ class OriginalIntakeController:
                     raise OriginalIntakeError('original_render_storage_invalid')
                 return data
             finally:body.close()
-        data=await _blocking(derivative)
-        _LOG.info('original_page_read stage=image_downloaded run_id=%s ingestion_id=%s page_index=%s image_bytes=%s elapsed_ms=%.3f',
-            binding.run_id,record['spec']['ingestion_id'],index,len(data),(time.monotonic()-started)*1000)
-        return record,page,data
+        return await _blocking(derivative)
 
     def _record_issued_image(self,receipt,page):
         issued=issued_image_receipt(receipt,page)
@@ -633,8 +636,20 @@ class OriginalIntakeController:
                 WHERE ingestion_id=? AND json_extract(spec_json,'$.source_id')=?
                 AND receipt_json IS NOT NULL AND storage_sha256=?''',
                 (figure['ingestion_id'],figure['source_id'],self._storage)).fetchone()
+            issued=db.execute('SELECT receipt_json FROM rkb_original_image_issuance WHERE ingestion_id=? AND physical_page_index=?',
+                (figure['ingestion_id'],figure['physical_page_index'])).fetchone()
         if row is None:raise OriginalIntakeError('original_verified_receipt_required')
         receipt=VerifiedOriginalReceipt.from_wire(json.loads(row['receipt_json']))
+        if issued is not None:
+            prior=json.loads(issued['receipt_json'])
+            if prior!=issued_image_receipt(receipt,prior):raise OriginalIntakeError('original_source_image_receipt_changed')
+            key='originals/v1/'+digest(self.spool.journal.stream.encode())+'/'+receipt.source_id+'/'+receipt.sha256+'/pages/'+str(figure['physical_page_index'])+'/'+prior['image_sha256']
+            observed=await self._head(key,None)
+            if observed is None:raise OriginalIntakeError('original_render_storage_invalid')
+            version,length=observed
+            data=await self._image_data(dict(key=key,native_version=version),dict(image_size=length,image_sha256=prior['image_sha256']))
+            await recheck()
+            return data
         record=json.loads(row['acquisition_json'])
         _,_,data=await self._page_data(binding,record,figure['physical_page_index'],
             dict(block=0,offset=0,text=0),restore=lambda prior:self._restore_handle(
