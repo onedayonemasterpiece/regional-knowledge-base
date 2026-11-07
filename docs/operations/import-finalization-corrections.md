@@ -44,6 +44,9 @@ ordinary model-authored stage may supply identical accepted text and corrected
 semantic input for those pages, including a historically reading-completed
 packet import. Other finalized corrections remain sealed; exact-text SQL guards,
 old commands, receipts and original reading-completion provenance are unchanged.
+`book_pages` supplies that page's accepted model page and chunks whenever its
+TEXT is APPLIED and SEMANTIC is missing, including before finalization. It does
+not require `finalized`, because the semantic gap itself can prevent that phase.
 No separate repair queue, mode or manual caption edit is involved.
 
 The latest SEM outcome for each page is read from the same ordered journal.

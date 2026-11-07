@@ -178,12 +178,9 @@ def accepted_model_page(db, row, physical_index):
 
 
 def read_accepted_model_page(queue, row, physical_index):
-    # Only a finalized book's semantic gap is restaged; ordinary reading pays one indexed row read.
+    # Semantic gaps also block finalization; their accepted input must be available before it.
     with queue.connect(write=False) as db:
-        state = db.execute('SELECT phase FROM rkb_native_source_intake_state WHERE ingestion_id=?',
-                           (row['ingestion_id'],)).fetchone()
-        finalized = 'finalized' in (row.get('phase'), state and state['phase'])  # as the activity reader
-        if not finalized or physical_index not in enrichment_gaps(db, row):
+        if physical_index not in enrichment_gaps(db, row):
             return None
         return accepted_model_page(db, row, physical_index)
 
