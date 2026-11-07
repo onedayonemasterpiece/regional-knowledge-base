@@ -12,7 +12,7 @@ MAX_BYTES=512*1024
 
 
 def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,baseline_executor_source=None,*,
-           case_source=None,source_read_source=None,baseline_source_read_source=None,
+           case_source=None,search_source=None,source_read_source=None,baseline_source_read_source=None,
            source_export_source=None,source_pdf_source=None,baseline_source_pdf_source=None):
     graph=ast.parse(graph_source);baseline=ast.parse(baseline_graph_source)
     def wire(tree,names):
@@ -22,6 +22,7 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
         raise ValueError('warm_graph_wire_abi_changed')
     graph.body=[node for node in graph.body if not isinstance(node,ast.ClassDef) or node.name not in WIRE_CLASSES]
     executor_prefix=''
+    search_prefix=''
     if executor_source is not None:
         executor=ast.parse(executor_source)
         baseline_executor=ast.parse(baseline_executor_source)
@@ -32,11 +33,21 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
             raise ValueError('warm_query_tokenizer_abi_changed')
         executor.body=[node for node in executor.body
             if not isinstance(node,ast.ClassDef) or node.name!='PinnedTokenizer']
+        if search_source is not None:
+            search_prefix=(
+                '_warm_search = dict(__name__=__name__, __package__=__package__, __file__=__file__)\n'
+                f"exec(compile({search_source!r}, '<warm-search>', 'exec'), _warm_search)\n")
+            for index,node in enumerate(executor.body):
+                if isinstance(node,ast.ImportFrom) and node.level==1 and node.module=='kaggle_search':
+                    executor.body[index:index+1]=[ast.copy_location(ast.parse(
+                        f"{item.asname or item.name} = _warm_search[{item.name!r}]").body[0],node)
+                        for item in node.names]
         executor_prefix=(
             'from .kaggle_query import PinnedTokenizer\n'
             '_warm_query = dict(__name__=__name__, __package__=__package__, '
-            '__file__=__file__, PinnedTokenizer=PinnedTokenizer)\n'
-            f"exec(compile({ast.unparse(executor)!r}, '<warm-query>', 'exec'), _warm_query)\n")
+            '__file__=__file__, PinnedTokenizer=PinnedTokenizer'
+            + (', _warm_search=_warm_search' if search_source is not None else '') + ')\n'
+            + f"exec(compile({ast.unparse(executor)!r}, '<warm-query>', 'exec'), _warm_query)\n")
     case_prefix=(
         '_warm_case = dict(__name__=__name__, __package__=__package__, __file__=__file__)\n'
         f"exec(compile({case_source!r}, '<warm-case>', 'exec'), _warm_case)\n"
@@ -124,7 +135,7 @@ def bundle(query_source,graph_source,baseline_graph_source,executor_source=None,
     if replaced!=1:raise ValueError('warm_graph_import_missing')
     query.body=[node for node in query.body if not isinstance(node,ast.ImportFrom) or node.module!='__future__']
     source=("from __future__ import annotations\n"
-        +executor_prefix+case_prefix+source_prefix+
+        +search_prefix+executor_prefix+case_prefix+source_prefix+
         "from .kaggle_source_graph_read import SourceGraphReadRequest, SourceGraphReadResult\n"
         "_warm_graph = dict(__name__=__name__, __package__=__package__, __file__=__file__, "
         "SourceGraphReadRequest=SourceGraphReadRequest, SourceGraphReadResult=SourceGraphReadResult)\n"
@@ -150,6 +161,7 @@ def main():
     source=bundle(read(commit,'kaggle_worker_query'),read(commit,'kaggle_source_graph_read'),
         read(baseline,'kaggle_source_graph_read'),read(commit,'kaggle_query'),read(baseline,'kaggle_query'),
         case_source=read(commit,'kaggle_case_read'),
+        search_source=read(commit,'kaggle_search'),
         source_read_source=read(commit,'kaggle_source_read'),
         baseline_source_read_source=read(baseline,'kaggle_source_read'),
         source_export_source=read(commit,'source_unit_export'),

@@ -54,14 +54,17 @@ def test_wire_abi_change_is_not_a_stateless_patch():
 async def test_warm_query_uses_reviewed_executor_and_existing_tokenizer_and_stage_collector(monkeypatch):
     import asyncio
     from regional_knowledge import kaggle_query as resident
+    from regional_knowledge import kaggle_search as resident_search
     from regional_knowledge.query_telemetry import ReadRuntime, bind_read_runtime
     from test_kaggle_worker_query import Lease, frame, pinned, VECTOR
     async def forbidden(*args, **kwargs):
         raise AssertionError('resident query executor must remain untouched')
     monkeypatch.setattr(resident, 'execute_query', forbidden)
+    monkeypatch.setattr(resident_search, 'fused_search', forbidden)
     worker, graph = sources()
     executor = (ROOT/'src/regional_knowledge/kaggle_query.py').read_text()
-    source = builder.bundle(worker, graph, graph, executor, executor)
+    search = (ROOT/'src/regional_knowledge/kaggle_search.py').read_text()
+    source = builder.bundle(worker, graph, graph, executor, executor, search_source=search)
     module = types.ModuleType('regional_knowledge._warm_query_bundle_test')
     module.__package__ = 'regional_knowledge'; module.__file__ = '<warm-query-handler>'
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -74,6 +77,7 @@ async def test_warm_query_uses_reviewed_executor_and_existing_tokenizer_and_stag
     assert result['status'] == 'ok' and result['reason'] is None
     assert handler.tokenizer is tokenizer and handler.telemetry is collector
     assert lease.entered == lease.exited == 1 and resident.execute_query is forbidden
+    assert resident_search.fused_search is forbidden
     terminal = next(event for event in result['read_events'] if event['terminal'])
     assert {'encode_ms', 'lexical_ms', 'dense_ms', 'hydrate_ms'} <= terminal['stages_ms'].keys()
     with pytest.raises(ValueError, match='tokenizer_abi_changed'):

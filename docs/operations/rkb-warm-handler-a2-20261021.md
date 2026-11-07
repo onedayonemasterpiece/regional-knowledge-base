@@ -1,5 +1,12 @@
 # RKB A2 — warm read-handler boundary (2026-10-21)
 
+The existing bundle builder also isolates the reviewed `kaggle_search` implementation
+used by its query executor. Exact duplicate source evidence is collapsed after the
+existing bounded hydration and illustration read, retaining the first ranked citation.
+Different source/revision, locator, full body, bibliography, provenance or illustration
+facts remain separate. Internal rank observations and story retrieval are unchanged;
+there is no additional candidate scan to refill the public result up to `top_k`.
+
 **Status: source/fixture only. Read-only WSS maintenance readback is implemented; actual patch activation, production rollout and complete DBG-1 acceptance remain NOT RUN.** This change is isolated from frozen PR #170 (cold-demand/MCP) and from the import/media and expert workflow executors.
 
 ## Precisely implemented
