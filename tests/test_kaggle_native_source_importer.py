@@ -27,7 +27,7 @@ from regional_knowledge.original_intake_controller import OriginalIntakeControll
 from regional_knowledge.read_issuance import capture_read_output
 from regional_knowledge.recovery_journal import RecoveryJournal
 from regional_knowledge.source_activation import ACTIVATION_REVISIONS, ACTIVATE_ROUTE, MATERIALIZE_ROUTE
-from regional_knowledge.source_stage import STAGE_ROUTE, SEAL_ROUTE, ZERO_HASH, canonical, digest
+from regional_knowledge.source_stage import STAGE_ROUTE, SEAL_ROUTE, ZERO_HASH, canonical, digest, validate_stage_payload
 from test_kaggle_public_backend import target
 from test_kaggle_service_startup import HistoryAdapter
 from test_kaggle_source_importer import options
@@ -273,6 +273,30 @@ def batch(s, result, *, first=0, count=4):
         chunks.append(StageChunkInput.model_validate(dict(chunk_key=f'page-{index}',title='Synthetic source passage',
             region_refs=[dict(page_id=page_id,region_key='body')])).model_dump(mode='json'))
     return dict(pages=pages,chunks=chunks,story_candidates=[])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('count', [5, 8, 9])
+async def test_stage_reuses_native_eight_page_envelope_bound(native_intake, count):
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=count)
+    if count == 9:
+        with pytest.raises(ToolError, match='bounded_model_authored_selected_pages_required'):
+            await stage(s, book, payload)
+        assert operation_count(s) == 0
+        return
+    assert (await stage(s, book, payload)).state == 'processing'
+    entry = await pending(s, book)
+    doc = validate_stage_payload(entry.command.payload, source_id=book.document_id)
+    expected = copy.deepcopy(payload)
+    for page in expected['pages']:
+        page['source_unit_version'] = 1
+    assert doc['model_payload'] == expected
+    assert len(doc['issued_images_b64']) == count
+    assert len(entry.command.payload) < 700 * 1024
+    with pytest.raises(ValueError, match='bounded exact source stage bytes required'):
+        validate_stage_payload(b'x' * (700 * 1024 + 1), source_id=book.document_id)
 
 
 async def call(s, result, command, **kwargs):

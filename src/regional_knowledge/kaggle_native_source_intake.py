@@ -22,7 +22,7 @@ from uuid import UUID, uuid5
 from .bge_contract import TOKEN_REJECTION_PATTERN
 from .control_spool import SpoolConflict
 from .source_stage import (STAGE_ROUTE, BATCH_CODEC, ZERO_HASH, FIXED_REJECTION_PATTERN, SOURCE_COVERAGE_REJECTION_PATTERN,
-    canonical, digest, encode_issued_image, validate_stage_payload)
+    canonical, digest, encode_issued_image, validate_stage_payload, MAX_BATCH_PAGES)
 
 
 _LOG=logging.getLogger(__name__)
@@ -854,7 +854,7 @@ class NativeSourceIntake:
             if (continuation.get('tool')!='book_pages' or type(continuation.get('arguments')) is not dict
                     or continuation['arguments'].get('ingestion_id')!=row['ingestion_id']):
                 raise _failure('research_requires_reachable_owned_page_continuation',status='invalid_query')
-        limit=4
+        limit=MAX_BATCH_PAGES
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
         from .source_page_progress import read_publication_progress,next_unaccepted

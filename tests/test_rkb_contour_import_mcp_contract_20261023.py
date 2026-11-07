@@ -183,7 +183,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
     assert "exact page/region/quote evidence" not in native.instructions
     # Existing stage wire supports page-scoped regions/exact source spans.
     # Model chooses meaning boundaries; 256 tokens is not a new hard cap and a
-    # 1-4-page packet is not a chunk or evidence of deployed tail handling.
+    # 1-8-page packet is not a chunk or evidence of deployed tail handling.
     chunk_guidance = native_text
     assert chunk_guidance.count("Build semantically coherent source chunks") == 1
     for expected in (
@@ -196,7 +196,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "combine short adjacent paragraphs about the same idea",
         "source-backed region_refs or span_refs",
         "Read continuing text with book_pages",
-        "one book_ingest(stage) packet contains 1-4 issued, visually reviewed pages",
+        "one book_ingest(stage) packet contains 1-8 issued, visually reviewed pages",
         "not one oversized chunk", "a completed thought spans pages",
         "ordered region_refs OR exact span_refs", "both real page_ids",
         "original page/region/span provenance", "never invent unseen continuation",
@@ -214,7 +214,7 @@ async def test_registered_native_book_ingest_instruction_is_truthful_and_legacy_
         "For span_refs supply page_id, region_key, start and end",
         "the server derives source_text_sha256 from the known region text",
         "the model must not calculate or supply a hash",
-        "Stage only newly issued, visually reviewed page(s) in a 1-4-page packet",
+        "Stage only newly issued, visually reviewed page(s) in a 1-8-page packet",
         "do not re-stage the accepted prior page",
         "split sentences, invent missing text",
         "system-chosen split/merge boundaries",

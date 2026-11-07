@@ -23,6 +23,8 @@ import threading
 import time
 from uuid import uuid4
 
+from .source_stage import MAX_BATCH_PAGES
+
 DEFAULT_DISK_BYTES = 32 * 1024 * 1024
 DEFAULT_SEGMENT_BYTES = 256 * 1024
 _EVENTS = frozenset({"read.stage", "read.terminal", "fetch.terminal", "command.phase",
@@ -129,7 +131,7 @@ def _clean(record: Mapping[str, object], level: str):
             else: ignored += 1
         if 'physical_page_indices' in record:
             indices=record['physical_page_indices']
-            if type(indices) is list and 1<=len(indices)<=4 and all(type(v) is int and 0<=v<2500 for v in indices):
+            if type(indices) is list and 1<=len(indices)<=MAX_BATCH_PAGES and all(type(v) is int and 0<=v<2500 for v in indices):
                 result['physical_page_indices']=indices
             else: ignored += 1
     for key in ("connection_generation", "turn_generation"):
@@ -365,7 +367,7 @@ def import_metadata(*, ingestion_id=None, source_id=None, operation_key=None, **
             if k in _IMPORT_NUMBERS and type(v) is int and 0 <= v < 2**63
             or k in _IMPORT_ENUMS and type(v) is str and v in _IMPORT_ENUMS[k]
             or k=='has_more' and type(v) is bool
-            or k=='physical_page_indices' and type(v) is list and 1<=len(v)<=4 and all(type(i) is int and 0<=i<2500 for i in v)})
+            or k=='physical_page_indices' and type(v) is list and 1<=len(v)<=MAX_BATCH_PAGES and all(type(i) is int and 0<=i<2500 for i in v)})
     except Exception: pass
 
 
