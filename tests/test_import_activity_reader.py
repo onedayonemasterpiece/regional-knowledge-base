@@ -166,8 +166,15 @@ async def test_activity_199_page_journal_skips_stale_140_not_rejected_198(watche
     with w.queue.connect() as db:
         db.execute("DELETE FROM rkb_control_operations")
         for index in range(199):
-            synthetic_page_records(db,w,batch=index,physical=index,sequence=2*index+1)
-        synthetic_page_records(db,w,batch=213,physical=198,sequence=399,
+            synthetic_page_records(db,w,batch=index,physical=index,sequence=3*index+1)
+            # These pages are complete; a TEXT-only fixture now has real SEM gaps.
+            raw=db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?',
+                (f'source-packet:{w.ingestion}:{index}:text',)).fetchone()[0]
+            packet=json.loads(base64.b64decode(json.loads(raw)['payload_b64']));packet['component']='semantic'
+            command=json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+            db.execute('INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)',
+                (w.source,w.actor,f'source-packet:{w.ingestion}:{index}:semantic',3*index+3,'ACCEPTED','APPLIED',command))
+        synthetic_page_records(db,w,batch=213,physical=198,sequence=598,
                                text_state="REJECTED_PRECONDITION")
         db.execute("UPDATE rkb_native_source_intake_state SET batch_count=214,"
                    "published_batch_count=214,enriched_batch_count=214,rejected_batch_index=213")
@@ -177,7 +184,7 @@ async def test_activity_199_page_journal_skips_stale_140_not_rejected_198(watche
     result=(await get(w)).json()
     elapsed_ms=round(1000*(clock.perf_counter()-begin),2)
     print(f"synthetic 199 TEXT APPLIED pages + 1 rejected duplicate: watch={elapsed_ms} ms")
-    assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"198")
+    assert (result["state"],result["accepted_pages"],result["next_cursor"])==("staged",199,"199")
 
 
 @pytest.mark.parametrize('rejected',[None,31])
@@ -190,6 +197,7 @@ def test_latest_stage_lookup_stops_when_latest_and_rejected_are_found(watcher,mo
     # Publication proof has its own receipt-coverage tests; isolate the second
     # latest-stage lookup, which must not re-decode unrelated historical stages.
     monkeypatch.setattr(reader,'publication_progress',lambda *_:({3,8},set()))
+    monkeypatch.setattr(reader,'enrichment_gaps',lambda *_:set())
     decode=reader.base64.b64decode;calls=[]
     def observed(*args,**kwargs):
         calls.append(1);return decode(*args,**kwargs)
@@ -375,7 +383,7 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("physical,cursor", [(9,"9"),(3,"3")])
+@pytest.mark.parametrize("physical,cursor", [(9,"9"),(3,"4")])
 async def test_finalized_unpublished_rejected_text_is_not_done(watcher,physical,cursor):
     w=watcher
     with w.queue.connect() as db:
@@ -477,14 +485,22 @@ async def test_activity_credential_checks_run_off_the_event_loop(watcher, monkey
     assert {name for name, _ in seen} == {"verify_service_credential", "service_credential_current"}
     assert not any(on_loop for _, on_loop in seen)
 
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize('text_state,cursor',[('REJECTED_PRECONDITION','3'),('APPLIED','4')])
-async def test_corrective_packet_keeps_its_page_until_matching_text_applies(watcher,text_state,cursor):
-    """Earlier TEXT for a page does not apply its later corrective packet."""
+@pytest.mark.parametrize('text_state,cursor',[('REJECTED_PRECONDITION','9'),('APPLIED','4')])
+async def test_rejected_covered_correction_resumes_real_semantic_gap(watcher,text_state,cursor):
+    """A covered correction must not hide another page needing enrichment."""
     from regional_knowledge.kaggle_native_source_intake import NativeSourceIntake
     w=watcher
     with w.queue.connect() as db:
-        synthetic_page_records(db,w,batch=1,physical=3,sequence=3,text_state=text_state)
+        raw=db.execute("SELECT command_bytes FROM rkb_control_operations WHERE operation_key LIKE '%:text'").fetchone()[0]
+        packet=json.loads(base64.b64decode(json.loads(raw)['payload_b64']))
+        packet['component']='semantic'
+        command=json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+        db.execute('INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)',
+            (w.source,w.actor,f'source-packet:{w.ingestion}:0:semantic',3,'ACCEPTED','APPLIED',command))
+        synthetic_page_records(db,w,batch=1,physical=3,sequence=4,text_state=text_state)
+        synthetic_page_records(db,w,batch=2,physical=9,sequence=6)
         db.execute('UPDATE rkb_native_source_intake_state SET rejected_batch_index=1')
     helper=object.__new__(NativeSourceIntake);helper.queue=w.queue
     async def entry(key):
@@ -498,4 +514,4 @@ async def test_corrective_packet_keeps_its_page_until_matching_text_applies(watc
     native=await helper.applied_page_cursor(object(),row,rejected_batch=1)
     activity=(await get(w)).json()
     assert (native,activity['next_cursor'])==(cursor,cursor)
-    assert activity['accepted_pages']==2 and read_timestamp(w)==before
+    assert activity['accepted_pages']==3 and read_timestamp(w)==before

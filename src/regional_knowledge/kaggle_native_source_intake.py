@@ -632,7 +632,12 @@ class NativeSourceIntake:
         await self._check(access,row)
         if retry:
             first=str(pages[0]['physical_page_index'])
-            return next_unaccepted(first,published) if rejected_batch in text_batches else first
+            if rejected_batch not in text_batches and all(p['physical_page_index'] in published for p in pages):
+                from .source_page_progress import read_enrichment_gaps
+                missing=await asyncio.to_thread(read_enrichment_gaps,self.queue,row)
+                await self._check(access,row)
+                if missing:return str(min(missing))
+            return next_unaccepted(first,published) if all(p['physical_page_index'] in published for p in pages) else first
         cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
         raw=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
         return next_unaccepted(raw,published)

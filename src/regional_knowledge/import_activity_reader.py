@@ -81,7 +81,8 @@ class ImportActivityReader:
                     (pending,row["source_id"],row["person_id"])).fetchone():
                 pending = None
             accepted, text_batches = publication_progress(db,row) if native and native['packet_mode'] else (set(),set())
-            missing_semantic = enrichment_gaps(db,row) if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized') else set()
+            missing_semantic = enrichment_gaps(db,row) if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized' or
+                native['rejected_batch_index'] is not None and native['rejected_batch_index'] not in text_batches) else set()
             last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
             # count is NOT page count (a reviewed batch can contain four pages).
@@ -135,9 +136,10 @@ class ImportActivityReader:
                 cursor = None
             if type(cursor) is not str or not cursor.isdecimal() or len(cursor) > 4 or int(cursor) > 2499:
                 cursor = None
-            elif not unpublished_rejection:
+            else:
                 cursor = next_unaccepted(cursor,accepted)
-        if missing_semantic and not unpublished_rejection and not pending and state != 'failed':
+        if missing_semantic and not pending and state != 'failed' and (not unpublished_rejection or
+                all(page['physical_page_index'] in accepted for page in rejected_pages)):
             cursor = str(min(missing_semantic))
         timestamp = row["last_operation_at"]
         return dict(state=state, next_action=action,
