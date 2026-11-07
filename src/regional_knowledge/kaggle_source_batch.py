@@ -74,20 +74,19 @@ async def materialize_packet(worker, command, *, acquire, database):
     else:
         knowledge = prepared[0]
     encoded = 0; reused = 0
-    for ident, text in inputs(knowledge):
-        worker._current(); h = digest(text.encode())
-        async with acquire() as connection:
+    async with acquire() as connection:
+        for ident, text in inputs(knowledge):
+            worker._current(); h = digest(text.encode())
             async with connection.transaction():
                 await connection.execute("SET LOCAL statement_timeout='5s'")
                 row = await (await connection.execute('''SELECT embedding::real[] FROM rkb_v4.source_batch_vectors
                     WHERE source_id=%s AND input_id=%s AND input_sha256=%s ORDER BY batch_index DESC LIMIT 1''',
                     (source,ident,h))).fetchone()
-        if row is None:
-            vector = validate_vector(await worker.encode(text)); encoded += 1
-        else:
-            vector = validate_vector(row[0]); reused += 1
-        worker._current()
-        async with acquire() as connection:
+            if row is None:
+                vector = validate_vector(await worker.encode(text)); encoded += 1
+            else:
+                vector = validate_vector(row[0]); reused += 1
+            worker._current()
             async with connection.transaction():
                 await connection.execute("SET LOCAL statement_timeout='5s'")
                 row = await (await connection.execute('''SELECT rkb_v4.install_source_batch_vector_v1(
