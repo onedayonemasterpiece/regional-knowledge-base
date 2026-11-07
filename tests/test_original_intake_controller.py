@@ -941,3 +941,38 @@ async def test_admitted_original_transfer_finishes_under_drain_maintenance_bindi
             await controller.dispatch_transfer({'phase':'original_pages'},binding)
     finally:
         await bridge.aclose();spool.close()
+
+
+@pytest.mark.asyncio
+async def test_ten_selected_issued_images_remain_exact_and_bounded(owner):
+    import base64
+    from test_source_stage import batch, original
+    receipt = original()
+    doc = batch(count=10, receipt=receipt)
+    controller = object.__new__(OriginalIntakeController)
+    controller.queue = owner.q
+    async def authorize(context):
+        assert context == 'synthetic-owner'
+        return 'actor', None
+    async def verified(context, ingestion):
+        assert ingestion == receipt.ingestion_id
+        return receipt
+    controller._authorize = authorize
+    controller._row = lambda actor, ingestion: None
+    controller.verified = verified
+    with owner.q.connect() as db:
+        db.execute('CREATE TABLE rkb_original_image_issuance(ingestion_id TEXT,physical_page_index INTEGER,receipt_json TEXT)')
+        for encoded in doc['issued_images_b64']:
+            image = json.loads(base64.b64decode(encoded))
+            from regional_knowledge.original_intake import issued_image_receipt
+            image = issued_image_receipt(receipt, image)
+            db.execute('INSERT INTO rkb_original_image_issuance VALUES(?,?,?)',
+                (receipt.ingestion_id, image['physical_page_index'], canonical(image).decode()))
+    selections = tuple((i, None) for i in range(10))
+    issued = await controller.selected_image_receipts('synthetic-owner', receipt.ingestion_id, selections)
+    assert [image['physical_page_index'] for image in issued] == list(range(10))
+    for invalid, reason in ((selections + ((10, None),), 'original_selected_image_bound'),
+            (selections[:-1] + ((100, None),), 'original_source_image_not_issued'),
+            (selections[:-1] + ((9, 'f' * 64),), 'original_source_image_receipt_changed')):
+        with pytest.raises(OriginalIntakeError, match=reason):
+            await controller.selected_image_receipts('synthetic-owner', receipt.ingestion_id, invalid)

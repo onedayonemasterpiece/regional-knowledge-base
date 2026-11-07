@@ -18,6 +18,7 @@ from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOr
     OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value,
     decode_page_cursor,encode_page_cursor,assemble_native_page,issued_image_receipt)
 from .recovery_s3 import _blocking,_missing
+from .source_stage import MAX_BATCH_PAGES
 
 _LOG=logging.getLogger(__name__)
 _RESTORE_LOG=logging.getLogger(__name__+'.restore')
@@ -444,7 +445,7 @@ class OriginalIntakeController:
         actor,_=await self._authorize(context)
         self._row(actor,ingestion_id)
         receipt=await self.verified(context,ingestion_id)
-        if receipt is None or type(selections) is not tuple or not 1<=len(selections)<=8:
+        if receipt is None or type(selections) is not tuple or not 1<=len(selections)<=MAX_BATCH_PAGES:
             raise OriginalIntakeError('original_selected_image_bound')
         result=[];seen=set()
         with self.queue.connect(write=False) as db:

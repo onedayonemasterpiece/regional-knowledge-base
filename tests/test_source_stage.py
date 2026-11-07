@@ -103,8 +103,8 @@ class StagePayloadTests(unittest.TestCase):
         for format in ('pdf','djvu'):
             with self.subTest(format=format): self.validate(batch(receipt=original(format=format)))
 
-    def test_ninth_page_rejected(self):
-        with self.assertRaises(ValueError): self.validate(batch(count=9))
+    def test_eleventh_page_rejected(self):
+        with self.assertRaises(ValueError): self.validate(batch(count=11))
 
     def test_payload_bytes_are_per_batch_bounded(self):
         data=batch(count=1); data['model_payload']['pages'][0]['regions'][0]['source_text']='x'*MAX_BATCH_BYTES
@@ -186,3 +186,13 @@ class StageReadTests(unittest.IsolatedAsyncioTestCase):
 
 
 if __name__=='__main__': unittest.main()
+
+
+def test_ten_page_packet_keeps_chunk_and_byte_limits():
+    data = batch(count=10)
+    assert len(validate_stage_payload(canonical(data), source_id=SOURCE)['model_payload']['pages']) == 10
+    data['model_payload']['chunks'] *= 11
+    with unittest.TestCase().assertRaisesRegex(ValueError, 'per-batch model input bound exceeded'):
+        validate_stage_payload(canonical(data), source_id=SOURCE)
+    with unittest.TestCase().assertRaisesRegex(ValueError, 'bounded exact source stage bytes required'):
+        validate_stage_payload(b'x' * (MAX_BATCH_BYTES + 1), source_id=SOURCE)
