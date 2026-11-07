@@ -605,7 +605,7 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                         shared.durable_result_settled(frame['job_id'],frame['claim'],settled['status'])
                     elif frame['type']=='SOURCE_COMMAND_RESULT':
                         _fields(frame,(*common,'job_id','claim','receipt','run_id','launch_nonce',
-                            'runtime_incarnation','compute_claim','dispatch_generation'))
+                            'runtime_incarnation','compute_claim','dispatch_generation'),('timings',))
                         if source_dispatch is None or shared is None or not ready or observed['provider_version'] is None:
                             raise ValueError('source_executor_unavailable')
                         _identifier(frame['job_id']);_identifier(frame['claim'])
@@ -613,6 +613,13 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             settled=await source_dispatch.receive(frame,run_id=run_id,token=token,generation=generation)
                         except (StaleClaim,LookupError):
                             settled=dict(job_id=frame['job_id'],claim=frame['claim'],status='stale')
+                        else:
+                            timings=frame.get('timings',{})
+                            seconds=timings.get('native_work_seconds') if type(timings) is dict else None
+                            if (type(timings) is dict and set(timings)=={'native_work_seconds'} and type(seconds) in (int,float)
+                                    and 0<=seconds<=86_400 and math.isfinite(seconds)):
+                                logger.info(json.dumps(dict(event='native_source_work_timing',run_id=run_id,
+                                    connection_generation=generation,job_id=frame['job_id'],native_work_seconds=seconds)))
                         if settled is None:
                             await send('RESULT_ACK',job_id=frame['job_id'],claim=frame['claim'],status='apply_received')
                         else:

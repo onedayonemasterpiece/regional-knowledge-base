@@ -257,13 +257,21 @@ async def test_source_receipt_rejects_forged_durable_claim_and_exact_outcome(acc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('final_status',['accepted','checkpoint_pending'])
-async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes(monkeypatch,final_status):
+@pytest.mark.parametrize('near_limit',[False,True])
+async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes(monkeypatch,final_status,near_limit):
     transport=module('bge_wss_transport');peer=Peer();stop=asyncio.Event();calls=[]
     monkeypatch.setattr(transport.random,'uniform',lambda *_:.001)
     async def read(frame,*,encode):return result(frame)
     async def source(frame):
         calls.append(frame['command_sha256'])
-        return dict(native='synthetic native receipt')
+        await asyncio.sleep(.01)
+        receipt=dict(native='synthetic native receipt')
+        if near_limit:
+            envelope=dict(job_id=frame['id'],claim=frame['claim'],receipt=receipt,
+                **{k:frame[k] for k in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')})
+            receipt['native']+='x'*(15499-len(json.dumps(envelope).encode()))
+            assert len(json.dumps(envelope).encode())==15499
+        return receipt
     async def prepare(encoder,**identity):return PreparedRuntime(read,candidate(),source)
     def load():
         def forbidden_encode(text):raise AssertionError('source command invoked BGE')
@@ -279,6 +287,8 @@ async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes
             database_generation='db',writer_generation='writer',compute_claim='actual-slot',dispatch_generation=1)
         await peer.put(frame)
         first=await peer.wait('SOURCE_COMMAND_RESULT')
+        if near_limit:assert 'timings' not in first
+        else:assert first['timings']['native_work_seconds']>=.005
         await peer.put(dict(type='RESULT_ACK',job_id='source-job',claim='source-claim',status='apply_received'))
         assert worker.pending is not None
         await peer.disconnect()
@@ -292,7 +302,11 @@ async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes
         stop.set();await task
 
 
-def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer):
+@pytest.mark.parametrize('timings', [None, {'native_work_seconds': .125},
+    {'native_work_seconds': -1}, {'native_work_seconds': True}, 'malformed', {'private': 3},
+    {'native_work_seconds': 86_401}, {'native_work_seconds': 1e100}, {'native_work_seconds': 10**1000}])
+def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer, caplog, timings):
+    caplog.set_level('INFO', logger='regional_knowledge.bge_channel')
     from test_bge_shared_channel import connect,attach,ready,receive_expected,send,release as wire_release
     p=peer
     with p.q.connect() as db:db.execute('DELETE FROM jobs WHERE id=?',(p.document,))
@@ -317,6 +331,7 @@ def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer
             wire_release(socket,generation,frame)
             send(socket,generation,'SOURCE_COMMAND_RESULT',job_id=frame['id'],claim=frame['claim'],
                 receipt=receipt_wire(native_receipt(retained['command'],retained['handler'])),
+                **({'timings':timings} if timings is not None else {}),
                 **{key:frame[key] for key in ('run_id','launch_nonce','runtime_incarnation','compute_claim','dispatch_generation')})
             ack=receive_expected(socket,'RESULT_ACK')
             assert ack['status']=='apply_received'
@@ -325,6 +340,14 @@ def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer
             assert p.q.result(p.auth.p.owner.subject,retained['job'])['result']['remote_outcome_durable']
             async def status():return await retained['spool'].get(retained['command'].operation_key)
             assert p.client.portal.call(status).outcome_state=='DURABLE'
+            timing_logs=[json.loads(record.message) for record in caplog.records
+                if 'native_source_work_timing' in record.message]
+            if timings == {'native_work_seconds': .125}:
+                assert len(timing_logs)==1
+                assert timing_logs[0]['native_work_seconds']==.125
+                assert timing_logs[0]['job_id']==frame['id']
+            else:
+                assert timing_logs==[]  # malformed observations never block the exact receipt
     finally:
         p.client.portal.call(retained['bridge'].aclose)
         retained['spool'].close()

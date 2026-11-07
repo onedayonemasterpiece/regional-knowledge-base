@@ -350,6 +350,7 @@ class BgeWssTransport:
                 handler = self._native_handler(job)
                 if handler is None:
                     raise ValueError('fixed native executor unavailable')
+                before = time.monotonic()
                 if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
                     with self.snapshot_channel.assignment(job):
                         receipt = await handler(job)
@@ -361,6 +362,10 @@ class BgeWssTransport:
                 if len(json.dumps(pending, allow_nan=False).encode()) > (
                         130000 if job['kind'] == 'recovery_phase' else 15500):
                     raise ValueError('source command receipt bound')
+                if job['kind'] == 'source_command':
+                    timed = {**pending, 'timings': {'native_work_seconds': time.monotonic()-before}}
+                    if len(json.dumps(timed, allow_nan=False).encode()) <= 15500:
+                        pending = timed
             else:
                 before = time.monotonic()
                 vector = await self._forward(job['texts'][0])
