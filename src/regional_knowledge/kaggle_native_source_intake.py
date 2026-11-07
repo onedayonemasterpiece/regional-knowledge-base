@@ -864,6 +864,9 @@ class NativeSourceIntake:
             state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
                 any(graph.get(key) for key in ('entities','relations','entity_refs'))))
         if selected and selected<=published and not retry_semantic:
+            tail = await self._tail_output(access, row, state)
+            retry_semantic = bool(tail and any(ref.physical_page_index in selected for ref in tail.tail_refs))
+        if selected and selected<=published and not retry_semantic:
             if state['pending_operation_key'] or state['enriched_batch_count']<state['batch_count']:
                 return self._output(row,state)
             return self.importer._output(row,'staged',
