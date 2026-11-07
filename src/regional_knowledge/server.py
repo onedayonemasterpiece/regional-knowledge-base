@@ -527,6 +527,7 @@ def build_server(
         raise RuntimeError('RKB_BACKEND_PROFILE must be legacy or kaggle_source')
     if selected=='kaggle_source':
         from .kaggle_service_startup import TargetServiceStartup
+        from .kaggle_importer import _NATIVE_STAGE_INPUT_GUIDE
         if type(target_startup) is not TargetServiceStartup:
             raise RuntimeError('kaggle_source requires explicit typed TargetServiceStartup')
         if backend is not None or oauth_provider is not None:
@@ -1688,6 +1689,7 @@ def build_server(
         ) if selected!='kaggle_source' else (
             _SOURCE_DISAGREEMENT_INSTRUCTIONS +
             _SOURCE_TRANSCRIPTION_INSTRUCTIONS +
+            _NATIVE_STAGE_INPUT_GUIDE +
             "In entity_candidates, evidence may use page_id, region_key and chunk_key from this stage packet. " +
             "During the SAME page review, send a bounded book_ingest(stage).entity_candidates GraphBundle " +
             "for all source-mentioned person, organization, event, historical_thread, and poi_ref " +

@@ -491,3 +491,88 @@ async def test_stage_file_transport_and_native_canonical_envelope_have_distinct_
     with pytest.raises(ValueError, match="bounded exact source stage bytes required"):
         validate_stage_payload(b"x" * (MAX_BATCH_BYTES + 1),
                                source_id="00000000-0000-0000-0000-000000000000")
+
+
+@pytest.mark.asyncio
+async def test_native_stage_shape_guide_survives_flattened_arrays_and_stages_without_hash(native_intake, monkeypatch):
+    import json
+    import regional_knowledge.server as source_server
+    import regional_knowledge.read_issuance as read_issuance
+    from test_kaggle_native_source_importer import batch, pending
+    s = native_intake
+    book = await start(s)
+    monkeypatch.setattr(source_server, '_principal', lambda: s.principal)
+    monkeypatch.setattr(read_issuance, 'bind_request_output', lambda context, calls: False)
+    server = build_server(target_startup=s.startup)
+    tool = next(t for t in await server.list_tools() if t.name == 'book_ingest')
+    # Some connectors expose pages/chunks as Array<unknown>. Required nested
+    # structure must remain discoverable in the tool's ordinary description.
+    for name in tool.input_schema['$defs']['StageRegionInput']['required']:
+        assert name in tool.description
+    def without_nulls(value):
+        if isinstance(value, dict):
+            return {k: without_nulls(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+            return [without_nulls(v) for v in value]
+        return value
+    payload = without_nulls(batch(s, book, count=1))
+    payload['pages'][0].pop('source_image_receipt_sha256')
+    original_reads = list(s.originals.calls)
+    await server.call_tool('book_ingest', dict(command='stage', ingestion_id=book.ingestion_id,
+        pages=payload['pages'], chunks=payload['chunks'],
+        source_import=options(research=True, ingestion_id=book.ingestion_id,
+            state='pending').model_dump(mode='json')))
+    accepted = json.loads((await pending(s, book)).command.payload)['model_payload']
+    assert accepted['pages'][0]['regions'] == payload['pages'][0]['regions']
+    assert accepted['chunks'] == payload['chunks']
+    assert accepted['pages'][0]['source_image_receipt_sha256']
+    assert s.originals.calls == original_reads
+
+
+@pytest.mark.asyncio
+async def test_native_status_exposes_stage_shape_without_tools_list_refresh(native_intake, monkeypatch):
+    import regional_knowledge.server as source_server
+    from regional_knowledge.read_issuance import _SCOPE_KEY
+    from starlette.requests import Request
+    from types import SimpleNamespace
+    s = native_intake
+    book = await start(s)
+    monkeypatch.setattr(source_server, '_principal', lambda: s.principal)
+    server = build_server(target_startup=s.startup)
+    # Existing clients can retain an older tools/list. The ordinary response
+    # itself carries the current structure, without any metadata refresh.
+    request = Request({'type': 'http', 'method': 'POST', 'path': '/mcp', 'headers': [],
+        'app': SimpleNamespace(state=SimpleNamespace()), 'state': {}})
+    context = SimpleNamespace(request_context=SimpleNamespace(request=request, request_id='fictional-native-shape'))
+    response = await server.call_tool('book_ingest', dict(command='status', ingestion_id=book.ingestion_id), context)
+    issued = request.scope.pop(_SCOPE_KEY)[1]
+    try:
+        refreshed = await issued.gate.refresh(issued.gated)
+        assert issued.render(refreshed.result).message == response.structured_content['message']
+    finally:
+        issued.release()
+    message = response.structured_content['message']
+    assert response.structured_content['next_action'] == 'continue_pages'
+    assert message.startswith('Review issued pages and stage exact model input')
+    for field in ('region_key', 'kind', 'bbox', 'reading_order', 'chunk_key', 'region_refs'):
+        assert field in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state,action,warnings', [
+    ('staged', 'continue_pages', ['native_source_stage_requires_review']),
+    ('needs_review', 'continue_pages', []),
+    ('processing', 'wait', []),
+    ('staged', 'continue_tail', []),
+    ('finalized', 'done', []),
+])
+async def test_shape_guide_keeps_precise_rejection_semantic_and_wait_messages(native_intake, state, action, warnings):
+    from regional_knowledge.contracts import BookIngestOutput
+    s = native_intake
+    book = await start(s)
+    original = BookIngestOutput(ingestion_id=book.ingestion_id, document_id=book.document_id,
+        state=state, next_action=action, message='Existing precise response.', warnings=warnings)
+    async with s.importer._access(s.principal) as access:
+        result = await s.importer._reply(access, original)
+    assert result is original
+    assert result.message == 'Existing precise response.' and result.warnings == warnings

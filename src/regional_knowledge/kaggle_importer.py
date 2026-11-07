@@ -41,6 +41,9 @@ from .kaggle_domain_bindings import DOMAIN_REVISIONS,DOMAIN_V2_REVISIONS,resolve
 from .story_contracts import StageStoryCandidateInput
 from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate_graph
 
+_NATIVE_STAGE_INPUT_GUIDE = ("For a newly visually reviewed, unaccepted page, use page_id, physical_page_index, source_material='visual_reviewed', source_review_note (1-500 characters), and regions. "
+    "Each region needs region_key, kind (heading, body, caption, footnote, figure, table, header, footer, page_number or marginalia), bbox={left,top,right,bottom} with integer coordinates 0..1000 and left<right/top<bottom, and reading_order unique within its page; put verbatim text in source_text. "
+    "Each chunk needs chunk_key and title with region_refs=[{page_id,region_key}] OR exact span_refs, never both. source_image_receipt_sha256 is optional: native stage resolves its previously issued owned receipt without another image read. ")
 _LOG = logging.getLogger(__name__)
 MAX_BYTES = 128 * 1024 * 1024
 MAX_PAGES = 2500
@@ -207,6 +210,9 @@ class KaggleSourceImporter:
                 self.read_authority.release(authority)
 
     async def _reply(self, access, output, *, render=None):
+        if (self.native_intake is not None and isinstance(output, BookIngestOutput) and output.next_action=='continue_pages'
+                and output.state!='needs_review' and not output.warnings):
+            output=output.model_copy(update={'message':output.message+' '+_NATIVE_STAGE_INPUT_GUIDE})
         access.retained = await self.output_gate.retain(output, access.authority,
             access.context, access.binding, render=render)
         return output
