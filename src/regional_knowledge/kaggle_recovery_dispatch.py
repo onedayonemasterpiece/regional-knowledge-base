@@ -152,7 +152,12 @@ class RecoveryPhaseDispatch:
                 raise PermissionError('recovery binding expired before delivery')
             binding=self._bindings.pop(job,None)
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
-        value=result['result']['value']
+        # Preserve the resolved page only after the normal identity/delivery fences.
+        if not (phase=='original_pages' and row is not None and row['state']=='done'
+                and value.get('status')!='pending' and not value.get('error')):
+            value=result['result']['value']
+        else:
+            _LOG.info('recovery_phase_reused run_id=%s phase=%s',self.identity[0],phase)
         if phase in ('capture','dataset_verify','original_pages') and isinstance(value,dict) and value.get('status')=='pending':
             handle=value.get('handle')
             if not isinstance(handle,str):raise SnapshotError('snapshot_io_receipt_invalid')
