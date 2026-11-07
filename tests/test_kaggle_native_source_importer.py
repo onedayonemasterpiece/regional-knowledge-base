@@ -1773,6 +1773,38 @@ async def test_native_stage_value_error_identifies_validator_without_private_pay
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('new_region',[False,True])
+async def test_semantic_retry_reuses_existing_chunk_identities_before_new_stage(native_intake,new_region):
+    s=native_intake;book=await start(s)
+    payload=batch(s,book,first=0,count=1)
+    await stage(s,book,payload)
+    for _ in ('stage','text'):
+        await finish(s,book);await call(s,book,'status')
+    await finish(s,book,status='rejected_precondition');await call(s,book,'status')
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
+    changed=copy.deepcopy(payload)
+    changed['chunks'][0]['chunk_key']='renamed-same-source-text'
+    if new_region:
+        # A genuine source omission remains the existing new-region correction.
+        region=copy.deepcopy(changed['pages'][0]['regions'][0])
+        region.update(region_key='additional-source-text',reading_order=1,
+                      source_text='Additional synthetic source sentence.')
+        changed['pages'][0]['regions'].append(region)
+        changed['chunks'][0]['region_refs'].append(dict(
+            page_id=changed['pages'][0]['page_id'],region_key=region['region_key']))
+        assert (await stage(s,book,changed)).state=='processing'
+        return
+    with pytest.raises(ToolError,match='semantic_retry_requires_accepted_chunks'):
+        await stage(s,book,changed)
+    with s.t.queue.connect(write=False) as db:
+        assert [tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]==before
+    # The ordinary correction remains available with the accepted identities.
+    payload['pages'][0]['source_review_note']='Same accepted page and chunks; corrected semantic candidates.'
+    assert (await stage(s,book,payload)).state=='processing'
+
+
+@pytest.mark.asyncio
 async def test_semantic_correction_on_text_applied_page_keeps_prior_receipts(native_intake):
     s=native_intake;book=await start(s)
     payload=batch(s,book,first=0,count=1)

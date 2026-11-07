@@ -871,6 +871,23 @@ class NativeSourceIntake:
                 next_cursor=next_unaccepted(str(min(selected)),published))
         if selected & published and not (retry_semantic and selected<=published):
             raise _failure('native_stage_mixed_published_pages',status='invalid_query')
+        if selected and selected<=missing:
+            from .source_page_progress import accepted_model_page
+            from .source_batch_context import chunk_pages
+            def reuses_chunks():
+                with self.queue.connect(write=False) as db:
+                    for physical in selected:
+                        accepted=accepted_model_page(db,row,physical)
+                        page=next(p for p in payload['pages'] if p['physical_page_index']==physical)
+                        if (accepted and accepted['chunks']
+                                and page['regions']==accepted['page']['regions']):
+                            keys={c['chunk_key'] for c in accepted['chunks']}
+                            if any(c['chunk_key'] not in keys for c in payload.get('chunks',[])
+                                   if accepted['page']['page_id'] in chunk_pages(c,text_only=True)):
+                                return False
+                return True
+            if not await asyncio.to_thread(reuses_chunks):
+                raise _failure('semantic_retry_requires_accepted_chunks',status='invalid_query')
         if state.get('rejected_batch_index') is not None and not retry_semantic:
             retry_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
             if retry_cursor is not None and str(payload['pages'][0]['physical_page_index'])!=retry_cursor:
