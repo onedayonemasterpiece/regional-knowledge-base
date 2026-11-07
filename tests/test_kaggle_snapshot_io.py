@@ -15,9 +15,19 @@ from test_kaggle_recovery_phases import database,response
 from test_kaggle_original_intake import native as original_native
 
 
+@pytest.fixture
+def fast_page_poll_wait(monkeypatch):
+    # Virtualize only the page-poll cadence; retain the real admission, queue,
+    # compute-claim and blocked-I/O deadlines/assertions below.
+    sleep=asyncio.sleep
+    async def wait(seconds, *args, **kwargs):
+        return await sleep(0 if seconds in (18, 20) else seconds, *args, **kwargs)
+    monkeypatch.setattr('regional_knowledge.kaggle_recovery_dispatch.asyncio.sleep',wait)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind',['capture','dataset_verify','original_pages'])
-async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_blocked(state,tmp_path,kind,original_native):
+async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_blocked(state,tmp_path,kind,original_native,fast_page_poll_wait):
     s=state;db=database();binding=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,
         db.database_generation,db.writer_generation)
     active=(s.run,'incarnation-a',s.generation)
@@ -122,7 +132,7 @@ async def test_actual_query_admission_between_short_snapshot_jobs_while_io_is_bl
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('scenario',['second_page','third_page','busy_slots'])
-async def test_original_page_waiting_never_holds_compute_and_preserves_operation(state,original_native,scenario):
+async def test_original_page_waiting_never_holds_compute_and_preserves_operation(state,original_native,scenario,fast_page_poll_wait):
     s=state;db=database();identity=(s.run,s.nonce,'incarnation-a');active=(s.run,'incarnation-a',s.generation)
     binding=PreReadyRecoveryBinding(s.run,active[1],s.generation,db.database_generation,db.writer_generation)
     native=object.__new__(NativeSnapshotFactory)
