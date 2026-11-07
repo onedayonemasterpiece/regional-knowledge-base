@@ -628,10 +628,15 @@ class NativeSourceIntake:
         doc=json.loads(entry.command.payload)
         pages=doc['model_payload']['pages']
         from .source_page_progress import read_publication_progress,next_unaccepted
-        published,_=await asyncio.to_thread(read_publication_progress,self.queue,row)
+        published,text_batches=await asyncio.to_thread(read_publication_progress,self.queue,row)
         await self._check(access,row)
         if retry:
             first=str(pages[0]['physical_page_index'])
+            if rejected_batch not in text_batches and all(p['physical_page_index'] in published for p in pages):
+                from .source_page_progress import read_enrichment_gaps
+                missing=await asyncio.to_thread(read_enrichment_gaps,self.queue,row)
+                await self._check(access,row)
+                if missing:return str(min(missing))
             return next_unaccepted(first,published) if all(p['physical_page_index'] in published for p in pages) else first
         cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
         raw=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
