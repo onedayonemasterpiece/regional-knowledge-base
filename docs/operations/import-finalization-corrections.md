@@ -49,6 +49,15 @@ TEXT is APPLIED and SEMANTIC is missing, including before finalization. It does
 not require `finalized`, because the semantic gap itself can prevent that phase.
 No separate repair queue, mode or manual caption edit is involved.
 
+For missing SEMANTIC on an already published page with unchanged regions,
+stage intake requires the accepted chunk keys supplied by `book_pages`.
+Renaming those chunks would insert new passage IDs for the same source text;
+the existing SQL identity constraint cannot deduplicate different IDs. Such an
+input returns `semantic_retry_requires_accepted_chunks` before a new stage is
+accepted. Copy the supplied chunks and correct only semantic candidates.
+The ordinary new-region correction for an actual source-text omission remains
+available. Historical commands, receipts and passages are not rewritten.
+
 The latest SEM outcome for each page is read from the same ordered journal.
 An unresolved `native_source_sql_rolled_back` is not automatically sent back
 to the model: ordinary completion may end with that explicit error still shown
