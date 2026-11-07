@@ -2142,3 +2142,25 @@ async def test_changed_active_caption_does_not_starve_finished_book(native_intak
     await s.importer._sync_import_captions(
         SimpleNamespace(authority=SimpleNamespace(person_id='synthetic-owner')), 'current')
     assert calls == ['finished']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_tail', [False, True])
+async def test_accepted_text_stage_can_complete_its_reported_source_tail(native_intake, monkeypatch, with_tail):
+    s = native_intake; book = await start(s)
+    payload = batch(s, book, first=0, count=1)
+    await stage(s, book, payload)
+    for _ in ('stage', 'text', 'semantic'):
+        await finish(s, book); await call(s, book, 'status')
+    page = payload['pages'][0]
+    async def tails(binding, source_id, ingestion_id):
+        return dict(tail_refs=[dict(page_id=page['page_id'], physical_page_index=0,
+            region_id=str(uuid5(UUID(page['page_id']), 'region:body')), region_key='body',
+            source_text_sha256='e'*64, start=0, end=10)] if with_tail else [], has_more=False)
+    monkeypatch.setattr(s.startup.history, 'source_tail_refs', tails)
+    before = operation_count(s)
+    payload['chunks'][0]['chunk_key'] = 'previously-uncovered-tail'
+    response = await stage(s, book, payload)
+    assert (operation_count(s) > before) is with_tail, response.message
+    if with_tail:
+        assert response.state == 'processing'
