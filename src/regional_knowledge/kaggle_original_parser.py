@@ -16,7 +16,7 @@ MODEL_PAGE_MAX_EDGE=3200;MODEL_PAGE_EDGES=(MODEL_PAGE_MAX_EDGE,2400,1600)
 MODEL_PAGE_QUALITIES=(85,80,70,55);MODEL_PAGE_BYTE_LIMIT=8*1024*1024
 
 
-def parse(path,action,index=0,*,cursor=None):
+def parse(path,action,index=0,*,cursor=None,legacy_fragments=False,page_metadata=None):
     # Inspect the actual file signature, not extension or caller-provided MIME.
     # This runs as a python -I child: a relative package import cannot be used.
     fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|getattr(os,'O_NOFOLLOW',0))
@@ -66,13 +66,6 @@ def parse(path,action,index=0,*,cursor=None):
                 or (cursor['block']<len(blocks) and cursor['offset']>=len(blocks[cursor['block']]['text']))):
             raise ValueError('original_page_cursor_invalid')
         position,offset=cursor['block'],cursor['offset'];segments=[]
-        for _ in range(12):
-            if position==len(blocks):break
-            block=blocks[position];text=block['text'];end=min(offset+1000,len(text))
-            segments.append(dict(block_index=block['block_index'],bbox=block['bbox'],text=text[offset:end],
-                original_length=len(text),offset=offset,end=end,truncated=end<len(text),text_sha256=_hash(text.encode())))
-            if end==len(text):position+=1;offset=0
-            else:offset=end
         text_end=min(cursor['text']+12000,len(native));complete=position==len(blocks) and text_end==len(native)
         value=dict(format='pdf',page_count=total,physical_page_index=index,width=width,height=height,
             native_cursor=cursor,next_native=None if complete else dict(block=position,offset=offset,text=text_end),
@@ -92,6 +85,31 @@ def parse(path,action,index=0,*,cursor=None):
             render=dict(policy='rkb.model-page.v2',width=pixmap.width,height=pixmap.height,scale=scale,max_edge=edge,jpeg_quality=quality,byte_limit=MODEL_PAGE_BYTE_LIMIT,image_bytes=len(image),preview_only=True)
             value['preview_render']=render;value['native_text_info']['preview_render']=render
             value.update(image_b64=base64.b64encode(image).decode(),image_sha256=_hash(image))
+        # Account for the exact native result envelope; image bytes travel separately.
+        wire={k:v for k,v in value.items() if k!='image_b64'}
+        wire.update(page_metadata or {})
+        if action=='page':wire['image_size']=len(image)
+        wire['page_receipt_sha256']='0'*64
+        wire['native_text_info']=dict(wire['native_text_info'])
+        if 'preview_render' in wire:wire['native_text_info']['preview_render']=wire['preview_render']
+        # Reserve cursor widths from this page's actual block/text dimensions.
+        wire['next_native']=dict(block=len(blocks),offset=max((len(b['text']) for b in blocks),default=0),text=text_end)
+        wire['native_text_info'].update(complete=False,blocks_truncated=False)
+        remaining_bytes=120*1024-len(_json(dict(phase='original_pages',request_sha256='0'*64,value=wire)))
+        remaining=12000
+        while position<len(blocks):
+            if (legacy_fragments and len(segments)==12) or not remaining:break
+            block=blocks[position];text=block['text'];end=min(offset+1000,len(text),offset+remaining)
+            segment=dict(block_index=block['block_index'],bbox=block['bbox'],text=text[offset:end],
+                original_length=len(text),offset=offset,end=end,truncated=end<len(text),text_sha256=_hash(text.encode()))
+            size=len(_json(segment))+bool(segments)
+            if not legacy_fragments and size>remaining_bytes:break
+            segments.append(segment);remaining-=end-offset;remaining_bytes-=size
+            if end==len(text):position+=1;offset=0
+            else:offset=end
+        complete=position==len(blocks) and text_end==len(native)
+        value['next_native']=None if complete else dict(block=position,offset=offset,text=text_end)
+        value['native_text_info'].update(complete=complete,blocks_truncated=position<len(blocks))
         return value
 
 
@@ -103,10 +121,10 @@ def main():
     resource.setrlimit(resource.RLIMIT_NOFILE,(64,64))
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
     try:
-        if len(sys.argv)!=7:raise ValueError
+        if len(sys.argv)!=9 or sys.argv[7] not in ('legacy','packed'):raise ValueError
         path=Path(sys.argv[2])
         if not path.is_absolute() or not path.is_relative_to('/kaggle/temp') or path.resolve(strict=True)!=path:raise ValueError
-        result=parse(path,sys.argv[1],int(sys.argv[3]),cursor=dict(zip(('block','offset','text'),map(int,sys.argv[4:]))))
+        result=parse(path,sys.argv[1],int(sys.argv[3]),cursor=dict(zip(('block','offset','text'),map(int,sys.argv[4:7]))),legacy_fragments=sys.argv[7]=='legacy',page_metadata=json.loads(sys.argv[8]))
         data=json.dumps(result,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
         if len(data)>12*1024*1024:raise ValueError
         sys.stdout.buffer.write(data);sys.stdout.buffer.flush()

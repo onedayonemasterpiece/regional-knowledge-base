@@ -34,7 +34,7 @@ HISTORICAL_PDF_SCRIPT_SHA256='f614e3acbfc32f1bf3ca339a11a8edbf08cd3c3de3d72b0d5f
 # -I intentionally ignores PYTHONPATH and the parent's dynamic sys.path. Stage0
 # installs verified wheels into a private --target directory, so pass only the
 # already version-checked PyMuPDF distribution root, never request paths. Keep
-# the parser script/argv/main (including its resource limits) byte-for-byte.
+# the parser resource limits and dependency binding intact.
 _ISOLATED_PARSER_BOOTSTRAP = '''
 import importlib.metadata, importlib.util, json, pathlib, runpy, sys
 try:
@@ -101,6 +101,7 @@ class NativeOriginalIntake:
         legacy_code=HISTORICAL_PDF_SCRIPT_SHA256
         self.legacy_parser_sha256=digest(canonical(dict(packages=actual,code=legacy_code)))
         self.previous_parser_sha256=digest(canonical(dict(packages=actual,code='20532723f1fc88d895e639f5f82427b6e600e5ffea9a6bf8790d81a2f6c2ca0c',djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),legacy_pdf_parser_sha256=legacy_code)))
+        self.fragmented_parser_sha256=digest(canonical(dict(packages=actual,code='bc219e131e0e63892e361f76d19e96fddc3222d02eb011507b4e18c40180b363',djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),legacy_pdf_parser_sha256=legacy_code)))
         self.parser_sha256=digest(canonical(dict(packages=actual,
             code=digest(Path(__file__).with_name('kaggle_original_parser.py').read_bytes()),
             djvu_inspector_sha256=digest(Path(__file__).with_name('kaggle_djvu_inspect.py').read_bytes()),
@@ -134,29 +135,31 @@ class NativeOriginalIntake:
 
     def _parser_script(self,pin):
         # Historical receipts keep their original identity. Both accepted PDF
-        # revisions execute the same PDF branch of the current isolated parser.
-        if pin not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256):
+        # revisions retain twelve-segment fragments inside the same isolated parser.
+        if pin not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256,self.fragmented_parser_sha256):
             raise OriginalIntakeError('original_parser_pin_unavailable')
         return Path(__file__).with_name('kaggle_original_parser.py')
 
-    async def _parse_selected(self,path,action,index=0,*,cursor=None,parser_sha256):
+    async def _parse_selected(self,path,action,index=0,*,cursor=None,parser_sha256,page_metadata=None):
         self._parser_script(parser_sha256)
         # Injected test parser follows the same pin admission; the native
         # production child executes the immutable script matching the receipt.
         if (getattr(self.parser,'__self__',None) is self
                 and getattr(self.parser,'__func__',None) is type(self)._parse):
-            return await self._parse(path,action,index,cursor=cursor,parser_sha256=parser_sha256)
+            return await self._parse(path,action,index,cursor=cursor,parser_sha256=parser_sha256,page_metadata=page_metadata)
         # Inspect/first-page peers historically take positional args only;
         # preserve their exact call form when no continuation is requested.
         if cursor is None:return await self.parser(path,action,index)
         return await self.parser(path,action,index,cursor=cursor)
 
-    async def _parse(self,path,action,index=0,*,cursor=None,parser_sha256=None):
+    async def _parse(self,path,action,index=0,*,cursor=None,parser_sha256=None,page_metadata=None):
         cursor=cursor or dict(block=0,offset=0,text=0)
-        script=self._parser_script(self.parser_sha256 if parser_sha256 is None else parser_sha256)
+        pin=self.parser_sha256 if parser_sha256 is None else parser_sha256
+        script=self._parser_script(pin)
         child=await asyncio.create_subprocess_exec(sys.executable,'-I','-c',_ISOLATED_PARSER_BOOTSTRAP,
             self._pdf_dependency_root,self._pdf_dependency_version,str(script),
             action,str(path),str(index),*(str(cursor[k]) for k in ('block','offset','text')),
+            'packed' if pin==self.parser_sha256 else 'legacy',canonical(page_metadata or {}).decode(),
             stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
             env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
         try:
@@ -337,7 +340,9 @@ class NativeOriginalIntake:
                     self.identity[0],record['spec']['ingestion_id'],index,str(error))
                 raise OriginalIntakeError('original_djvu_decoder_required') from None
         return await self._parse_selected(record['path'],'page',index,
-            parser_sha256=record['parser_sha256'])
+            parser_sha256=record['parser_sha256'],page_metadata=dict(
+                page_id=str(uuid5(UUID(record['spec']['source_id']),f'page:1:{index}')),
+                original_sha256=record['sha256'],parser_sha256=record['parser_sha256'],mime_type='image/jpeg'))
 
     async def _execute(self,frame):
         phase,args,private=frame['phase'],frame['arguments'],frame.get('original_transfer')
@@ -370,7 +375,7 @@ class NativeOriginalIntake:
                     prior=VerifiedOriginalReceipt.from_wire(args['restore_receipt'])
                     if ((prior.source_id,prior.ingestion_id,prior.request_id,prior.revision)!=(
                             spec.source_id,spec.ingestion_id,spec.request_id,spec.revision)
-                            or prior.parser_sha256 not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256)
+                            or prior.parser_sha256 not in (self.parser_sha256,self.legacy_parser_sha256,self.previous_parser_sha256,self.fragmented_parser_sha256)
                             or (prior.parser_sha256==self.legacy_parser_sha256 and prior.format!='pdf')
                             or prior.size>spec.max_bytes
                             or type(args['restore_nonce']) is not str or len(args['restore_nonce'])!=48):
@@ -539,7 +544,8 @@ class NativeOriginalIntake:
             artifact=record['pages'][index];key=canonical(cursor).decode()
             if key not in artifact['chunks']:
                 result=await self._parse_selected(record['path'],'text',index,cursor=cursor,
-                    parser_sha256=record['parser_sha256'])
+                    parser_sha256=record['parser_sha256'],page_metadata={name:artifact['result'][name] for name in
+                        ('page_id','original_sha256','parser_sha256','image_size','image_sha256','mime_type','preview_render')})
                 for name in ('page_id','original_sha256','parser_sha256','image_size','image_sha256','mime_type','preview_render'):
                     result[name]=artifact['result'][name]
                 result['native_text_info']['preview_render']=artifact['result']['preview_render']

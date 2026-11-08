@@ -108,3 +108,53 @@ async def test_isolated_djvu_inspection_and_decoder_required_semantics_preserved
     assert await f.owner._parse(path,'inspect')==dict(format='djvu',page_count=2)
     with pytest.raises(OriginalIntakeError,match='original_djvu_decoder_required'):
         await f.owner._parse(path,'page')
+
+
+@pytest.mark.asyncio
+async def test_only_new_receipt_pin_packs_fragments_all_issued_pins_keep_old_boundaries(child_fixture):
+    f=child_fixture;fitz=pytest.importorskip('pymupdf');path=f.root/'fictional-many-blocks.pdf'
+    with fitz.open() as document:
+        page=document.new_page(width=400,height=3000)
+        for index in range(126):page.insert_text((20,20+index*20),'fictional' if index<84 else 'tinytext',fontsize=5)
+        document.save(path)
+    for pin in (f.owner.legacy_parser_sha256,f.owner.previous_parser_sha256,f.owner.fragmented_parser_sha256):
+        first=await f.owner._parse(path,'text',parser_sha256=pin)
+        assert len(first['native_blocks'])==12 and first['next_native']==dict(block=12,offset=0,text=1218)
+        second=await f.owner._parse(path,'text',cursor=first['next_native'],parser_sha256=pin)
+        assert [b['block_index'] for b in second['native_blocks']]==list(range(12,24))
+    current=await f.owner._parse(path,'text',parser_sha256=f.owner.parser_sha256)
+    assert len(current['native_blocks'])==126 and current['next_native'] is None
+    with pytest.raises(OriginalIntakeError,match='original_parser_pin_unavailable'):
+        native.NativeOriginalIntake._parser_script(f.owner,'f'*64)
+
+
+@pytest.mark.asyncio
+async def test_actual_native_receipt_first_and_continued_control_text_fit_existing_frame(child_fixture):
+    from regional_knowledge.original_intake import canonical,digest,assemble_native_page
+    f=child_fixture;text='\x01😀'*500;texts=[text]*30
+    original=f.script.read_text()
+    f.script.write_text(original.replace('runpy.run_path(',
+        "import pymupdf\n"+
+        f"texts={texts!r}\n"+
+        "def fictional_text(self,kind,sort=False):\n"
+        "    return ''.join(texts) if kind=='text' else [(10,10,20,20,t,i,0) for i,t in enumerate(texts)]\n"
+        "pymupdf.Page.get_text=fictional_text\nrunpy.run_path("))
+    sha=digest(f.pdf.read_bytes());handle='fictional-owned-handle'
+    f.owner._records[handle]=dict(path=f.pdf,sha256=sha,size=f.pdf.stat().st_size,format='pdf',page_count=1,
+        pages={},verified={'retained':True},parser_sha256=f.owner.parser_sha256,
+        spec=dict(source_id='10000000-0000-0000-0000-000000000001'))
+    parts=[];cursor=dict(block=0,offset=0,text=0)
+    while True:
+        args=dict(handle=handle,original_sha256=sha,index=0,cursor=cursor)
+        request=digest(canonical(dict(phase='original_pages',arguments=args)))
+        frame=dict(phase='original_pages',arguments=args,request_sha256=request,operation_key=request,id=request)
+        value=await f.owner._execute_logged(frame)
+        receipt=f.owner._receipt(frame,value)
+        assert 'error' not in value
+        assert len(canonical(receipt))<=120*1024
+        assert value['next_native']!=cursor or value['next_native'] is None
+        parts.append(value);cursor=value['next_native']
+        if cursor is None:break
+        assert len(parts)<100
+    assert len(parts)>1 and assemble_native_page(parts)['native_text']==''.join(texts)
+    assert [b['text'] for b in assemble_native_page(parts)['native_blocks']]==texts
