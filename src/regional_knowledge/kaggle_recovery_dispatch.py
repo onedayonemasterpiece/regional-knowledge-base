@@ -122,6 +122,7 @@ class RecoveryPhaseDispatch:
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
         root=operation_key
+        value=None
         for attempt in range(256):
             with self.queue.connect(write=False) as db:
                 row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
@@ -171,7 +172,7 @@ class RecoveryPhaseDispatch:
             binding=self._bindings.pop(job,None)
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
         # Preserve the resolved page only after the normal identity/delivery fences.
-        if not (phase=='original_pages' and row is not None and row['state']=='done'
+        if not (phase=='original_pages' and value is not None and row is not None and row['state']=='done'
                 and value.get('status')!='pending' and not value.get('error')):
             value=result['result']['value']
         else:

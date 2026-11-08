@@ -42,9 +42,10 @@ async def test_attachment_refresh_uses_serving_binding_for_ready_original_transf
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['verify','original_pages'])
 @pytest.mark.parametrize('claimed',[False,True])
 @pytest.mark.parametrize('after',['valid','revoked','different_run'])
-async def test_reconnect_dispatches_retained_job_without_another_client_request(state,claimed,after,monkeypatch):
+async def test_reconnect_dispatches_retained_job_without_another_client_request(state,claimed,after,phase,monkeypatch):
     s=state;db=database()
     old=PreReadyRecoveryBinding(s.run,'incarnation-a',s.generation,db.database_generation,db.writer_generation)
     current=[old];revoked=[False]
@@ -56,6 +57,8 @@ async def test_reconnect_dispatches_retained_job_without_another_client_request(
         binding_current=lambda b:b==current[0],
         rebind_current=lambda: False if revoked[0] else restorer.resume_attachment())
     restorer.dispatch=bridge
+    async def original_transfer(identity,binding):return None
+    bridge.original_intake=SimpleNamespace(dispatch_transfer=original_transfer)
     subscribed=asyncio.Event();received=asyncio.Event();release=asyncio.Event()
     arrivals=resolved=0
     original_wait=s.q.wait_result
@@ -69,7 +72,7 @@ async def test_reconnect_dispatches_retained_job_without_another_client_request(
         await release.wait()
         return value
     monkeypatch.setattr(s.q,'wait_result',held_wait)
-    tasks=[asyncio.create_task(bridge.request(old,'verify',{'reference':'retained'},operation_key='only-request'))
+    tasks=[asyncio.create_task(bridge.request(old,phase,{'reference':'retained'},operation_key='only-request'))
            for _ in range(2)]
     try:
         await asyncio.wait_for(subscribed.wait(),2)
