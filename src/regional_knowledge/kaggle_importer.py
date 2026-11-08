@@ -1081,7 +1081,29 @@ class KaggleSourceImporter:
             await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
             if await self._receipt(access, row) is None:
                 raise failure('verified_original_pending')
-            batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1)
+            async def page_read(args,handle,attempt=0):
+                from .kaggle_source_read import SourceReadRequest
+                from .kaggle_protocol import TrustedActorContext
+                async with self._access(principal) as read:
+                    read.binding=access.binding
+                    await self._check(read.authority,read.context,access.binding)
+                    authority=read.authority
+                    query=SourceReadRequest(request_id=str(uuid4()),connection_generation=access.binding.connection_generation,
+                        turn_generation=0,operation='original_page_io',source_id=row['source_id'],page_start=args['index'],limit=1,
+                        original=dict(ingestion_id=row['ingestion_id'],handle=args['handle'],
+                            original_sha256=args['original_sha256'],cursor=args['cursor'],io_handle=handle,attempt=attempt),
+                        actor=TrustedActorContext(person_id=authority.person_id,audience=authority.destination.key,
+                            auth_epoch=authority.auth_revision,visibility_epoch=0,context_ref=authority.context_ref),
+                        min_data_seq=0,deadline_ms=2000)
+                    ticket=await self.queue.shared_reads.begin_read(authority,query,
+                        dialog_ref=authority.context_ref,deadline=time.monotonic()+2)
+                    result=await ticket.result
+                    await self._check(authority,read.context,access.binding)
+                    if result.status!='ok' or result.operation!=query.operation or len(result.records)!=1:
+                        raise OriginalIntakeError('original_native_receipt_unavailable')
+                    return result.records[0]
+            batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1,
+                **({'page_read':page_read} if getattr(self,'native_intake',None) is not None else {}))
             if len(batch.pages) != 1 or sum(len(page.data) for page in batch.pages) > MODEL_PAGE_BYTE_LIMIT:
                 raise failure('bounded_original_page_output_required')
             for page in batch.pages:

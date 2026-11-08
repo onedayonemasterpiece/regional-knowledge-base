@@ -617,7 +617,8 @@ class SharedReadAdmission:
         if (self._reads.get(key) is not read or read.deadline<=self.clock()
                 or read.ticket.result.done()
                 or self._attachment!=(run_id,connection_generation,run['runtime_incarnation'])):return False
-        if result.status in {'ok','degraded'} and (result.observed_data_seq<read.query.min_data_seq
+        if result.status in {'ok','degraded'} and not (type(read.query) is SourceReadRequest
+                and read.query.operation=='original_page_io') and (result.observed_data_seq<read.query.min_data_seq
                 or result.observed_projection_seq<read.query.min_data_seq):
             raise ValueError('read result violates minimum sequence')
         self._reads.pop(key);read.timer.cancel() if read.timer is not None else None;read.ticket.result.set_result(result)

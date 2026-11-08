@@ -140,7 +140,8 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
     assert archived["native_version"] == "etag"
     controller.store = SimpleNamespace(bucket="fixture", client=SimpleNamespace(
         get_object=lambda **kw: dict(ContentLength=len(pdf_image), Body=BytesIO(pdf_image))))
-    async def phase(binding, name, phase_args, private=None):
+    async def phase(binding, name, phase_args, private=None, *, page_read=None):
+        assert page_read is None
         return first
     controller._phase = phase
     binding = SimpleNamespace(run_id="fixture")
@@ -270,7 +271,8 @@ async def test_dense_spread_pdf_djvu_native_controller_book_pages_and_immutable_
         original_sha256=original_sha,parser_sha256=n.parser_sha256,
         image_size=len(second_jpeg),mime_type='image/jpeg')
     second_native['page_receipt_sha256']=digest(canonical(second_native))
-    async def after_restart(binding_value,name,args,private=None):
+    async def after_restart(binding_value,name,args,private=None,*,page_read=None):
+        assert page_read is None
         assert name=='original_pages' and args['handle']=='restored-new-handle'
         return new_native if args['index']==0 else second_native
     controller._phase=after_restart

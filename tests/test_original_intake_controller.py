@@ -672,7 +672,7 @@ async def test_large_original_page_releases_chunks_and_keeps_proof():
 
     async def authorize(_context):return 'actor','binding'
     async def verified(_context,_ingestion_id):return receipt
-    async def page_data(_binding,record,_index,native_cursor,*,restore):
+    async def page_data(_binding,record,_index,native_cursor,*,restore,page_read=None):
         assert native_cursor==cursor
         return record,page,IMAGE
 
