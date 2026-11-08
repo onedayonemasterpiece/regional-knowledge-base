@@ -65,10 +65,10 @@ async def jpeg_case(s,monkeypatch,*,fault=None):
 
 
 @pytest.mark.asyncio
-async def test_old_126_block_page_uses_one_get_with_all_head_and_native_fragment_checks(native_intake,monkeypatch):
+async def test_old_126_block_page_uses_one_head_and_get_with_all_native_fragment_checks(native_intake,monkeypatch):
     s=native_intake;f=await jpeg_case(s,monkeypatch)
     result,_=await issue(f);manifest=json.loads(result['result']['content'][0]['text']);page=manifest['pages'][0]
-    assert f.stats['phase']==11 and f.stats['head']==11 and f.stats['get']==1
+    assert f.stats['phase']==11 and f.stats['head']==1 and f.stats['get']==1
     assert f.stats['if_matches']==['fictional-image-version']
     assert len(page['native_blocks'])==126 and page['native_text']==f.native and page['native_text_info']['complete']
     assert len(result['result']['content'])==2 and result['result']['content'][1]['data']=='c3ludGhldGljLWpwZWc='
@@ -77,8 +77,31 @@ async def test_old_126_block_page_uses_one_get_with_all_head_and_native_fragment
     assert s.originals.receipts[f.book.ingestion_id]==f.original_receipt
     # An explicit fragment request keeps the previous GET/SHA path.
     result,_=await issue(f,cursor=encode_page_cursor(0,f.parts[0]['next_native']))
-    assert f.stats['get']==2 and f.stats['head']==12 and f.stats['phase']==12
+    assert f.stats['get']==2 and f.stats['head']==2 and f.stats['phase']==12
     assert not json.loads(result['result']['content'][0]['text'])['pages'][0]['native_text_info']['complete']
+
+
+@pytest.mark.asyncio
+async def test_initial_page_still_requires_available_derivative(native_intake,monkeypatch):
+    s=native_intake;f=await jpeg_case(s,monkeypatch)
+    async def missing(key,version):
+        f.stats['head']+=1
+        return None
+    s.originals._head=missing
+    with pytest.raises(ToolError):await issue(f)
+    assert f.stats['head']==1 and f.stats['get']==0 and f.stats['phase']==1
+
+
+@pytest.mark.asyncio
+async def test_internal_reuse_rejects_wrong_image_type_before_accessing_bytes(native_intake,monkeypatch):
+    s=native_intake;f=await jpeg_case(s,monkeypatch);pages=s.originals.pages
+    async def wrong_image(*args,**kwargs):
+        if kwargs.get('_page_image') is not None:kwargs['_page_image']=object()
+        return await pages(*args,**kwargs)
+    s.originals.pages=wrong_image
+    # Importer deliberately hides the internal provenance label in its envelope.
+    with pytest.raises(ToolError,match='native_original_page_unavailable'):await issue(f)
+    assert f.stats['head']==1 and f.stats['get']==1 and f.stats['phase']==2
 
 
 @pytest.mark.asyncio
