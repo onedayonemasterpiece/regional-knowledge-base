@@ -128,14 +128,17 @@ async def native_intake(target, tmp_path):
     spool.close()
 
 
-async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu'):
-    return await s.importer.book_ingest(command='start',principal=s.principal,
+async def start(s, *, file_id='synthetic-174-djvu',mime_type='image/vnd.djvu',page_count=174):
+    result = await s.importer.book_ingest(command='start',principal=s.principal,
         file=ChatFile(file_id=file_id,download_url='https://files.example.test/174.djvu?private=fixture',
             mime_type=mime_type,file_name='synthetic-174.djvu'),
         payload=dict(title='Synthetic 174-page scanned source',authors=['Synthetic author'],
             publication_year=1901,language='de',catalog={'kind':'book','publisher':'Synthetic publisher'}),
         source_import=options())
-
+    if page_count != 174:
+        from dataclasses import replace
+        s.originals.receipts[result.ingestion_id]=replace(s.originals.receipts[result.ingestion_id],page_count=page_count)
+    return result
 
 
 @pytest.mark.asyncio
@@ -882,7 +885,7 @@ async def test_real_lost_acceptance_ack_keeps_unknown_key_then_read_only_reconci
 
 @pytest.mark.asyncio
 async def test_packet_progress_and_reading_completion_keep_exact_durability_receipts(native_intake):
-    s = native_intake; result = await start(s)
+    s = native_intake; result = await start(s,page_count=1)
     await stage(s,result,batch(s,result,count=1))
     staged = await finish(s,result,publish=False)
     assert (await call(s,result,'status')).state == 'processing'
@@ -1941,7 +1944,7 @@ async def test_caption_only_at_book_start_and_applied_finish(native_intake,monke
             edits.append(caption)
         return dict(owned=True,editable=True,caption=last,updated=caption is not None)
     monkeypatch.setattr(s.originals,'caption',caption)
-    book=await start(s)
+    book=await start(s,page_count=1)
     # SQLite receipt projection is already independently covered; exercise its
     # truthful result through the actual APPLIED finish boundary and Telegram.
     from test_telegram_import_status_counts import _status
@@ -2045,7 +2048,7 @@ async def test_slow_book_stage_does_not_hold_other_book_status(native_intake,mon
 async def test_completion_resumes_older_rejected_semantic_packet(native_intake, reason):
     """Later successful packets must not hide an earlier rejected SEM page."""
     s = native_intake
-    book = await start(s)
+    book = await start(s,page_count=2)
     await stage(s, book, batch(s, book, first=0, count=1))
     await finish(s, book)
     await call(s, book, 'status')
@@ -2167,3 +2170,60 @@ async def test_accepted_text_stage_can_complete_its_reported_source_tail(native_
         assert operation_count(s)>before_retry, response.message
         assert response.state=='processing'
         assert json.loads((await pending(s,book)).command.payload)['batch_index']==2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', [0, 1, None])
+@pytest.mark.parametrize('legacy_finished', [False, True])
+async def test_completion_requires_all_physical_pages_and_allows_ordinary_missing_correction(native_intake, monkeypatch, missing, legacy_finished):
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+    s = native_intake; book = await start(s)
+    s.originals.receipts[book.ingestion_id] = replace(s.originals.receipts[book.ingestion_id], page_count=3)
+    payload = batch(s, book, count=3)
+    if missing is not None:
+        payload['pages'] = [p for p in payload['pages'] if p['physical_page_index'] != missing]
+        payload['chunks'] = [c for c in payload['chunks'] if c['chunk_key'] != f'page-{missing}']
+    await stage(s, book, payload)
+    for _ in range(3):
+        await finish(s, book); await call(s, book, 'status')
+    if legacy_finished:
+        with monkeypatch.context() as patch:
+            patch.setattr(type(s.importer.native_intake), '_tail_output', AsyncMock(return_value=None))
+            await call(s, book, 'finalize'); await finish(s, book)
+    before = operation_count(s)
+    verified = s.originals.verified
+    if legacy_finished:
+        monkeypatch.setattr(s.originals, 'verified', AsyncMock(side_effect=AssertionError('duplicate original verification')))
+    result = await call(s, book, 'status' if legacy_finished else 'finalize')
+    monkeypatch.setattr(s.originals, 'verified', verified)
+    if missing is None:
+        if state(s, book)['pending_operation_key']: await finish(s, book)
+        assert (await call(s, book, 'status')).next_action == 'done'
+        return
+    assert (result.next_action, result.next_cursor) == ('continue_pages', str(missing))
+    assert operation_count(s) == before
+    await stage(s, book, batch(s, book, first=missing, count=1))
+    for _ in range(3):
+        await finish(s, book); await call(s, book, 'status')
+    await call(s, book, 'finalize')
+    if state(s, book)['pending_operation_key']: await finish(s, book)
+    assert (await call(s, book, 'status')).next_action == 'done'
+
+
+@pytest.mark.asyncio
+async def test_completion_accepts_existing_reviewed_blank_page_without_exclusion_state(native_intake):
+    from dataclasses import replace
+    from regional_knowledge.source_page_progress import read_publication_progress
+    s=native_intake; book=await start(s)
+    s.originals.receipts[book.ingestion_id]=replace(s.originals.receipts[book.ingestion_id],page_count=1)
+    payload=batch(s,book,count=1)
+    payload['pages'][0].update(regions=[],source_review_note='Fictional blank leaf visually reviewed: no text or figures.')
+    payload['chunks']=[]
+    await stage(s,book,payload)
+    for _ in range(3):
+        await finish(s,book);await call(s,book,'status')
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    assert read_publication_progress(s.t.queue,row)[0]=={0}
+    await call(s,book,'finalize');await finish(s,book)
+    assert (await call(s,book,'status')).next_action=='done'
