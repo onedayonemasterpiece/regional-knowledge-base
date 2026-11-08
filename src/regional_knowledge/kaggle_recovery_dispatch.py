@@ -96,6 +96,22 @@ class RecoveryPhaseDispatch:
                 'values(?,?,?,?,?,?,?,?,?)',(job,actor,key,'recovery_phase','[]',encoded,'pending',now,now))
             return job,actor
 
+    def _completed_status(self,binding,handle):
+        with self.queue.connect(write=False) as db:
+            row=db.execute("""SELECT * FROM jobs WHERE actor=? AND state='done' AND kind='recovery_phase'
+                AND json_valid(identity) AND json_valid(result)
+                AND json_extract(identity,'$.phase')='snapshot_status'
+                AND json_extract(identity,'$.arguments.handle')=?
+                AND json_extract(result,'$.value.status')='complete'
+                AND json_type(result,'$.value.value')='object'
+                AND json_extract(result,'$.value.value.error') IS NULL""",('maintenance:'+self.identity[0],handle)).fetchone()
+            if row is None:return None
+            run=db.execute('SELECT * FROM runs WHERE id=?',(self.identity[0],)).fetchone()
+        if run is not None and self.eligible(row,run,getattr(binding,'connection_generation',None)):
+            self._bindings.pop(row['id'],None)
+            return json.loads(row['result'])['value']
+        return None
+
     async def request(self,binding,phase,arguments,*,operation_key):
         if not self.current(binding):raise PermissionError('current maintenance binding required')
         # A validated current request also restores authority for retained
@@ -113,7 +129,9 @@ class RecoveryPhaseDispatch:
             if row is None or row['state']!='done':break
             value=json.loads(row['result'])['value']
             if phase=='original_pages' and value.get('status')=='pending':
-                status=await self.request(binding,'snapshot_status',dict(handle=value['handle']),operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
+                status=self._completed_status(binding,value['handle'])
+                if status is None:
+                    status=await self.request(binding,'snapshot_status',dict(handle=value['handle']),operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
                 if status.get('status')=='complete':value=status['value']
             if phase=='original_acquire' and (value.get('terminal') is True or value.get('error') in TERMINAL_REJECTIONS
                     or value.get('error') in ('original_telegram_scope_denied','original_telegram_document_changed',
