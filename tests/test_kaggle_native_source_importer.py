@@ -2227,3 +2227,32 @@ async def test_completion_accepts_existing_reviewed_blank_page_without_exclusion
     assert read_publication_progress(s.t.queue,row)[0]=={0}
     await call(s,book,'finalize');await finish(s,book)
     assert (await call(s,book,'status')).next_action=='done'
+
+@pytest.mark.asyncio
+async def test_invalid_stage_location_reaches_safe_product_span(native_intake, monkeypatch):
+    from regional_knowledge import product_telemetry as telemetry
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=1)
+    payload['pages'][0]['source_review_note'] = 'PRIVATE_DIAGNOSTIC_DO_NOT_LOG' * 100
+    records = []
+    monkeypatch.setenv('RKB_PRODUCT_LOG_MODE', 'standard')
+    monkeypatch.setattr(telemetry, 'emit_product_event',
+        lambda record: records.append(telemetry._clean(record, 'standard')))
+    async def run():
+        return await stage(s, book, payload)
+    with pytest.raises(ToolError) as caught:
+        await telemetry.observe_async('book_ingest', run,
+            arguments={'ingestion_id': book.ingestion_id, 'command': 'stage'})
+    assert operation_count(s) == 0
+    diagnostic = json.loads(str(caught.value))
+    record = next(item for item in records if item['event'] == 'import.call')
+    assert record['validation_field'] == 'pages'
+    assert record['validation_type'] == diagnostic['validation_type'] == 'value_error'
+    assert record['input_validator_line'] == int(diagnostic['validator'].rsplit(':', 1)[1])
+    assert record['input_caller_line'] > 0
+    assert 'PRIVATE_DIAGNOSTIC_DO_NOT_LOG' not in json.dumps(records)
+    clean = telemetry._clean(dict(record, validation_field='PRIVATE_FIELD',
+        validation_type='PRIVATE_TYPE', input_caller_line=-1), 'standard')
+    assert all(key not in clean for key in ('validation_field', 'validation_type', 'input_caller_line'))
+    assert telemetry._import_call.get() is None

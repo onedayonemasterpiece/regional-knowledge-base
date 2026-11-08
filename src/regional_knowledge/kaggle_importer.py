@@ -1047,6 +1047,9 @@ class KaggleSourceImporter:
             caller=frame
             while frame.tb_next is not None:
                 caller,frame=frame,frame.tb_next
+            from .product_telemetry import import_metadata
+            import_metadata(input_validator_line=frame.tb_lineno,input_caller_line=caller.tb_lineno,
+                validation_field=field_path.split('.',1)[0],validation_type=validation_type)
             validator=f'{frame.tb_frame.f_code.co_name}:{frame.tb_lineno}'
             caller_validator=f'{caller.tb_frame.f_code.co_name}:{caller.tb_lineno}'
             safe_ingestion=(ingestion_id if type(ingestion_id) is str and
