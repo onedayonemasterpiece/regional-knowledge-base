@@ -308,7 +308,8 @@ def _book_mcp_error(exc: Exception) -> ToolError:
             allowed = {"payload", "pages", "chunks", "entity_candidates", "entities",
                 "aliases", "relations", "evidence", "page_id", "region_id", "region_key",
                 "chunk_id", "chunk_key", "exact_quote", "key", "kind",
-                "canonical_label", "exact_source_spelling", "source_review_note", "*"}
+                "canonical_label", "exact_source_spelling", "source_review_note", "*",
+                "physical_page_index", "source_image_receipt_sha256", "source_material"}
             if (type(path) is str and len(path) <= 128 and
                     all(part in allowed or part.isdecimal() and len(part) <= 4
                         for part in path.split("."))):
