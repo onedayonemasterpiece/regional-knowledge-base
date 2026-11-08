@@ -258,6 +258,8 @@ class KaggleDatasetPublisher:
             return expected
         if self.observe() != previous_version:
             raise DatasetPublicationError('dataset_publication_predecessor_changed')
+        if previous_version is not None and self.api.dataset_status(self.ref) != 'ready':
+            raise DatasetPublicationError('dataset_publication_pending_readback')
         uploaded = []
         for file in files:
             item = ApiDatasetNewFile()
