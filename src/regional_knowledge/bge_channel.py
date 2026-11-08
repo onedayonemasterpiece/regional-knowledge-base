@@ -113,6 +113,8 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
             await socket.accept()
             message = await asyncio.wait_for(socket.receive(), 10)
             if message['type'] == 'websocket.disconnect':
+                logger.info(json.dumps({'event':'bge_channel_closed','run_id':run_id,
+                    'connection_generation':generation,'reason':'peer_disconnect','close_code':message.get('code')}))
                 return
             hello = _decode(message)
             _fields(hello, ('type', 'protocol_version', 'run_id', 'launch_nonce', 'runtime_incarnation'),
@@ -413,6 +415,8 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                     message = await (service_frames.get() if service else socket.receive())
                     received_at=time.monotonic_ns()
                     if message['type'] == 'websocket.disconnect':
+                        logger.info(json.dumps({'event':'bge_channel_closed','run_id':run_id,
+                            'connection_generation':generation,'reason':'peer_disconnect','close_code':message.get('code')}))
                         return
                     frame = message if service else _decode(message)
                     if not service and frame['type'] in ('RECOVERY_PHASE_RESULT', 'SNAPSHOT_UPLOAD_INTENT', 'HEARTBEAT',
@@ -675,10 +679,12 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-        except WebSocketDisconnect:
-            pass
+        except WebSocketDisconnect as error:
+            logger.info(json.dumps({'event':'bge_channel_closed','run_id':run_id,
+                'connection_generation':generation,'reason':'websocket_disconnect','close_code':error.code}))
         except asyncio.CancelledError:
-            pass
+            logger.info(json.dumps({'event':'bge_channel_closed','run_id':run_id,
+                'connection_generation':generation,'reason':'cancelled'}))
         except PermissionError as error:
             from .bge_queue import StaleAttachment as CurrentStaleAttachment
             logger.info(json.dumps({'event': 'bge_channel_rejected', 'run_id': run_id,
