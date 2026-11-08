@@ -1126,22 +1126,26 @@ class KaggleSourceImporter:
                         async with self._access(principal) as read:
                             read.binding=access.binding
                             await self._check(read.authority,read.context,access.binding)
-                            part=await self.originals.pages(read.context,row['ingestion_id'],cursor=continuation,batch_size=1,
-                                **({'page_read':page_read} if getattr(self,'native_intake',None) is not None else {}))
+                            try:
+                                part=await self.originals.pages(read.context,row['ingestion_id'],cursor=continuation,batch_size=1,
+                                    **({'page_read':page_read} if getattr(self,'native_intake',None) is not None else {}))
+                            except TimeoutError:
+                                break
                         continuation=part.next_cursor
                     else:raise OriginalIntakeError('original_page_continuation_bound')
-                proof=json.loads(self.originals._page_proofs[row['ingestion_id']][page.physical_page_index])
-                candidate=replace(first,pages=(replace(page,native_text=proof['native_text'],
-                    native_blocks=tuple(proof['native_blocks']),native_text_info={**page.native_text_info,
-                        **proof['native_text_info'],'page_receipt_sha256':proof['page_receipt_sha256']}),),
-                    next_cursor=str(page.physical_page_index+1) if page.physical_page_index+1<receipt.page_count else None)
-                from .read_issuance import MAX_RESPONSE_BYTES
-                rendered=_book_page_tool_result(ingestion_id,candidate,accepted).model_dump(
-                    mode='json',by_alias=True,exclude_none=True)
-                envelope=dict(jsonrpc='2.0',id=response_id,result=rendered)
-                if len(json.dumps(envelope,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode())<= (
-                        MAX_RESPONSE_BYTES+4*((len(page.data)+2)//3)):
-                    batch=candidate
+                if page.physical_page_index in self.originals._page_proofs.get(row['ingestion_id'],{}):
+                    proof=json.loads(self.originals._page_proofs[row['ingestion_id']][page.physical_page_index])
+                    candidate=replace(first,pages=(replace(page,native_text=proof['native_text'],
+                        native_blocks=tuple(proof['native_blocks']),native_text_info={**page.native_text_info,
+                            **proof['native_text_info'],'page_receipt_sha256':proof['page_receipt_sha256']}),),
+                        next_cursor=str(page.physical_page_index+1) if page.physical_page_index+1<receipt.page_count else None)
+                    from .read_issuance import MAX_RESPONSE_BYTES
+                    rendered=_book_page_tool_result(ingestion_id,candidate,accepted).model_dump(
+                        mode='json',by_alias=True,exclude_none=True)
+                    envelope=dict(jsonrpc='2.0',id=response_id,result=rendered)
+                    if len(json.dumps(envelope,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode())<= (
+                            MAX_RESPONSE_BYTES+4*((len(page.data)+2)//3)):
+                        batch=candidate
             preview=batch.pages[0].native_text_info.get('preview_render') or {}
             import_metadata(ingestion_id=ingestion_id,source_id=row['source_id'],page_count=len(batch.pages),
                 physical_page_index=batch.pages[0].physical_page_index,
