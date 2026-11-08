@@ -1153,6 +1153,9 @@ class KaggleSourceImporter:
             import_metadata(ingestion_id=ingestion_id,source_id=row['source_id'],page_count=len(batch.pages),
                 physical_page_index=batch.pages[0].physical_page_index,
                 image_bytes=sum(len(page.data) for page in batch.pages),
+                native_complete_count=sum(p.native_text_info.get('complete') is True for p in batch.pages),
+                native_block_count=sum(len(p.native_blocks) for p in batch.pages),
+                native_continuation_request=int(bool(cursor and cursor.startswith('pc1.'))),
                 image_width=preview.get('width'),image_height=preview.get('height'))
             # Renew owner authorization after slow rendering, retaining the result's runtime fence.
             async with self._access(principal) as delivery:
