@@ -1039,7 +1039,8 @@ class KaggleSourceImporter:
                 loc, validation_type = detail['loc'], detail['type']
                 allowed = {'pages','chunks','entity_candidates','entities','aliases','relations',
                     'evidence','page_id','region_id','region_key','chunk_id','chunk_key',
-                    'exact_quote','key','kind','canonical_label','exact_source_spelling','source_review_note'}
+                    'exact_quote','key','kind','canonical_label','exact_source_spelling','source_review_note',
+                    'physical_page_index','source_image_receipt_sha256','source_material'}
                 field_path = '.'.join(str(part) if type(part) is int and 0 <= part <= 9999
                     else part if type(part) is str and part in allowed else '*'
                     for part in loc[:8]) or 'payload'
