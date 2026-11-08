@@ -123,6 +123,7 @@ class RecoveryPhaseDispatch:
             raise SnapshotError('recovery_phase_contract')
         if page_read is not None and phase!='original_pages':raise SnapshotError('recovery_phase_contract')
         root=operation_key
+        value=None
         for attempt in range(256):
             if page_read is not None:
                 value=await page_read(arguments,None,attempt)
@@ -180,7 +181,7 @@ class RecoveryPhaseDispatch:
             binding=self._bindings.pop(job,None)
         if not self.current(binding):raise PermissionError('recovery binding expired before delivery')
         # Preserve the resolved page only after the normal identity/delivery fences.
-        if not (phase=='original_pages' and row is not None and row['state']=='done'
+        if not (phase=='original_pages' and value is not None and row is not None and row['state']=='done'
                 and value.get('status')!='pending' and not value.get('error')):
             value=result['result']['value']
         else:
