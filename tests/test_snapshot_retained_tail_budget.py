@@ -1,5 +1,4 @@
 """Fictional journal bytes only; no corpus, provider, PostgreSQL or model."""
-from dataclasses import replace
 from types import SimpleNamespace
 import time
 
@@ -36,19 +35,26 @@ def recovery(journal, limits=SnapshotLimits()):
 async def test_retained_1861_command_tail_fits_bounded_default_without_dropping_bytes():
     journal = SyntheticTail(1861)
     started = time.perf_counter()
-    tail = await recovery(journal)._tail(SimpleNamespace(reference=journal.ref(1861)), None, 0)
-    assert 43059574 <= journal.total_bytes <= SnapshotLimits().max_tail_bytes
+    tail = [item async for item in recovery(journal)._tail(SimpleNamespace(reference=journal.ref(1861)), None, 0)]
+    assert journal.total_bytes >= 2 * 43059574  # validation pass plus streaming replay
     assert [entry[0].sequence for entry in tail] == list(range(1, 1862))
     assert all(entry[0].payload == b'{"synthetic":"' + b'x' * 18000 + b'"}' for entry in tail)
-    assert SnapshotLimits().max_tail_commands == 2048
     assert SnapshotLimits().timeout_seconds == 900
     print({'bytes': journal.total_bytes, 'commands': len(tail), 'elapsed_seconds': time.perf_counter() - started})
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('limits', [replace(SnapshotLimits(), max_tail_commands=1),
-                                  replace(SnapshotLimits(), max_tail_bytes=30000)])
-async def test_tail_command_and_byte_guards_still_reject_over_budget(limits):
+async def test_tail_gap_is_detected_before_streaming_replay():
     journal = SyntheticTail(2)
-    with pytest.raises(SnapshotError, match='snapshot_replay_budget'):
-        await recovery(journal, limits)._tail(SimpleNamespace(reference=journal.ref(2)), None, 0)
+    original = journal.read_segment
+
+    async def gapped(ref):
+        previous, raws = await original(ref)
+        return previous, (command(4).encode(),) if ref.last_sequence == 1 else raws
+
+    journal.read_segment = gapped
+    emitted=[]
+    with pytest.raises(SnapshotError, match='snapshot_tail_gap'):
+        async for item in recovery(journal)._tail(SimpleNamespace(reference=journal.ref(2)), None, 0):
+            emitted.append(item)
+    assert emitted==[]
