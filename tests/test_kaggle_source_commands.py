@@ -357,8 +357,13 @@ def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer
                 if timings.get('encoded_count') == 2:
                     assert {k:timing_logs[0][k] for k in timings if k!='native_work_seconds'}=={k:v for k,v in timings.items() if k!='native_work_seconds'}
                     assert {r['phase']:r['duration_ms'] for r in spans}=={'total':125,'encode':100,'materialize':120}
+                    total=next(r for r in spans if r['phase']=='total')
+                    assert (total['encoded_count'],total['reused_count'])==(2,1)
+                    assert all('encoded_count' not in r and 'reused_count' not in r
+                        for r in spans if r['phase']!='total')
                 if timings.get('encoded_count') is True:
                     assert 'encode_seconds' not in timing_logs[0] and 'encoded_count' not in timing_logs[0]
+                    assert all('encoded_count' not in r and 'reused_count' not in r for r in spans)
             else:
                 assert timing_logs==[]  # malformed observations never block the exact receipt
                 assert not [r for r in records if r.get('attempt_id')==frame['id']]
