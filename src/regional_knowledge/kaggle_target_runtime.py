@@ -455,6 +455,8 @@ class TargetRuntime:
         if self.database.schema_version>=9 and is_dataclass(handler):
             from dataclasses import replace
             handler=replace(handler,source_provenance=True,
+                original_page=(lambda request,**kw:self.original_intake_handler.read_page(request,**kw))
+                    if self.target.get('original_intake') is not None else None,
                 public_illustrations=self.database.schema_version>=37,
                 illustration_page=(lambda figure:self.original_intake_handler.accepted_illustration_page(figure))
                     if self.target.get('original_intake') is not None else None)

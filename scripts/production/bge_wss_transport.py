@@ -289,7 +289,8 @@ class BgeWssTransport:
             deadline = math.inf if frame.get('type')=='QUERY' else asyncio.get_running_loop().time() + frame['deadline_ms'] / 1000
             try:
                 async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
-                    if frame.get('type')=='SQL_HEALTH':
+                    if (frame.get('type')=='SQL_HEALTH' or frame.get('type')=='SOURCE_READ'
+                            and frame.get('operation')=='original_page_io'):
                         def lease_current():
                             return (not read['released'] and not read['discard']
                                 and self._connection_generation==frame['connection_generation'])

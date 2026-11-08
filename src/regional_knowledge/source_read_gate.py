@@ -189,6 +189,8 @@ class SourceReadGate:
 
     async def dispatch(self, authority, query: Query | PassageReadRequest | StoryReadRequest, binding):
         self._expire()
+        if type(query) is SourceReadRequest and query.operation=='original_page_io':
+            raise SourceGateDenied('private original requires owned intake')
         if type(query) not in (Query, AcceptanceReadRequest, PassageReadRequest, StoryReadRequest, FactReadRequest, SourceReadRequest,EditorialReadRequest,SourceGraphReadRequest) or len(self._permits) + len(self._tickets) >= self.max_retained:
             raise SourceGateDenied('read capacity or contract unavailable')
         await self.authority.require(authority, 'public_search')
