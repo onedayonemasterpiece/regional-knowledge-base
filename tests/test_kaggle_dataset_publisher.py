@@ -144,6 +144,22 @@ def test_saved_time_uses_exact_verified_version_and_native_naive_utc():
         publisher.version_created_at(1)
 
 
+def test_publisher_version_history_resolves_absent_matching_and_foreign_publications():
+    api,publisher,_=setup()
+    api.version=7
+    api.versions=[NS(version_number=7,version_notes='previous-saved')]
+    assert publisher.published_version(operation='stalled-operation',previous_version=7) is None
+    api.version=8
+    api.versions.append(NS(version_number=8,version_notes='stalled-operation'))
+    assert publisher.published_version(operation='stalled-operation',previous_version=7)==8
+    api.versions[-1].version_notes='foreign-operation'
+    with pytest.raises(DatasetPublicationError,match='history_conflict'):
+        publisher.published_version(operation='stalled-operation',previous_version=7)
+    api.versions=[]
+    with pytest.raises(DatasetPublicationError,match='history_unavailable'):
+        publisher.published_version(operation='stalled-operation',previous_version=7)
+
+
 def test_read_control_above_64_mib_streams_and_checks_exact_sha():
     from regional_knowledge.kaggle_dataset_base import DatasetFile
     from regional_knowledge.kaggle_pg_snapshot_native import sha

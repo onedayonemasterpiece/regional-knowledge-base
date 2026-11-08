@@ -835,6 +835,22 @@ class KaggleSourceBackend:
                     observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
             except Exception:
                 observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
+            # Local Dataset diagnostics only: startup status must not query the provider.
+            health=observed['health']
+            health.update(verified_dataset_version=None,oldest_unclosed_seed_state=None)
+            checkpoints=getattr(getattr(self,'startup',None),'dataset_checkpoints',None)
+            if checkpoints is not None:
+                store=checkpoints.store
+                try:
+                    health['verified_dataset_version']=store.latest_checkpoint.dataset_version
+                    with self.worker_queue.connect(write=False) as db:
+                        row=db.execute("SELECT state FROM rkb_dataset_seed WHERE provider_ref=? "
+                            "AND state IN ('publishing','published') ORDER BY rowid LIMIT 1",
+                            (store.publisher.ref,)).fetchone()
+                    if row is not None:
+                        health['oldest_unclosed_seed_state']=row['state']
+                except Exception:
+                    pass  # Observability cannot block an authorized status read.
             await self.read_authority.recheck(authority)
             if health_binding is not None and observed['health'].get('read_ready'):
                 try:still_current=current_binding(self.worker_queue)==health_binding

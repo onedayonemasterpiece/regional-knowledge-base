@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -15,6 +16,16 @@ from .kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha
 from .recovery_journal import ObjectRef
 
 _LOG=logging.getLogger(__name__)
+
+
+def _safe_checkpoint_args(exc):
+    # Provider exceptions may carry signed URLs/tokens. Log only known-shaped
+    # local reason codes or exception classes, not arbitrary exception text.
+    return tuple(value if type(value) is str and re.fullmatch(
+        r'(?:[A-Z][A-Za-z0-9]{1,64}(?:Error|Pending)|(?:dataset|snapshot|migration|control|outcome)_[a-z0-9_]{1,80})',
+        value) and not any(mark in value.lower() for mark in
+        ('token','secret','password','private','credential','signed','bearer','url','auth','key'))
+        else '<redacted>' for value in exc.args[:2])
 
 
 class CheckpointPending(Exception):
@@ -244,13 +255,15 @@ class SourceDatasetCheckpoints:
                 await self.refresh(binding,planned_stop=planned_stop)
             except asyncio.CancelledError:raise
             except Exception as exc:
-                _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+                _LOG.warning('target_dataset_checkpoint state=pending reason=%s args=%s',
+                    type(exc).__name__,_safe_checkpoint_args(exc))
             if self._force_after and not planned_stop:
                 try:
                     await self.refresh(binding,planned_stop=True)
                 except asyncio.CancelledError:raise
                 except Exception as exc:
-                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s args=%s',
+                    type(exc).__name__,_safe_checkpoint_args(exc))
         finally:
             self._force_after=False
 
@@ -316,7 +329,7 @@ class SourceDatasetCheckpoints:
         with queue.connect(write=False) as db:
             # Resume publication/readback after an API restart without another
             # capture or provider create/version operation.
-            retained=db.execute("SELECT operation_key FROM rkb_dataset_seed WHERE provider_ref=? "
+            retained=db.execute("SELECT operation_key,state,package_json FROM rkb_dataset_seed WHERE provider_ref=? "
                 "AND operation_key LIKE 'dataset-checkpoint:%' AND package_json IS NOT NULL "
                 "AND state IN ('publishing','published') ORDER BY rowid LIMIT 1",
                 (self.store.publisher.ref,)).fetchone()
@@ -334,6 +347,22 @@ class SourceDatasetCheckpoints:
                     run['status']=='draining'
                     or queue.clock()-run['started']>=9*3600-900
                     or owner is not None and owner['current_run']==run_id and owner['successor'] is not None))
+        if retained is not None and retained['state']=='publishing':
+            try:
+                previous=json.loads(retained['package_json'])['previous_version']
+                version=await asyncio.to_thread(self.store.publisher.published_version,
+                    operation=retained['operation_key'],previous_version=previous)
+            except Exception as exc:
+                raise CheckpointPending(type(exc).__name__) from exc
+            if version is None:
+                if not startup.checkpoint_binding_current(binding):
+                    raise CheckpointPending('dataset_checkpoint_writer_changed')
+                with queue.connect() as db:
+                    changed=db.execute("UPDATE rkb_dataset_seed SET state='pending',package_json=NULL,version=NULL "
+                        "WHERE operation_key=? AND state='publishing' AND package_json=?",
+                        (retained['operation_key'],retained['package_json']))
+                    if changed.rowcount!=1:raise CheckpointPending('dataset_checkpoint_state_changed')
+                retained=None
         if retained is None:
             late_outcomes=self.store.pending_outcomes()
             try:control=self.store.pending_control()

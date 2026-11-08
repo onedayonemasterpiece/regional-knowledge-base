@@ -96,6 +96,8 @@ def composition(owner, env, tmp_path, monkeypatch):
             return fake_publisher.read_control(file,version=version)
         def reserve(self,**kwargs):return fake_publisher.reserve(**kwargs)
         def observe(self):return fake_publisher.observe()
+        def published_version(self,*,operation,previous_version):
+            return fake_publisher.published_version(operation=operation,previous_version=previous_version)
         def finalize(self,**kwargs):return fake_publisher.finalize(**kwargs)
         def reconcile(self,**kwargs):return fake_publisher.reconcile(**kwargs)
 
@@ -302,7 +304,10 @@ async def test_lost_publish_ack_retains_original_version_and_single_signed_event
         assert len(local_rows(env.p))==1
         assert p.calls.count('capture')==1
         assert p.calls.count('finalize')==1
-        assert len(p.saved)==1
+        assert set(p.saved)=={2}
+        with p.q.connect(write=False) as db:
+            seed=db.execute("SELECT state,version FROM rkb_dataset_seed WHERE version=2").fetchone()
+        assert seed is not None and (seed['state'],seed['version'])==('verified',2)
         assert ctl.claim(credentials)['state']=='leased'
         assert not await p.owner.refresh(p.binding)
     finally:

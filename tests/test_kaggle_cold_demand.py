@@ -2,6 +2,7 @@
 import asyncio
 import concurrent.futures
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -247,10 +248,38 @@ async def test_startup_status_requires_fresh_public_search_authority(auth,tmp_pa
     backend=KaggleSourceBackend(worker_queue=queue,read_authority=auth.resolver,
         source_gate=Gate(auth.resolver),destination_ref='synthetic-response')
     ref=queue.request_startup()['startup_ref']
+    provider_calls=[]
+    class Publisher:
+        ref='owner/rkb-pg'
+        def version_created_at(self,version):
+            provider_calls.append(version)
+            raise AssertionError('startup_status must not call Kaggle')
+    publisher=Publisher()
+    backend.startup=SimpleNamespace(dataset_checkpoints=SimpleNamespace(
+        store=SimpleNamespace(latest_checkpoint=SimpleNamespace(dataset_version=9),
+            publisher=publisher)))
+    with queue.connect() as db:
+        db.execute('CREATE TABLE rkb_dataset_seed(operation_key TEXT PRIMARY KEY,provider_ref TEXT,'
+            'state TEXT,package_json TEXT,version INTEGER)')
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('historic',?,'pending',NULL,NULL)",(publisher.ref,))
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('old',?,'publishing',NULL,NULL)",(publisher.ref,))
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('new',?,'published',NULL,NULL)",(publisher.ref,))
     try:
         principal=SimpleNamespace(access_token=auth.tokens.access_token)
         observed=await backend.startup_status(ref,principal)
         assert observed.status=='pending' and observed.protocol=='rkb.startup.v1'
+        assert observed.health['verified_dataset_version']==9
+        assert observed.health['oldest_unclosed_seed_state']=='publishing'
+        with queue.connect() as db:
+            db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key='old'")
+        observed=await backend.startup_status(ref,principal)
+        assert observed.health['oldest_unclosed_seed_state']=='published'
+        with queue.connect() as db:
+            db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key='new'")
+        observed=await backend.startup_status(ref,principal)
+        assert observed.health['verified_dataset_version']==9
+        assert observed.health['oldest_unclosed_seed_state'] is None
+        assert provider_calls==[]
         assert observed.eta_seconds is None
         assert observed.message_ru is not None
         assert observed.message_ru.startswith("Запускаем инфраструктуру")
