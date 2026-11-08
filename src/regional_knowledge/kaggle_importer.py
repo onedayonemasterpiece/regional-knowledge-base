@@ -1105,7 +1105,7 @@ class KaggleSourceImporter:
                             read.binding=access.binding
                             await self._check(read.authority,read.context,access.binding)
                             try:
-                                part=await self.originals.pages(read.context,row['ingestion_id'],cursor=continuation,batch_size=1)
+                                part=await self.originals.pages(read.context,row['ingestion_id'],cursor=continuation,batch_size=1,_page_image=page)
                             except TimeoutError:
                                 break
                         continuation=part.next_cursor

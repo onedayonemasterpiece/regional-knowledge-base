@@ -52,7 +52,7 @@ async def setup_page(s, monkeypatch, *, characters=120, gap=None, accepted=None)
     receipt=s.originals.receipts[book.ingestion_id];parts,native=old_fragments(receipt,characters=characters)
     originals=s.originals;originals._page_chunks={};originals._page_proofs={};calls=[]
     immutable=[canonical(p) for p in parts]
-    async def pages(self,context,ingestion_id,cursor=None,batch_size=1,*,page_read=None):
+    async def pages(self,context,ingestion_id,cursor=None,batch_size=1,*,page_read=None,_page_image=None):
         await self.spool._authorize(context)
         index,fragment=decode_page_cursor(cursor);assert index==0 and batch_size==1
         raw=next(p for p in parts if p['native_cursor']==fragment);part=copy.deepcopy(raw);calls.append(fragment)
@@ -168,7 +168,7 @@ async def test_current_owner_withdrawal_after_cached_page_before_issuance_denies
 async def test_optional_continuation_timeout_keeps_first_fragment_but_final_withdrawal_denies(native_intake,monkeypatch,withdraw):
     from mcp.server.mcpserver.exceptions import ToolError
     s=native_intake;f=await setup_page(s,monkeypatch);original=s.originals.pages
-    async def timeout(context,ingestion_id,cursor=None,batch_size=1,*,page_read=None):
+    async def timeout(context,ingestion_id,cursor=None,batch_size=1,*,page_read=None,_page_image=None):
         if cursor and cursor.startswith('pc1.'):
             if withdraw:
                 await s.t.auth.provider.revoke_token(await s.t.auth.provider.load_access_token(s.principal.access_token))
