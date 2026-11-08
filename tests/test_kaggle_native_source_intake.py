@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from regional_knowledge.source_stage import canonical,digest,STAGE_ROUTE,SEAL_ROUTE
 from regional_knowledge.kaggle_native_source_intake import NativeSourceIntake
-from regional_knowledge.source_page_progress import next_unaccepted
+from regional_knowledge.source_page_progress import next_unaccepted,unpublished_pages
 from test_source_stage import SOURCE,INGESTION,REQUEST,batch,original
 
 ACTIVATE='source.activate.v1'; MATERIALIZE='source.materialize.v1'; VERSIONS=('synthetic','schema14','unit-seam')
@@ -94,7 +94,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.temp=TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.spool=Spool(); self.queue=Queue(str(Path(self.temp.name)/'control.sqlite'))
         self.events=[]; self.revoked=False; self.enqueued=[]; self.saved=[]
-        source=batch(count=1); metadata=source['source']['metadata']
+        source=batch(count=1,receipt=original(page_count=1)); metadata=source['source']['metadata']
         self.row=dict(ingestion_id=INGESTION,source_id=SOURCE,person_id='owner',request_id=REQUEST,
             metadata_json=canonical(metadata).decode(),rights_json=canonical(source['source']['public_rights']).decode(),
             research_json=canonical({k:v for k,v in source['research'].items() if k!='frontier_id'}).decode(),phase='staging')
@@ -108,9 +108,9 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             if self.revoked: raise PermissionError('revoked synthetic lease')
         async def captions(*args): pass
         async def selected(*args): return self.issued
-        async def receipt(*args): return original()
+        async def receipt(*args): return original(page_count=1)
         # Original is already verified; pending/rejected cases concern stage receipts.
-        async def original_status(*args): return NS(verified=True)
+        async def original_status(*args): return NS(verified=True,receipt=original(page_count=1))
         async def enqueue(context,key,**kwargs): self.enqueued.append(key)
         def save(row,**changes):
             self.saved.append(changes); row.update(changes); return row
@@ -126,6 +126,16 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             _revisions=lambda binding:VERSIONS,_intake_coverage_current=lambda binding:True)
         # Stub only external contracts at this controller unit boundary. Native
         # payload validation and SQLite transitions below are actual code.
+        def published(*args):
+            stages={};pages=set();batches=set()
+            for entry in self.spool.entries.values():
+                if entry.apply_state!='APPLIED':continue
+                doc=json.loads(entry.command.payload)
+                if entry.command.route==STAGE_ROUTE:
+                    stages[doc['batch_index'],digest(entry.command.payload)]={p['physical_page_index'] for p in doc['model_payload']['pages']}
+                elif entry.command.route=='source.batch.v1' and doc['component']=='text':
+                    pages.update(stages[doc['batch_index'],doc['last_batch_sha256']]);batches.add(doc['batch_index'])
+            return pages,batches
         modules={
             'regional_knowledge.source_activation':NS(ACTIVATION_REVISIONS=VERSIONS,ACTIVATE_ROUTE=ACTIVATE,
                 ACTIVATION_CODEC='rkb.source-activate.v1',MATERIALIZE_ROUTE=MATERIALIZE,
@@ -144,7 +154,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
             'regional_knowledge.recovery_journal':NS(JournalUnknown=JournalUnknown),
             'regional_knowledge.source_page_progress':NS(
                 read_enrichment_gaps=lambda *_:set(),
-                read_publication_progress=lambda *_:(set(),set()),next_unaccepted=next_unaccepted),
+                read_publication_progress=published,next_unaccepted=next_unaccepted,unpublished_pages=unpublished_pages),
         }
         self.mock=patch.dict(sys.modules,modules); self.mock.start(); self.addCleanup(self.mock.stop)
         self.helper=NativeSourceIntake(self.importer)
@@ -212,7 +222,7 @@ class NativeIntakeTests(unittest.IsolatedAsyncioTestCase):
         self.packet_mode()
         self.payload['pages'][0].pop('source_unit_version', None)
         self.payload['chunks'][0]['article_id'] = 'article-p0'
-        legacy = batch(count=1)
+        legacy = batch(count=1,receipt=original(page_count=1))
         legacy['model_payload'] = json.loads(canonical(self.payload))
         self.spool.unknown_once = True
         await self.helper._stage_exact(self.access, self.row, kind='stage',

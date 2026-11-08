@@ -97,6 +97,10 @@ def published_pages(db,row):
     return publication_progress(db,row)[0]
 
 
+def unpublished_pages(published, page_count):
+    return set(range(page_count)) - published
+
+
 def next_unaccepted(cursor, published):
     if type(cursor) is not str or not cursor.isdecimal():return cursor
     index=int(cursor)

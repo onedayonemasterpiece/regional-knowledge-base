@@ -12,7 +12,7 @@ from uuid import UUID
 from starlette.responses import JSONResponse
 
 from .projects_hub_reader import PrivateInput
-from .source_page_progress import publication_progress,next_unaccepted,enrichment_gaps
+from .source_page_progress import publication_progress,next_unaccepted,enrichment_gaps,unpublished_pages
 
 PATH = "/internal/import/activity"
 SERVICE_ID = "launcher-import-watch"
@@ -57,7 +57,8 @@ class ImportActivityReader:
         # commands and start Kaggle work. Only bounded local SQLite reads.
         with self.importer.queue.connect(write=False) as db:
             row = db.execute(
-                "SELECT ingestion_id,source_id,person_id,phase,last_operation_at,research_json "
+                "SELECT ingestion_id,source_id,person_id,phase,last_operation_at,research_json, "
+                "(SELECT json_extract(receipt_json,'$.page_count') FROM rkb_original_intakes o WHERE o.ingestion_id=rkb_source_intake_control.ingestion_id) AS page_count "
                 "FROM rkb_source_intake_control WHERE ingestion_id=? AND person_id=?",
                 (ingestion_id, owner_person_id),
             ).fetchone()
@@ -83,6 +84,7 @@ class ImportActivityReader:
             accepted, text_batches = publication_progress(db,row) if native and native['packet_mode'] else (set(),set())
             missing_semantic = enrichment_gaps(db,row) if native and native['packet_mode'] and (native['phase']=='finalized' or row['phase']=='finalized' or
                 native['rejected_batch_index'] is not None and native['rejected_batch_index'] not in text_batches) else set()
+            missing_physical = unpublished_pages(accepted,row["page_count"]) if native and native["packet_mode"] and (native["read_completion_requested"] or native["phase"]=="finalized" or row["phase"]=="finalized") else set()
             last_stage = rejected_pages = None
             # Stage commands are already in the existing local journal. Batch
             # count is NOT page count (a reviewed batch can contain four pages).
@@ -112,7 +114,7 @@ class ImportActivityReader:
         unpublished_rejection = bool(rejected_pages and native['rejected_batch_index'] not in text_batches)
         if phase == "failed" or native and native["phase"] == "failed":
             state, action = "failed", "blocker"
-        elif (native and native["phase"] == "finalized" or phase == "finalized") and not (missing_semantic or unpublished_rejection):
+        elif (native and native["phase"] == "finalized" or phase == "finalized") and not (missing_semantic or unpublished_rejection or missing_physical):
             state, action = "finalized", "done"
         elif phase == "acquiring":
             state, action = "processing", "wait"
@@ -141,6 +143,8 @@ class ImportActivityReader:
         if missing_semantic and not pending and state != 'failed' and (not unpublished_rejection or
                 all(page['physical_page_index'] in accepted for page in rejected_pages)):
             cursor = str(min(missing_semantic))
+        if missing_physical and not (missing_semantic or pending or unpublished_rejection) and state=='staged':
+            cursor=str(min(missing_physical))
         timestamp = row["last_operation_at"]
         return dict(state=state, next_action=action,
                     last_operation_at=(datetime.fromtimestamp(timestamp, timezone.utc).isoformat()

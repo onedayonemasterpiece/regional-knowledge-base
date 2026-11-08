@@ -40,6 +40,8 @@ def watcher(tmp_path, auth):
             batch_count INTEGER, published_batch_count INTEGER,
             enriched_batch_count INTEGER, rejected_batch_index INTEGER,
             read_completion_requested INTEGER)""")
+        db.execute("CREATE TABLE rkb_original_intakes(ingestion_id TEXT PRIMARY KEY,receipt_json TEXT)")
+        db.execute("INSERT INTO rkb_original_intakes VALUES(?,?)",(ingestion,json.dumps({"page_count":9})))
         db.execute("""CREATE TABLE rkb_control_operations (
             source_id TEXT, person_id TEXT, operation_key TEXT,
             sequence INTEGER, seal_state TEXT, apply_state TEXT,
@@ -269,6 +271,14 @@ async def test_authorized_activity_is_redacted_read_only_and_cold_ready_book_res
         command = json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
         db.execute("INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)",
             (w.source,w.actor,f'source-packet:{w.ingestion}:0:semantic',3,'ACCEPTED','APPLIED',command))
+    with w.queue.connect() as db:
+        for offset, physical in enumerate((0,1,2,4,5,6,7), start=1):
+            synthetic_page_records(db,w,batch=offset,physical=physical,sequence=10+offset*3)
+            raw=db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?',(f'source-packet:{w.ingestion}:{offset}:text',)).fetchone()[0]
+            packet=json.loads(base64.b64decode(json.loads(raw)['payload_b64']));packet['component']='semantic'
+            command=json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+            db.execute('INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)',
+                (w.source,w.actor,f'source-packet:{w.ingestion}:{offset}:semantic',12+offset*3,'ACCEPTED','APPLIED',command))
     finalized = (await get(w)).json()
     assert (finalized["state"],finalized["next_action"]) == ("finalized","done")
     with w.queue.connect() as db:
@@ -460,7 +470,7 @@ async def test_completion_intent_without_work_allows_reader_to_resume_finalize(w
     result = (await get(w)).json()
     expected = ("staged", "continue_pages") if work == "none" else ("processing", "wait")
     assert (result["state"], result["next_action"]) == expected
-    assert result["accepted_pages"] == 2 and result["next_cursor"] == "9"
+    assert result["accepted_pages"] == 2 and result["next_cursor"] == ("0" if work == "none" else "9")
     assert read_timestamp(w) == original
     with w.queue.connect(write=False) as db:
         assert db.execute("SELECT read_completion_requested FROM rkb_native_source_intake_state").fetchone()[0] == 1
@@ -512,3 +522,25 @@ async def test_rejected_covered_correction_resumes_real_semantic_gap(watcher,tex
     activity=(await get(w)).json()
     assert (native,activity['next_cursor'])==(cursor,cursor)
     assert activity['accepted_pages']==3 and read_timestamp(w)==before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', [0, 1])
+async def test_finalized_missing_physical_page_uses_shared_progress_and_existing_cursor(watcher, missing):
+    w=watcher
+    with w.queue.connect() as db:
+        db.execute('DELETE FROM rkb_control_operations')
+        db.execute('UPDATE rkb_original_intakes SET receipt_json=?',(json.dumps({'page_count':3}),))
+        for batch,physical in enumerate(i for i in range(3) if i!=missing):
+            synthetic_page_records(db,w,batch=batch,physical=physical,sequence=batch*3+1)
+            raw=db.execute('SELECT command_bytes FROM rkb_control_operations WHERE operation_key=?',(f'source-packet:{w.ingestion}:{batch}:text',)).fetchone()[0]
+            packet=json.loads(base64.b64decode(json.loads(raw)['payload_b64']));packet['component']='semantic'
+            command=json.dumps({'payload_b64':base64.b64encode(json.dumps(packet).encode()).decode()}).encode()
+            db.execute('INSERT INTO rkb_control_operations(source_id,person_id,operation_key,sequence,seal_state,apply_state,command_bytes) VALUES(?,?,?,?,?,?,?)',
+                (w.source,w.actor,f'source-packet:{w.ingestion}:{batch}:semantic',batch*3+3,'ACCEPTED','APPLIED',command))
+        db.execute("UPDATE rkb_native_source_intake_state SET phase='finalized',read_completion_requested=1")
+        db.execute("UPDATE rkb_source_intake_control SET phase='finalized'")
+    before=read_timestamp(w)
+    result=(await get(w)).json()
+    assert (result['state'],result['next_action'],result['next_cursor'])==('staged','continue_pages',str(missing))
+    assert result['accepted_pages']==2 and read_timestamp(w)==before

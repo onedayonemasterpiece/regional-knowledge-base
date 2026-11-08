@@ -699,15 +699,15 @@ class NativeSourceIntake:
                 'continue_pages',next_cursor=next_page,source_archive_status='verified')
         return self._output(row,state)
 
-    async def _tail_output(self, access, row, state):
+    async def _tail_output(self, access, row, state, *, receipt=None):
         if (not state['batch_count'] or state['pending_operation_key']
                 or state['phase'] not in ('staging','finalized')):
             return None
-        if state['packet_mode'] and state.get('rejected_batch_index') is not None:
-            from .source_page_progress import read_publication_progress
-            _, text_batches = await asyncio.to_thread(read_publication_progress, self.queue, row)
+        if state['packet_mode'] and (state.get('rejected_batch_index') is not None or state.get('read_completion_requested') or state['phase']=='finalized'):
+            from .source_page_progress import read_publication_progress,unpublished_pages
+            published, text_batches = await asyncio.to_thread(read_publication_progress, self.queue, row)
             await self._check(access, row)
-            if state['rejected_batch_index'] not in text_batches:
+            if state.get('rejected_batch_index') is not None and state['rejected_batch_index'] not in text_batches:
                 cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index'])
                 if cursor is not None:
                     return self._output(row,dict(state,phase='staging',read_completion_requested=0),
@@ -722,6 +722,11 @@ class NativeSourceIntake:
                     'Continue the existing import on pages without an APPLIED semantic packet; '
                     'retain exact text and correct the reviewed semantic input, then finalize.',
                     'continue_pages', next_cursor=str(min(missing)), source_archive_status='verified')
+        if state['packet_mode'] and (state.get('read_completion_requested') or state['phase']=='finalized'):
+            receipt=receipt or await self.importer._receipt(access,row)
+            missing=unpublished_pages(published,receipt.page_count)
+            if missing:return self.importer._output(row,'needs_review','Continue the existing import on physical pages without an APPLIED text packet, then finalize.',
+                'continue_pages',next_cursor=str(min(missing)),source_archive_status='verified')
         if state.get('rejected_batch_index') is not None:return None
         return await self._source_tail_output(access,row,state)
 
@@ -857,7 +862,7 @@ class NativeSourceIntake:
         limit=MAX_BATCH_PAGES
         if type(payload) is not dict or type(payload.get('pages')) is not list or not 1<=len(payload['pages'])<=limit:
             raise _failure('bounded_model_authored_selected_pages_required',status='invalid_query')
-        from .source_page_progress import read_publication_progress,next_unaccepted
+        from .source_page_progress import read_publication_progress,next_unaccepted,unpublished_pages
         published,text_batches=await asyncio.to_thread(read_publication_progress,self.queue,row)
         await self._check(access,row)
         selected={page['physical_page_index'] for page in payload['pages']}
@@ -867,7 +872,7 @@ class NativeSourceIntake:
         await self._check(access,row)
         rejected_text = (state.get('rejected_batch_index') is not None
             and state['rejected_batch_index'] not in text_batches and selected.isdisjoint(published))
-        if state['phase']=='finalized' and not (selected<=missing or rejected_text):
+        if state['phase']=='finalized' and not (selected<=missing or rejected_text or selected<=unpublished_pages(published,receipt.page_count)):
             raise _failure('native_candidate_already_sealed',status='invalid_query')
         retry_semantic=(bool(selected & missing) or state.get('rejected_batch_index') in text_batches or
             state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
@@ -982,7 +987,7 @@ class NativeSourceIntake:
         return self._output(row,await self._packet_progress(access,row,await self._drive(access,row,state)))
 
     @_timed_native_phase('materialize')
-    async def finalize(self, access, row):
+    async def finalize(self, access, row, *, receipt=None):
         await self._check(access,row)
         state=await asyncio.to_thread(self._state,row)
         if state is None: raise _failure('validate_before_finalize',status='invalid_query')
@@ -992,10 +997,10 @@ class NativeSourceIntake:
         if state['pending_operation_key'] or state['phase']=='failed':
             return self._output(row,state)
         if state['phase']=='finalized':
-            return await self._tail_output(access,row,state) or self._output(row,state)
+            return await self._tail_output(access,row,state,receipt=receipt) or self._output(row,state)
         if state['enriched_batch_count']<state['batch_count'] or not state['read_completion_requested']:
             return self._output(row,state)
-        tails=await self._tail_output(access,row,state)
+        tails=await self._tail_output(access,row,state,receipt=receipt)
         if tails is not None:return tails
         from .source_batch import FINISH_ROUTE,resolved_command
         key=self._operation(row,'finish')+':'+str(state['command_attempt'])
@@ -1029,10 +1034,10 @@ class NativeSourceIntake:
                 'Review issued pages and stage exact model input' if receipt else 'Verified original pending',
                 'continue_pages' if receipt else 'wait',source_archive_status='verified' if receipt else 'pending')
         if state.get('read_completion_requested') and state['phase']!='finalized':
-            return await self.finalize(access,row)
+            return await self.finalize(access,row,receipt=original.receipt)
         state=await self._drive(access,row,state)
         state=await self._packet_progress(access,row,state)
-        tails=await self._tail_output(access,row,state)
+        tails=await self._tail_output(access,row,state,receipt=original.receipt)
         if tails is not None: return tails
         if state.get('rejected_batch_index') is not None:
             return self._output(row,state,rejected_next_cursor=await self.applied_page_cursor(access,row,rejected_batch=state['rejected_batch_index']))
