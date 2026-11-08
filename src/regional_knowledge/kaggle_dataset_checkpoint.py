@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -15,6 +16,16 @@ from .kaggle_pg_snapshot_native import BlobRef, SnapshotError, encode, sha
 from .recovery_journal import ObjectRef
 
 _LOG=logging.getLogger(__name__)
+
+
+def _safe_checkpoint_args(exc):
+    # Provider exceptions may carry signed URLs/tokens. Log only known-shaped
+    # local reason codes or exception classes, not arbitrary exception text.
+    return tuple(value if type(value) is str and re.fullmatch(
+        r'(?:[A-Z][A-Za-z0-9]{1,64}(?:Error|Pending)|(?:dataset|snapshot|migration|control|outcome)_[a-z0-9_]{1,80})',
+        value) and not any(mark in value.lower() for mark in
+        ('token','secret','password','private','credential','signed','bearer','url','auth','key'))
+        else '<redacted>' for value in exc.args[:2])
 
 
 class CheckpointPending(Exception):
@@ -244,13 +255,15 @@ class SourceDatasetCheckpoints:
                 await self.refresh(binding,planned_stop=planned_stop)
             except asyncio.CancelledError:raise
             except Exception as exc:
-                _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+                _LOG.warning('target_dataset_checkpoint state=pending reason=%s args=%s',
+                    type(exc).__name__,_safe_checkpoint_args(exc))
             if self._force_after and not planned_stop:
                 try:
                     await self.refresh(binding,planned_stop=True)
                 except asyncio.CancelledError:raise
                 except Exception as exc:
-                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s args=%s',
+                    type(exc).__name__,_safe_checkpoint_args(exc))
         finally:
             self._force_after=False
 

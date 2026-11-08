@@ -560,6 +560,31 @@ async def test_stale_publishing_without_provider_version_allows_next_capture(tmp
 
 
 @pytest.mark.asyncio
+async def test_background_checkpoint_logs_safe_reason_args_on_regular_and_forced_ticks(tmp_path,monkeypatch,caplog):
+    import logging
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    p=control_cycle(tmp_path,monkeypatch)
+    calls=[]
+    async def failing_refresh(*args,**kwargs):
+        calls.append(kwargs['planned_stop'])
+        raise CheckpointPending('DatasetPublicationError','dataset_seed_publication_pending')
+    monkeypatch.setattr(p.owner,'refresh',failing_refresh)
+    p.owner._force_after=True
+    with caplog.at_level(logging.WARNING,logger='regional_knowledge.kaggle_dataset_checkpoint'):
+        await p.owner._background(p.binding,planned_stop=False)
+    assert calls==[False,True]
+    assert caplog.text.count("('DatasetPublicationError', 'dataset_seed_publication_pending')")==2
+    for private in ('https://storage.googleapis.com/?token=PRIVATE_SECRET','dataset_private_token'):
+        caplog.clear()
+        async def secret_refresh(*args,**kwargs):
+            raise CheckpointPending('DatasetPublicationError',private)
+        monkeypatch.setattr(p.owner,'refresh',secret_refresh)
+        with caplog.at_level(logging.WARNING,logger='regional_knowledge.kaggle_dataset_checkpoint'):
+            await p.owner._background(p.binding,planned_stop=False)
+        assert private not in caplog.text and '<redacted>' in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_missing_saved_timestamp_triggers_checkpoint_now(tmp_path,monkeypatch):
     p=control_cycle(tmp_path,monkeypatch)
     key=await put_control(p)

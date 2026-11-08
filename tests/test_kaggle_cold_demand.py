@@ -2,6 +2,7 @@
 import asyncio
 import concurrent.futures
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -247,10 +248,37 @@ async def test_startup_status_requires_fresh_public_search_authority(auth,tmp_pa
     backend=KaggleSourceBackend(worker_queue=queue,read_authority=auth.resolver,
         source_gate=Gate(auth.resolver),destination_ref='synthetic-response')
     ref=queue.request_startup()['startup_ref']
+    class Publisher:
+        ref='owner/rkb-pg'
+        def version_created_at(self,version):
+            assert version==9
+            return time.time()-321
+    publisher=Publisher()
+    backend.startup=SimpleNamespace(dataset_checkpoints=SimpleNamespace(
+        store=SimpleNamespace(latest_checkpoint=SimpleNamespace(dataset_version=9),
+            publisher=publisher)))
+    with queue.connect() as db:
+        db.execute('CREATE TABLE rkb_dataset_seed(operation_key TEXT PRIMARY KEY,provider_ref TEXT,'
+            'state TEXT,package_json TEXT,version INTEGER)')
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('old',?,'publishing',NULL,NULL)",(publisher.ref,))
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('new',?,'pending',NULL,NULL)",(publisher.ref,))
     try:
         principal=SimpleNamespace(access_token=auth.tokens.access_token)
         observed=await backend.startup_status(ref,principal)
         assert observed.status=='pending' and observed.protocol=='rkb.startup.v1'
+        assert 319<=observed.health['verified_dataset_age_seconds']<=323
+        assert observed.health['oldest_unclosed_seed_state']=='publishing'
+        with queue.connect() as db:
+            db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key='old'")
+        observed=await backend.startup_status(ref,principal)
+        assert observed.health['oldest_unclosed_seed_state']=='pending'
+        def provider_failure(version):
+            raise RuntimeError('https://private.example?token=PRIVATE_SECRET')
+        publisher.version_created_at=provider_failure
+        observed=await backend.startup_status(ref,principal)
+        assert observed.health['verified_dataset_age_seconds'] is None
+        assert observed.health['oldest_unclosed_seed_state']=='pending'
+        assert 'PRIVATE_SECRET' not in json.dumps(observed.health)
         assert observed.eta_seconds is None
         assert observed.message_ru is not None
         assert observed.message_ru.startswith("Запускаем инфраструктуру")

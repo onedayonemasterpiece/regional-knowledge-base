@@ -835,6 +835,26 @@ class KaggleSourceBackend:
                     observed['health']=await asyncio.to_thread(heartbeat_health,self.worker_queue)
             except Exception:
                 observed['health']={'codec':'rkb.health.v1','reason':'health_probe_unavailable','read_ready':False}
+            # Read-only Dataset diagnostics in the existing authenticated health.
+            health=observed['health']
+            health.update(verified_dataset_age_seconds=None,oldest_unclosed_seed_state=None)
+            checkpoints=getattr(getattr(self,'startup',None),'dataset_checkpoints',None)
+            if checkpoints is not None:
+                store=checkpoints.store
+                try:
+                    with self.worker_queue.connect(write=False) as db:
+                        row=db.execute("SELECT state FROM rkb_dataset_seed WHERE provider_ref=? "
+                            "AND state<>'verified' ORDER BY rowid LIMIT 1",
+                            (store.publisher.ref,)).fetchone()
+                    if row is not None and row['state'] in ('pending','publishing','published'):
+                        health['oldest_unclosed_seed_state']=row['state']
+                    version=store.latest_checkpoint.dataset_version
+                    saved_at=await asyncio.wait_for(asyncio.to_thread(
+                        store.publisher.version_created_at,version),timeout=2)
+                    if type(saved_at) in (float,int) and math.isfinite(saved_at):
+                        health['verified_dataset_age_seconds']=int(max(0,time.time()-saved_at))
+                except Exception:
+                    pass  # Observability cannot block an authorized status read.
             await self.read_authority.recheck(authority)
             if health_binding is not None and observed['health'].get('read_ready'):
                 try:still_current=current_binding(self.worker_queue)==health_binding
