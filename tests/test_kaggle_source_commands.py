@@ -307,8 +307,11 @@ async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes
     {'native_work_seconds': .125, 'encode_seconds': 10**1000, 'encoded_count': True},
     {'native_work_seconds': -1}, {'native_work_seconds': True}, 'malformed', {'private': 3},
     {'native_work_seconds': 86_401}, {'native_work_seconds': 1e100}, {'native_work_seconds': 10**1000}])
-def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer, caplog, timings):
+def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer, caplog, timings, monkeypatch):
     caplog.set_level('INFO', logger='regional_knowledge.bge_channel')
+    from regional_knowledge import product_telemetry as telemetry
+    records=[]
+    monkeypatch.setattr(telemetry,'emit_product_event',lambda record: records.append(telemetry._clean(record,'standard')))
     from test_bge_shared_channel import connect,attach,ready,receive_expected,send,release as wire_release
     p=peer
     with p.q.connect() as db:db.execute('DELETE FROM jobs WHERE id=?',(p.document,))
@@ -348,12 +351,17 @@ def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer
                 assert len(timing_logs)==1
                 assert timing_logs[0]['native_work_seconds']==.125
                 assert timing_logs[0]['job_id']==frame['id']
+                spans=[r for r in records if r.get('attempt_id')==frame['id']]
+                assert next(r for r in spans if r['phase']=='total')['duration_ms']==125
+                assert all(r['run_id']==frame['run_id'] and r['timing_semantics']=='overlapping_do_not_sum' for r in spans)
                 if timings.get('encoded_count') == 2:
                     assert {k:timing_logs[0][k] for k in timings if k!='native_work_seconds'}=={k:v for k,v in timings.items() if k!='native_work_seconds'}
+                    assert {r['phase']:r['duration_ms'] for r in spans}=={'total':125,'encode':100,'materialize':120}
                 if timings.get('encoded_count') is True:
                     assert 'encode_seconds' not in timing_logs[0] and 'encoded_count' not in timing_logs[0]
             else:
                 assert timing_logs==[]  # malformed observations never block the exact receipt
+                assert not [r for r in records if r.get('attempt_id')==frame['id']]
     finally:
         p.client.portal.call(retained['bridge'].aclose)
         retained['spool'].close()

@@ -622,11 +622,18 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                             seconds=timings.get('native_work_seconds') if type(timings) is dict else None
                             if (type(timings) is dict and set(timings)<={'native_work_seconds','encode_seconds','encoded_count','reused_count','materialize_seconds'} and type(seconds) in (int,float)
                                     and 0<=seconds<=86_400 and math.isfinite(seconds)):
-                                logger.info(json.dumps(dict(event='native_source_work_timing',run_id=run_id,
+                                observation=dict(event='native_source_work_timing',run_id=run_id,
                                     connection_generation=generation,job_id=frame['job_id'],native_work_seconds=seconds,
                                     **{k:v for k,v in timings.items() if k!='native_work_seconds' and type(v) in (int,float)
                                         and (not k.endswith('_count') or type(v) is int)
-                                        and 0<=v<=86_400 and math.isfinite(v)})))
+                                        and 0<=v<=86_400 and math.isfinite(v)})
+                                logger.info(json.dumps(observation))
+                                from .product_telemetry import emit_import_event
+                                for key,phase in (('native_work_seconds','total'),('encode_seconds','encode'),('materialize_seconds','materialize')):
+                                    if key in observation:
+                                        emit_import_event(event='command.phase',phase=phase,status='ok',
+                                            run_id=run_id,attempt_id=frame['job_id'],connection_generation=generation,
+                                            duration_ms=1000*observation[key])
                         if settled is None:
                             await send('RESULT_ACK',job_id=frame['job_id'],claim=frame['claim'],status='apply_received')
                         else:
