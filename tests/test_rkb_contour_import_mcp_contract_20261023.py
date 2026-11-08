@@ -554,6 +554,9 @@ async def test_native_status_exposes_stage_shape_without_tools_list_refresh(nati
     message = response.structured_content['message']
     assert response.structured_content['next_action'] == 'continue_pages'
     assert message.startswith('Review issued pages and stage exact model input')
+    from regional_knowledge.source_stage import MAX_BATCH_PAGES
+    assert f'1-{MAX_BATCH_PAGES} issued, visually reviewed pages' in message
+    assert 'separate from the book_pages request size' in message
     for field in ('region_key', 'kind', 'bbox', 'reading_order', 'chunk_key', 'region_refs'):
         assert field in message
 
