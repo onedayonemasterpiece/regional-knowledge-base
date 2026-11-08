@@ -83,6 +83,7 @@ class KaggleWorkerQuery:
     source_provenance: bool = False
     public_illustrations: bool = False
     illustration_page: object = None
+    original_page: object = None
 
     def __post_init__(self):
         if not callable(self.acquire):
@@ -177,7 +178,9 @@ class KaggleWorkerQuery:
             elif source:
                 from .kaggle_source_read import execute_source_read
                 result=await execute_source_read(query,acquire=self.acquire,
-                    illustration_page=self.illustration_page)
+                    illustration_page=self.illustration_page,
+                    original_page=(lambda request:self.original_page(request,lease_current=lease_current))
+                        if self.original_page is not None else None)
             elif fact:
                 from .kaggle_fact_read import execute_fact_read
                 result=await execute_fact_read(query,acquire=self.acquire)

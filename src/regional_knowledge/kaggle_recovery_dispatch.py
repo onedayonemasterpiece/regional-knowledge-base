@@ -112,7 +112,7 @@ class RecoveryPhaseDispatch:
             return json.loads(row['result'])['value']
         return None
 
-    async def request(self,binding,phase,arguments,*,operation_key):
+    async def request(self,binding,phase,arguments,*,operation_key,page_read=None):
         if not self.current(binding):raise PermissionError('current maintenance binding required')
         # A validated current request also restores authority for retained
         # jobs of this exact runtime after socket or API-only reconnect.
@@ -121,18 +121,26 @@ class RecoveryPhaseDispatch:
         self.bind_attachment(binding)
         if phase not in PHASES or not isinstance(operation_key,str) or not 1<=len(operation_key.encode())<=256:
             raise SnapshotError('recovery_phase_contract')
+        if page_read is not None and phase!='original_pages':raise SnapshotError('recovery_phase_contract')
         root=operation_key
         for attempt in range(256):
-            with self.queue.connect(write=False) as db:
-                row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
-                    ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
-            if row is None or row['state']!='done':break
-            value=json.loads(row['result'])['value']
-            if phase=='original_pages' and value.get('status')=='pending':
-                status=self._completed_status(binding,value['handle'])
-                if status is None:
-                    status=await self.request(binding,'snapshot_status',dict(handle=value['handle']),operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
-                if status.get('status')=='complete':value=status['value']
+            if page_read is not None:
+                value=await page_read(arguments,None,attempt)
+                if value.get('status')=='pending':
+                    return await self._resolve_io(binding,phase,arguments,operation_key,value,
+                        page_read=lambda args,handle:page_read(args,handle,attempt))
+                if value.get('status')=='complete':value=value['value']
+            else:
+                with self.queue.connect(write=False) as db:
+                    row=db.execute('SELECT state,result FROM jobs WHERE actor=? AND idempotency=?',
+                        ('maintenance:'+self.identity[0],'recovery:'+operation_key)).fetchone()
+                if row is None or row['state']!='done':break
+                value=json.loads(row['result'])['value']
+                if phase=='original_pages' and value.get('status')=='pending':
+                    status=self._completed_status(binding,value['handle'])
+                    if status is None:
+                        status=await self.request(binding,'snapshot_status',dict(handle=value['handle']),operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
+                    if status.get('status')=='complete':value=status['value']
             if phase=='original_acquire' and (value.get('terminal') is True or value.get('error') in TERMINAL_REJECTIONS
                     or value.get('error') in ('original_telegram_scope_denied','original_telegram_document_changed',
                         'original_restore_receipt_mismatch','original_acquire_contract','original_telegram_spec_changed')):break
@@ -145,6 +153,7 @@ class RecoveryPhaseDispatch:
                 self.identity[0],phase,attempt+1)
             operation_key=root+':retry:'+str(attempt+1)
         else:raise SnapshotError('migration_retry_budget')
+        if page_read is not None:return value
         arguments=json.loads(encode(arguments));request_hash=sha(encode({'phase':phase,'arguments':arguments}))
         identity=bounded(dict(phase=phase,arguments=arguments,operation_key=operation_key,
             request_sha256=request_hash,database_generation=self.database.database_generation,
@@ -176,15 +185,19 @@ class RecoveryPhaseDispatch:
             value=result['result']['value']
         else:
             _LOG.info('recovery_phase_reused run_id=%s phase=%s',self.identity[0],phase)
+        return await self._resolve_io(binding,phase,arguments,operation_key,value)
+
+    async def _resolve_io(self,binding,phase,arguments,operation_key,value,*,page_read=None):
         if phase in ('capture','dataset_verify','original_pages') and isinstance(value,dict) and value.get('status')=='pending':
             handle=value.get('handle')
             if not isinstance(handle,str):raise SnapshotError('snapshot_io_receipt_invalid')
             async with asyncio.timeout(self.timeout):
                 while True:
-                    status=await self.request(binding,'snapshot_status',dict(handle=handle),
-                        operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex])))
+                    status=(await page_read(arguments,handle) if page_read is not None else
+                        await self.request(binding,'snapshot_status',dict(handle=handle),
+                            operation_key=sha(encode([operation_key,'status',uuid.uuid4().hex]))))
                     if status.get('status')=='complete':return status['value']
-                    if status.get('status')=='upload_required':
+                    if page_read is None and status.get('status')=='upload_required':
                         upload=await self.request(binding,'capture_upload',dict(handle=handle),
                             operation_key=operation_key+':upload')
                         if upload!={'status':'started'}:raise SnapshotError('snapshot_io_upload_pending')
