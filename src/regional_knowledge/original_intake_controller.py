@@ -353,7 +353,7 @@ class OriginalIntakeController:
         except OriginalIntakeRejected as exc:return self._reject(ingestion_id,exc.code)
         except Exception:return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
 
-    async def pages(self,context,ingestion_id,cursor=None,batch_size=1,*,page_read=None):
+    async def pages(self,context,ingestion_id,cursor=None,batch_size=1,*,page_read=None,_page_image=None):
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         receipt=await self.verified(context,ingestion_id)
         if receipt is None:raise OriginalIntakeError('original_verified_receipt_required')
@@ -362,7 +362,8 @@ class OriginalIntakeController:
         if index<0 or index>=receipt.page_count:raise OriginalIntakeError('original_page_cursor_invalid')
         record=json.loads(row['acquisition_json'])
         record,page,data=await self._page_data(binding,record,index,native_cursor,
-            restore=lambda prior:self._restore_handle(context,actor,binding,receipt,prior),page_read=page_read)
+            restore=lambda prior:self._restore_handle(context,actor,binding,receipt,prior),page_read=page_read,
+            **({'_page_image':_page_image} if _page_image is not None else {}))
         await self._authorize(context)
         expected_page=str(uuid5(UUID(receipt.source_id),f'page:1:{index}'))
         if (page.get('page_id')!=expected_page or page.get('original_sha256')!=receipt.sha256
@@ -387,7 +388,7 @@ class OriginalIntakeController:
                 image_sha256=issued['image_sha256'])),),
             next_cursor)
 
-    async def _page_data(self,binding,record,index,native_cursor,*,restore,page_read=None):
+    async def _page_data(self,binding,record,index,native_cursor,*,restore,page_read=None,_page_image=None):
         args=dict(handle=record['handle'],original_sha256=record['sha256'],index=index,cursor=native_cursor)
         try:page=await self._phase(binding,'original_pages',args,page_read=page_read)
         except OriginalIntakeError as exc:
@@ -398,7 +399,9 @@ class OriginalIntakeController:
             old=db.execute('SELECT receipt_json FROM rkb_original_image_issuance WHERE ingestion_id=? AND physical_page_index=?',
                 (record['spec']['ingestion_id'],index)).fetchone()
         prior=json.loads(old['receipt_json']) if old else None
-        if prior is None:native=await self._archive(binding,record,page=page)
+        if prior is None:
+            if _page_image is not None:raise OriginalIntakeError('original_issued_image_changed')
+            native=await self._archive(binding,record,page=page)
         else:
             # Re-rendered metadata is not permission to replace an issued image.
             if any(prior.get(k)!=page.get(k) for k in ('page_id','original_sha256','parser_sha256','width','height')):
@@ -411,9 +414,18 @@ class OriginalIntakeController:
             if 'preview_render' in page['native_text_info']:page['native_text_info']['preview_render']=prior['preview_render']
             page['page_receipt_sha256']=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))
         started=time.monotonic()
-        data=await self._image_data(native,page)
-        _LOG.info('original_page_read stage=image_downloaded run_id=%s ingestion_id=%s page_index=%s image_bytes=%s elapsed_ms=%.3f',
-            binding.run_id,record['spec']['ingestion_id'],index,len(data),(time.monotonic()-started)*1000)
+        if _page_image is None:data=await self._image_data(native,page)
+        else:
+            if (type(_page_image) is not RenderedPage or
+                    (_page_image.page_id,_page_image.physical_page_index,_page_image.mime_type,len(_page_image.data),
+                     _page_image.native_text_info.get('original_sha256'),_page_image.native_text_info.get('image_sha256'),
+                     _page_image.native_text_info.get('source_image_receipt_sha256'))!=
+                    (page['page_id'],index,page['mime_type'],page['image_size'],record['sha256'],page['image_sha256'],
+                     prior['source_image_receipt_sha256'])):
+                raise OriginalIntakeError('original_issued_image_changed')
+            data=_page_image.data
+        _LOG.info('original_page_read stage=%s run_id=%s ingestion_id=%s page_index=%s image_bytes=%s elapsed_ms=%.3f',
+            'image_downloaded' if _page_image is None else 'image_reused',binding.run_id,record['spec']['ingestion_id'],index,len(data),(time.monotonic()-started)*1000)
         return record,page,data
 
     async def _image_data(self,native,page):
