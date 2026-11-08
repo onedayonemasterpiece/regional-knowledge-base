@@ -17,7 +17,7 @@ class _Queue:
 
 def _status(page_count, text_pages, semantic_pages, *, finished=False,
             rejections=0, rejected_batch=None, pending=False, last_processing=False,
-            prior_failed=False, failed=False):
+            prior_failed=False, failed=False, verify_cached=False):
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript("""
@@ -73,6 +73,14 @@ def _status(page_count, text_pages, semantic_pages, *, finished=False,
                        {"ingestion_id": "ing", "batch_index": page,
                         "last_batch_sha256": digest, "component": component})
     result = started_statuses(_Queue(db), "actor")
+    if verify_cached:
+        db.execute("UPDATE rkb_native_source_intake_state SET batch_count=batch_count+1,"
+                   "published_batch_count=published_batch_count+1,enriched_batch_count=enriched_batch_count+1,"
+                   "pending_operation_key='next-packet' WHERE ingestion_id='ing'")
+        statements=[]
+        db.set_trace_callback(statements.append)
+        assert started_statuses(_Queue(db), "actor", synced={"ing": (result[0][0]['caption_stamp'],)})==[]
+        assert not any("FROM rkb_control_operations" in sql for sql in statements)
     db.close()
     return result[0][1]
 
@@ -126,3 +134,7 @@ def test_last_still_enriching_packet_is_not_prematurely_missing_entities():
 def test_missing_pages_list_is_bounded_to_five():
     assert _status(10, {9}, {9}) == (
         "⏳⚠️ Импортируется · страниц 1/10 · не импортированы стр. 1, 2, 3, 4, 5 и ещё 4")
+
+
+def test_packet_progress_does_not_rescan_history_for_unchanged_caption_milestone():
+    _status(2, {0}, {0}, verify_cached=True)
