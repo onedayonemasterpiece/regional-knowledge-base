@@ -203,7 +203,7 @@ class RecoveryPhaseDispatch:
                             operation_key=operation_key+':upload')
                         if upload!={'status':'started'}:raise SnapshotError('snapshot_io_upload_pending')
                     elif status.get('status')!='pending':raise SnapshotError('snapshot_io_pending_reconciliation')
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0 if page_read is not None else 2)
         return value
 
 
