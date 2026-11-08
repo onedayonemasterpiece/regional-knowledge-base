@@ -311,8 +311,9 @@ class KaggleSourceImporter:
             if source.get('publication_year') is not None:
                 label+=f" ({source['publication_year']})"
             marker='RKB-original '+row['ingestion_id']
-            label=label.encode('utf-16-le')[:2*(1023-len(marker))].decode('utf-16-le',errors='ignore')
-            caption=label.rstrip()+'\n'+marker
+            prefix='РКБ: ⏳ Импортируется\n' if status is None else ''
+            label=label.encode('utf-16-le')[:2*(1023-len(marker)-len(prefix))].decode('utf-16-le',errors='ignore')
+            caption=prefix+label.rstrip()+'\n'+marker
             async with asyncio.timeout(2):
                 if status is not None:
                     if self._caption_synced.get(row['ingestion_id'],(None,))[1:] == (status,label):
@@ -324,6 +325,9 @@ class KaggleSourceImporter:
                     if body.startswith('РКБ: '):body=body.split('\n',1)[-1]
                     if not body.endswith(marker):body=body.rstrip()+'\n'+marker
                     caption='РКБ: '+status+'\n'+body
+                    if observed.get('owned') and observed.get('caption')==caption:
+                        self._caption_synced[row['ingestion_id']]=(row.get('caption_stamp'),status,label)
+                        return False
                     if len(caption.encode('utf-16-le'))>2048:
                         _LOG.warning('original_caption state=caption_full ingestion_id=%s',row['ingestion_id'])
                         return False
@@ -341,14 +345,13 @@ class KaggleSourceImporter:
                 row['ingestion_id'],type(exc).__name__)
 
     async def _sync_import_captions(self, access, ingestion_id):
-        # Only this book's APPLIED finish boundary; no per-ingest history scan.
+        # One changed milestone per owner status; cached packet progress needs no history scan.
         try:
             from .telegram_import_status import started_statuses
             rows=await asyncio.to_thread(started_statuses,self.queue,access.authority.person_id,
-                preferred=ingestion_id,limit=1)
+                synced=self._caption_synced,preferred=ingestion_id,limit=1)
             for row,status in rows:
-                if row['ingestion_id']==ingestion_id:
-                    await self._caption_original(access,row,status=status)
+                await self._caption_original(access,row,status=status)
         except Exception as error:
             _LOG.warning('original_caption state=projection_unavailable error_class=%s',type(error).__name__)
 
@@ -1015,6 +1018,7 @@ class KaggleSourceImporter:
                                     'continue_pages',next_cursor='0',source_archive_status='verified')
                             else:
                                 output = await self._original_pending(row,status)
+                if command=='status':await self._sync_import_captions(access,output.ingestion_id)
                 if stage_file_sha256 is not None:
                     if (command != 'stage' or type(stage_file_sha256) is not str or len(stage_file_sha256) != 64
                             or set(stage_file_sha256) - set('0123456789abcdef')):

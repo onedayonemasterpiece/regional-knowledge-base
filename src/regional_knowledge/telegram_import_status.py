@@ -22,8 +22,9 @@ def started_statuses(queue, actor, *, synced=None, preferred=None, limit=None):
         rows=sorted(current.values(),key=lambda row:row['ingestion_id']!=preferred)
         for row in rows:
             stamp=tuple(row[key] for key in ('metadata_json','phase','native_phase',
-                'rejected_batch_index','receipt_json','pending_operation_key',
-                'batch_count','published_batch_count','enriched_batch_count'))
+                'rejected_batch_index','receipt_json'))
+            # A caption marks lifecycle/error milestones, not each packet counter.
+            stamp+=(bool(row['pending_operation_key']) if 'finalized' in (row['phase'],row['native_phase']) else False,)
             if synced and synced.get(row['ingestion_id'],(None,))[0]==stamp:continue
             stages={}; text=set(); semantic=set()
             for op in db.execute(

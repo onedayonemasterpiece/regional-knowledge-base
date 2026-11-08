@@ -219,7 +219,7 @@ async def test_start_updates_caption_without_blocking_verified_import(native_int
     book=await start(s)
     assert book.state=='staged' and book.source_archive_status=='verified'
     assert s.originals.captions==[
-        ('Synthetic author — Synthetic 174-page scanned source (1901)\nRKB-original '+book.ingestion_id)]
+        ('РКБ: ⏳ Импортируется\nSynthetic author — Synthetic 174-page scanned source (1901)\nRKB-original '+book.ingestion_id)]
     s.originals.caption_failure=True
     replay=await start(s)
     assert replay.ingestion_id==book.ingestion_id and replay.source_archive_status=='verified'
@@ -231,7 +231,7 @@ async def test_start_updates_caption_without_blocking_verified_import(native_int
         payload=dict(title='Book without credited author',authors=[],language='de',catalog={'kind':'book'}),
         source_import=options())
     assert no_author.state=='staged'
-    assert s.originals.captions[-1]==('Book without credited author\nRKB-original '+no_author.ingestion_id)
+    assert s.originals.captions[-1]==('РКБ: ⏳ Импортируется\nBook without credited author\nRKB-original '+no_author.ingestion_id)
 
 
 @pytest.mark.asyncio
@@ -244,6 +244,7 @@ async def test_delayed_original_sets_caption_when_status_finishes_start(native_i
     ready=True
     assert (await call(s,book,'status')).state=='staged'
     assert len(s.originals.captions)==1
+    assert s.originals.captions[0].startswith('РКБ: ⏳ Импортируется\n')
     await call(s,book,'status')
     assert len(s.originals.captions)==1
 
@@ -1951,7 +1952,8 @@ async def test_caption_only_at_book_start_and_applied_finish(native_intake,monke
     import regional_knowledge.telegram_import_status as projection
     expected=_status(2, {0, 1}, semantic_pages, finished=True)
     row=s.importer._row(s.principal.subject,book.ingestion_id)
-    monkeypatch.setattr(projection,'started_statuses',lambda *args,**kwargs:[(row,expected)])
+    monkeypatch.setattr(projection,'started_statuses',lambda *args,**kwargs:
+        [(row,expected)] if s.importer._row(s.principal.subject,book.ingestion_id)['phase']=='finalized' else [])
     assert len(edits)==1 and 'Synthetic 174-page scanned source' in edits[0]
     await call(s,book,'status')
     await stage(s,book,batch(s,book,count=1))
@@ -2256,3 +2258,36 @@ async def test_invalid_stage_location_reaches_safe_product_span(native_intake, m
         validation_type='PRIVATE_TYPE', input_caller_line=-1), 'standard')
     assert all(key not in clean for key in ('validation_field', 'validation_type', 'input_caller_line'))
     assert telemetry._import_call.get() is None
+
+
+@pytest.mark.asyncio
+async def test_caption_backfill_selects_unsynced_older_book(native_intake,monkeypatch):
+    import regional_knowledge.telegram_import_status as projection
+    s=native_intake;book=await start(s)
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    other={**dict(row),'ingestion_id':'older-book'}
+    def projected(queue,actor,**kwargs):
+        assert kwargs['synced'] is s.importer._caption_synced
+        assert kwargs['limit']==1
+        return [(other,'✅ Импорт завершён')]
+    monkeypatch.setattr(projection,'started_statuses',projected)
+    edits=[]
+    async def caption(access,row,*,status):edits.append((row['ingestion_id'],status))
+    monkeypatch.setattr(s.importer,'_caption_original',caption)
+    async with s.importer._access(s.principal) as access:
+        await s.importer._sync_import_captions(access,book.ingestion_id)
+    assert edits==[('older-book','✅ Импорт завершён')]
+
+
+@pytest.mark.asyncio
+async def test_start_caption_marker_keeps_telegram_utf16_limit(native_intake):
+    s=native_intake;book=await start(s)
+    row=s.importer._row(s.principal.subject,book.ingestion_id)
+    metadata=json.loads(row['metadata_json']);metadata['title']='Ж'*1100
+    row={**dict(row),'metadata_json':json.dumps(metadata)}
+    async with s.importer._access(s.principal) as access:
+        await s.importer._caption_original(access,row)
+    caption=s.originals.captions[-1]
+    assert caption.startswith('РКБ: ⏳ Импортируется\n')
+    assert caption.endswith('RKB-original '+book.ingestion_id)
+    assert len(caption.encode('utf-16-le'))<=2048
