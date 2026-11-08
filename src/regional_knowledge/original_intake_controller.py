@@ -407,17 +407,21 @@ class OriginalIntakeController:
             if any(prior.get(k)!=page.get(k) for k in ('page_id','original_sha256','parser_sha256','width','height')):
                 raise OriginalIntakeError('original_issued_image_changed')
             key='originals/v1/'+digest(self.spool.journal.stream.encode())+'/'+record['spec']['source_id']+'/'+record['sha256']+'/pages/'+str(index)+'/'+prior['image_sha256']
-            observed=await self._head(key,None)
-            if observed is None:raise OriginalIntakeError('original_render_storage_invalid')
-            version,length=observed;native=dict(key=key,native_version=version)
+            if _page_image is None:
+                observed=await self._head(key,None)
+                if observed is None:raise OriginalIntakeError('original_render_storage_invalid')
+                version,length=observed;native=dict(key=key,native_version=version)
+            elif type(_page_image) is RenderedPage:
+                # Internal continuation already holds the verified derivative.
+                length=len(_page_image.data)
+            else:raise OriginalIntakeError('original_issued_image_changed')
             page.update(image_size=length,image_sha256=prior['image_sha256'],preview_render=prior['preview_render'])
             if 'preview_render' in page['native_text_info']:page['native_text_info']['preview_render']=prior['preview_render']
             page['page_receipt_sha256']=digest(canonical({k:v for k,v in page.items() if k!='page_receipt_sha256'}))
         started=time.monotonic()
         if _page_image is None:data=await self._image_data(native,page)
         else:
-            if (type(_page_image) is not RenderedPage or
-                    (_page_image.page_id,_page_image.physical_page_index,_page_image.mime_type,len(_page_image.data),
+            if ((_page_image.page_id,_page_image.physical_page_index,_page_image.mime_type,len(_page_image.data),
                      _page_image.native_text_info.get('original_sha256'),_page_image.native_text_info.get('image_sha256'),
                      _page_image.native_text_info.get('source_image_receipt_sha256'))!=
                     (page['page_id'],index,page['mime_type'],page['image_size'],record['sha256'],page['image_sha256'],
