@@ -39,7 +39,7 @@ def test_actual_parser_marks_native_preview_truncation_instead_of_claiming_compl
         # metadata. Its native layer exceeds the explicit preview byte budget.
         for row in range(200):page.insert_text((10,10+row*9),'synthetic source region '*5,fontsize=5)
         document.save(path)
-    result=parse(path,'page',0)
+    result=parse(path,'page',0,legacy_fragments=True)
     assert len(result['native_text'])==12000
     assert result['native_text_info']['original_length']>12000
     assert result['native_text_info']['truncated'] and result['native_text_info']['requires_visual_review']
@@ -111,3 +111,74 @@ def test_actual_dense_image_preview_has_finite_policy_and_never_exceeds_output_b
         assert len(image)<=MODEL_PAGE_BYTE_LIMIT and result['width']==900 and result['height']==900
         assert render['width']==decoded.width and render['height']==decoded.height
         assert render['max_edge'] in MODEL_PAGE_EDGES and render['jpeg_quality'] in MODEL_PAGE_QUALITIES
+
+
+def test_tiny_native_blocks_fit_one_fragment_without_changing_source(tmp_path):
+    fitz=pytest.importorskip('pymupdf')
+    path=tmp_path/'fictional-tiny-blocks.pdf'
+    with fitz.open() as document:
+        page=document.new_page(width=400,height=3000)
+        for index in range(126):
+            page.insert_text((20,20+index*20), 'fictional' if index<84 else 'tinytext', fontsize=5)
+        document.save(path)
+    result=parse(path,'text')
+    assert result['native_text_info']['block_count']==126
+    assert len(result['native_text'])==1218
+    assert result['next_native'] is None
+    assert len(result['native_blocks'])==126
+    assert [b['block_index'] for b in result['native_blocks']]==list(range(126))
+    assert ''.join(b['text'] for b in result['native_blocks'])==result['native_text']
+    assert all(len(b['text'])<=1000 and not b['truncated'] for b in result['native_blocks'])
+
+
+def test_historical_tiny_block_fragments_keep_exact_issued_bytes(tmp_path):
+    fitz=pytest.importorskip('pymupdf');path=tmp_path/'fictional-historical.pdf'
+    with fitz.open() as document:
+        page=document.new_page(width=400,height=3000)
+        for index in range(126):page.insert_text((20,20+index*20),'fictional' if index<84 else 'tinytext',fontsize=5)
+        document.save(path)
+    for cursor,expected in [(None,'6b84ecc251c461dbb59cf340db7925be50337edb5ad0d2fa87b255aa536cd609'),
+            (dict(block=12,offset=0,text=1218),'1f7f8f1b8cbcb717577b139c9de6aa4c25cfa6123e63b3d5a8a1dccd607f3d14')]:
+        # Canonical hashes captured from the pre-change parser on this fictional PDF.
+        part=parse(path,'text',cursor=cursor,legacy_fragments=True)
+        assert digest(canonical(part))==expected
+        assert len(part['native_blocks'])==12
+
+
+@pytest.mark.parametrize('texts', [['\x01😀'*500]*30, ['x']*1200])
+def test_packed_native_fragments_respect_exact_wire_bound_and_resume_all_blocks(tmp_path,monkeypatch,texts):
+    fitz=pytest.importorskip('pymupdf');path=tmp_path/'fictional-bound.pdf'
+    with fitz.open() as document:document.new_page(width=300,height=400);document.save(path)
+    native=''.join(texts)
+    def get_text(self,kind,sort=False):
+        return native if kind=='text' else [(10,10,20,20,text,index,0) for index,text in enumerate(texts)]
+    monkeypatch.setattr(fitz.Page,'get_text',get_text)
+    metadata=dict(page_id='00000000-0000-0000-0000-000000000001',original_sha256='a'*64,
+        parser_sha256='b'*64,image_size=8000000,image_sha256='c'*64,mime_type='image/jpeg',
+        preview_render=dict(policy='rkb.model-page.v2',width=3200,height=3200,scale=1.0,max_edge=3200,
+            jpeg_quality=85,byte_limit=8*1024*1024,image_bytes=8000000,preview_only=True))
+    cursor=None;parts=[]
+    while True:
+        part=parse(path,'text',cursor=cursor,page_metadata=metadata)
+        wire=dict(part,**metadata);wire['native_text_info']=dict(part['native_text_info'],preview_render=metadata['preview_render'])
+        wire['page_receipt_sha256']=digest(canonical(wire))
+        assert len(canonical(dict(phase='original_pages',request_sha256='d'*64,value=wire)))<=120*1024
+        assert len(part['native_text'])<=12000 and all(len(b['text'])<=1000 for b in part['native_blocks'])
+        assert part['next_native']!=cursor or part['next_native'] is None
+        parts.append(wire);cursor=part['next_native']
+        if cursor is None:break
+        assert len(parts)<100
+    complete=assemble_native_page(parts)
+    assert len(parts)>1 and complete['native_text']==native
+    assert [b['text'] for b in complete['native_blocks']]==texts
+
+
+def test_historical_long_block_continuation_preserves_exact_bytes(tmp_path,monkeypatch):
+    fitz=pytest.importorskip('pymupdf');path=tmp_path/'fictional-old-long.pdf'
+    with fitz.open() as document:document.new_page(width=300,height=400);document.save(path)
+    text='fictional '*3000
+    monkeypatch.setattr(fitz.Page,'get_text',lambda self,kind,sort=False:
+        text if kind=='text' else [(10,10,20,20,text,0,0)])
+    for cursor,expected in [(None,'40b723a45b19752411ab885366c6c94275112eae2ac3db8b93049631e5e03ab4'),
+            (dict(block=0,offset=12000,text=12000),'ed7dc5d9e1284ec1ec3db9f1a7c98f699a2aefcdbbbe5f35b34f9d5c06be12ed')]:
+        assert digest(canonical(parse(path,'text',cursor=cursor,legacy_fragments=True)))==expected
