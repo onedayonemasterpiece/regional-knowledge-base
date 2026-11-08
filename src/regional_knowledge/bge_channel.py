@@ -633,7 +633,9 @@ def channel_route(queue, *, read_telemetry=None, before_stop=None):
                                     if key in observation:
                                         emit_import_event(event='command.phase',phase=phase,status='ok',
                                             run_id=run_id,attempt_id=frame['job_id'],connection_generation=generation,
-                                            duration_ms=1000*observation[key])
+                                            duration_ms=1000*observation[key],
+                                            **{k:observation[k] for k in ('encoded_count','reused_count')
+                                                if phase=='total' and k in observation})
                         if settled is None:
                             await send('RESULT_ACK',job_id=frame['job_id'],claim=frame['claim'],status='apply_received')
                         else:
