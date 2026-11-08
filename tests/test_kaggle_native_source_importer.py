@@ -1391,6 +1391,39 @@ async def test_invalid_source_review_note_logs_safe_caller_and_ingestion(native_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['page_id', 'source_material'])
+async def test_mcp_page_provenance_error_identifies_field_without_input(native_intake, monkeypatch, caplog, field):
+    from regional_knowledge.server import build_server
+    s = native_intake
+    book = await start(s)
+    payload = batch(s, book, count=1)
+    page = payload['pages'][0]
+    correct = page[field]
+    page[field] = 'PRIVATE_PROVENANCE_VALUE_DO_NOT_RETURN'
+    async def synthetic_stage_file(backend, principal, ingestion_id, file):
+        assert principal == s.principal and ingestion_id == book.ingestion_id
+        return payload, 'a' * 64
+    monkeypatch.setattr('regional_knowledge.stage_file.read_stage_file', synthetic_stage_file)
+    monkeypatch.setattr('regional_knowledge.server._principal', lambda: s.principal)
+    server = build_server(target_startup=s.startup)
+    arguments = dict(command='stage', ingestion_id=book.ingestion_id,
+        source_import=options(research=True, ingestion_id=book.ingestion_id, state='pending').model_dump(mode='json'),
+        file=dict(file_id='synthetic-stage', download_url='https://files.example.test/stage.json',
+            mime_type='application/json', file_name='stage.json'))
+    with pytest.raises(ToolError) as caught:
+        await server._tool_manager.call_tool('book_ingest', arguments, None)
+    detail = json.loads(str(caught.value).removeprefix('Error executing tool book_ingest: '))
+    assert detail['field_path'] == 'pages.0.' + field
+    assert detail['error_class'] == 'domain'
+    assert 'validation_type=value_error' in caplog.text
+    assert 'PRIVATE_PROVENANCE_VALUE_DO_NOT_RETURN' not in str(caught.value) + caplog.text
+    assert operation_count(s) == 0
+    page[field] = correct
+    await server._tool_manager.call_tool('book_ingest', arguments, None)
+    assert operation_count(s) == 1
+
+
+@pytest.mark.asyncio
 async def test_status_releases_verified_upload_and_current_file_dedup_survives_other_book(native_intake):
     s=native_intake
     first=await start(s,file_id='first-upload')
@@ -1782,7 +1815,7 @@ async def test_reused_start_returns_full_nonmonotonic_research_status(native_int
 
 
 @pytest.mark.asyncio
-async def test_native_stage_value_error_identifies_validator_without_private_payload(native_intake,caplog):
+async def test_native_stage_provenance_error_identifies_validator_without_private_payload(native_intake,caplog):
     s=native_intake
     book=await start(s)
     payload=batch(s,book,count=1)
@@ -1791,7 +1824,8 @@ async def test_native_stage_value_error_identifies_validator_without_private_pay
         await stage(s,book,payload)
     diagnostic=json.loads(str(caught.value))
     assert diagnostic['reason']=='invalid_small_source_input'
-    assert diagnostic['exception_class']=='ValueError'
+    assert diagnostic['exception_class']=='ValidationError'
+    assert diagnostic['field_path']=='pages.0.source_material'
     assert diagnostic['validator'].startswith('validate_stage_payload:')
     assert 'validator='+diagnostic['validator'] in caplog.text
     assert 'Private visual annotation' not in str(caught.value)+caplog.text

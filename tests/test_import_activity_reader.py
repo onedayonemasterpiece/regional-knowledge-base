@@ -354,7 +354,7 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
         page=SimpleNamespace(
             data=b"image", physical_page_index=0,
             page_id=str(uuid5(UUID(w.source),"page:1:0")),
-            mime_type="image/jpeg",native_text_info={"preview_render":{}})
+            mime_type="image/jpeg",native_blocks=(),native_text_info={"preview_render":{}})
         return SimpleNamespace(pages=[page],next_cursor="1")
     async def stage(*_):
         return BookIngestOutput(ingestion_id=w.ingestion,document_id=w.source,
