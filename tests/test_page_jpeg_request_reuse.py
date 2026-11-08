@@ -54,6 +54,12 @@ async def jpeg_case(s,monkeypatch,*,fault=None):
         return dict(ContentLength=len(b'synthetic-jpeg'),Body=BytesIO(b'synthetic-jpeg'))
     originals.store=SimpleNamespace(bucket='fictional-private',client=SimpleNamespace(
         head_object=head_object,get_object=get_object))
+    f.observed_fragments={}
+    assemble=originals._assemble_available
+    def observe_assembly(ingestion,index,chunks):
+        f.observed_fragments.update(chunks)
+        return assemble(ingestion,index,chunks)
+    originals._assemble_available=observe_assembly
     f.stats=stats
     return f
 
@@ -67,6 +73,7 @@ async def test_old_126_block_page_uses_one_get_with_all_head_and_native_fragment
     assert len(page['native_blocks'])==126 and page['native_text']==f.native and page['native_text_info']['complete']
     assert len(result['result']['content'])==2 and result['result']['content'][1]['data']=='c3ludGhldGljLWpwZWc='
     assert f.immutable==[canonical(p) for p in f.parts]
+    assert f.observed_fragments=={canonical(p['native_cursor']).decode():canonical(p) for p in f.parts}
     assert s.originals.receipts[f.book.ingestion_id]==f.original_receipt
     # An explicit fragment request keeps the previous GET/SHA path.
     result,_=await issue(f,cursor=encode_page_cursor(0,f.parts[0]['next_native']))
