@@ -25,6 +25,57 @@ from test_kaggle_native_source_importer import native_intake, start
 
 
 @pytest.mark.asyncio
+async def test_native_bibliography_guide_uses_existing_metadata_only_correction(native_intake, monkeypatch):
+    import regional_knowledge.server as module
+    from regional_knowledge.contracts import BookIngestOutput, CATALOG_STAGE_GUIDE
+    s = native_intake
+    book = await start(s)
+    monkeypatch.setattr(module, '_principal', lambda: s.principal)
+    captured = []
+
+    async def ingest(**kwargs):
+        captured.append(kwargs)
+        return BookIngestOutput(state='processing', message='Synthetic accepted text',
+            ingestion_id=book.ingestion_id, next_action='continue_pages')
+
+    monkeypatch.setattr(s.startup.backend, 'book_ingest', ingest)
+    server = build_server(target_startup=s.startup)
+    tool = next(t for t in await server.list_tools() if t.name == 'book_ingest')
+    page = dict(page_id=book.ingestion_id, physical_page_index=0, layout_kind='cover',
+        regions=[], source_material='visual_reviewed', source_review_note='Synthetic cover reviewed')
+    first = dict(command='stage', ingestion_id=book.ingestion_id, pages=[page], chunks=[],
+        source_import={'research': {'state': 'pending', 'continuation': {
+            'tool': 'book_pages', 'arguments': {'ingestion_id': book.ingestion_id,
+                'cursor': '1', 'batch_size': 1}}}})
+    # The existing adapter really rejects the old instructed combination.
+    mixed = {**first, 'metadata': {'title': 'Observed synthetic title'}}
+    with pytest.raises(ToolError, match='"reason":"domain_error"'):
+        await server._tool_manager.call_tool('book_ingest', mixed, None)
+    assert captured == []
+    # Follow the advertised first-stage instruction, rather than merely testing
+    # that one preferred phrase appears in a description.
+    if 'include observed bibliography in that normal stage metadata' in tool.description:
+        first = mixed
+    await server._tool_manager.call_tool('book_ingest', first, None)
+    assert captured[0]['source_import'].research.model_dump() == first['source_import']['research']
+    assert set(captured[0]['payload']) == {'pages', 'chunks', 'poi_facts', 'poi_media_links', 'story_candidates'}
+    for guide in (tool.description, book.message):
+        assert guide.count(CATALOG_STAGE_GUIDE) == 1
+        assert 'After the first TEXT is APPLIED' in guide
+        assert 'metadata.catalog_update={expected_revision:1' in guide
+        assert 'without pages/chunks/source_import' in guide
+    # After accepted TEXT, observed bibliography uses the already-supported
+    # metadata-only shape. No source, page or research payload is mixed into it.
+    update = dict(expected_revision=1, title='Observed synthetic title',
+        authors=['Synthetic author'], publication_year=1901, language='de',
+        catalog={'publisher': 'Synthetic publisher', 'cover_page': 0, 'cover_kind': 'cover'})
+    await server._tool_manager.call_tool('book_ingest', dict(command='stage',
+        ingestion_id=book.ingestion_id, metadata={'catalog_update': update}), None)
+    assert captured[1]['payload'] == {'catalog_update': update}
+    assert 'source_import' not in captured[1]
+
+
+@pytest.mark.asyncio
 async def test_target_mcp_advertises_native_book_bounds_and_complete_story_input(native_intake):
     server = build_server(target_startup=native_intake.startup)
     tools = {tool.name: tool for tool in await server.list_tools()}

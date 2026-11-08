@@ -149,6 +149,11 @@ class CatalogCorrectionMetadata(CatalogMetadata):
         return self
 
 
+CATALOG_STAGE_GUIDE = (
+    "Stage reviewed pages without bibliographic metadata; keep source_import.research on the first stage. "
+    "After the first TEXT is APPLIED, send observed bibliography separately with book_ingest(command=stage, metadata.catalog_update={expected_revision:1,...}), without pages/chunks/source_import. Keep kind and article registration unchanged. ")
+
+
 class CatalogUpdateInput(BaseModel):
     """Descriptive metadata only; source identity, ACL and revision are immutable."""
     model_config = {"extra": "forbid"}
