@@ -150,6 +150,20 @@ def test_sqlite_contention_keeps_channel_close_and_reports_safe_facts(queue, mon
     assert 'PRIVATE' not in json.dumps(event) and str(tmp_path) not in json.dumps(event)
 
 
+@pytest.mark.parametrize('attached',[False,True])
+def test_peer_disconnect_records_boundary_without_private_reason(queue, caplog, attached):
+    caplog.set_level('INFO', logger='regional_knowledge.bge_channel')
+    with client(queue) as app:
+        with app.websocket_connect('/bge-worker/channel', headers={'Authorization': 'Bearer secret'}) as socket:
+            generation = attach(socket)['connection_generation'] if attached else None
+            socket.close(code=4001, reason='PRIVATE_CLOSE_REASON')
+    events = [json.loads(record.message) for record in caplog.records if 'bge_channel_closed' in record.message]
+    assert events == [dict(event='bge_channel_closed', run_id='run' if attached else None, connection_generation=generation,
+                           reason='peer_disconnect', close_code=4001)]
+    assert queue.detached == ([generation] if attached else [])
+    assert 'PRIVATE' not in json.dumps(events) and 'secret' not in json.dumps(events)
+
+
 def test_socket_run_auth_and_no_public_query(queue):
     with client(queue) as app:
         with pytest.raises(WebSocketDisconnect) as denied:
