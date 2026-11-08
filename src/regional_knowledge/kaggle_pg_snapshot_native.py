@@ -96,7 +96,7 @@ class SnapshotLimits:
     max_files: int = 200000
     max_receipts: int = 2000000
     max_tail_commands: int = 2048
-    max_tail_bytes: int = 16*1024**2
+    max_tail_bytes: int = 64*1024**2
     max_control_bytes: int = 1024**2
     timeout_seconds: float = 900
 
