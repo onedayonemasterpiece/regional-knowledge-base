@@ -159,9 +159,9 @@ class PhysicalSnapshotRecovery:
                 manifest_bytes=encode(manifest),manifest_ref=manifest_ref.wire(),
                 blob=asdict(blob),control_bytes=control_bytes,expected_versions=expected_versions,
                 database=database.wire(),identity=identity)
-            head=await self.journal.head();tail=await self._tail(head,boundary,manifest['applied_sequence'])
+            head=await self.journal.head()
             heads={row[0]:row for row in control['heads']};receipts=[];replayed=[]
-            for command,seal in tail:
+            async for command,seal in self._tail(head,boundary,manifest['applied_sequence']):
                 self._authority(binding)
                 handler=self.registry.resolve(command);dep=handler.dependency
                 # Same closed route/dependency classification as native history;
@@ -197,7 +197,7 @@ class PhysicalSnapshotRecovery:
                     source=command.ids['source_id'];old=heads.get(source)
                     heads[source]=[source,command.sequence,sha(command.encode()),int(dep.restriction or old is not None and old[3]),0,0]
             if await self.journal.head()!=head:raise SnapshotError('snapshot_tail_changed_before_rollover')
-            sequence=manifest['applied_sequence']+len(tail)
+            sequence=head.reference.last_sequence if head else manifest['applied_sequence']
             for legacy_field in ('catalog_sha256','acl_sha256','closure_transitions'):
                 control.pop(legacy_field,None)
             control.update(sequence=sequence,journal_head=head.reference.wire() if head else None,
@@ -230,7 +230,7 @@ class PhysicalSnapshotRecovery:
                 _LOG.info('snapshot_recovered_jobs_settled command_sha256=%s sequence=%s count=%s',
                           receipt.command_sha256,receipt.sequence,len(jobs))
             _LOG.info('snapshot_recovery_verified manifest_hash=%s operation_hash=%s cursor=%s replay_count=%s',
-                manifest_ref.sha256,sha(operation_key.encode()),sequence,len(tail))
+                manifest_ref.sha256,sha(operation_key.encode()),sequence,sequence-manifest['applied_sequence'])
             return proof
 
     async def verify_initialized(self,proof,database,identity):
@@ -344,18 +344,20 @@ class PhysicalSnapshotRecovery:
         except (ValueError,TypeError,KeyError):raise SnapshotError('snapshot_manifest_invalid') from None
         return m,blob,boundary
     async def _tail(self,head,base,sequence):
-        ref=head.reference if head else None;tail=[];used=0
+        # Validate the entire immutable ancestry before applying any command.
+        # Retain only segment refs; replay one segment at a time, in journal order.
+        ref=head.reference if head else None;refs=[]
+        expected=ref.last_sequence if ref else sequence
         while ref!=base:
             if ref is None:raise SnapshotError('snapshot_boundary_not_ancestor')
             previous,raws=await self.journal.read_segment(ref)
+            for raw in reversed(raws):
+                if _command(raw).sequence!=expected:raise SnapshotError('snapshot_tail_gap')
+                expected-=1
+            refs.append(ref);ref=previous
+        if expected!=sequence:raise SnapshotError('snapshot_tail_gap')
+        for ref in reversed(refs):
+            _,raws=await self.journal.read_segment(ref)
             seal=AcceptedSeal(ref,tuple(sha(raw) for raw in raws))
             for raw in raws:
-                used+=len(raw)
-                if used>self.limits.max_tail_bytes or len(tail)>=self.limits.max_tail_commands:
-                    raise SnapshotError('snapshot_replay_budget')
-                tail.append((_command(raw),seal))
-            ref=previous
-        tail.sort(key=lambda p:p[0].sequence)
-        if [c.sequence for c,_ in tail]!=list(range(sequence+1,sequence+len(tail)+1)):
-            raise SnapshotError('snapshot_tail_gap')
-        return tail
+                yield _command(raw),seal

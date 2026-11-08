@@ -159,6 +159,9 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
             if p.fail_finalize:
                 p.fail_finalize=False;raise TimeoutError('provider committed; response lost')
             return version
+        def published_version(self,*,operation,previous_version):
+            saved=p.saved.get(previous_version+1)
+            return previous_version+1 if saved and saved[0]==operation else None
         def reconcile(self,*,files,operation,expected_version):
             p.calls.append('reconcile')
             saved=p.saved.get(expected_version)
@@ -529,6 +532,31 @@ async def test_api_restart_cannot_reset_saved_version_deadline(tmp_path,monkeypa
         wall_clock=lambda:p.clock[0],interval_seconds=1800,quiet_seconds=900)
     assert not await p.owner.refresh(p.binding)
     assert p.calls.count('capture')==1
+
+
+@pytest.mark.asyncio
+async def test_stale_publishing_without_provider_version_allows_next_capture(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch)
+    key=await put_control(p)
+    operation='dataset-checkpoint:'+sha(encode([p.store.publisher.ref,1,'db',7]))
+    package=dict(previous_version=1,base_sequence=7,database_generation='db',
+        manifest_sha256='a'*64,files=[])
+    with p.q.connect() as db:
+        db.execute("INSERT INTO rkb_dataset_seed VALUES(?,?,'publishing',?,NULL)",
+            (operation,p.store.publisher.ref,json.dumps(package)))
+    checks=[]
+    def history(*,operation: str,previous_version: int):
+        checks.append((operation,previous_version))
+        return None
+    monkeypatch.setattr(p.store.publisher,'published_version',history,raising=False)
+    assert await p.owner.refresh(p.binding,planned_stop=True)
+    assert checks==[(operation,1)]
+    assert p.store.latest_checkpoint.dataset_version==2
+    assert p.store.remote_durable(key,b'pending')
+    assert p.calls==['capture','finalize','verify']
+    with p.q.connect(write=False) as db:
+        row=db.execute('SELECT state,version FROM rkb_dataset_seed WHERE operation_key=?',(operation,)).fetchone()
+    assert row['state']=='verified' and row['version']==2
 
 
 @pytest.mark.asyncio

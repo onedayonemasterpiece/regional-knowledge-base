@@ -316,7 +316,7 @@ class SourceDatasetCheckpoints:
         with queue.connect(write=False) as db:
             # Resume publication/readback after an API restart without another
             # capture or provider create/version operation.
-            retained=db.execute("SELECT operation_key FROM rkb_dataset_seed WHERE provider_ref=? "
+            retained=db.execute("SELECT operation_key,state,package_json FROM rkb_dataset_seed WHERE provider_ref=? "
                 "AND operation_key LIKE 'dataset-checkpoint:%' AND package_json IS NOT NULL "
                 "AND state IN ('publishing','published') ORDER BY rowid LIMIT 1",
                 (self.store.publisher.ref,)).fetchone()
@@ -334,6 +334,22 @@ class SourceDatasetCheckpoints:
                     run['status']=='draining'
                     or queue.clock()-run['started']>=9*3600-900
                     or owner is not None and owner['current_run']==run_id and owner['successor'] is not None))
+        if retained is not None and retained['state']=='publishing':
+            try:
+                previous=json.loads(retained['package_json'])['previous_version']
+                version=await asyncio.to_thread(self.store.publisher.published_version,
+                    operation=retained['operation_key'],previous_version=previous)
+            except Exception as exc:
+                raise CheckpointPending(type(exc).__name__) from exc
+            if version is None:
+                if not startup.checkpoint_binding_current(binding):
+                    raise CheckpointPending('dataset_checkpoint_writer_changed')
+                with queue.connect() as db:
+                    changed=db.execute("UPDATE rkb_dataset_seed SET state='pending',package_json=NULL,version=NULL "
+                        "WHERE operation_key=? AND state='publishing' AND package_json=?",
+                        (retained['operation_key'],retained['package_json']))
+                    if changed.rowcount!=1:raise CheckpointPending('dataset_checkpoint_state_changed')
+                retained=None
         if retained is None:
             late_outcomes=self.store.pending_outcomes()
             try:control=self.store.pending_control()

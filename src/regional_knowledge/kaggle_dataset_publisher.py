@@ -136,6 +136,33 @@ class KaggleDatasetPublisher:
             raise DatasetPublicationError('dataset_private_version_unproven')
         return version
 
+    def published_version(self, *, operation, previous_version):
+        """Resolve one persisted publication intent from the owned version history."""
+        from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetRequest
+        if type(previous_version) is not int or previous_version < 1:
+            raise DatasetPublicationError('dataset_publication_history_unavailable')
+        request = ApiGetDatasetRequest()
+        request.owner_slug, request.dataset_slug = self.owner, self.slug
+        try:
+            with self.api.build_kaggle_client() as client:
+                value = client.datasets.dataset_api_client.get_dataset(request)
+        except Exception:
+            raise DatasetPublicationError('dataset_publication_history_unavailable') from None
+        current, versions = _field(value, 'current_version_number'), _field(value, 'versions')
+        if (_field(value, 'is_private') is not True or type(current) is not int
+                or versions is None
+                or not any(_field(v, 'version_number') == current for v in versions)):
+            raise DatasetPublicationError('dataset_publication_history_unavailable')
+        expected = previous_version + 1
+        matches = [v for v in versions if _field(v, 'version_number') == expected]
+        if len(matches) > 1 or matches and _field(matches[0], 'version_notes') != operation:
+            raise DatasetPublicationError('dataset_publication_history_conflict')
+        if matches:
+            return expected
+        if current == previous_version:
+            return None
+        raise DatasetPublicationError('dataset_publication_history_unavailable')
+
     def version_created_at(self, version):
         """Provider timestamp of the exact verified Saved version, not latest."""
         from datetime import datetime, timezone
