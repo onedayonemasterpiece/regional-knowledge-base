@@ -161,3 +161,31 @@ async def test_current_owner_withdrawal_after_cached_page_before_issuance_denies
     async def revoke():await s.t.auth.provider.revoke_token(await s.t.auth.provider.load_access_token(s.principal.access_token))
     result,body=await issue(f,before_send=revoke)
     assert result['result']['isError'] and b'c3ludGhldGljLWpwZWc=' not in body and f.native.encode() not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('withdraw',[False,True])
+async def test_optional_continuation_timeout_keeps_first_fragment_but_final_withdrawal_denies(native_intake,monkeypatch,withdraw):
+    from mcp.server.mcpserver.exceptions import ToolError
+    s=native_intake;f=await setup_page(s,monkeypatch);original=s.originals.pages
+    async def timeout(context,ingestion_id,cursor=None,batch_size=1,*,page_read=None):
+        if cursor and cursor.startswith('pc1.'):
+            if withdraw:
+                await s.t.auth.provider.revoke_token(await s.t.auth.provider.load_access_token(s.principal.access_token))
+            raise TimeoutError('fictional ordinary continuation wait expired')
+        return await original(context,ingestion_id,cursor,batch_size)
+    s.originals.pages=timeout
+    if withdraw:
+        with pytest.raises(ToolError):await issue(f)
+        return
+    result,_=await issue(f);manifest=json.loads(result['result']['content'][0]['text'])
+    page=manifest['pages'][0]
+    assert manifest['next_cursor']==encode_page_cursor(0,f.parts[0]['next_native'])
+    assert page['native_text']==f.parts[0]['native_text'] and len(page['native_blocks'])==12
+    assert not page['native_text_info']['complete'] and len(result['result']['content'])==2
+    assert f.immutable==[canonical(p) for p in f.parts]
+    # A caller's explicit continuation is the original operation, not optional drain.
+    with pytest.raises(ToolError) as error:await issue(f,cursor=manifest['next_cursor'])
+    cause=error.value
+    while cause.__cause__ is not None:cause=cause.__cause__
+    assert json.loads(str(cause))['reason']=='transport_timeout'
