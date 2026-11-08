@@ -138,11 +138,39 @@ async def test_tail_uses_exact_ancestor_and_original_revisions(env,monkeypatch):
     await accept(env,withdraw(env.p.owner.subject,2),predecessor=await env.journal.head())
     controller=PhysicalSnapshotRecovery(env.journal,None,None,registry=env.registry,history_verifier=history,
         maintenance_guard=guard,current=lambda value:True,private_storage_current=lambda:True)
-    tail=await controller._tail(await env.journal.head(),first.manifest,1)
+    tail=[item async for item in controller._tail(await env.journal.head(),first.manifest,1)]
     assert len(tail)==1 and tail[0][0].sequence==2
     assert tail[0][0].schema_revision==VERSIONS.schema
     assert tail[0][1].manifest.last_sequence==2
-    with pytest.raises(SnapshotError):await controller._tail(None,first.manifest,1)
+    with pytest.raises(SnapshotError):
+        [item async for item in controller._tail(None,first.manifest,1)]
+
+
+
+@pytest.mark.asyncio
+async def test_tail_replays_all_5000_saved_commands_without_budget(env):
+    from regional_knowledge.recovery_journal import ObjectRef
+    from types import SimpleNamespace as NS
+
+    segments = {}
+    previous = None
+    for end in range(100, 5001, 100):
+        ref = ObjectRef('synthetic/segment-' + str(end), sha(str(end).encode()), 1, end)
+        raws = [replace(env.cmd, sequence=i, operation_key='saved-' + str(i)).encode()
+            for i in range(end - 99, end + 1)]
+        segments[ref] = (previous, raws)
+        previous = ref
+
+    async def read_segment(ref):
+        return segments[ref]
+
+    controller = PhysicalSnapshotRecovery(NS(read_segment=read_segment), None, None,
+        registry=env.registry, history_verifier=None, maintenance_guard=guard,
+        current=lambda value: True, private_storage_current=lambda: True)
+    import inspect
+    pending = controller._tail(NS(reference=previous), None, 0)
+    tail = await pending if inspect.isawaitable(pending) else [item async for item in pending]
+    assert [command.sequence for command, _ in tail] == list(range(1, 5001))
 
 
 @pytest.mark.asyncio
