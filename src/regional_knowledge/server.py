@@ -7,7 +7,7 @@ import os
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -1929,6 +1929,7 @@ def build_server(
     @_book_mcp_error_boundary
     async def book_pages(
         ingestion_id: str,
+        ctx: Context = None,
         cursor: str | None = None,
         batch_size: Annotated[int, Field(ge=1, le=4)] = 1,
     ) -> list[TextContent | ImageContent]:
@@ -1938,6 +1939,7 @@ def build_server(
             principal=_principal(),
             cursor=cursor,
             batch_size=batch_size,
+            **({'response_id':ctx.request_context.request_id} if selected=='kaggle_source' and ctx is not None else {}),
         )
         return _book_page_tool_result(ingestion_id, batch).content
 
