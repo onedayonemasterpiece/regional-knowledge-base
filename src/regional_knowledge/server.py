@@ -315,6 +315,8 @@ def _book_mcp_error(exc: Exception) -> ToolError:
                         for part in path.split("."))):
                 response["exception_class"] = record["exception_class"]
                 response["field_path"] = path
+                if record.get("validation_type") in ("missing", "model_type", "extra_forbidden", "value_error", "too_long"):
+                    response["validation_type"] = record["validation_type"]
     if reason == "stage_file_schema" and isinstance(exc, ToolError):
         hints = _book_stage_schema_hints(exc)
         if hints:
