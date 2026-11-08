@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -30,7 +30,7 @@ from .kaggle_original_parser import MODEL_PAGE_BYTE_LIMIT
 from .kaggle_import_output import OwnerImportOutputGate
 from .kaggle_import_tokenizer import HfImportTokenCounter
 from .kaggle_public_backend import current_binding, TargetUnavailable
-from .original_intake import OriginalIntakeError, TERMINAL_REJECTIONS, VerifiedOriginalReceipt
+from .original_intake import OriginalIntakeError, TERMINAL_REJECTIONS, VerifiedOriginalReceipt, decode_page_cursor
 from .participants import RequestAuthority
 from .source_import import MAX_IMPORT_BYTES
 from .source_stage import MAX_BATCH_PAGES
@@ -1058,9 +1058,9 @@ class KaggleSourceImporter:
             raise failure(catalog_reason or 'invalid_small_source_input', status='invalid_query',
                 exception_class=type(error).__name__, field_path=field_path, validator=validator, validation_type=validation_type) from None
 
-    async def book_pages(self, *, principal, ingestion_id, cursor=None, batch_size=1):
+    async def book_pages(self, *, principal, ingestion_id, cursor=None, batch_size=1, response_id=None):
         try:
-            return await self._pages(principal=principal,ingestion_id=ingestion_id,cursor=cursor)
+            return await self._pages(principal=principal,ingestion_id=ingestion_id,cursor=cursor,response_id=response_id)
         except ToolError:
             raise
         except PermissionError as error:
@@ -1075,11 +1075,12 @@ class KaggleSourceImporter:
         except (ValueError,KeyError,TypeError):
             raise failure('invalid_original_page_request',status='invalid_query') from None
 
-    async def _pages(self, *, principal, ingestion_id, cursor):
+    async def _pages(self, *, principal, ingestion_id, cursor, response_id=None):
         async with self._access(principal) as access:
             row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id)
             await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
-            if await self._receipt(access, row) is None:
+            receipt=await self._receipt(access,row)
+            if receipt is None:
                 raise failure('verified_original_pending')
             batch = await self.originals.pages(access.context, row['ingestion_id'], cursor=cursor, batch_size=1)
             if len(batch.pages) != 1 or sum(len(page.data) for page in batch.pages) > MODEL_PAGE_BYTE_LIMIT:
@@ -1094,6 +1095,30 @@ class KaggleSourceImporter:
             from .source_page_progress import read_accepted_model_page
             accepted = None if getattr(self, 'native_intake', None) is None else await read_accepted_model_page(
                 self.queue, row, batch.pages[0].physical_page_index, self.native_intake.spool)
+            if (response_id is not None and (cursor is None or cursor.isdecimal())
+                    and batch.next_cursor and batch.next_cursor.startswith('pc1.')):
+                first=batch;page=batch.pages[0];continuation=batch.next_cursor
+                if page.physical_page_index not in self.originals._page_proofs.get(row['ingestion_id'],{}):
+                    for _ in range(4096):
+                        if not continuation or decode_page_cursor(continuation)[0]!=page.physical_page_index:break
+                        async with self._access(principal) as read:
+                            read.binding=access.binding
+                            await self._check(read.authority,read.context,access.binding)
+                            part=await self.originals.pages(read.context,row['ingestion_id'],cursor=continuation,batch_size=1)
+                        continuation=part.next_cursor
+                    else:raise OriginalIntakeError('original_page_continuation_bound')
+                proof=json.loads(self.originals._page_proofs[row['ingestion_id']][page.physical_page_index])
+                candidate=replace(first,pages=(replace(page,native_text=proof['native_text'],
+                    native_blocks=tuple(proof['native_blocks']),native_text_info={**page.native_text_info,
+                        **proof['native_text_info'],'page_receipt_sha256':proof['page_receipt_sha256']}),),
+                    next_cursor=str(page.physical_page_index+1) if page.physical_page_index+1<receipt.page_count else None)
+                from .read_issuance import MAX_RESPONSE_BYTES
+                rendered=_book_page_tool_result(ingestion_id,candidate,accepted).model_dump(
+                    mode='json',by_alias=True,exclude_none=True)
+                envelope=dict(jsonrpc='2.0',id=response_id,result=rendered)
+                if len(json.dumps(envelope,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode())<= (
+                        MAX_RESPONSE_BYTES+4*((len(page.data)+2)//3)):
+                    batch=candidate
             preview=batch.pages[0].native_text_info.get('preview_render') or {}
             import_metadata(ingestion_id=ingestion_id,source_id=row['source_id'],page_count=len(batch.pages),
                 physical_page_index=batch.pages[0].physical_page_index,
