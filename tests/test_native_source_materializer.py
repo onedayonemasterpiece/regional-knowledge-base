@@ -30,6 +30,15 @@ class NativeCompilerTests(unittest.IsolatedAsyncioTestCase):
             return min(maximum,len(text.split())+2)
         return NativeSourceCompiler(count=count,current=current)
 
+    async def test_ten_page_packet_keeps_every_source_page_and_chunk(self):
+        raw = canonical(exact_batch(count=10))
+        resolved, _ = await self.compiler().compile_batch([raw], batch_index=0, source_id=SOURCE,
+            person_id=PERSON, last_batch_sha256=digest(raw))
+        self.assertEqual(len(resolved['passages']), 10)
+        self.assertEqual(len(resolved['image_manifest']['pages']), 10)
+        self.assertEqual(len(self.counted), 10)
+        self.assertTrue(all(p['input_tokens'] <= 512 for p in resolved['passages']))
+
     async def test_174_page_compilation_keeps_native_model_text_and_no_vectors(self):
         raws=[];head=ZERO_HASH
         for index,offset in enumerate(range(0,174,8)):

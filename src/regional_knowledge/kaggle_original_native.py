@@ -240,27 +240,58 @@ class NativeOriginalIntake:
         if frame['phase']=='original_pages' and self.snapshot_io is not None:
             prior=self._remember_request(key,request)
             if prior is not None:return prior
-            async def render(operation):
-                queued=time.monotonic()
-                async with self._lock:
-                    _LOG.info('native_original_page stage=lock_acquired run_id=%s job_id=%s wait_ms=%.3f',
-                        self.identity[0],frame['id'],(time.monotonic()-queued)*1000)
-                    value=await self._execute_logged(frame)
-                    if value.get('error'):value['retryable']=True
-                    return value
-            from .kaggle_pg_snapshot_native import SnapshotError
-            try:
-                value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],
-                    frame['connection_generation']),render,phase=frame['phase'])
-            except SnapshotError:
-                _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
-                value={'error':'original_intake_unavailable'}
+            value=self._start_page(frame,key)
             return self._receipt(frame,value)
         # The existing WSS compute claim already serializes these phases.
         # They must not wait on an unrelated background page renderer.
         prior=self._remember_request(key,request)
         if prior is not None:return prior
         return self._receipt(frame,await self._execute_logged(frame))
+
+    def _start_page(self,frame,key):
+        async def render(operation):
+            queued=time.monotonic()
+            async with self._lock:
+                _LOG.info('native_original_page stage=lock_acquired run_id=%s job_id=%s wait_ms=%.3f',
+                    self.identity[0],frame['id'],(time.monotonic()-queued)*1000)
+                value=await self._execute_logged(frame)
+                if value.get('error'):value['retryable']=True
+                return value
+        from .kaggle_pg_snapshot_native import SnapshotError
+        try:
+            value=self.snapshot_io.start(key,(frame['run_id'],frame['runtime_incarnation'],
+                frame['connection_generation']),render,phase=frame['phase'])
+        except SnapshotError:
+            _LOG.warning('native_original_phase state=unavailable run_id=%s phase=original_pages boundary=io_start',self.identity[0])
+            value={'error':'original_intake_unavailable'}
+        return value
+
+    async def read_page(self,request,*,lease_current):
+        binding=(self.identity[0],self.identity[2],request.connection_generation)
+        if (self.closed or self.generation!=request.connection_generation or not self.current(binding)
+                or not callable(lease_current) or lease_current() is not True):
+            raise OriginalIntakeError('original_current_binding_required')
+        selector=request.original
+        args=dict(handle=selector.handle,original_sha256=selector.original_sha256,
+            index=request.page_start,cursor=dict(selector.cursor))
+        record=self._record(args)
+        if (record['spec']['source_id'],record['spec']['ingestion_id'])!=(request.source_id,selector.ingestion_id):
+            raise OriginalIntakeError('original_owned_ingestion_required')
+        key=digest(canonical(dict(phase='original_pages',args=args)))
+        if selector.attempt:key+=':retry:'+str(selector.attempt)
+        if selector.io_handle is not None:
+            operation=self.snapshot_io.operations.get(selector.io_handle)
+            if (selector.io_handle!=digest(key.encode()) or operation is None or operation.phase!='original_pages'):
+                raise OriginalIntakeError('original_page_handle_changed')
+            value=self.snapshot_io.status(selector.io_handle,binding)
+        else:
+            value=self._start_page(dict(phase='original_pages',arguments=args,id=request.request_id,
+                operation_key=key,request_sha256=digest(canonical(dict(phase='original_pages',arguments=args))),
+                run_id=self.identity[0],runtime_incarnation=self.identity[2],connection_generation=self.generation),key)
+            operation=self.snapshot_io.operations.get(value.get('handle'))
+            if operation is not None and operation.task.done():value=self.snapshot_io.status(value['handle'],binding)
+        if lease_current() is not True:raise OriginalIntakeError('original_current_binding_required')
+        return value
 
     async def _execute_logged(self,frame):
         started=time.monotonic();operation_ref=digest(frame['operation_key'].encode())

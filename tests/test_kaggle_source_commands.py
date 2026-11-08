@@ -303,6 +303,8 @@ async def test_worker_reconnect_retains_exact_native_receipt_and_never_reencodes
 
 
 @pytest.mark.parametrize('timings', [None, {'native_work_seconds': .125},
+    {'native_work_seconds': .125, 'encode_seconds': .1, 'encoded_count': 2, 'reused_count': 1, 'materialize_seconds': .12},
+    {'native_work_seconds': .125, 'encode_seconds': 10**1000, 'encoded_count': True},
     {'native_work_seconds': -1}, {'native_work_seconds': True}, 'malformed', {'private': 3},
     {'native_work_seconds': 86_401}, {'native_work_seconds': 1e100}, {'native_work_seconds': 10**1000}])
 def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer, caplog, timings):
@@ -342,10 +344,14 @@ def test_actual_asgi_channel_delivers_source_command_and_remote_durable_ack(peer
             assert p.client.portal.call(status).outcome_state=='DURABLE'
             timing_logs=[json.loads(record.message) for record in caplog.records
                 if 'native_source_work_timing' in record.message]
-            if timings == {'native_work_seconds': .125}:
+            if isinstance(timings, dict) and timings.get('native_work_seconds') == .125:
                 assert len(timing_logs)==1
                 assert timing_logs[0]['native_work_seconds']==.125
                 assert timing_logs[0]['job_id']==frame['id']
+                if timings.get('encoded_count') == 2:
+                    assert {k:timing_logs[0][k] for k in timings if k!='native_work_seconds'}=={k:v for k,v in timings.items() if k!='native_work_seconds'}
+                if timings.get('encoded_count') is True:
+                    assert 'encode_seconds' not in timing_logs[0] and 'encoded_count' not in timing_logs[0]
             else:
                 assert timing_logs==[]  # malformed observations never block the exact receipt
     finally:

@@ -29,6 +29,14 @@ _REASONS = frozenset({'dense_unavailable', 'projection_lag', 'deadline_exceeded'
     'hybrid_search_required', 'target_warming', 'native_query_stalled'})
 _RUNTIME = ContextVar('rkb_read_runtime_diagnostics', default=None)
 _NATIVE = ContextVar('rkb_native_read_diagnostics', default=None)
+SOURCE_WORK = ContextVar('rkb_source_work_diagnostics', default=None)
+
+
+@contextmanager
+def source_work_observation():
+    values = {}; token = SOURCE_WORK.set(values)
+    try:yield values
+    finally:SOURCE_WORK.reset(token)
 
 
 def _opaque(value):

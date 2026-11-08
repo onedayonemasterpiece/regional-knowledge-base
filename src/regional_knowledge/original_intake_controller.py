@@ -18,6 +18,7 @@ from .original_intake import (OriginalIntakeSpec,OriginalIntakeStatus,VerifiedOr
     OriginalIntakeError,OriginalIntakeRejected,TERMINAL_REJECTIONS,NativePagesProof,PHASES,canonical,digest,text,uuid_value,
     decode_page_cursor,encode_page_cursor,assemble_native_page,issued_image_receipt)
 from .recovery_s3 import _blocking,_missing
+from .source_stage import MAX_BATCH_PAGES
 
 _LOG=logging.getLogger(__name__)
 _RESTORE_LOG=logging.getLogger(__name__+'.restore')
@@ -105,10 +106,10 @@ class OriginalIntakeController:
         if private is None:raise OriginalIntakeError('original_ephemeral_ticket_requires_retry')
         return private
 
-    async def _phase(self,binding,phase,args,private=None,*,operation_key=None):
+    async def _phase(self,binding,phase,args,private=None,*,operation_key=None,page_read=None):
         key=operation_key or digest(canonical(dict(phase=phase,args=args)))
         if private is not None:self._private[key]=private
-        value=await self._bridge(binding).request(binding,phase,args,operation_key=key)
+        value=await self._bridge(binding).request(binding,phase,args,operation_key=key,**({'page_read':page_read} if page_read is not None else {}))
         self._private.pop(key,None)
         if type(value) is not dict:raise OriginalIntakeError('original_native_receipt_invalid')
         if 'error' in value:
@@ -352,7 +353,7 @@ class OriginalIntakeController:
         except OriginalIntakeRejected as exc:return self._reject(ingestion_id,exc.code)
         except Exception:return OriginalIntakeStatus(ingestion_id,'pending',reason='original_intake_unknown_retry_same_operation')
 
-    async def pages(self,context,ingestion_id,cursor=None,batch_size=1):
+    async def pages(self,context,ingestion_id,cursor=None,batch_size=1,*,page_read=None):
         actor,binding=await self._authorize(context);row=self._row(actor,ingestion_id)
         receipt=await self.verified(context,ingestion_id)
         if receipt is None:raise OriginalIntakeError('original_verified_receipt_required')
@@ -361,7 +362,7 @@ class OriginalIntakeController:
         if index<0 or index>=receipt.page_count:raise OriginalIntakeError('original_page_cursor_invalid')
         record=json.loads(row['acquisition_json'])
         record,page,data=await self._page_data(binding,record,index,native_cursor,
-            restore=lambda prior:self._restore_handle(context,actor,binding,receipt,prior))
+            restore=lambda prior:self._restore_handle(context,actor,binding,receipt,prior),page_read=page_read)
         await self._authorize(context)
         expected_page=str(uuid5(UUID(receipt.source_id),f'page:1:{index}'))
         if (page.get('page_id')!=expected_page or page.get('original_sha256')!=receipt.sha256
@@ -386,13 +387,13 @@ class OriginalIntakeController:
                 image_sha256=issued['image_sha256'])),),
             next_cursor)
 
-    async def _page_data(self,binding,record,index,native_cursor,*,restore):
+    async def _page_data(self,binding,record,index,native_cursor,*,restore,page_read=None):
         args=dict(handle=record['handle'],original_sha256=record['sha256'],index=index,cursor=native_cursor)
-        try:page=await self._phase(binding,'original_pages',args)
+        try:page=await self._phase(binding,'original_pages',args,page_read=page_read)
         except OriginalIntakeError as exc:
             if str(exc)!='original_retained_bytes_unavailable':raise
             record=await restore(record)
-            page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']))
+            page=await self._phase(binding,'original_pages',dict(args,handle=record['handle']),page_read=page_read)
         with self.queue.connect(write=False) as db:
             old=db.execute('SELECT receipt_json FROM rkb_original_image_issuance WHERE ingestion_id=? AND physical_page_index=?',
                 (record['spec']['ingestion_id'],index)).fetchone()
@@ -447,7 +448,7 @@ class OriginalIntakeController:
         actor,_=await self._authorize(context)
         self._row(actor,ingestion_id)
         receipt=await self.verified(context,ingestion_id)
-        if receipt is None or type(selections) is not tuple or not 1<=len(selections)<=8:
+        if receipt is None or type(selections) is not tuple or not 1<=len(selections)<=MAX_BATCH_PAGES:
             raise OriginalIntakeError('original_selected_image_bound')
         result=[];seen=set()
         with self.queue.connect(write=False) as db:

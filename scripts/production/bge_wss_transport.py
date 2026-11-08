@@ -289,7 +289,8 @@ class BgeWssTransport:
             deadline = math.inf if frame.get('type')=='QUERY' else asyncio.get_running_loop().time() + frame['deadline_ms'] / 1000
             try:
                 async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
-                    if frame.get('type')=='SQL_HEALTH':
+                    if (frame.get('type')=='SQL_HEALTH' or frame.get('type')=='SOURCE_READ'
+                            and frame.get('operation')=='original_page_io'):
                         def lease_current():
                             return (not read['released'] and not read['discard']
                                 and self._connection_generation==frame['connection_generation'])
@@ -350,12 +351,14 @@ class BgeWssTransport:
                 handler = self._native_handler(job)
                 if handler is None:
                     raise ValueError('fixed native executor unavailable')
-                before = time.monotonic()
-                if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
-                    with self.snapshot_channel.assignment(job):
+                from regional_knowledge.query_telemetry import source_work_observation
+                with source_work_observation() as observations:
+                    before = time.monotonic()
+                    if job['kind'] == 'recovery_phase' and self.snapshot_channel is not None:
+                        with self.snapshot_channel.assignment(job):
+                            receipt = await handler(job)
+                    else:
                         receipt = await handler(job)
-                else:
-                    receipt = await handler(job)
                 pending = dict(job_id=job['id'], claim=job['claim'], receipt=receipt,
                     **{key:job[key] for key in ('run_id', 'launch_nonce', 'runtime_incarnation',
                         'compute_claim', 'dispatch_generation')})
@@ -363,7 +366,7 @@ class BgeWssTransport:
                         130000 if job['kind'] == 'recovery_phase' else 15500):
                     raise ValueError('source command receipt bound')
                 if job['kind'] == 'source_command':
-                    timed = {**pending, 'timings': {'native_work_seconds': time.monotonic()-before}}
+                    timed = {**pending, 'timings': {'native_work_seconds': time.monotonic()-before, **observations}}
                     if len(json.dumps(timed, allow_nan=False).encode()) <= 15500:
                         pending = timed
             else:

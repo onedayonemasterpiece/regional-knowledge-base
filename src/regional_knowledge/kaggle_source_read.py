@@ -11,17 +11,27 @@ from pydantic import Field, model_validator
 from psycopg.pq import TransactionStatus
 from psycopg.rows import tuple_row
 
-from .kaggle_protocol import ReadIdentity, TrustedActorContext, Nonnegative, Identifier
+from .kaggle_protocol import Contract, ReadIdentity, TrustedActorContext, Nonnegative, Identifier
 from .kaggle_protocol import EvidenceItem, EvidenceMetadata, ItemDependencies, SourceDependency
 from .kaggle_query import ReadUnavailable, _frontier, _identity
 
 _LOG = logging.getLogger(__name__)
 
 
+class OriginalPageSelector(Contract):
+    ingestion_id: Annotated[str, Field(pattern=r'^[0-9a-f-]{36}$')]
+    handle: Identifier
+    attempt: Annotated[int, Field(strict=True, ge=0, le=255)] = 0
+    original_sha256: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')]
+    cursor: dict[Literal['block','offset','text'], Annotated[int, Field(strict=True, ge=0, lt=2**31)]]
+    io_handle: Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')] | None = None
+
+
 class SourceReadRequest(ReadIdentity):
     type: Literal['SOURCE_READ'] = 'SOURCE_READ'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units', 'source_unit_pdf'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units', 'source_unit_pdf', 'original_page_io'] = 'source_catalog'
+    original: OriginalPageSelector | None = None
     operation_version: Literal[1] = 1
     query: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
     source_id: Identifier | None = None
@@ -39,6 +49,15 @@ class SourceReadRequest(ReadIdentity):
 
     @model_validator(mode='after')
     def bounded_query(self):
+        if self.operation=='original_page_io':
+            if (self.original is None or self.source_id is None or self.page_start is None or self.limit!=1 or self.min_data_seq!=0
+                    or any(v is not None for v in (self.query,self.page_end,self.after_ordinal,self.article_id,
+                        self.annotation_ru,self.translation_ru))
+                    or set(self.original.cursor)!={'block','offset','text'}
+                    or any(str(UUID(v))!=v for v in (self.source_id,self.original.ingestion_id))):
+                raise ValueError('exact private original selector required')
+            return self
+        if self.original is not None:raise ValueError('private original selector requires original_page_io')
         if self.operation != 'source_unit_pdf' and (
                 self.annotation_ru is not None or self.translation_ru is not None):
             raise ValueError('PDF additions require source_unit_pdf')
@@ -82,7 +101,7 @@ class SourceReadRequest(ReadIdentity):
 class SourceReadResult(ReadIdentity):
     type: Literal['SOURCE_READ_RESULT'] = 'SOURCE_READ_RESULT'
     protocol_version: Literal[2] = 2
-    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units', 'source_unit_pdf'] = 'source_catalog'
+    operation: Literal['source_catalog', 'accepted_chunks', 'source_illustration', 'source_units', 'source_unit_pdf', 'original_page_io'] = 'source_catalog'
     status: Literal['ok','unavailable','invalid_query','denied','cancelled']
     records: tuple[dict,...] = Field(default=(), max_length=8)
     evidence: tuple[EvidenceItem,...] = Field(default=(), max_length=8)
@@ -191,9 +210,16 @@ async def _source_units(request, cursor, execute):
     return records, (), next_ordinal
 
 
-async def execute_source_read(request, *, acquire, illustration_page=None):
+async def execute_source_read(request, *, acquire, illustration_page=None, original_page=None):
     if type(request) is not SourceReadRequest:
         raise TypeError('fixed native source read required')
+    if request.operation=='original_page_io':
+        from .original_intake import OriginalIntakeError
+        try:value=await original_page(request) if original_page is not None else None
+        except OriginalIntakeError as error:value={'error':str(error)}
+        return SourceReadResult(**_identity(request),operation=request.operation,
+            status='ok' if value is not None else 'unavailable',records=(value,) if value is not None else (),
+            reason=None if value is not None else 'not_ready',observed_data_seq=None,observed_projection_seq=None)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + min(request.deadline_ms, 30000 if request.operation=='source_unit_pdf' else 2000)/1000
     observed = {}

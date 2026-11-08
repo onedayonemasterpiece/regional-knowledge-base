@@ -84,6 +84,8 @@ class ReadHandlerSlot:
             self._pinned['public_illustrations']=handler.public_illustrations
         if self._pinned is not None and hasattr(handler,'illustration_page'):
             self._pinned['illustration_page']=handler.illustration_page
+        if self._pinned is not None and hasattr(handler,'original_page'):
+            self._pinned['original_page']=handler.original_page
         self._hash = loaded_sha256
         self._active_module: str | None = None
         self._compatibility = compatibility
