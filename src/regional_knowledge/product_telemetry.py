@@ -68,7 +68,7 @@ _IMPORT_NUMBERS = frozenset({'physical_page_index','page_count','region_count','
     'command_sequence','batch_count','published_batch_count','enriched_batch_count','attempt',
     'call_started_unix_ms','event_time_unix_ms','image_width','image_height','entity_candidate_count',
     'poi_candidate_count','physical_page_end','input_validator_line','input_caller_line',
-    'encoded_count','reused_count'})
+    'encoded_count','reused_count','native_complete_count','native_block_count','native_continuation_request'})
 _IMPORT_ENUMS = {
     'tool': frozenset({'book_ingest','book_pages','fetch','search'}),
     'command': frozenset({'start','stage','validate','finalize','status','reprocess','rechunk'}),

@@ -106,7 +106,7 @@ async def error_envelope(server, tool, args=None):
     envelope = json.loads(raw[begin:end + 1])
     assert {"status", "reason", "error_class"} <= set(envelope)
     assert set(envelope) <= {"status", "reason", "error_class", "hints",
-                             "exception_class", "field_path"}
+                             "exception_class", "field_path", "validation_type"}
     assert len(json.dumps(envelope)) <= 360
     return envelope
 
@@ -183,6 +183,35 @@ async def test_domain_json_extras_and_private_error_text_do_not_escape(registere
         "error_class": "domain", "exception_class": "ValidationError",
         "field_path": field_path,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("validation_type", ["missing", "model_type", "extra_forbidden", "value_error", "too_long"])
+async def test_actual_mcp_error_retains_fixed_validation_type_for_input_correction(registered_books, validation_type):
+    server, backend = registered_books
+    backend.error = ToolError(json.dumps({
+        "status": "invalid_query", "reason": "invalid_small_source_input",
+        "exception_class": "ValidationError", "field_path": "entities.0.evidence",
+        "validation_type": validation_type, "original_bytes": _SECRET,
+    }))
+    result = await error_envelope(server, "book_ingest")
+    assert result["validation_type"] == validation_type
+    assert result["field_path"] == "entities.0.evidence"
+    assert result["status"] == "invalid_query"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("validation_type", [_SECRET, "unknown_private_value", None, 7, {}, []])
+async def test_unrecognized_validation_type_is_not_disclosed(registered_books, validation_type):
+    server, backend = registered_books
+    backend.error = ToolError(json.dumps({
+        "status": "invalid_query", "reason": "invalid_small_source_input",
+        "exception_class": "ValidationError", "field_path": "entities.0.evidence",
+        "validation_type": validation_type,
+    }))
+    result = await error_envelope(server, "book_ingest")
+    assert "validation_type" not in result
+    assert result["field_path"] == "entities.0.evidence"
 
 
 @pytest.mark.asyncio

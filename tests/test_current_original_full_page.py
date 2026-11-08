@@ -189,3 +189,34 @@ async def test_optional_continuation_timeout_keeps_first_fragment_but_final_with
     cause=error.value
     while cause.__cause__ is not None:cause=cause.__cause__
     assert json.loads(str(cause))['reason']=='transport_timeout'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['complete', 'explicit_fragment', 'timeout_fallback'])
+async def test_actual_page_response_counts_distinguish_repeated_images_from_fragments(native_intake, monkeypatch, case):
+    import regional_knowledge.product_telemetry as telemetry
+    s=native_intake;f=await setup_page(s,monkeypatch);records=[]
+    monkeypatch.setattr(telemetry,'import_metadata',lambda **fields:records.append(fields))
+    cursor=None
+    if case=='explicit_fragment':
+        cursor=encode_page_cursor(0,f.parts[1]['native_cursor'])
+    elif case=='timeout_fallback':
+        original=s.originals.pages
+        async def timeout(context,ingestion_id,cursor=None,batch_size=1,**kwargs):
+            if cursor and cursor.startswith('pc1.'):raise TimeoutError('fictional continuation')
+            return await original(context,ingestion_id,cursor,batch_size,**kwargs)
+        s.originals.pages=timeout
+    result,_=await issue(f,cursor=cursor)
+    page=json.loads(result['result']['content'][0]['text'])['pages'][0]
+    record=records[-1]
+    assert record['native_complete_count']==(1 if case=='complete' else 0)
+    assert record['native_block_count']==len(page['native_blocks'])==(126 if case=='complete' else 12)
+    assert record['native_continuation_request']==(1 if case=='explicit_fragment' else 0)
+    seen=[];sink=telemetry.ProductTelemetry(sink=seen.append)
+    assert sink.try_emit(dict(event='import.call',phase='pages',status='returned',**record,
+        native_text='PRIVATE PAGE',native_cursor='PRIVATE CURSOR'))
+    sink._queue.join()
+    assert seen[0]['native_complete_count']==record['native_complete_count']
+    assert seen[0]['native_block_count']==record['native_block_count']
+    assert seen[0]['native_continuation_request']==record['native_continuation_request']
+    assert 'PRIVATE' not in json.dumps(seen)
