@@ -20,6 +20,7 @@ from .contracts import (StagePageInput, StageChunkInput, StagePoiFactInput,
                         StagePoiMediaLinkInput)
 from .entity_graph import GraphBundle
 from .story_contracts import StageStoryCandidateInput
+from .source_stage import MAX_BATCH_PAGES
 
 MAX_STAGE_FILE_BYTES = 1024 * 1024
 
@@ -32,7 +33,7 @@ class StageFile(BaseModel):
     model_config = ConfigDict(extra='forbid')
     ingestion_id: UUID
     source_revision: int = Field(ge=1)
-    pages: list[StagePageInput] = Field(default_factory=list, max_length=8)
+    pages: list[StagePageInput] = Field(default_factory=list, max_length=MAX_BATCH_PAGES)
     chunks: list[StageChunkInput] = Field(default_factory=list, max_length=100)
     poi_facts: list[StagePoiFactInput] = Field(default_factory=list, max_length=100)
     poi_media_links: list[StagePoiMediaLinkInput] = Field(default_factory=list, max_length=100)

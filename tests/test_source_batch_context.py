@@ -68,7 +68,8 @@ async def test_current_story_uses_existing_passage_identity_and_only_explicit_pr
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('missing_current_text',[False,True])
-async def test_explicit_prior_passage_does_not_require_other_prior_regions(missing_current_text):
+@pytest.mark.parametrize('selector',['chunk_id','chunk_key'])
+async def test_explicit_prior_passage_does_not_require_other_prior_regions(missing_current_text,selector):
     first=exact_batch(count=1)
     prior_page=first['model_payload']['pages'][0]
     extra=copy.deepcopy(prior_page['regions'][0])
@@ -84,9 +85,10 @@ async def test_explicit_prior_passage_does_not_require_other_prior_regions(missi
         second['model_payload']['pages'][0]['regions'][0]['reading_order']=1
         second['model_payload']['pages'][0]['regions'].append(current_extra)
     prior_id=str(uuid5(UUID(SOURCE),'chunk:1:'+first['model_payload']['chunks'][0]['chunk_key']))
+    evidence_selector={selector:prior_id if selector=='chunk_id' else first['model_payload']['chunks'][0]['chunk_key']}
     second['model_payload']['story_candidates']=[dict(candidate_key='episode',title='A source finding',
         summary='A finding linked to an accepted passage.',proposition='The source describes the event.',
-        narrative_outcome='facts_only',evidence_refs=[dict(page_id=prior_page['page_id'],region_key='body',chunk_id=prior_id)])]
+        narrative_outcome='facts_only',evidence_refs=[dict(page_id=prior_page['page_id'],region_key='body',**evidence_selector)])]
     raw=canonical(second)
     view=await load_current(Connection(first),raw,SOURCE,text_only=False)
     # The indexed prior UUID lookup returns exactly one passage, although the
