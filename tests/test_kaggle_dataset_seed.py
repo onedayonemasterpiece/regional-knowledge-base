@@ -223,3 +223,64 @@ async def test_seed_large_journal_paginates_beyond_10000_and_uploads_exact_bytes
         sha256=sha(journal), url='https://storage.googleapis.com/checkpoint')
     _put_control(grant, journal)
     assert observed==dict(sha256=sha(journal),size=len(journal))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['before_effect', 'lost_ack', 'processing', 'foreign_version', 'stale_writer'])
+async def test_resume_persisted_publication_uses_same_intent_without_recapture(tmp_path, outcome):
+    import json
+    from dataclasses import asdict
+    from regional_knowledge.kaggle_dataset_publisher import DatasetPublicationError, DatasetUpload
+    queue = Queue(tmp_path/'resume.sqlite')
+    api = FakeApi()
+    api.version = 7
+    file = DatasetUpload('pg-fixed.blob', 123, 'd'*64, 'private-token',
+        'https://storage.googleapis.com/fixed')
+    api.files = [NS(name=file.name, total_bytes=file.size)]
+    publisher = KaggleDatasetPublisher(api, provider_ref='owner/rkb-pg', owner='owner')
+    binding = object()
+    @asynccontextmanager
+    async def guard(generation):
+        assert generation == 'writer'
+        yield
+    startup = NS(config=NS(queue=queue, writer_owner=guard, writer_generation='writer'),
+        binding_current=lambda b:b is binding and outcome != 'stale_writer')
+    seed = SourceDatasetSeed(startup, NS(operation_key='fixed-intent', provider_ref=publisher.ref), publisher)
+    package = dict(files=[asdict(file)], previous_version=7, base_sequence=42,
+        database_generation='db', manifest_sha256='a'*64)
+    with queue.connect() as db:
+        db.execute("UPDATE rkb_dataset_seed SET state='publishing', package_json=?",
+            (json.dumps(package),))
+    create = api.create_dataset_version
+    calls = []
+    def effect(request):
+        calls.append(request)
+        if outcome == 'before_effect' and len(calls) == 1:
+            raise ConnectionError('request never reached provider')
+        create(request)
+        if outcome == 'lost_ack':
+            raise TimeoutError('response lost after provider commit')
+    api.create_dataset_version = effect
+    if outcome == 'before_effect':
+        with pytest.raises(DatasetPublicationError, match='pending_readback'):
+            publisher.finalize(files=(file,), operation='fixed-intent', previous_version=7)
+    elif outcome == 'lost_ack':
+        assert publisher.finalize(files=(file,), operation='fixed-intent', previous_version=7) == 8
+    elif outcome == 'processing':
+        api.status = 'processing'
+    elif outcome == 'foreign_version':
+        api.version = 8
+        api.description = 'a different operation'
+    if outcome in ('processing', 'foreign_version', 'stale_writer'):
+        with pytest.raises(DatasetPublicationError):
+            await seed.capture_once(binding)
+        assert calls == [] and api.mutations == []
+    else:
+        assert await seed.capture_once(binding) == 8
+        assert await seed.capture_once(binding) == 8
+        assert api.mutations == ['version']
+        assert len(calls) == (2 if outcome == 'before_effect' else 1)
+        with queue.connect(write=False) as db:
+            row = db.execute('SELECT * FROM rkb_dataset_seed').fetchone()
+        assert row['state'] == 'published' and row['version'] == 8
+        assert json.loads(row['package_json']) == package
