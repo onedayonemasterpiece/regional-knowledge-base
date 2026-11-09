@@ -207,11 +207,15 @@ class SourceDatasetSeed:
                     files=tuple(files), operation=self.config.operation_key, previous_version=previous)
                 return self._published(version, package)
         expected = 1 if package['previous_version'] is None else package['previous_version']+1
-        if not await asyncio.to_thread(self.publisher.reconcile,
-                files=tuple(DatasetUpload(**f) for f in package['files']),
+        files=tuple(DatasetUpload(**f) for f in package['files'])
+        if await asyncio.to_thread(self.publisher.reconcile, files=files,
                 operation=self.config.operation_key, expected_version=expected):
-            raise DatasetPublicationError('dataset_seed_publication_pending')
-        return self._published(expected, package)
+            return self._published(expected, package)
+        known=await asyncio.to_thread(self.publisher.published_version, operation=self.config.operation_key)
+        if known is not None and await asyncio.to_thread(self.publisher.reconcile, files=files,
+                operation=self.config.operation_key, expected_version=known):
+            return self._published(known, package)
+        raise DatasetPublicationError('dataset_seed_publication_pending')
 
     def _published(self, version, package):
         with self.queue.connect() as db:
