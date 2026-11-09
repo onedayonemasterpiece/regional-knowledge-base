@@ -2306,7 +2306,8 @@ async def test_completed_text_allows_semantic_correction_after_rejected_correcti
     await stage(s,book,payload)
     await finish(s,book);await call(s,book,'status')
     rejected=await finish(s,book,status='rejected_precondition',reason='native_source_packet_requires_review')
-    await call(s,book,'status')
+    correction_status=await call(s,book,'status')
+    assert correction_status.next_cursor=='0'  # Retry the rejected semantic input, not EOF.
     with s.t.queue.connect(write=False) as db:
         before=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
     payload['entity_candidates']['entities'][0]['canonical_label']='Synthetic corrected'
