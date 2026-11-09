@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import hashlib
 from io import BytesIO
 import json
+import logging
 import re
 import os
 from pathlib import Path
@@ -136,6 +137,32 @@ class KaggleDatasetPublisher:
             raise DatasetPublicationError('dataset_private_version_unproven')
         return version
 
+    def published_version(self, *, operation):
+        """Find this exact intent; absence never authorizes its resubmission."""
+        from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetRequest
+        request = ApiGetDatasetRequest()
+        request.owner_slug, request.dataset_slug = self.owner, self.slug
+        try:
+            with self.api.build_kaggle_client() as client:
+                value = client.datasets.dataset_api_client.get_dataset(request)
+        except Exception as error:
+            status = getattr(error, 'status_code', None) or getattr(getattr(error, 'response', None), 'status_code', None)
+            if status == 404:
+                return None
+            raise DatasetPublicationError('dataset_publication_history_unavailable') from None
+        if _field(value, 'is_private') is not True:
+            raise DatasetPublicationError('dataset_private_version_unproven')
+        matches = [v for v in _field(value, 'versions', []) or []
+                   if _field(v, 'version_notes') == operation]
+        if len(matches) > 1:
+            raise DatasetPublicationError('dataset_publication_history_conflict')
+        if not matches or str(_field(matches[0], 'status')).lower() != 'ready':
+            return None
+        version = _field(matches[0], 'version_number')
+        if type(version) is not int or version < 1:
+            raise DatasetPublicationError('dataset_publication_history_unavailable')
+        return version
+
     def version_created_at(self, version):
         """Provider timestamp of the exact verified Saved version, not latest."""
         from datetime import datetime, timezone
@@ -216,25 +243,30 @@ class KaggleDatasetPublisher:
 
     def reconcile(self, *, files, operation, expected_version):
         description = self._description(files, operation)
-        if self.observe() != expected_version:
+        current = self.observe()
+        if current is None:
             return False
-        from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetMetadataRequest
-        request = ApiGetDatasetMetadataRequest()
-        request.owner_slug, request.dataset_slug = self.owner, self.slug
-        with self.api.build_kaggle_client() as client:
-            response = client.datasets.dataset_api_client.get_dataset_metadata(request)
-        if _field(_field(response, 'info'), 'description') != description:
-            return False
-        # Status and version are separate provider observations.
-        if self.api.dataset_status(self.ref) != 'ready':
-            return False
+        historical = current != expected_version
+        if historical:
+            if self.published_version(operation=operation) != expected_version:
+                return False
+        else:
+            from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetMetadataRequest
+            request = ApiGetDatasetMetadataRequest()
+            request.owner_slug, request.dataset_slug = self.owner, self.slug
+            with self.api.build_kaggle_client() as client:
+                response = client.datasets.dataset_api_client.get_dataset_metadata(request)
+            if (_field(_field(response, 'info'), 'description') != description
+                    or self.api.dataset_status(self.ref) != 'ready'):
+                return False
         observed, cursor, seen = [], None, set()
         for _ in range(10):
             response = self.api.dataset_list_files(f'{self.ref}/{expected_version}', page_token=cursor, page_size=100)
             if _field(response, 'error_message'):
                 raise DatasetPublicationError('dataset_file_metadata_unavailable')
             for item in _field(response, 'files', []) or []:
-                observed.append((_field(item, 'name'), _field(item, 'total_bytes')))
+                observed.append((_field(item, 'name'), _field(item, 'total_bytes'),
+                    _field(item, 'description') if historical else None))
             cursor = _field(response, 'next_page_token')
             if not cursor:
                 break
@@ -243,8 +275,8 @@ class KaggleDatasetPublisher:
             seen.add(cursor)
         else:
             raise DatasetPublicationError('dataset_file_listing_unbounded')
-        return (sorted(observed) == sorted((f.name, f.size) for f in files)
-                and self.observe() == expected_version)
+        return (sorted(observed) == sorted((f.name, f.size, f.description if historical else None) for f in files)
+                and (historical or self.observe() == expected_version))
 
     def finalize(self, *, files, operation, previous_version):
         from kagglesdk.datasets.types.dataset_api_service import (
@@ -257,6 +289,9 @@ class KaggleDatasetPublisher:
         if self.reconcile(files=files, operation=operation, expected_version=expected):
             return expected
         if self.observe() != previous_version:
+            known = self.published_version(operation=operation)
+            if known is not None and self.reconcile(files=files, operation=operation, expected_version=known):
+                return known
             raise DatasetPublicationError('dataset_publication_predecessor_changed')
         uploaded = []
         for file in files:
@@ -278,9 +313,13 @@ class KaggleDatasetPublisher:
                     request = ApiCreateDatasetVersionRequest()
                     request.owner_slug, request.dataset_slug, request.body = self.owner, self.slug, body
                     client.datasets.dataset_api_client.create_dataset_version(request)
-        except Exception:
+        except Exception as error:
             # Read back even after a lost provider response; never resubmit here.
-            pass
+            logging.getLogger(__name__).warning('dataset_publication_response state=unknown error_type=%s',
+                type(error).__name__)
         if self.reconcile(files=files, operation=operation, expected_version=expected):
             return expected
+        known = self.published_version(operation=operation)
+        if known is not None and self.reconcile(files=files, operation=operation, expected_version=known):
+            return known
         raise DatasetPublicationError('dataset_publication_pending_readback')
