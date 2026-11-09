@@ -2325,3 +2325,34 @@ async def test_start_caption_marker_keeps_telegram_utf16_limit(native_intake):
     assert caption.startswith('РКБ: ⏳ Импортируется\n')
     assert caption.endswith('RKB-original '+book.ingestion_id)
     assert len(caption.encode('utf-16-le'))<=2048
+
+
+@pytest.mark.asyncio
+async def test_completed_text_allows_semantic_correction_after_rejected_corrective_text(native_intake):
+    s=native_intake;book=await start(s,page_count=1)
+    payload=batch(s,book,count=1)
+    await stage(s,book,payload)
+    for _ in ('stage','text','semantic'):
+        await finish(s,book);await call(s,book,'status')
+    payload['entity_candidates']=dict(entities=[dict(key='person-alpha',kind='person',
+        canonical_label='Synthetic',exact_source_spelling='Synthetic',
+        evidence=dict(page_id=payload['pages'][0]['page_id'],region_key='body',chunk_key='page-0'))])
+    await stage(s,book,payload)
+    await finish(s,book);await call(s,book,'status')
+    rejected=await finish(s,book,status='rejected_precondition',reason='native_source_packet_requires_review')
+    await call(s,book,'status')
+    with s.t.queue.connect(write=False) as db:
+        before=[tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence')]
+    payload['entity_candidates']['entities'][0]['canonical_label']='Synthetic corrected'
+    response=await stage(s,book,payload)
+    assert response.state=='processing', response.message
+    correction=json.loads((await pending(s,book)).command.payload)
+    assert correction['batch_index']==2
+    assert correction['model_payload']['pages'][0]['physical_page_index']==0
+    with s.t.queue.connect(write=False) as db:
+        assert [tuple(r) for r in db.execute('SELECT operation_key,command_bytes,outcome_bytes FROM rkb_control_operations ORDER BY sequence LIMIT ?', (len(before),))]==before
+    assert (await s.spool.get(rejected.command.operation_key)).apply_state=='REJECTED_PRECONDITION'
+    for _ in ('stage','text','semantic'):
+        await finish(s,book);await call(s,book,'status')
+    await call(s,book,'finalize');await finish(s,book)
+    assert (await call(s,book,'status')).state=='finalized'
