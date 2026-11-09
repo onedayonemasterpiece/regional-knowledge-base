@@ -637,7 +637,11 @@ class BgeWssTransport:
                     if self.shared_reads and frame['dispatch_generation'] != generation:
                         raise ValueError('new dispatch requires current generation')
                     if self.waiting_job is not None and key == (self.waiting_job['id'], self.waiting_job['claim']):
-                        if frame['texts'] != self.waiting_job['texts'] or frame['kind'] != self.waiting_job['kind']:
+                        fields=(('command_b64','command_sha256','accepted','handler_sha256','database_generation','writer_generation',
+                                 'run_id','launch_nonce','runtime_incarnation') if source else
+                                ('phase','operation_key','request_sha256','arguments','database_generation','writer_generation',
+                                 'run_id','launch_nonce','runtime_incarnation') if recovery else ('texts',))
+                        if frame['kind'] != self.waiting_job['kind'] or any(frame.get(k)!=self.waiting_job.get(k) for k in fields):
                             raise ValueError('replayed waiting assignment payload mismatch')
                         continue
                     if self.job is not None:
