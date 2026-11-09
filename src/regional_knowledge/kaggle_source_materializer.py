@@ -578,7 +578,9 @@ class NativeSourceCompiler:
                         if region.region_id in [*chunk.region_ids,*chunk.footnote_region_ids]
                         and region.page_id in chunk.page_ids]
                     if ref.chunk_key is not None:
-                        matching = [chunk for chunk in matching if chunk.chunk_key == ref.chunk_key]
+                        passage_id = uuid5(UUID(row['source_id']), 'chunk:1:'+ref.chunk_key)
+                        matching = [chunk for chunk in matching
+                            if chunk.chunk_key == ref.chunk_key or chunk.chunk_id == passage_id]
                     elif ref.chunk_id is not None:
                         matching = [chunk for chunk in matching if str(chunk.chunk_id) == ref.chunk_id]
                     elif len(matching) > 1:
