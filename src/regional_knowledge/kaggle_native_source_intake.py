@@ -638,6 +638,9 @@ class NativeSourceIntake:
                 missing=await asyncio.to_thread(read_enrichment_gaps,self.queue,row)
                 await self._check(access,row)
                 if missing:return str(min(missing))
+                model=doc['model_payload'];graph=model.get('entity_candidates') or {}
+                if model.get('story_candidates') or any(graph.get(key) for key in ('entities','relations','entity_refs')):
+                    return first
             return next_unaccepted(first,published) if all(p['physical_page_index'] in published for p in pages) else first
         cursor=doc['research'].get('continuation',{}).get('arguments',{}).get('cursor')
         raw=cursor if isinstance(cursor,str) and cursor.isdecimal() else str(pages[-1]['physical_page_index']+1)
