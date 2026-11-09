@@ -544,3 +544,24 @@ async def test_finalized_missing_physical_page_uses_shared_progress_and_existing
     result=(await get(w)).json()
     assert (result['state'],result['next_action'],result['next_cursor'])==('staged','continue_pages',str(missing))
     assert result['accepted_pages']==2 and read_timestamp(w)==before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('runtime_state', ['starting', 'draining', 'ready', 'expired', None])
+async def test_activity_waits_for_existing_runtime_but_preserves_cold_demand(watcher, runtime_state):
+    w = watcher
+    before = read_timestamp(w)
+    with w.queue.connect() as db:
+        run_id = w.queue._new_run(db, time.time())
+        db.execute('UPDATE runs SET status=? WHERE id=?', (runtime_state or 'expired', run_id))
+        db.execute('UPDATE control SET current_run=? WHERE id=1',
+                   (run_id if runtime_state is not None else None,))
+    result = (await get(w)).json()
+    expected = ('processing', 'wait') if runtime_state in ('starting', 'draining') else ('staged', 'continue_pages')
+    assert (result['state'], result['next_action']) == expected
+    assert result['accepted_pages'] == 2 and read_timestamp(w) == before
+    with w.queue.connect() as db:
+        db.execute("UPDATE runs SET status='ready' WHERE id=?", (run_id,))
+    resumed = (await get(w)).json()
+    assert (resumed['state'], resumed['next_action']) == ('staged', 'continue_pages')
+    assert resumed['accepted_pages'] == 2 and resumed['last_operation_at'] == result['last_operation_at']

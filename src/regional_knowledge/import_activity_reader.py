@@ -74,6 +74,8 @@ class ImportActivityReader:
                 "WHERE ingestion_id=? AND source_id=? AND person_id=?",
                 (ingestion_id, row["source_id"], row["person_id"]),
             ).fetchone()
+            warming = db.execute("SELECT 1 FROM control c JOIN runs r ON r.id=c.current_run "
+                                 "WHERE c.id=1 AND r.status IN ('starting','draining')").fetchone()
             pending = native["pending_operation_key"] if native else None
             # A committed catalog is not an in-flight save; status settles its local cursor later.
             if pending and pending.startswith(f"source-catalog:{ingestion_id}:") and db.execute(
@@ -116,7 +118,7 @@ class ImportActivityReader:
             state, action = "failed", "blocker"
         elif (native and native["phase"] == "finalized" or phase == "finalized") and not (missing_semantic or unpublished_rejection or missing_physical):
             state, action = "finalized", "done"
-        elif phase == "acquiring":
+        elif phase == "acquiring" or warming:
             state, action = "processing", "wait"
         elif native and (pending
               or native["enriched_batch_count"] < native["batch_count"]):
