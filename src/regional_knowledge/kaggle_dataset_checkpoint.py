@@ -248,13 +248,15 @@ class SourceDatasetCheckpoints:
                 await self.refresh(binding,planned_stop=planned_stop)
             except asyncio.CancelledError:raise
             except Exception as exc:
-                _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+                _LOG.warning('target_dataset_checkpoint state=pending reason=%s cause_type=%s',
+                    type(exc).__name__,type(exc.__cause__).__name__)
             if self._force_after and not planned_stop:
                 try:
                     await self.refresh(binding,planned_stop=True)
                 except asyncio.CancelledError:raise
                 except Exception as exc:
-                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s',type(exc).__name__)
+                    _LOG.warning('target_dataset_checkpoint state=pending reason=%s cause_type=%s',
+                        type(exc).__name__,type(exc.__cause__).__name__)
         finally:
             self._force_after=False
 
@@ -327,6 +329,10 @@ class SourceDatasetCheckpoints:
                 "AND (state='published' OR json_extract(package_json,'$.base_sequence')>=?) ORDER BY rowid LIMIT 1",
                 (self.store.publisher.ref,latest.base_sequence,
                  proof.applied_sequence if proof is not None else latest.base_sequence)).fetchone()
+            uncertain=db.execute("SELECT operation_key FROM rkb_dataset_seed WHERE provider_ref=? "
+                "AND operation_key LIKE 'dataset-checkpoint:%' AND state='publishing' "
+                "AND package_json IS NOT NULL AND json_extract(package_json,'$.base_sequence')>=? "
+                "ORDER BY rowid DESC",(self.store.publisher.ref,latest.base_sequence)).fetchall() if retained is None else ()
             meta=db.execute('SELECT sequence FROM rkb_control_spool_meta WHERE id=1').fetchone()
             run_id=getattr(binding,'run_id',None)
             if run_id is not None:
@@ -341,6 +347,10 @@ class SourceDatasetCheckpoints:
                     run['status']=='draining'
                     or queue.clock()-run['started']>=9*3600-900
                     or owner is not None and owner['current_run']==run_id and owner['successor'] is not None))
+        for candidate in uncertain:
+            if await asyncio.to_thread(self.store.publisher.published_version,
+                    operation=candidate['operation_key']) is not None:
+                retained=candidate;break
         if retained is None:
             late_outcomes=self.store.pending_outcomes()
             try:control=self.store.pending_control()
