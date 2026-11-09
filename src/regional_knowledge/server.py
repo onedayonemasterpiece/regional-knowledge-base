@@ -308,12 +308,15 @@ def _book_mcp_error(exc: Exception) -> ToolError:
             allowed = {"payload", "pages", "chunks", "entity_candidates", "entities",
                 "aliases", "relations", "evidence", "page_id", "region_id", "region_key",
                 "chunk_id", "chunk_key", "exact_quote", "key", "kind",
-                "canonical_label", "exact_source_spelling", "source_review_note", "*"}
+                "canonical_label", "exact_source_spelling", "source_review_note", "*",
+                "physical_page_index", "source_image_receipt_sha256", "source_material"}
             if (type(path) is str and len(path) <= 128 and
                     all(part in allowed or part.isdecimal() and len(part) <= 4
                         for part in path.split("."))):
                 response["exception_class"] = record["exception_class"]
                 response["field_path"] = path
+                if record.get("validation_type") in ("missing", "model_type", "extra_forbidden", "value_error", "too_long"):
+                    response["validation_type"] = record["validation_type"]
     if reason == "stage_file_schema" and isinstance(exc, ToolError):
         hints = _book_stage_schema_hints(exc)
         if hints:
