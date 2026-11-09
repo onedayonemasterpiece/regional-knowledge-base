@@ -314,12 +314,15 @@ class SourceDatasetCheckpoints:
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
         latest=self.store.latest_checkpoint;proof=startup.coverage
         with queue.connect(write=False) as db:
-            # Resume publication/readback after an API restart without another
-            # capture or provider create/version operation.
+            # Resume this prefix without resubmission. An older unknown intent
+            # stays intact while a newer accepted prefix gets its own checkpoint.
             retained=db.execute("SELECT operation_key FROM rkb_dataset_seed WHERE provider_ref=? "
                 "AND operation_key LIKE 'dataset-checkpoint:%' AND package_json IS NOT NULL "
-                "AND state IN ('publishing','published') ORDER BY rowid LIMIT 1",
-                (self.store.publisher.ref,)).fetchone()
+                "AND state IN ('publishing','published') "
+                "AND json_extract(package_json,'$.base_sequence')>=? "
+                "AND (state='published' OR json_extract(package_json,'$.base_sequence')>=?) ORDER BY rowid LIMIT 1",
+                (self.store.publisher.ref,latest.base_sequence,
+                 proof.applied_sequence if proof is not None else latest.base_sequence)).fetchone()
             meta=db.execute('SELECT sequence FROM rkb_control_spool_meta WHERE id=1').fetchone()
             run_id=getattr(binding,'run_id',None)
             if run_id is not None:
@@ -378,6 +381,10 @@ class SourceDatasetCheckpoints:
                 current=lambda:startup.checkpoint_binding_current(binding))
         except asyncio.CancelledError:raise
         except Exception as exc:
+            with queue.connect(write=False) as db:
+                if db.execute("SELECT 1 FROM rkb_dataset_seed WHERE operation_key=? "
+                        "AND state='publishing' AND package_json IS NOT NULL",(operation,)).fetchone():
+                    self.dirty_since=self.clock()
             raise CheckpointPending(type(exc).__name__,
                 exc.args[0] if len(exc.args)==1 and type(exc.args[0]) is str else '') from exc
         with queue.connect(write=False) as db:
