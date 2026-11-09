@@ -146,6 +146,8 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
     original=p.publisher
     class Publisher:
         ref=original.ref
+        def published_version(self,*,operation):
+            return next((version for version,saved in p.saved.items() if saved[0]==operation),None)
         def version_created_at(self,version):return p.saved_times.get(version,0.)
         def reserve(self,*,name,size,sha256,now):
             return DatasetUpload(name,size,sha256,'token-'+sha256,'https://storage.googleapis.com/fixture')

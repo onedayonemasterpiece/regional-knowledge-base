@@ -78,6 +78,7 @@ async def test_new_prefix_saves_without_repeating_or_clearing_old_unknown(tmp_pa
         journal=pin('journal-control.json', journal))
     class Publisher:
         ref = p.publisher.ref
+        def published_version(self, *, operation): return None
         def version_created_at(self, version): return 0.
         def read_control(self, file, *, version):
             assert version == 2
