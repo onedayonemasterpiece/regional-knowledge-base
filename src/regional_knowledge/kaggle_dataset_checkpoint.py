@@ -61,7 +61,11 @@ class _WorkCycleCapture(SourceDatasetSeed):
                 "AND seal_state='ACCEPTED' AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') "
                 "AND outcome_state='NOT_SENT' ORDER BY sequence LIMIT ?",
                 (proof.applied_sequence,self.startup.restorer.physical.limits.max_receipts))]
+            staged={r[0] for r in db.execute('SELECT key FROM rkb_dataset_recovery_objects WHERE storage=? '
+                'AND key>=? AND key<?',(spool.journal.store.storage_identity,
+                spool.journal.prefix+'/outcomes/',spool.journal.prefix+'/outcomes0'))}
         for key in keys:
+            if spool.journal.prefix+'/outcomes/'+sha(key.encode()) in staged:continue
             entry=await spool.get(key)
             if entry.accepted is None or entry.apply_receipt is None:
                 raise SnapshotError('dataset_checkpoint_exact_native_outcome_required')
