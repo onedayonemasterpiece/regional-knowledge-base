@@ -875,7 +875,8 @@ class NativeSourceIntake:
         if state['phase']=='finalized' and not (selected<=missing or rejected_text or selected<=unpublished_pages(published,receipt.page_count)):
             raise _failure('native_candidate_already_sealed',status='invalid_query')
         retry_semantic=(bool(selected & missing) or state.get('rejected_batch_index') in text_batches or
-            state.get('rejected_batch_index') is None and selected<=published and bool(payload.get('story_candidates') or
+            (state.get('rejected_batch_index') is None or not unpublished_pages(published,receipt.page_count))
+            and selected<=published and bool(payload.get('story_candidates') or
                 any(graph.get(key) for key in ('entities','relations','entity_refs'))))
         if selected and selected<=published and not retry_semantic:
             # Accepted source tails survive rejection of a corrective packet.
