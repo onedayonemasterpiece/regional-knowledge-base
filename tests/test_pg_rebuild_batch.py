@@ -2,6 +2,8 @@
 import json
 import hashlib
 import sqlite3
+import os
+import subprocess
 from dataclasses import replace
 
 import pytest
@@ -9,7 +11,7 @@ import pytest
 from regional_knowledge.pg_rebuild_batch import ReplayRecord, SnapshotInput, rebuild
 from regional_knowledge.kaggle_apply import apply_accepted
 from test_kaggle_apply import PG, env, accepted, item
-from test_kaggle_pg_driver import database
+from test_kaggle_pg_driver import CONTAINER, database
 
 
 @PG
@@ -71,15 +73,38 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
     async def resolve(cmd):
         return env["registry"]
 
-    async def run():
+    async def run(keep_going=lambda: True):
         source = SnapshotInput(path, storage="fixture", stream=env["journal"].stream)
         try:
             return await rebuild(env["connection"], journal=source.journal, records=source.records(),
                 database_generation="db-1", writer_generation="writer-1",
-                resolve=resolve, prepare=prepare)
+                resolve=resolve, prepare=prepare, keep_going=keep_going)
         finally:
             source.close()
 
+    partial = await run(lambda: len(prepared) < 1)
+    assert partial == {"APPLIED": 1, "REJECTED_PRECONDITION": 0, "NOT_SENT": 0,
+                       "SENT_UNKNOWN": 0, "restored_prefix": 1, "next_sequence": 2,
+                       "accepted_last_sequence": 5}
+    # A real PG dump/restore of this tiny synthetic checkpoint, not copied Python rows.
+    container = os.environ.get("RKB_PG17_CONTAINER", CONTAINER)
+    endpoint = [] if os.environ.get("RKB_PG17_CONTAINER") else ["-h", "/socket"]
+    args = endpoint + ["-U", "postgres", "-d", env["connection"].info.dbname]
+    checkpoint = tmp_path / "synthetic-prefix.dump"
+    with checkpoint.open("wb") as output:
+        subprocess.run(["docker", "exec", container, "pg_dump", *args,
+                        "--format=custom", "--schema=rkb_v4"], stdout=output,
+                       stderr=subprocess.PIPE, check=True, timeout=30)
+    assert 0 < checkpoint.stat().st_size < 4 * 1024 * 1024
+    async with env["connection"].transaction():
+        await env["connection"].execute("DROP SCHEMA rkb_v4 CASCADE")
+    with checkpoint.open("rb") as source:
+        subprocess.run(["docker", "exec", "-i", container, "pg_restore", *args,
+                        "--exit-on-error", "--no-owner"], stdin=source,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30)
+    async with env["connection"].transaction():
+        assert await (await env["connection"].execute(
+            "SELECT applied_seq FROM rkb_v4.recovery_state")).fetchone() == (1,)
     report = await run()
     assert report == {"APPLIED": 2, "REJECTED_PRECONDITION": 1, "NOT_SENT": 1,
                       "SENT_UNKNOWN": 1, "restored_prefix": 3}

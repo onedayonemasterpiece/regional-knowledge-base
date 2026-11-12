@@ -9,8 +9,11 @@ import base64
 import hashlib
 import json
 import logging
+import importlib
 from pathlib import Path
 import sqlite3
+import sys
+import types
 
 from .kaggle_apply import ApplyConflict, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, RecoveryJournal, StoredObject
@@ -18,6 +21,29 @@ from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, RecoveryJou
 
 LOG = logging.getLogger(__name__)
 STATES = ("APPLIED", "REJECTED_PRECONDITION", "NOT_SENT", "SENT_UNKNOWN")
+
+
+def historical_materializer(root, fingerprint):
+    """Load prepared immutable source, sharing only executor boundary types.
+
+    root is a caller-verified source archive extracted outside provider outputs.
+    No journal payload is evaluated as Python. Model loading stays with the caller.
+    """
+    if (len(fingerprint) != 64
+            or any(char not in "0123456789abcdef" for char in fingerprint)):
+        raise ValueError("historical materializer fingerprint required")
+    name = "_rkb_history_" + fingerprint
+    if name not in sys.modules:
+        package = types.ModuleType(name)
+        package.__path__ = [str(Path(root).resolve() / "src" / "regional_knowledge")]
+        sys.modules[name] = package
+        for boundary in ("recovery_journal", "kaggle_apply", "kaggle_bootstrap"):
+            sys.modules[name + "." + boundary] = importlib.import_module(
+                "regional_knowledge." + boundary)
+    module = importlib.import_module(name + ".kaggle_source_materializer")
+    if module.materializer_fingerprint() != fingerprint:
+        raise ApplyConflict("historical source differs from accepted materializer")
+    return module
 
 
 @dataclass(frozen=True)
@@ -145,13 +171,15 @@ async def _restore_rejection(connection, record, *, database_generation, writer_
 
 
 async def rebuild(connection, *, journal, records, database_generation, writer_generation,
-                  resolve, prepare):
+                  resolve, prepare, keep_going=lambda: True):
     """Replay a finite ordered input, preserving unresolved suffix and exact receipts.
 
     resolve(command) installs/selects historical schema/functions and returns its
     registry. prepare(command) uses that same historical local materializer. Both
     are trusted notebook code, never serialized callbacks or journal instructions.
     A missing dependency terminates this batch; it never weakens domain guards.
+    keep_going is the finite caller's time budget, checked between transactions.
+    A partial report counts only visited records and identifies the next sequence.
     """
     head = await journal.head()
     if head is None:
@@ -163,6 +191,9 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
     last = 0
     async for record in records:
         command = record.command
+        if not keep_going():
+            return dict(report, next_sequence=command.sequence,
+                        accepted_last_sequence=head.reference.last_sequence)
         if command.sequence != last + 1:
             raise ApplyConflict("batch must start at genesis and preserve sequence")
         last = command.sequence
