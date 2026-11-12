@@ -4,11 +4,15 @@ import hashlib
 import sqlite3
 import os
 import subprocess
+import base64
+import gzip
+import shutil
 from dataclasses import replace
 
 import pytest
 
 from regional_knowledge.pg_rebuild_batch import ReplayRecord, SnapshotInput, rebuild
+from regional_knowledge.pg_rebuild_part import import_objects
 from regional_knowledge.kaggle_apply import apply_accepted
 from test_kaggle_apply import PG, env, accepted, item
 from test_kaggle_pg_driver import CONTAINER, database
@@ -40,12 +44,8 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
             state = "APPLIED" if receipt.status == "applied" else "REJECTED_PRECONDITION"
             records.append(ReplayRecord(cmd, seal, state, receipt.outcome))
     # Same external format as the private SQLite projection, including one retired raw command.
-    path = tmp_path / "synthetic-input.sqlite"
-    with sqlite3.connect(path) as snapshot:
-        snapshot.execute("CREATE TABLE rkb_dataset_recovery_objects(storage,key,data,token)")
-        snapshot.executemany("INSERT INTO rkb_dataset_recovery_objects VALUES(?,?,?,?)",
-            [("fixture", key, obj.data, obj.token)
-             for key, obj in env["journal"].store.objects.items()])
+    metadata = tmp_path / "synthetic-metadata.sqlite"
+    with sqlite3.connect(metadata) as snapshot:
         snapshot.execute("""CREATE TABLE rkb_control_operations(sequence, operation_key,
             command_bytes, command_sha256, seal_state, seal_bytes, apply_state,
             outcome_bytes, outcome_sha256, remote_receipt_bytes)""")
@@ -59,6 +59,16 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
                                  command_hashes=record.seal.command_hashes)),
                  record.state, record.outcome,
                  hashlib.sha256(record.outcome).hexdigest() if record.outcome else None, None))
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    with metadata.open("rb") as source, gzip.open(inputs / "input-metadata.sqlite.gz", "wb") as target:
+        shutil.copyfileobj(source, target)
+    with gzip.open(inputs / "journal-objects.jsonl.gz", "wt") as output:
+        for key, obj in env["journal"].store.objects.items():
+            output.write(json.dumps(dict(storage="fixture", key=key, token=obj.token,
+                data_b64=base64.b64encode(obj.data).decode())) + "\n")
+    path = tmp_path / "synthetic-input.sqlite"
+    import_objects(inputs, path)
     # Empty only the synthetic domain/receipt tables; preserve trusted function installation.
     async with env["connection"].transaction():
         await env["connection"].execute("TRUNCATE rkb_v4.applied_ops, rkb_v4.apply_fixture_items")

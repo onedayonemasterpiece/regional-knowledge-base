@@ -1,49 +1,48 @@
-# Конечный PG recovery: объём адаптера
+# Конечный PG recovery: объём и проверка адаптера
 
-Принятое изменение 12 ноября: пилот около 20 минут, проверенный checkpoint,
-затем части около двух часов с реальными перерывами. Источник и действующий
-контракт — `rkb-single-batch-pg-recovery-crew-20261112.md`.
+Цель: восстановленная private PG после потери Dataset, с честным покрытием,
+проверенным backup и конечными частями без online controller. Прямое решение
+12 ноября: пилот около20 минут, затем части около2 часов с сохранением и перерывами.
+Действующий контракт — rkb-single-batch-pg-recovery-crew-20261112.md.
 
-Три основания: владелец потерял Dataset; точные команды сохранены, но автономного
-вызывающего кода нет; прежняя оркестрация требует online controller. Нужен прямой
-локальный вызов существующих materializer, PG apply и backup tools.
+Три основания: владелец потерял Dataset; exact journal сохранён, но автономного
+вызывающего кода не было; прежняя оркестрация требует WSS/controller.
 
-Текущий production diff: **+232 строки**, удалений нет. Он читает exact input,
-сохраняет исходные отказы и неизвестный хвост, проверяет исторические receipt,
-загружает неизменные исторические compiler-модули и останавливает replay между
-транзакциями по бюджету вызывающего кода. Это ещё не готовый notebook.
+Фактический production diff: **+643 / -0 строк**, baseline250, дефицит393.
+Все строки notebook включены: pg_rebuild_batch.py232, pg_rebuild_part.py338,
+rkb_pg_recovery_notebook.py73. Это исходники, не выполненное восстановление корпуса.
+Предварительное обоснование недостающих компонентов опубликовано до превышения
+baseline. Оценка165–240 дополнительных строк оказалась ниже фактической: она
+не учла полный stdlib entrypoint до импорта зависимостей, вход из физического
+checkpoint, раздельные измерения и безопасный выход при ошибке. Код не уплотнялся,
+protected materializer и domain guards не изменялись. Рост показан явно для ревью.
 
-| Добавление | Предотвращаемый сбой | Почему существующего механизма недостаточно |
-|---|---|---|
-| SnapshotInput и rebuild | Новая трактовка принятых команд и отказов | apply_accepted не читает локальный экспорт и исторические rejected receipts |
-| Исторический импорт | Новый compiler отвергает старый fingerprint или меняет смысл | Один текущий package не представляет 15 сохранённых версий |
-| keep_going между транзакциями | Часть съедает время сохранения, либо прерывается COMMIT | Срок runtime сам не создаёт проверенный checkpoint |
-| Продолжение через существующие applied_ops | Повторное вычисление и дубль эффекта после restore | Используется имеющаяся PG дедупликация, отдельный курсор не добавлен |
+| Добавление | Конкретный предотвращаемый сбой | Проверенный существующий механизм и почему его недостаточно | Решение |
+|---|---|---|---|
+| SnapshotInput/rebuild | Подмена exact bytes и исходных rejected/unknown | RecoveryJournal и apply_accepted не читают локальный экспорт и не восстанавливают исторические rejected receipts | Оставлено |
+| Исторический импорт/resolver | Текущий compiler отвергает старый fingerprint или меняет трактовку | Единственный текущий package не представляет15 версий; используются неизменные архивы и существующий fingerprint | Оставлено |
+| GenesisPostgres | Текущий initializer не заполняет mandatory revision columns SQL11 | OwnedPostgres lifecycle переиспользован; заменена только инициализация пустой исторической схемы | Оставлено |
+| Конечный caller и бюджет | Часть заканчивается без времени на backup либо обрывает COMMIT | Provider deadline не создаёт checkpoint; keep_going проверяется между транзакциями | Оставлено |
+| Физический checkpoint/restore | Успешная упаковка не означает восстанавливаемую PG | Использованы pg_basebackup, pg_verifybackup, pack_tree/unpack_tree и applied_prefix; online factory требует scoped transport/binding и обновляет восстановленную схему до текущей | Оставлено |
+| Source counts и timing | Частичный prefix или старый CPU профиль выдаётся за полный/измеренный результат | applied_ops и существующие SQL ограничения — источник фактов; отчёт сохраняет prefix, таблицы, source IDs, bootstrap/model/encoder/SQL/backup/restore отдельно | Оставлено |
+| Stdlib Stage0 entrypoint | Импорт psycopg до установки зависимостей; private input попадает в working output | Существующий Stage0 запускается до импорта caller, assets идут в private temp; новая установка/загрузчик не созданы | Оставлено |
+| Компактный error report | Текст принятого материала попадает в traceback | Исторические PG ошибки могут содержать private payload; наружу сохраняется только тип ошибки и publishable=false | Оставлено |
 
-Один regression теперь выполняет частичный replay → настоящий маленький PG dump
-→ удаление вымышленной схемы → pg_restore → продолжение. Проверяются correction,
-rejected, unknown/not-sent, исходные outcome bytes и отсутствие повторных эффектов.
-Это проверка логического checkpoint на вымышленной БД; физический backup реального
-корпуса ещё не получен и не проверен.
+Один committed regression теперь собирает вымышленный gzip input потоковым
+production importer, делает partial replay → настоящий logical dump/restore →
+resume. Проверяются correction, rejected, unknown/not-sent, exact receipts и
+дубликаты. Отдельная локальная проверка production physical helpers использовала
+тот же изолированный PG17 container: настоящий WAL backup, pg_verifybackup,
+сжатый output, распаковка именно этого output, запуск восстановленной PG,
+сверка prefix/coverage и следующая correction с duplicate no-op. Docker заменял
+только локальный транспорт к native tools. Это synthetic PG17/pgvector0.8.2,
+не модель, не реальный корпус и не проверка native Ubuntu24 bundle на Kaggle.
 
-## Необходимый дефицит до написания оставшегося caller
+Не добавлены scheduler/supervisor, WSS, provider API/retry, новый compiler,
+embedding cache, actor identity или модельный режим. Текущий pinned worker — CPU;
+GPU совместимость не доказана. Старые16,2ч не ETA и не прогноз GPU.
 
-От baseline 250 остаётся 18 строк. Недостающий caller нельзя честно вместить в них:
-
-| Недостающий конкретный компонент | Оценка дополнительных строк | Что переиспользуется |
-|---|---:|---|
-| Подготовка локального object store из gzip и закрытой metadata, выбор исторического SQL | 35–50 | SnapshotInput, RecoveryJournal, kaggle_schema_migrate |
-| Stage0/native PG/BGE bootstrap и genesis SQL11 | 45–65 | kaggle_stage0, kaggle_native_bundle, OwnedPostgres; старый initialize_database с revisions |
-| Локальный historical resolver и materializer callbacks | 25–35 | current_registry, проверенный legacy GEO handler, historical_materializer |
-| Физический backup, pg_verifybackup, настоящий restore и конечный выход | 45–65 | kaggle_pg_snapshot_native и существующий owned PG lifecycle |
-| Coverage и измерения длительности частей | 15–25 | applied_ops, recovery_state, сохранённые квитанции и стандартный monotonic |
-
-Оценочный итог: 397–472 строки, дефицит baseline 147–222. Это обоснование до
-превышения, а не уже добавленный код и не обещание точного размера. При реализации
-сначала искать прямое переиспользование и вычитать лишнее; итоговые net lines
-показывать в PR. Не скрывать notebook code вне production подсчёта.
-
-Не добавлены scheduler, supervisor, WSS, provider retry, новый compiler, отдельная
-очередь, хранилище векторов или модельный режим. Protected fingerprint-файлы,
-chunk boundaries, precision contract и domain guards не менялись. Старые 16,2 часа
-CPU — предупреждение по историческому профилю, не ETA и не прогноз GPU.
+Ни submit, ни Dataset publication не выполнялись. Для реального пилота нужны
+разрешённый доступ после бана, фактическая среда/лимиты, проверенный native bundle,
+закреплённые model/wheel mounts и привязанный к версии config/receipt. Зелёные
+фикстуры не заменяют эти результаты и не являются заявлением готовой PG.
