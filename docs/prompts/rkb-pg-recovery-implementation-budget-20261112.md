@@ -46,3 +46,5 @@ GPU совместимость не доказана. Старые16,2ч не ET
 разрешённый доступ после бана, фактическая среда/лимиты, проверенный native bundle,
 закреплённые model/wheel mounts и привязанный к версии config/receipt. Зелёные
 фикстуры не заменяют эти результаты и не являются заявлением готовой PG.
+
+13 ноября: public Dataset не содержит pinned wheels и имеет другой tokenizer_config. Entry добавляет3 production lines (+646 суммарно) для использования уже существующего Stage0Download вместо предположения о полном mount. Дополнительный downloader/cache/retry не добавлен. Guard и версии сохранены. Синтаксис entry проверен; прежние regression receipts действуют для неизменённого replay/backup.

@@ -47,7 +47,10 @@ def main(config_path):
         archive.extractall(code, filter='data')
     sys.path.insert(0, str(code/'src'))
     private_names = {entry['name'] for entry in json.loads(manifest)['files']}
+    downloads = {entry['name'] for entry in config['stage0']['downloads']}
     for entry in config['prepared_model']['entries']:
+        if entry['name'] not in private_names and entry['name'] in downloads:
+            continue  # Existing Stage0 fetches and verifies the pinned public asset.
         source_root = inputs if entry['name'] in private_names else Path(config['assets_input_root'])
         target = Path(config['prepared_model']['root'])/entry['name']
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
