@@ -65,3 +65,14 @@ Pilot2 terminal ERROR/Stage0Error до PG/BGE; version-specific error/environmen
 |---|---|---|---|
 | Owned artifacts root0711 и stage_weight | Pilot2 Stage0Error; старый staging под umask077 воспроизводит отказ Stage0 на0700 | Stage0 требует traversal nonroot PG; прежний launcher создавал только temp0711, вложенный artifacts root получал0700 | Оставлено; chmod только вновь созданного собственного каталога |
 | Fixed Stage0Error reason | Выход pilot2 скрывал конкретный код Stage0 за одним class name | В Stage0Error все сообщения — фиксированные коды, доменные PG ошибки могут содержать private text и не выводятся | Оставлено |
+
+Pilot3 прошёл Stage0 download/install и затем завершился RuntimeError. Прежний notebook исполнял sync main прямо в активном Jupyter loop, а finite entry вызывает asyncio.run. Этот вызов в существующем loop локально воспроизводит RuntimeError; remote traceback ранее скрывался, поэтому live проверка причины ещё впереди. Notebook теперь вызывает await notebook_main(), который исполняет прежний конечный main через stdlib asyncio.to_thread и ожидает его до завершения. CLI main остаётся штатным. Нет background task, второго controller или замены event loop.
+
+При ошибке сохраняются максимум6 имён модулей/функций и номера строк traceback без source lines, locals и exception text PG: прежнего class name оказалось недостаточно для диагностики pilot3. Три delivery/bootstrap regression PASS, nested asyncio baseline RED. Production+757/-0, baseline250, дефицит507; последнее изменение+9/-0. Весь фактический notebook launcher включён в подсчёт.
+
+| Добавление | Наблюдаемый сбой | Существующий механизм и почему недостаточен | Решение |
+|---|---|---|---|
+| Awaited notebook_main/to_thread | RuntimeError после Stage0; вложенный asyncio.run воспроизводит такой отказ | Jupyter уже владеет loop, finite caller должен закончить собственный; stdlib thread bridge ожидается одной notebook cell | Оставлено |
+| Bounded traceback frames | Pilot3 показывал только RuntimeError без места сбоя | Class-only report исключает private payload, но теряет местоположение; сохраняются только public module/function/line | Оставлено |
+
+Прямое решение владельца13ноября заменяет прежний перерыв после каждого startup ERROR: исправленный запуск продолжается сразу после готовности. Перерыв остаётся после продуктивной части с проверенным результатом. На стадии старта Crew проверяет существующий запуск раз в3мин, без polling-loop.

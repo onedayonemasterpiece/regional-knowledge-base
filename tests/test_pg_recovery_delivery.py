@@ -6,9 +6,11 @@ from pathlib import Path
 import runpy
 import tarfile
 import os
+import asyncio
 
 from regional_knowledge import kaggle_stage0 as stage0
 from test_kaggle_stage0 import download, prepared, spec
+import pytest
 
 
 def test_opaque_input_preserves_nested_archive_bytes(tmp_path):
@@ -64,3 +66,14 @@ def test_staged_weight_allows_existing_native_stage0_under_private_umask(tmp_pat
     assert root.stat().st_mode & 0o777 == 0o711
     assert (root/'model').stat().st_mode & 0o777 == 0o700
     assert (root/item.name).read_bytes() == raw
+
+
+@pytest.mark.asyncio
+async def test_notebook_bridge_runs_finite_caller_inside_jupyter_loop(monkeypatch):
+    launcher = runpy.run_path(str(Path(__file__).parents[1]/'scripts/production/rkb_pg_recovery_launcher.py'))
+    async def finite_part():
+        return 'finite checkpoint fixture'
+    def entry_main():
+        return asyncio.run(finite_part())
+    monkeypatch.setitem(launcher['notebook_main'].__globals__, 'main', entry_main)
+    assert await launcher['notebook_main']() == 'finite checkpoint fixture'

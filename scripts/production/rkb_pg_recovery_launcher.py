@@ -1,4 +1,5 @@
 """Bind one finite recovery part to its actual private Kaggle environment."""
+import asyncio
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import runpy
 import shutil
 import sys
 import tarfile
+import traceback
 
 RUN_CONFIG = {}  # Filled in the private notebook; contains no credentials.
 
@@ -91,11 +93,18 @@ def main():
         runpy.run_path(str(inputs/'rkb_pg_recovery_notebook.py'), run_name='_rkb_entry')['main'](config_path)
     except Exception as error:
         report = dict(status='failed', phase=phase, error_type=type(error).__name__, publishable=False)
+        report['frames'] = [dict(module=Path(frame.filename).name, function=frame.name, line=frame.lineno)
+                            for frame in traceback.extract_tb(error.__traceback__)[-6:]]
         if type(error).__name__ == 'Stage0Error':
             report['reason'] = str(error)  # Stage0 raises fixed codes, never private PG text.
         (output/'error-report.json').write_text(json.dumps(report)+'\n')
         print(json.dumps(report), flush=True)
         raise SystemExit(1) from None
+
+
+async def notebook_main():
+    # Jupyter owns its event loop; the finite caller owns a separate thread's loop.
+    return await asyncio.to_thread(main)
 
 
 if __name__ == '__main__':
