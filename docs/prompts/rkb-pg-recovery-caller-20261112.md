@@ -59,3 +59,5 @@ checkpoint; выбран перерыв60 минут без compute. Скрип�
 последнему пожеланию владельца, старые slugs не являются default.
 
 13 ноября: при отсутствии полного публичного mount entrypoint использует уже существующий Stage0Download для закреплённых публичных файлов. Закрытые native files копируются из input Dataset; веса идут из masterstar/bge-m3 version1, конфиги и wheels — по исходным публичным immutable URL с прежними SHA/размерами. Новых загрузчиков и смены версий нет.
+
+Доставка Kaggle: все allowlisted входы и input-manifest.json передаются внутри одного несжатого tar с именем recovery-input.blob. Это сохраняет исходные .tar.gz от автоматической распаковки Dataset. Launcher извлекает blob в /kaggle/temp/recovery-input, затем исходный entrypoint проверяет manifest и SHA/size файлов. Dataset metadata находится вне blob; полный forensic SQLite и секреты не входят.

@@ -8,8 +8,23 @@ import pwd
 import runpy
 import shutil
 import sys
+import tarfile
 
 RUN_CONFIG = {}  # Filled in the private notebook; contains no credentials.
+
+
+def unpack_input(mounted, destination, manifest_sha256):
+    # Kaggle expands recognized archives on upload; opaque bytes preserve them.
+    blobs = list(Path(mounted).rglob('recovery-input.blob'))
+    if len(blobs) != 1:
+        raise RuntimeError('expected exactly one opaque private input')
+    destination = Path(destination)
+    destination.mkdir(mode=0o700, parents=True)
+    with tarfile.open(blobs[0], mode='r:') as archive:
+        archive.extractall(destination, filter='data')
+    if hashlib.sha256((destination/'input-manifest.json').read_bytes()).hexdigest() != manifest_sha256:
+        raise RuntimeError('private input manifest differs from submitted binding')
+    return destination
 
 
 def main():
@@ -35,12 +50,6 @@ def main():
         if memory < 12*1024**3 or environment['free_bytes'] < 32*1024**3:
             raise RuntimeError('insufficient room for input, PG, model, backup and actual restore')
         phase = 'input_binding'
-        manifests = [p for p in Path('/kaggle/input').rglob('input-manifest.json')
-                     if hashlib.sha256(p.read_bytes()).hexdigest() == config['input_manifest_sha256']]
-        if len(manifests) != 1:
-            raise RuntimeError('expected exactly one bound private input')
-        inputs = manifests[0].parent
-        config['input_root'] = str(inputs)
         temporary = Path('/kaggle/temp')
         try:
             temporary.mkdir(mode=0o711)
@@ -48,6 +57,9 @@ def main():
             pass
         else:
             temporary.chmod(0o711)
+        inputs = unpack_input('/kaggle/input', temporary/'recovery-input',
+                              config['input_manifest_sha256'])
+        config['input_root'] = str(inputs)
         identity = pwd.getpwnam('nobody') if os.geteuid() == 0 else pwd.getpwuid(os.geteuid())
         config['database'].update(uid=identity.pw_uid, gid=identity.pw_gid,
                                   ownership_evidence=config['run_id'])
