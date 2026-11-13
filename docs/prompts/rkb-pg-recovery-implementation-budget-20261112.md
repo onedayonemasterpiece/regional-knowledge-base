@@ -56,3 +56,12 @@ GPU совместимость не доказана. Старые16,2ч не ET
 | Добавление | Конкретный сбой | Существующий механизм и почему недостаточен | Решение |
 |---|---|---|---|
 | Opaque input unpack | Provider version1 превратил immutable archives в каталоги, caller получил FileNotFoundError | Tarfile/data filter уже используется для code; provider auto-extract происходит раньше notebook, поэтому нужны непрозрачные transport bytes | Оставлено; прежние guards проверяют содержимое |
+
+Pilot2 terminal ERROR/Stage0Error до PG/BGE; version-specific error/environment outputs сохранены. Локальное исполнение трёх исходных строк staging при umask077 воспроизводит stage0_preparation_failed: rkb-artifacts создаётся0700, тогда как существующий Stage0 требует прохода по этому корню для nonroot PG. Launcher создаёт только свой новый artifacts root0711; model directory остаётся0700, данные и файлы не становятся общедоступными. Исходный guard не меняется. Фикстура запускает настоящий Stage0 с уже имеющимися вымышленными bytes, без сети/модели/pip; baseline RED, исправление GREEN, затронутые36 тестов прошли. Live причина ещё требует проверки исправленным пилотом.
+
+Итоговый production diff +748/-0, baseline250, дефицит498; последнее изменение launcher +12/-3. Stage0Error report теперь сохраняет его фиксированный код; PG exception text по-прежнему исключён. Новый входной Dataset не нужен: меняется только notebook launcher, прежний opaque input version2 переиспользуется. Нового submit до окончания60мин перерыва нет.
+
+| Добавление | Наблюдаемый сбой | Существующий механизм и почему недостаточен | Решение |
+|---|---|---|---|
+| Owned artifacts root0711 и stage_weight | Pilot2 Stage0Error; старый staging под umask077 воспроизводит отказ Stage0 на0700 | Stage0 требует traversal nonroot PG; прежний launcher создавал только temp0711, вложенный artifacts root получал0700 | Оставлено; chmod только вновь созданного собственного каталога |
+| Fixed Stage0Error reason | Выход pilot2 скрывал конкретный код Stage0 за одним class name | В Stage0Error все сообщения — фиксированные коды, доменные PG ошибки могут содержать private text и не выводятся | Оставлено |

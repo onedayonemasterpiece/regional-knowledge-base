@@ -27,6 +27,15 @@ def unpack_input(mounted, destination, manifest_sha256):
     return destination
 
 
+def stage_weight(source, root, name):
+    root = Path(root)
+    root.mkdir(mode=0o711)
+    root.chmod(0o711)  # Only this newly owned root; native PG needs traversal.
+    target = root/name
+    target.parent.mkdir(mode=0o700, parents=True)
+    shutil.copyfile(source, target)
+
+
 def main():
     os.umask(0o077)
     config = RUN_CONFIG
@@ -75,15 +84,15 @@ def main():
         sources = list(Path('/kaggle/input').rglob('pytorch_model.bin'))
         if len(sources) != 1:
             raise RuntimeError('expected one pinned public model mount')
-        target = Path(config['prepared_model']['root'])/weight['name']
-        target.parent.mkdir(mode=0o700, parents=True)
-        shutil.copyfile(sources[0], target)
+        stage_weight(sources[0], config['prepared_model']['root'], weight['name'])
         config_path = temporary/'recovery-part.json'
         config_path.write_text(json.dumps(config))
         phase = 'recovery'
         runpy.run_path(str(inputs/'rkb_pg_recovery_notebook.py'), run_name='_rkb_entry')['main'](config_path)
     except Exception as error:
         report = dict(status='failed', phase=phase, error_type=type(error).__name__, publishable=False)
+        if type(error).__name__ == 'Stage0Error':
+            report['reason'] = str(error)  # Stage0 raises fixed codes, never private PG text.
         (output/'error-report.json').write_text(json.dumps(report)+'\n')
         print(json.dumps(report), flush=True)
         raise SystemExit(1) from None
