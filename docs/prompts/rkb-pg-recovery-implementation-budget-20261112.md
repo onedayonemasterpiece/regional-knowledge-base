@@ -48,3 +48,5 @@ GPU совместимость не доказана. Старые16,2ч не ET
 фикстуры не заменяют эти результаты и не являются заявлением готовой PG.
 
 13 ноября: public Dataset не содержит pinned wheels и имеет другой tokenizer_config. Entry добавляет3 production lines (+646 суммарно) для использования уже существующего Stage0Download вместо предположения о полном mount. Дополнительный downloader/cache/retry не добавлен. Guard и версии сохранены. Синтаксис entry проверен; прежние regression receipts действуют для неизменённого replay/backup.
+
+Фактическая привязка notebook добавляет76 production lines launcher: ABI/ресурсы перед тяжёлой работой, существующая OS identity, пути из retained manifest, точный input mount и public weight staging. Итог722 строки против baseline250, дефицит472: прежний caller не мог привязаться к ещё неизвестной Kaggle среде. Это конкретный недостающий deployment компонент, не новый replay/compiler/scheduler. Проверки ABI и peak32GiB/12GiB предотвращают запуск несовместимых CP313/Ubuntu24 native bytes и известный риск нехватки места при backup/restore. Чувствительный текст исключён из exception report.
