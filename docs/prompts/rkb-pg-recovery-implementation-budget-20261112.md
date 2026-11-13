@@ -76,3 +76,20 @@ Pilot3 прошёл Stage0 download/install и затем завершился R
 | Bounded traceback frames | Pilot3 показывал только RuntimeError без места сбоя | Class-only report исключает private payload, но теряет местоположение; сохраняются только public module/function/line | Оставлено |
 
 Прямое решение владельца13ноября заменяет прежний перерыв после каждого startup ERROR: исправленный запуск продолжается сразу после готовности. Перерыв остаётся после продуктивной части с проверенным результатом. На стадии старта Crew проверяет существующий запуск раз в3мин, без polling-loop.
+
+Part002 version6 завершился QueryCanceled/57014 на операции333: исторический
+materialize_packet задаёт5с перед prepare_source_batch_v1. Live RPC deadline
+прерывает конечный offline batch и не является проверкой содержимого. Offline
+connection теперь использует оставшийся существующий бюджет части вместо этих
+SET LOCAL statement_timeout; запас на backup остаётся480с. Exact SQL функций,
+materializer fingerprints, model/chunks и domain guards сохранены. Production
++9 строк: всего766 при baseline250, дефицит516. Измеряющий connection вынесен
+в фабрику для настоящей синтетической проверки PG17: короткий timeout отменяет
+pg_sleep до исправления, внутри бюджета запрос проходит, CHECK violation остаётся,
+истёкший бюджет отменяет запрос. Новых retry, checkpoint-on-error, флагов,
+таблиц или сервисов нет. Убрана привязка offline SQL к live request timeout.
+Полный корпус и операция333 после исправления пока не проверены.
+
+| Добавление | Наблюдаемый сбой | Существующий механизм и почему недостаточен | Решение |
+|---|---|---|---|
+| Part deadline в существующем measured connection | Version6 QueryCanceled в prepare_source_batch_v1 на333 | Live5с ограничивает отдельный RPC; конечный caller уже имеет7200с с480с на сохранение | Оставлено; используется прежний конечный бюджет, domain SQL не меняется |

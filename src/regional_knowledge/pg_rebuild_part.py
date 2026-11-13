@@ -235,6 +235,22 @@ async def save_checkpoint(owner, connection, output, workspace, report, limits):
     return manifest
 
 
+def part_connection(deadline, marks):
+    """Historical SQL uses this finite part's budget instead of live RPC deadlines."""
+    class MeasuredConnection(psycopg.AsyncConnection):
+        async def execute(self, query, params=None, **kwargs):
+            before = time.monotonic()
+            if isinstance(query, str) and query.upper().startswith('SET LOCAL STATEMENT_TIMEOUT'):
+                query = "SELECT set_config('statement_timeout',%s,true)"
+                params = (str(max(1, int((deadline-before)*1000))),)
+            try:
+                return await super().execute(query, params, **kwargs)
+            finally:
+                marks['sql_execute_seconds'] += time.monotonic()-before
+                marks['sql_execute_calls'] += 1
+    return MeasuredConnection
+
+
 async def execute_part(config, started):
     """Run one part, save a verified physical checkpoint, then close every PG."""
     from .kaggle_bootstrap import PreparedArtifact, verify_artifacts
@@ -242,14 +258,7 @@ async def execute_part(config, started):
     from .kaggle_native_env import verified_native_environment
     from .kaggle_readiness import ArtifactRequirement
     marks = {'sql_execute_seconds': 0., 'sql_execute_calls': 0}
-    class MeasuredConnection(psycopg.AsyncConnection):
-        async def execute(self, *args, **kwargs):
-            before = time.monotonic()
-            try:
-                return await super().execute(*args, **kwargs)
-            finally:
-                marks['sql_execute_seconds'] += time.monotonic()-before
-                marks['sql_execute_calls'] += 1
+    MeasuredConnection = part_connection(started+config['seconds']-config['save_seconds'], marks)
     prepared = config['prepared_model']
     entries = tuple(PreparedArtifact(ArtifactRequirement(e['name'], e['size'], e['sha256']), e['role'])
                     for e in prepared['entries'])
