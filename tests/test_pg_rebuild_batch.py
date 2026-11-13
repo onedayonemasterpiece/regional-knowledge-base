@@ -18,7 +18,7 @@ from regional_knowledge.pg_rebuild_batch import ReplayRecord, SnapshotInput, reb
 from regional_knowledge.pg_rebuild_part import import_objects, part_connection
 from regional_knowledge.kaggle_apply import apply_accepted
 from test_kaggle_apply import PG, env, accepted, item
-from test_kaggle_pg_driver import CONTAINER, database
+from test_kaggle_pg_driver import CONTAINER, database, connect
 
 
 @PG
@@ -31,7 +31,7 @@ async def test_offline_sql_uses_part_deadline_and_preserves_constraints(database
             await database.execute('SELECT pg_sleep(0.03)')
     marks = dict(sql_execute_seconds=0., sql_execute_calls=0)
     bounded = part_connection(time.monotonic()+2, marks)
-    async with await bounded.connect(database.info.dsn, autocommit=True) as connection:
+    async with await connect(bounded.connect) as connection:
         async with connection.transaction():
             await connection.execute("SET LOCAL statement_timeout='1ms'")
             await connection.execute('SELECT pg_sleep(0.03)')
@@ -40,7 +40,7 @@ async def test_offline_sql_uses_part_deadline_and_preserves_constraints(database
             with pytest.raises(psycopg.errors.CheckViolation):
                 await connection.execute('INSERT INTO checked VALUES (%s)', (-1,))
     expired = part_connection(time.monotonic()-1, marks)
-    async with await expired.connect(database.info.dsn, autocommit=True) as connection:
+    async with await connect(expired.connect) as connection:
         async with connection.transaction():
             await connection.execute("SET LOCAL statement_timeout='5s'")
             with pytest.raises(psycopg.errors.QueryCanceled):
