@@ -42,7 +42,12 @@ def main():
         inputs = manifests[0].parent
         config['input_root'] = str(inputs)
         temporary = Path('/kaggle/temp')
-        temporary.mkdir(mode=0o711, exist_ok=True)
+        try:
+            temporary.mkdir(mode=0o711)
+        except FileExistsError:
+            pass
+        else:
+            temporary.chmod(0o711)
         identity = pwd.getpwnam('nobody') if os.geteuid() == 0 else pwd.getpwuid(os.geteuid())
         config['database'].update(uid=identity.pw_uid, gid=identity.pw_gid,
                                   ownership_evidence=config['run_id'])
