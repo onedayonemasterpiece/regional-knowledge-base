@@ -16,7 +16,7 @@ import sys
 import types
 from psycopg.errors import QueryCanceled
 
-from .kaggle_apply import ApplyConflict, apply_accepted
+from .kaggle_apply import ApplyConflict, ApplyOutcomeMismatch, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, RecoveryJournal, StoredObject
 
 
@@ -29,8 +29,8 @@ def outcome_difference(expected, actual):
     before, after = json.loads(expected), json.loads(actual)
     fields = sorted(key for key in before.keys() | after.keys()
                     if before.get(key) != after.get(key))
-    before = json.loads(base64.b64decode(before['result_b64']))
-    after = json.loads(base64.b64decode(after['result_b64']))
+    before = json.loads(base64.b64decode(before['result_b64']) or b'{}')
+    after = json.loads(base64.b64decode(after['result_b64']) or b'{}')
     result_fields = sorted(key for key in before.keys() | after.keys()
                            if before.get(key) != after.get(key))
     return fields, result_fields
@@ -240,14 +240,19 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
                 report[record.state] -= 1
                 return dict(report, next_sequence=command.sequence,
                             accepted_last_sequence=head.reference.last_sequence)
-            receipt = await apply_accepted(connection, journal=journal, seal=record.seal,
-                command=command, database_generation=database_generation,
-                writer_generation=writer_generation, registry=registry)
-            if receipt.outcome != record.outcome:
-                fields, result_fields = outcome_difference(record.outcome, receipt.outcome)
+            try:
+                await apply_accepted(connection, journal=journal, seal=record.seal,
+                    command=command, database_generation=database_generation,
+                    writer_generation=writer_generation, registry=registry,
+                    expected_outcome=record.outcome)
+            except ApplyOutcomeMismatch as error:
+                fields, result_fields = outcome_difference(record.outcome, error.outcome)
                 LOG.error("offline_pg_rebuild_outcome_mismatch sequence=%s fields=%s result_fields=%s",
                           command.sequence, fields, result_fields)
-                raise ApplyConflict("replayed outcome differs; partial output must not be published")
+                report[record.state] -= 1
+                error.report = dict(report, next_sequence=command.sequence,
+                                    accepted_last_sequence=head.reference.last_sequence)
+                raise
         report["restored_prefix"] = command.sequence
         LOG.info("offline_pg_rebuild sequence=%s historical_state=%s", command.sequence, record.state)
     if last != head.reference.last_sequence:

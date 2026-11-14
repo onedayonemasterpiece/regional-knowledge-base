@@ -31,6 +31,86 @@ def test_replay_outcome_difference_does_not_expose_private_values():
     assert fields == ['result_b64', 'result_sha256']
     assert result_fields == ['visibility_epoch']
     assert 'PRIVATE BOOK TEXT' not in repr((fields, result_fields))
+    rejected = json.loads(receipt(2))
+    rejected.update(status='rejected_precondition', result_b64='',
+                    result_sha256=hashlib.sha256(b'').hexdigest())
+    fields, result_fields = outcome_difference(receipt(1), json.dumps(rejected).encode())
+    assert fields == ['result_b64', 'result_sha256', 'status']
+    assert result_fields == ['body', 'visibility_epoch']
+
+
+@PG
+@pytest.mark.asyncio
+async def test_mismatching_replay_rolls_back_before_checkpoint(env, tmp_path, caplog):
+    from regional_knowledge.kaggle_apply import ApplyConflict
+    records = []
+    for cmd in (item(1), item(2, revision='1')):
+        seal = await accepted(env, cmd)
+        receipt = await apply_accepted(env['connection'], journal=env['journal'], seal=seal,
+            command=cmd, database_generation='db-1', writer_generation='writer-1',
+            registry=env['registry'])
+        records.append(ReplayRecord(cmd, seal, 'APPLIED', receipt.outcome))
+    original = records[1]
+    outcome = json.loads(original.outcome)
+    result = json.loads(base64.b64decode(outcome['result_b64']))
+    result['body'] = 'PRIVATE HISTORICAL RESULT'
+    raw = json.dumps(result).encode()
+    outcome.update(result_b64=base64.b64encode(raw).decode(),
+                   result_sha256=hashlib.sha256(raw).hexdigest())
+    records[1] = replace(original, outcome=json.dumps(outcome).encode())
+    async with env['connection'].transaction():
+        await env['connection'].execute('TRUNCATE rkb_v4.applied_ops, rkb_v4.apply_fixture_items')
+        await env['connection'].execute('UPDATE rkb_v4.recovery_state SET applied_seq=0')
+        await env['connection'].execute('UPDATE rkb_v4.apply_fixture_calls SET n=0')
+
+    async def stream():
+        for record in records:
+            yield record
+
+    async def resolve(cmd):
+        return env['registry']
+
+    async def prepare(cmd):
+        pass
+
+    async def run():
+        return await rebuild(env['connection'], journal=env['journal'], records=stream(),
+            database_generation='db-1', writer_generation='writer-1',
+            resolve=resolve, prepare=prepare)
+
+    with pytest.raises(ApplyConflict) as caught:
+        await run()
+    assert caught.value.report == dict(APPLIED=1, REJECTED_PRECONDITION=0, NOT_SENT=0,
+        SENT_UNKNOWN=0, restored_prefix=1, next_sequence=2, accepted_last_sequence=2)
+    assert 'result_fields=[\'body\']' in caplog.text
+    assert 'PRIVATE HISTORICAL RESULT' not in caplog.text
+    async with env['connection'].transaction():
+        assert await (await env['connection'].execute(
+            'SELECT applied_seq FROM rkb_v4.recovery_state')).fetchone() == (1,)
+        assert await (await env['connection'].execute(
+            'SELECT revision FROM rkb_v4.apply_fixture_items')).fetchone() == (1,)
+        assert await (await env['connection'].execute(
+            'SELECT n FROM rkb_v4.apply_fixture_calls')).fetchone() == (1,)
+    # Preserve the prefix physically and resume it, excluding the rolled-back command.
+    container = os.environ.get('RKB_PG17_CONTAINER', CONTAINER)
+    endpoint = [] if os.environ.get('RKB_PG17_CONTAINER') else ['-h', '/socket']
+    args = endpoint + ['-U', 'postgres', '-d', env['connection'].info.dbname]
+    archive = tmp_path/'verified-prefix.dump'
+    with archive.open('wb') as output:
+        subprocess.run(['docker', 'exec', container, 'pg_dump', *args,
+            '--format=custom', '--schema=rkb_v4'], stdout=output,
+            stderr=subprocess.PIPE, check=True, timeout=30)
+    async with env['connection'].transaction():
+        await env['connection'].execute('DROP SCHEMA rkb_v4 CASCADE')
+    with archive.open('rb') as source:
+        subprocess.run(['docker', 'exec', '-i', container, 'pg_restore', *args,
+            '--exit-on-error', '--no-owner'], stdin=source,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30)
+    records[1] = original
+    assert (await run())['restored_prefix'] == 2
+    async with env['connection'].transaction():
+        assert await (await env['connection'].execute(
+            'SELECT n FROM rkb_v4.apply_fixture_calls')).fetchone() == (2,)
 
 
 @PG

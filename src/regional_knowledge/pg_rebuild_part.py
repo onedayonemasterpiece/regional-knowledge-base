@@ -21,7 +21,7 @@ import tarfile
 import time
 import psycopg
 
-from .kaggle_apply import HandlerRegistry
+from .kaggle_apply import ApplyOutcomeMismatch, HandlerRegistry
 from .kaggle_current_registry import current_registry
 from .geo_manifest_commands import GEO_REVISIONS, geo_manifest_handler
 from .kaggle_owned_pg import (
@@ -324,10 +324,14 @@ async def execute_part(config, started):
         marks['model_seconds'] = time.monotonic()-model_started
         history = HistoricalReplay(connection, source, inputs, workspace, code, owner.spec, encoder)
         replay_started = time.monotonic()
-        report = await rebuild(connection, journal=source.journal, records=source.records(),
-            database_generation=spec.database_generation, writer_generation=spec.writer_generation,
-            resolve=history.resolve, prepare=history.prepare,
-            keep_going=lambda: time.monotonic() < started+config['seconds']-config['save_seconds'])
+        mismatch = None
+        try:
+            report = await rebuild(connection, journal=source.journal, records=source.records(),
+                database_generation=spec.database_generation, writer_generation=spec.writer_generation,
+                resolve=history.resolve, prepare=history.prepare,
+                keep_going=lambda: time.monotonic() < started+config['seconds']-config['save_seconds'])
+        except ApplyOutcomeMismatch as error:
+            report, mismatch = error.report, error
         marks.update(replay_seconds=time.monotonic()-replay_started,
             encoder_seconds=history.encoder_seconds, encoder_calls=history.encoder_calls,
             unique_encoder_texts=len(history.input_hashes), encoder_device='cpu')
@@ -343,6 +347,8 @@ async def execute_part(config, started):
         (output/'README.txt').write_text('Private PG checkpoint. Restore pg.tar.gz with PG17 and the '
             'recorded pgvector version. Check checkpoint.json coverage and actual restore result. '
             'A partial checkpoint is not the full recovered corpus. Provider terminal is checked separately.\n')
+        if mismatch is not None:
+            raise mismatch
         return checkpoint
     finally:
         if connection is not None:
