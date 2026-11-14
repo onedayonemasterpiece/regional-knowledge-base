@@ -14,6 +14,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import types
+from psycopg.errors import QueryCanceled
 
 from .kaggle_apply import ApplyConflict, apply_accepted
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, RecoveryJournal, StoredObject
@@ -219,7 +220,14 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
                                              command.executor_revision)
                     or handler.fingerprint != expected["handler_sha256"]):
                 raise ApplyConflict("exact historical handler unavailable")
-            await prepare(command)
+            try:
+                await prepare(command)
+            except QueryCanceled:
+                if keep_going():
+                    raise
+                report[record.state] -= 1
+                return dict(report, next_sequence=command.sequence,
+                            accepted_last_sequence=head.reference.last_sequence)
             receipt = await apply_accepted(connection, journal=journal, seal=record.seal,
                 command=command, database_generation=database_generation,
                 writer_generation=writer_generation, registry=registry)

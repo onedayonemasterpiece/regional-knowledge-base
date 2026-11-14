@@ -11,6 +11,7 @@ from dataclasses import replace
 import gzip
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import runpy
@@ -257,6 +258,9 @@ async def execute_part(config, started):
     from .kaggle_native_bundle import NativeBundleSpec, prepare_native_bundle
     from .kaggle_native_env import verified_native_environment
     from .kaggle_readiness import ArtifactRequirement
+    progress = logging.getLogger('regional_knowledge.pg_rebuild_batch')
+    progress.setLevel(logging.INFO)
+    progress.addHandler(logging.StreamHandler())
     marks = {'sql_execute_seconds': 0., 'sql_execute_calls': 0}
     MeasuredConnection = part_connection(started+config['seconds']-config['save_seconds'], marks)
     prepared = config['prepared_model']

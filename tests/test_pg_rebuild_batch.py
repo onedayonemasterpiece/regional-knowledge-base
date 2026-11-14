@@ -105,9 +105,19 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
         await env["connection"].execute("UPDATE rkb_v4.apply_fixture_calls SET n=0")
 
     prepared = []
+    cancel_prepare = False
+    deadline_expired = False
 
     async def prepare(cmd):
+        nonlocal deadline_expired
         prepared.append(cmd.sequence)
+        if cancel_prepare:
+            try:
+                async with env['connection'].transaction():
+                    await env['connection'].execute("SET LOCAL statement_timeout='1ms'")
+                    await env['connection'].execute('SELECT pg_sleep(0.03)')
+            finally:
+                deadline_expired = True
 
     async def resolve(cmd):
         return env["registry"]
@@ -125,6 +135,12 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
     assert partial == {"APPLIED": 1, "REJECTED_PRECONDITION": 0, "NOT_SENT": 0,
                        "SENT_UNKNOWN": 0, "restored_prefix": 1, "next_sequence": 2,
                        "accepted_last_sequence": 5}
+    cancel_prepare = True
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        await run()  # An SQL timeout while the part still has time remains a failure.
+    deadline_expired = False
+    assert await run(lambda: not deadline_expired) == partial
+    cancel_prepare = False
     # A real PG dump/restore of this tiny synthetic checkpoint, not copied Python rows.
     container = os.environ.get("RKB_PG17_CONTAINER", CONTAINER)
     endpoint = [] if os.environ.get("RKB_PG17_CONTAINER") else ["-h", "/socket"]
@@ -147,9 +163,9 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
     report = await run()
     assert report == {"APPLIED": 2, "REJECTED_PRECONDITION": 1, "NOT_SENT": 1,
                       "SENT_UNKNOWN": 1, "restored_prefix": 3}
-    assert prepared == [1, 2]
+    assert prepared == [1, 2, 2, 2]
     assert await run() == report
-    assert prepared == [1, 2]
+    assert prepared == [1, 2, 2, 2]
     async with env["connection"].transaction():
         assert await (await env["connection"].execute(
             "SELECT revision, body FROM rkb_v4.apply_fixture_items")).fetchone() == (
