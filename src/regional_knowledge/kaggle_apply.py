@@ -47,6 +47,12 @@ class ApplyConflict(ApplyError):
     pass
 
 
+class ApplyOutcomeMismatch(ApplyConflict):
+    def __init__(self, outcome):
+        super().__init__('replayed outcome differs from historical receipt')
+        self.outcome = outcome
+
+
 class ApplyUnknown(ApplyError):
     """Keep original DB generation/key/bytes and reconcile on a new connection."""
 
@@ -361,7 +367,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                          writer_generation: str, registry: HandlerRegistry,
                          max_command_bytes: int = 1048576,
                          max_outcome_bytes: int = 1048576,
-                         reject_reason: str | None = None, reject_error: Exception | None = None) -> ApplyReceipt:
+                         reject_reason: str | None = None, reject_error: Exception | None = None,
+                         expected_outcome: bytes | None = None) -> ApplyReceipt:
     """Verify remote acceptance before TX, then atomically apply a trusted PG handler.
 
     Functions and registry are trusted deployment artifacts. Both functions must
@@ -462,6 +469,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         (command.sequence,))
                     receipt = ApplyReceipt(database_generation, command.operation_key, command.sequence,
                                            command_hash, status, outcome, digest, False)
+                if expected_outcome is not None and receipt.outcome != expected_outcome:
+                    raise ApplyOutcomeMismatch(receipt.outcome)
                 stage = 'commit'
             return receipt  # Only after the actual commit ACK.
         except psycopg.OperationalError as error:
