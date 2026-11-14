@@ -21,6 +21,18 @@ from test_kaggle_apply import PG, env, accepted, item
 from test_kaggle_pg_driver import CONTAINER, database, connect
 
 
+def test_replay_outcome_difference_does_not_expose_private_values():
+    from regional_knowledge.pg_rebuild_batch import outcome_difference
+    def receipt(epoch):
+        result = json.dumps(dict(visibility_epoch=epoch, body='PRIVATE BOOK TEXT')).encode()
+        return json.dumps(dict(status='applied', result_b64=base64.b64encode(result).decode(),
+                               result_sha256=hashlib.sha256(result).hexdigest())).encode()
+    fields, result_fields = outcome_difference(receipt(1), receipt(2))
+    assert fields == ['result_b64', 'result_sha256']
+    assert result_fields == ['visibility_epoch']
+    assert 'PRIVATE BOOK TEXT' not in repr((fields, result_fields))
+
+
 @PG
 @pytest.mark.asyncio
 async def test_offline_sql_uses_part_deadline_and_preserves_constraints(database):

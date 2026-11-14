@@ -24,6 +24,18 @@ LOG = logging.getLogger(__name__)
 STATES = ("APPLIED", "REJECTED_PRECONDITION", "NOT_SENT", "SENT_UNKNOWN")
 
 
+def outcome_difference(expected, actual):
+    """Report field names only; receipt values may contain private book text."""
+    before, after = json.loads(expected), json.loads(actual)
+    fields = sorted(key for key in before.keys() | after.keys()
+                    if before.get(key) != after.get(key))
+    before = json.loads(base64.b64decode(before['result_b64']))
+    after = json.loads(base64.b64decode(after['result_b64']))
+    result_fields = sorted(key for key in before.keys() | after.keys()
+                           if before.get(key) != after.get(key))
+    return fields, result_fields
+
+
 def historical_materializer(root, fingerprint):
     """Load prepared immutable source, sharing only executor boundary types.
 
@@ -232,6 +244,9 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
                 command=command, database_generation=database_generation,
                 writer_generation=writer_generation, registry=registry)
             if receipt.outcome != record.outcome:
+                fields, result_fields = outcome_difference(record.outcome, receipt.outcome)
+                LOG.error("offline_pg_rebuild_outcome_mismatch sequence=%s fields=%s result_fields=%s",
+                          command.sequence, fields, result_fields)
                 raise ApplyConflict("replayed outcome differs; partial output must not be published")
         report["restored_prefix"] = command.sequence
         LOG.info("offline_pg_rebuild sequence=%s historical_state=%s", command.sequence, record.state)
