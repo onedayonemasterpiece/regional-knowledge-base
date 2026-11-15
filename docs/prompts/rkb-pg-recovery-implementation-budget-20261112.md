@@ -149,3 +149,22 @@ Production +20/-0 net, всего814, baseline250, дефицит564. Удале
 |---|---|---|---|
 | expected_outcome перед COMMIT | Version11 записал расходящийся результат до проверки | PG transaction уже атомарна; прежнее сравнение выполнялось снаружи | Сравнение перенесено внутрь; online default прежний |
 | Конкретное mismatch exception и report | Потеря1408 завершённых операций в version11 | save_checkpoint уже проверяет restore, но не вызывается после raise | Обычное сохранение только предыдущего корректного префикса; затем terminal ERROR |
+
+
+15 ноября: terminal ERROR после verified checkpoint в version12 делает его
+недоступным обычному подключению следующей части: реальные диагностики
+смонтировали последний COMPLETE вместо запрошенной версии. Прежнее поведение
+«save, затем raise» выше заменено: caller записывает существующий error-report.json
+со status=failed и publishable=false, сохраняет корректный префикс с actual restore
+и завершает compute. input_scan_complete=false и next_sequence сохраняются;
+несовпавшая команда не применяется. COMPLETE относится к сохранению части,
+не к полноте восстановленной БД. Ошибки самого backup/restore остаются ошибками.
+Удалено повторное исключение; production net −1, всего813, baseline250,
+дефицит563. Новых режимов, retry, skip, Dataset-публикаций и ослабления equality нет.
+Терминальный control flow проверен RED→GREEN на actual execute_part tail с mock PG/encoder:
+частичный cursor, actual-restore marker, закрытие PG и непубликуемый error report сохранены.
+На Kaggle исправление ещё не доставлено; текущий checkpoint12 остаётся ERROR.
+
+| Добавление | Наблюдаемый сбой | Существующий механизм и почему недостаточен | Решение |
+|---|---|---|---|
+| Существующий error-report вместо повторного raise | Verified prefix8344 не подключается из ERROR output | PG и checkpoint уже проверены; provider status мешает следующей части | Сохранить ошибку в отчёте, завершить только сохранение частичного результата |

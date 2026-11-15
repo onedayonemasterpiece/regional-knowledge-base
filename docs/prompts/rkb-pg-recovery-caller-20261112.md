@@ -63,3 +63,10 @@ checkpoint; выбран перерыв60 минут без compute. Скрип�
 Доставка Kaggle: все allowlisted входы и input-manifest.json передаются внутри одного несжатого tar с именем recovery-input.blob. Это сохраняет исходные .tar.gz от автоматической распаковки Dataset. Launcher извлекает blob в /kaggle/temp/recovery-input, затем исходный entrypoint проверяет manifest и SHA/size файлов. Dataset metadata находится вне blob; полный forensic SQLite и секреты не входят.
 
 Jupyter cell использует `await notebook_main()` из launcher вместо синхронного `main()`: конечный entrypoint владеет asyncio.run, а Jupyter уже исполняется в event loop. Bridge через asyncio.to_thread ожидается cell до завершения; CLI продолжает вызывать main напрямую. После startup ERROR до результата нет заранее назначенного отдыха (прямое решение владельца13ноября); следующая исправленная попытка выполняется по готовности.
+
+
+После outcome mismatch команда откатывается. Caller сохраняет предыдущий
+корректный префикс с actual restore и error-report.json (failed, publishable=false),
+затем завершает compute, чтобы output части был доступен следующему запуску.
+Provider COMPLETE не означает полную БД: сверять input_scan_complete, next_sequence
+и error report. Финальная публикация при незавершённом replay запрещена.

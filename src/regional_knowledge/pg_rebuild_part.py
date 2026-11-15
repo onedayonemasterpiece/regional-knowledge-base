@@ -324,14 +324,15 @@ async def execute_part(config, started):
         marks['model_seconds'] = time.monotonic()-model_started
         history = HistoricalReplay(connection, source, inputs, workspace, code, owner.spec, encoder)
         replay_started = time.monotonic()
-        mismatch = None
         try:
             report = await rebuild(connection, journal=source.journal, records=source.records(),
                 database_generation=spec.database_generation, writer_generation=spec.writer_generation,
                 resolve=history.resolve, prepare=history.prepare,
                 keep_going=lambda: time.monotonic() < started+config['seconds']-config['save_seconds'])
         except ApplyOutcomeMismatch as error:
-            report, mismatch = error.report, error
+            report = error.report
+            (output/'error-report.json').write_text(json.dumps(dict(status='failed',
+                error_type='ApplyOutcomeMismatch', publishable=False))+'\n')
         marks.update(replay_seconds=time.monotonic()-replay_started,
             encoder_seconds=history.encoder_seconds, encoder_calls=history.encoder_calls,
             unique_encoder_texts=len(history.input_hashes), encoder_device='cpu')
@@ -347,8 +348,6 @@ async def execute_part(config, started):
         (output/'README.txt').write_text('Private PG checkpoint. Restore pg.tar.gz with PG17 and the '
             'recorded pgvector version. Check checkpoint.json coverage and actual restore result. '
             'A partial checkpoint is not the full recovered corpus. Provider terminal is checked separately.\n')
-        if mismatch is not None:
-            raise mismatch
         return checkpoint
     finally:
         if connection is not None:
