@@ -344,16 +344,15 @@ async def execute_part(config, started):
         checkpoint['input_manifest_sha256'] = config['input_manifest_sha256']
         checkpoint['input_scan_complete'] = 'next_sequence' not in report
         checkpoint['compute_terminal'] = False  # Only the provider receipt can establish this.
-        if checkpoint['input_scan_complete']:
-            # Retain the original accepted receipts alongside PG's actual rebuilt results.
-            for name in ('input-metadata.sqlite.gz', 'journal-objects.jsonl.gz'):
-                shutil.copyfile(inputs/name, output/name)
         (output/'checkpoint.json').write_text(json.dumps(checkpoint, indent=2)+'\n')
-        (output/'README.txt').write_text('Private PG checkpoint. Restore pg.tar.gz with PG17 and the '
-            'recorded pgvector version. Check checkpoint.json coverage and actual restore result. '
-            'A completed scan includes the unchanged input journal with original accepted receipts; '
-            'PG records actual rebuilt results and replay.projection_changes lists differing representations. '
-            'A partial checkpoint is not the full recovered corpus. Provider terminal is checked separately.\n')
+        (output/'recovery-report.json').write_text(json.dumps(checkpoint, indent=2)+'\n')
+        (output/'README.txt').write_text('Private PG backup: install PG17 and the pgvector version in recovery-report.json.\n'
+            'As the PostgreSQL OS user: mkdir -m 700 data socket; tar -xzf pg.tar.gz -C data; '
+            'pg_verifybackup data; pg_ctl -D data -o "-k $PWD/socket -h \'\'" -w start.\n'
+            'Check recovery-report.json coverage, restore_verified and input_scan_complete; partial is not full recovery. '
+            'Unresolved suffix is excluded. Provider terminal is checked separately.\n'
+            'PG contains actual rebuilt receipts; replay.projection_changes lists differing representations. '
+            'Original receipts remain in the private input identified by input_manifest_sha256.\n')
         return checkpoint
     finally:
         if connection is not None:

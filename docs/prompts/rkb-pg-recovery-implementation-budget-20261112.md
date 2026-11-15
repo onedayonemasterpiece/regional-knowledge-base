@@ -202,3 +202,21 @@ Synthetic real-PG regression RED при прежнем равенстве, GREEN
 | Сравнение результата без производного projection hash | 8345 остановлен только различием hash несортированной проекции | Original prepared reuse не применим к утраченному PG; сохраняются historical compiler, command, chain и preconditions | Оставлено только для APPLIED source.batch.v1 |
 | projection_changes в существующем replay report и structured log | Нельзя выдавать новый результат за исходную побайтовую квитанцию | PG хранит фактический outcome, input journal — оригинал; отчёт связывает их sequence | Оставлено как явное свидетельство результата |
 | Два исходных compressed journal файла в конечном output | Архив одной PG не содержит прежние квитанции изменившегося представления | Reuse уже подготовленных immutable input файлов без нового формата или хранилища | Оставлено только после полного сканирования |
+
+15 ноября, аудит финального пакета: прежнее добавление исходного журнала в output
+выше отменено как нарушение §8 постановки. Оригиналы остаются в private input
+и retained локальном экспорте; PG actual receipts и projection_changes сохраняются.
+Удалён export двух файлов (438257227 байт). recovery-report.json использует тот же
+проверенный checkpoint без нового формата; README содержит порядок физического
+restore, ссылку на private input по manifest hash и ограничения покрытия.
+Net production −1 строка, всего846, baseline250, дефицит596. Новых runtime
+режимов, retry, gates и Dataset нет. Текущая часть34 не прерывается; доставка
+исправления — со следующей необходимой частью до конечной публикации.
+Три существующие delivery проверки PASS; actual packaging tail RED на прежнем
+export и GREEN для полной/частичной упаковки с отчётом, без private входов.
+
+| Добавление | Наблюдаемый сбой | Существующий механизм и почему недостаточен | Решение |
+|---|---|---|---|
+| recovery-report.json | Требуемого §8 файла нет в output | Переиспользован проверенный checkpoint целиком | Оставлено без отдельного состояния |
+| README restore commands | Пакет не объяснял запуск физической PG | Используются те же PG17/pgvector и pg_verifybackup | Оставлено |
+| Export private journal | Прямое нарушение §8 | Исходники уже сохранены в private input и локально | Удалено |
