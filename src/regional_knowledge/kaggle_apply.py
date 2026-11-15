@@ -47,6 +47,33 @@ class ApplyConflict(ApplyError):
     pass
 
 
+class ApplyOutcomeMismatch(ApplyConflict):
+    def __init__(self, outcome):
+        super().__init__('replayed outcome differs from historical receipt')
+        self.outcome = outcome
+
+
+def replay_outcome_matches(expected, actual):
+    """Compare historical effects, allowing a rebuilt source projection's order hash.
+
+    The immutable journal retains the original receipt. PG records the actual
+    computed result; a projection hash is not a second authored source command.
+    """
+    if expected == actual:
+        return True
+    before, after = json.loads(expected), json.loads(actual)
+    for value in (before, after):
+        if value.get('route') != 'source.batch.v1' or value.get('status') != 'applied':
+            return False
+        result = json.loads(base64.b64decode(value['result_b64']))
+        projection_hash = result.pop('knowledge_sha256', None)
+        if not isinstance(projection_hash, str) or re.fullmatch('[0-9a-f]{64}', projection_hash) is None:
+            return False
+        value.pop('result_sha256')
+        value['result_b64'] = result
+    return before == after
+
+
 class ApplyUnknown(ApplyError):
     """Keep original DB generation/key/bytes and reconcile on a new connection."""
 
@@ -361,7 +388,8 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                          writer_generation: str, registry: HandlerRegistry,
                          max_command_bytes: int = 1048576,
                          max_outcome_bytes: int = 1048576,
-                         reject_reason: str | None = None, reject_error: Exception | None = None) -> ApplyReceipt:
+                         reject_reason: str | None = None, reject_error: Exception | None = None,
+                         expected_outcome: bytes | None = None) -> ApplyReceipt:
     """Verify remote acceptance before TX, then atomically apply a trusted PG handler.
 
     Functions and registry are trusted deployment artifacts. Both functions must
@@ -462,6 +490,11 @@ async def apply_accepted(connection, *, journal: RecoveryJournal, seal: Accepted
                         (command.sequence,))
                     receipt = ApplyReceipt(database_generation, command.operation_key, command.sequence,
                                            command_hash, status, outcome, digest, False)
+                if expected_outcome is not None and receipt.outcome != expected_outcome:
+                    if not replay_outcome_matches(expected_outcome, receipt.outcome):
+                        raise ApplyOutcomeMismatch(receipt.outcome)
+                    _LOG.info('offline_pg_rebuild_projection sequence=%s historical_outcome_sha256=%s actual_outcome_sha256=%s',
+                              command.sequence, _hash(expected_outcome), receipt.outcome_sha256)
                 stage = 'commit'
             return receipt  # Only after the actual commit ACK.
         except psycopg.OperationalError as error:

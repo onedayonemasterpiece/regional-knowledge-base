@@ -31,14 +31,14 @@ _SOCKET_FD = None
 _CI_PARAMS = None
 
 
-async def connect():
+async def connect(connection_factory=psycopg.AsyncConnection.connect):
     if _CI_PARAMS is not None:
-        return await psycopg.AsyncConnection.connect(
+        return await connection_factory(
             **_CI_PARAMS, connect_timeout=2, sslmode="disable", row_factory=tuple_row,
             application_name="rkb_disposable_driver_fixture")
     assert _SOCKET_FD is not None
     assert Path(os.readlink(f"/proc/self/fd/{_SOCKET_FD}")).resolve() == SOCKET
-    return await psycopg.AsyncConnection.connect(
+    return await connection_factory(
         host=f"/proc/self/fd/{_SOCKET_FD}", port=5432, dbname="rkb_fixture", user="postgres",
         password="", connect_timeout=2, sslmode="disable", row_factory=tuple_row,
         application_name="rkb_disposable_driver_fixture")
