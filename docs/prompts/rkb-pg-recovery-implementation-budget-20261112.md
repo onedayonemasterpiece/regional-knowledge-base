@@ -220,3 +220,9 @@ export и GREEN для полной/частичной упаковки с от�
 | recovery-report.json | Требуемого §8 файла нет в output | Переиспользован проверенный checkpoint целиком | Оставлено без отдельного состояния |
 | README restore commands | Пакет не объяснял запуск физической PG | Используются те же PG17/pgvector и pg_verifybackup | Оставлено |
 | Export private journal | Прямое нарушение §8 | Исходники уже сохранены в private input и локально | Удалено |
+
+Тот же аудит §11: при полном сканировании в уже восстановленной проверочной PG
+вызывается существующий NativeSnapshotFactory._sql_readiness. Итоговый manifest
+записывает search_sql_probe=passed только после успешных lexical/dense SQL probes.
+Частичные checkpoint не объявляются поисково готовыми; benchmark качества/латентности
+этим не заменяется. Net+3, cumulative849, baseline250, дефицит599. Нового validator нет.

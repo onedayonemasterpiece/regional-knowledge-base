@@ -30,7 +30,7 @@ from .kaggle_owned_pg import (
     grant_native_code_access,
 )
 from .kaggle_pg_snapshot_native import (
-    SnapshotLimits, applied_prefix, digest_file, pack_tree, unpack_tree,
+    SnapshotLimits, NativeSnapshotFactory, applied_prefix, digest_file, pack_tree, unpack_tree,
 )
 from .kaggle_schema_migrate import migrate
 from .pg_rebuild_batch import SnapshotInput, historical_materializer, rebuild
@@ -225,6 +225,9 @@ async def save_checkpoint(owner, connection, output, workspace, report, limits):
     try:
         async with restored_connection:
             after = await coverage(restored_connection, limits)
+            if 'next_sequence' not in report:
+                await NativeSnapshotFactory._sql_readiness(restored_connection)
+                manifest['search_sql_probe'] = 'passed'
         if after != before:
             raise ValueError('actual restored coverage differs')
     finally:
