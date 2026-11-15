@@ -16,7 +16,7 @@ import sys
 import types
 from psycopg.errors import QueryCanceled
 
-from .kaggle_apply import ApplyConflict, ApplyOutcomeMismatch, apply_accepted
+from .kaggle_apply import ApplyConflict, ApplyOutcomeMismatch, apply_accepted, replay_outcome_matches
 from .recovery_journal import AcceptedSeal, ExactCommand, ObjectRef, RecoveryJournal, StoredObject
 
 
@@ -185,7 +185,7 @@ async def _restore_rejection(connection, record, *, database_generation, writer_
 
 async def rebuild(connection, *, journal, records, database_generation, writer_generation,
                   resolve, prepare, keep_going=lambda: True):
-    """Replay a finite ordered input, preserving unresolved suffix and exact receipts.
+    """Replay ordered input, retaining original journal and actual rebuilt receipts.
 
     resolve(command) installs/selects historical schema/functions and returns its
     registry. prepare(command) uses that same historical local materializer. Both
@@ -220,11 +220,12 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
             raise ApplyConflict("terminal operation follows an unresolved historical gap")
         existing = await _existing(connection, command, database_generation)
         if existing is not None:
-            if existing != record.outcome:
+            if not replay_outcome_matches(record.outcome, existing):
                 raise ApplyConflict("restored receipt differs from historical bytes")
         elif record.state == "REJECTED_PRECONDITION":
             await _restore_rejection(connection, record, database_generation=database_generation,
                                      writer_generation=writer_generation)
+            existing = record.outcome
         else:
             registry = await resolve(command)
             handler = registry.resolve(command)
@@ -241,7 +242,7 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
                 return dict(report, next_sequence=command.sequence,
                             accepted_last_sequence=head.reference.last_sequence)
             try:
-                await apply_accepted(connection, journal=journal, seal=record.seal,
+                receipt = await apply_accepted(connection, journal=journal, seal=record.seal,
                     command=command, database_generation=database_generation,
                     writer_generation=writer_generation, registry=registry,
                     expected_outcome=record.outcome)
@@ -253,6 +254,9 @@ async def rebuild(connection, *, journal, records, database_generation, writer_g
                 error.report = dict(report, next_sequence=command.sequence,
                                     accepted_last_sequence=head.reference.last_sequence)
                 raise
+            existing = receipt.outcome
+        if existing != record.outcome:
+            report.setdefault('projection_changes', []).append(command.sequence)
         report["restored_prefix"] = command.sequence
         LOG.info("offline_pg_rebuild sequence=%s historical_state=%s", command.sequence, record.state)
     if last != head.reference.last_sequence:

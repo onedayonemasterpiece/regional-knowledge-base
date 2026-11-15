@@ -268,3 +268,64 @@ async def test_batch_preserves_correction_rejection_unknown_and_idempotency(env,
             "SELECT outcome_bytes FROM rkb_v4.applied_ops ORDER BY sequence")).fetchall()
     assert [bytes(row[0]) for row in receipts] == [r.outcome for r in records[:3]]
     assert json.loads(bytes(receipts[2][0]))["status"] == "rejected_precondition"
+
+
+def test_replay_preserves_source_domain_result_but_not_projection_order_hash():
+    from regional_knowledge.kaggle_apply import replay_outcome_matches
+    def outcome(h, *, route='source.batch.v1', count=77, status='applied'):
+        result = json.dumps(dict(knowledge_sha256=h, passage_count=count)).encode()
+        return json.dumps(dict(route=route, status=status, result_b64=base64.b64encode(result).decode(),
+            result_sha256=hashlib.sha256(result).hexdigest())).encode()
+    historical = outcome('a'*64)
+    actual = outcome('b'*64)
+    assert replay_outcome_matches(historical, actual)
+    assert not replay_outcome_matches(historical, outcome('b'*64, count=76))
+    assert not replay_outcome_matches(historical, outcome('b'*64, status='rejected_precondition'))
+    assert not replay_outcome_matches(outcome('a'*64, route='fixture.item'), outcome('b'*64, route='fixture.item'))
+    assert not replay_outcome_matches(historical, outcome(None))
+    assert historical == outcome('a'*64)
+
+
+@PG
+@pytest.mark.asyncio
+async def test_projection_hash_replay_keeps_actual_pg_receipt_and_original_journal(env):
+    from regional_knowledge.kaggle_apply import HandlerRegistry
+    from test_kaggle_apply import pinned
+    connection = env['connection']
+    async with connection.transaction():
+        definition = (await (await connection.execute(
+            "SELECT pg_get_functiondef('rkb_v4.apply_item_v1(bytea,jsonb,jsonb,text)'::regprocedure)")).fetchone())[0]
+        await connection.execute(definition.replace("'semantics','v1'", "'semantics','v1','knowledge_sha256','"+'b'*64+"'"), prepare=False)
+    old = env['registry'].resolve(item())
+    registry = HandlerRegistry([replace(old, route='source.batch.v1', apply=await pinned(connection, 'apply_item_v1'))])
+    cmd = replace(item(), route='source.batch.v1')
+    seal = await accepted(env, cmd)
+    actual = await apply_accepted(connection, journal=env['journal'], seal=seal, command=cmd,
+        database_generation='db-1', writer_generation='writer-1', registry=registry)
+    original = json.loads(actual.outcome)
+    result = json.loads(base64.b64decode(original['result_b64']))
+    assert result['knowledge_sha256'] == 'b'*64
+    result['knowledge_sha256'] = 'a'*64
+    raw = json.dumps(result).encode()
+    original.update(result_b64=base64.b64encode(raw).decode(), result_sha256=hashlib.sha256(raw).hexdigest())
+    original = json.dumps(original).encode()
+    record = ReplayRecord(cmd, seal, 'APPLIED', original)
+    async with connection.transaction():
+        await connection.execute('TRUNCATE rkb_v4.applied_ops, rkb_v4.apply_fixture_items')
+        await connection.execute('UPDATE rkb_v4.recovery_state SET applied_seq=0')
+        await connection.execute('UPDATE rkb_v4.apply_fixture_calls SET n=0')
+    async def stream():
+        yield record
+    async def resolve(command):
+        return registry
+    async def prepare(command):
+        pass
+    for _ in range(2):
+        report = await rebuild(connection, journal=env['journal'], records=stream(),
+            database_generation='db-1', writer_generation='writer-1', resolve=resolve, prepare=prepare)
+        assert report['restored_prefix'] == 1
+        assert report['projection_changes'] == [1]
+        assert record.outcome == original
+    async with connection.transaction():
+        assert await (await connection.execute('SELECT outcome_bytes FROM rkb_v4.applied_ops')).fetchone() == (actual.outcome,)
+        assert await (await connection.execute('SELECT n FROM rkb_v4.apply_fixture_calls')).fetchone() == (1,)

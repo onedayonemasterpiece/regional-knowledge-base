@@ -344,9 +344,15 @@ async def execute_part(config, started):
         checkpoint['input_manifest_sha256'] = config['input_manifest_sha256']
         checkpoint['input_scan_complete'] = 'next_sequence' not in report
         checkpoint['compute_terminal'] = False  # Only the provider receipt can establish this.
+        if checkpoint['input_scan_complete']:
+            # Retain the original accepted receipts alongside PG's actual rebuilt results.
+            for name in ('input-metadata.sqlite.gz', 'journal-objects.jsonl.gz'):
+                shutil.copyfile(inputs/name, output/name)
         (output/'checkpoint.json').write_text(json.dumps(checkpoint, indent=2)+'\n')
         (output/'README.txt').write_text('Private PG checkpoint. Restore pg.tar.gz with PG17 and the '
             'recorded pgvector version. Check checkpoint.json coverage and actual restore result. '
+            'A completed scan includes the unchanged input journal with original accepted receipts; '
+            'PG records actual rebuilt results and replay.projection_changes lists differing representations. '
             'A partial checkpoint is not the full recovered corpus. Provider terminal is checked separately.\n')
         return checkpoint
     finally:
