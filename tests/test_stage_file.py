@@ -7,10 +7,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from regional_knowledge.contracts import BookIngestOutput, ChatFile, Principal
+from regional_knowledge.contracts import BookIngestOutput, ChatFile, Principal, StagePageInput
 from regional_knowledge.file_ingress import DownloadedFile
 from regional_knowledge.stage_file import MAX_STAGE_FILE_BYTES, parse_stage_file, read_stage_file
 from regional_knowledge.ingestion import native_encoding_notice
+from regional_knowledge.source_stage import MAX_BATCH_PAGES
 
 
 @pytest.fixture
@@ -77,11 +78,28 @@ def test_schema_diagnostic_does_not_echo_private_input_or_extra_keys(batch):
 
 def test_file_is_bounded_and_json_is_unambiguous(batch):
     with pytest.raises(ValueError):
-        parse_stage_file(encode({**batch, 'pages': batch['pages']*9}), batch['ingestion_id'], 1)
+        parse_stage_file(encode({**batch, 'pages': batch['pages']*(MAX_BATCH_PAGES+1)}), batch['ingestion_id'], 1)
     for invalid in [b'', b' '* (MAX_STAGE_FILE_BYTES+1), b'%PDF-', b'\xff',
                     b'{"pages":[],"pages":[]}', b'{"source_revision":NaN}']:
         with pytest.raises(ValueError):
             parse_stage_file(invalid, batch['ingestion_id'], 1)
+
+
+@pytest.mark.parametrize('page_count', [9, 10])
+def test_stage_file_retains_pages_through_the_native_packet_bound(batch, page_count):
+    import copy
+    pages = []
+    for index in range(page_count):
+        page = copy.deepcopy(batch['pages'][0])
+        page.update(page_id=str(uuid4()), physical_page_index=index)
+        pages.append(page)
+    payload = parse_stage_file(encode({**batch, 'pages': pages}), batch['ingestion_id'], 1)
+    assert [p['page_id'] for p in payload['pages']] == [p['page_id'] for p in pages]
+    assert [p['physical_page_index'] for p in payload['pages']] == list(range(page_count))
+    assert [p['regions'] for p in payload['pages']] == [
+        StagePageInput.model_validate(p).model_dump(mode='json', exclude_none=True)['regions']
+        for p in pages]
+    assert all(p['knowledge_reviewed'] for p in payload['pages'])
 
 
 class Downloader:

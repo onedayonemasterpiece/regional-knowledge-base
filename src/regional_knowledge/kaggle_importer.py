@@ -1043,7 +1043,8 @@ class KaggleSourceImporter:
                 loc, validation_type = detail['loc'], detail['type']
                 allowed = {'pages','chunks','entity_candidates','entities','aliases','relations',
                     'evidence','page_id','region_id','region_key','chunk_id','chunk_key',
-                    'exact_quote','key','kind','canonical_label','exact_source_spelling','source_review_note'}
+                    'exact_quote','key','kind','canonical_label','exact_source_spelling','source_review_note',
+                    'physical_page_index','source_image_receipt_sha256','source_material'}
                 field_path = '.'.join(str(part) if type(part) is int and 0 <= part <= 9999
                     else part if type(part) is str and part in allowed else '*'
                     for part in loc[:8]) or 'payload'
@@ -1157,6 +1158,9 @@ class KaggleSourceImporter:
             import_metadata(ingestion_id=ingestion_id,source_id=row['source_id'],page_count=len(batch.pages),
                 physical_page_index=batch.pages[0].physical_page_index,
                 image_bytes=sum(len(page.data) for page in batch.pages),
+                native_complete_count=sum(p.native_text_info.get('complete') is True for p in batch.pages),
+                native_block_count=sum(len(p.native_blocks) for p in batch.pages),
+                native_continuation_request=int(bool(cursor and cursor.startswith('pc1.'))),
                 image_width=preview.get('width'),image_height=preview.get('height'))
             # Renew owner authorization after slow rendering, retaining the result's runtime fence.
             async with self._access(principal) as delivery:

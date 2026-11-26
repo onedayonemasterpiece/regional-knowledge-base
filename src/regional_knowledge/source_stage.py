@@ -186,13 +186,14 @@ public activation. No successful result here means "imported" or "searchable".
                     or image['original_receipt_sha256'] != digest(raw_original)
                     or image['original_sha256'] != receipt.sha256
                     or image['parser_sha256'] != receipt.parser_sha256
-                    or image['page_id'] != expected_id or page.get('page_id') != expected_id
-                    or page.get('physical_page_index') != index
-                    or type(page.get('physical_page_index')) is not int
-                    or page.get('source_image_receipt_sha256') != expected_hash
-                    or image['mime_type'] != 'image/jpeg'
-                    or page.get('source_material') != 'visual_reviewed'):
+                    or image['page_id'] != expected_id or image['mime_type'] != 'image/jpeg'):
                 raise ValueError('selected page/image/original provenance mismatch')
+            for field, expected in (('page_id', expected_id), ('physical_page_index', index),
+                    ('source_image_receipt_sha256', expected_hash), ('source_material', 'visual_reviewed')):
+                if page.get(field) != expected or (field == 'physical_page_index' and type(page.get(field)) is not int):
+                    raise ValidationError.from_exception_data('StagePageInput', [dict(
+                        type='value_error', loc=('pages', position, field), input=None,
+                        ctx={'error': ValueError('selected page/image/original provenance mismatch')})]) from None
             _hash(image['image_sha256'])
             try:
                 _text(page.get('source_review_note'), 500)

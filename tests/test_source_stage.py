@@ -3,6 +3,7 @@ import base64
 import copy
 import json
 import unittest
+from pydantic import ValidationError
 from uuid import UUID, uuid5
 
 from regional_knowledge.original_intake import VerifiedOriginalReceipt, issued_image_receipt
@@ -120,10 +121,11 @@ class StagePayloadTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError): self.validate(data)
 
     def test_exact_issued_image_binding_rejects_drift(self):
-        for key,value in [('page_id',REQUEST),('physical_page_index',1),
+        for key,value in [('page_id',REQUEST),('physical_page_index',1),('physical_page_index',False),
                           ('source_image_receipt_sha256','e'*64),('source_material','unreviewed')]:
             data=batch(count=1); data['model_payload']['pages'][0][key]=value
-            with self.subTest(key=key), self.assertRaises(ValueError): self.validate(data)
+            with self.subTest(key=key), self.assertRaises(ValidationError) as caught: self.validate(data)
+            self.assertEqual(caught.exception.errors(include_input=False)[0]['loc'], ('pages',0,key))
 
     def test_missing_review_note_rejected(self):
         data=batch(); del data['model_payload']['pages'][0]['source_review_note']
