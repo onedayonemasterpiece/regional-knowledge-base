@@ -199,7 +199,7 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             assert not await p.owner.refresh(p.binding)
             p.clock[0]=63
             assert await p.owner.refresh(p.binding)
-            assert p.store.latest_checkpoint.dataset_version==3
+            assert p.store.latest_checkpoint.dataset_version==4
             second=await client.post(RESULT,json=body,headers=_auth(credentials))
             assert second.status_code==202
             assert second.json()['state']=='send_intent_pending'
@@ -211,7 +211,7 @@ async def test_actual_dataset_signed_claim_result_send_intent_and_unknown_no_res
             assert not await p.owner.refresh(p.binding)
             p.clock[0]=95
             assert await p.owner.refresh(p.binding)
-            assert p.store.latest_checkpoint.dataset_version==4
+            assert p.store.latest_checkpoint.dataset_version==5
             third=await client.post(RESULT,json=body,headers=_auth(credentials))
             assert third.status_code==200
             assert third.json()==dict(codec=RESULT_CODEC,state='send_intent_ready',

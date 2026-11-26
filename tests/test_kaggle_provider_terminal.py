@@ -506,6 +506,9 @@ async def test_real_writer_publication_survives_closure_then_native_reconcile_un
     s.c.objects[s.key]=(b'exact','"fixture-native-token"')
     assert await s.w.reconcile(s.s)
     s.q.maintenance()
+    assert s.q.status()['reason']=='runtime_rest'
+    s.q.clock=lambda:4800.
+    s.q.maintenance()
     with s.q.connect(write=False) as db:
         current=db.execute('select current_run from control').fetchone()[0]
         assert current is not None and current!=s.run
@@ -648,3 +651,28 @@ def test_sealed_cold_terminal_retires_prepare_and_counts_once_without_startup_wa
         with q.connect(write=False) as db:
             assert db.execute('select startup_failures from control').fetchone()[0]==1
             assert db.execute('select current_run from control').fetchone()[0]==successor
+
+
+def test_productive_runtime_rest_survives_restart_and_demand_without_releasing_unknown(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute("UPDATE runs SET ready_at=1100 WHERE id=?",(rid,))
+    pending=q.request_startup()['run_id']
+    assert row()['launch_state']=='dispatched'
+    proof=observe(API(row()),row,now)
+    assert proof is not None and q.retire_provider_reservation(proof)
+    off=now[0]
+    reopened=BgeQueue(q.path,clock=lambda:now[0])
+    for elapsed in (0,60,1800,3599):
+        now[0]=off+elapsed
+        assert reopened.request_startup()['run_id'] is None
+        assert reopened.startup_status(reopened.request_startup()['startup_ref'])['reason']=='runtime_rest'
+        assert reopened.launch_claim(pending,provider_ref=REF) is None
+        reopened.maintenance()
+        with reopened.connect(write=False) as db:
+            assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==2
+    now[0]=off+3600
+    successor=reopened.request_startup()['run_id']
+    assert successor and successor!=rid
+    with reopened.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM bge_provider_terminal_receipts').fetchone()[0]==1

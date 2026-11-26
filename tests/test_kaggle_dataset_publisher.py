@@ -53,7 +53,7 @@ class FakeApi:
             raise TimeoutError('lost acknowledgment')
 
     def create_dataset_version(self, request):
-        assert request.body.delete_old_versions is True
+        self.delete_old_versions = request.body.delete_old_versions
         self.version += 1
         self.description = request.body.description
         self.mutations.append('version')
@@ -76,10 +76,11 @@ def test_direct_grant_then_lost_create_ack_reconciles_without_duplicate():
     assert 'private-token' not in repr(files[0]) and 'secret=' not in repr(files[0])
 
 
-def test_new_version_prunes_history_and_requires_exact_package():
+def test_new_version_preserves_verified_history_and_requires_exact_package():
     api, p, files = setup()
     p.finalize(files=files, operation='checkpoint-7', previous_version=None)
     assert p.finalize(files=files, operation='checkpoint-8', previous_version=1) == 2
+    assert api.delete_old_versions is False
     api.files[0].total_bytes = 122
     assert not p.reconcile(files=files, operation='checkpoint-8', expected_version=2)
     with pytest.raises(DatasetPublicationError, match='predecessor_changed'):
@@ -124,11 +125,13 @@ def test_403_never_becomes_permission_to_create_from_empty_inventory():
         raise exc
     api.get_dataset = denied
     api.dataset_list_with_response = lambda **kwargs: NS(datasets=[], next_page_token=None)
-    with pytest.raises(DatasetPublicationError, match='metadata_denied'):
+    with pytest.raises(SystemExit) as stopped:
         p.observe()
+    assert stopped.value.code==77
     api.dataset_list_with_response = lambda **kwargs: NS(datasets=[NS(ref=p.ref)], next_page_token=None)
-    with pytest.raises(DatasetPublicationError, match='metadata_denied'):
+    with pytest.raises(SystemExit) as stopped:
         p.observe()
+    assert stopped.value.code==77
     assert api.mutations == ['reserve']
 
 
@@ -179,3 +182,34 @@ def test_read_control_above_64_mib_streams_and_checks_exact_sha():
     assert observed == ['closed']
     with pytest.raises(DatasetPublicationError, match='dataset_control_read_bytes_changed'):
         publisher.read_control(DatasetFile(file.name, file.size, sha(b'wrong')), version=7)
+
+
+def test_destructive_pruning_is_explicit_and_only_for_verified_package_operations():
+    api,p,files=setup()
+    p.finalize(files=files,operation='checkpoint-1',previous_version=None)
+    with pytest.raises(DatasetPublicationError,match='verified_package_operation'):
+        p.finalize(files=files,operation='checkpoint-2',previous_version=1,delete_old_versions=True)
+    assert api.mutations==['reserve','create']
+    assert p.finalize(files=files,operation='dataset-prune:verified-1',previous_version=1,
+                      delete_old_versions=True)==2
+    assert api.delete_old_versions is True
+
+
+@pytest.mark.parametrize('status',[401,403])
+@pytest.mark.parametrize('endpoint',['metadata','status','files'])
+def test_provider_access_denial_exits_without_publication_or_empty_inventory(status,endpoint,caplog):
+    api,p,files=setup()
+    def denied(*args,**kwargs):
+        error=RuntimeError('private provider message must not be logged')
+        error.response=NS(status_code=status)
+        raise error
+    if endpoint=='metadata':api.get_dataset=denied
+    else:
+        api.version=1;api.description=p._description(files,'checkpoint-1')
+        if endpoint=='status':api.dataset_status=denied
+        else:api.dataset_list_files=denied
+    with pytest.raises(SystemExit) as stopped:
+        if endpoint=='metadata':p.observe()
+        else:p.reconcile(files=files,operation='checkpoint-1',expected_version=1)
+    assert stopped.value.code==77 and api.mutations==['reserve']
+    assert 'private provider message' not in caplog.text

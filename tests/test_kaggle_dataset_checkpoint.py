@@ -152,12 +152,13 @@ def control_cycle(tmp_path,monkeypatch,*,interval=900,quiet=30):
         def reserve(self,*,name,size,sha256,now):
             return DatasetUpload(name,size,sha256,'token-'+sha256,'https://storage.googleapis.com/fixture')
         def observe(self):return max(p.saved,default=1)
-        def finalize(self,*,files,operation,previous_version):
-            p.calls.append('finalize')
+        def finalize(self,*,files,operation,previous_version,delete_old_versions=False):
+            assert delete_old_versions==operation.startswith('dataset-prune:')
+            p.calls.append('prune' if delete_old_versions else 'finalize')
             assert previous_version==self.observe()
             version=previous_version+1
             p.saved_times[version]=p.clock[0]
-            p.saved[version]=(operation,files,{f.name:p.uploads.get(f.name) for f in files})
+            p.saved[version]=(operation,files,p.saved[previous_version][2].copy() if delete_old_versions else {f.name:p.uploads.get(f.name) for f in files})
             if p.fail_finalize:
                 p.fail_finalize=False;raise TimeoutError('provider committed; response lost')
             return version
@@ -327,7 +328,8 @@ async def test_late_control_cas_after_capture_remains_pending_for_next_group(tmp
     assert not await p.owner.refresh(p.binding) and p.calls.count('capture')==1
     p.clock[0]=63
     assert await p.owner.refresh(p.binding)
-    assert p.store.latest_checkpoint.dataset_version==3 and p.store.remote_durable(key,late_data)
+    assert p.store.latest_checkpoint.dataset_version==4 and p.store.remote_durable(key,late_data)
+    assert p.calls.count('prune')==1
     assert p.calls.count('capture')==2
 
 
@@ -602,3 +604,78 @@ async def test_same_runtime_reconnect_before_stop_saves_on_current_connection(tm
         assert p.owner.saved_seq==7 and p.store.remote_durable(key,b'pending')
         assert p.calls==['capture','finalize','verify'] and observed and all(b is new for b in observed)
         assert not p.startup.binding_current(new)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('first_result',['unknown','predecessor_changed'])
+async def test_unknown_verified_files_prune_blocks_newer_publications_without_resubmission(tmp_path,first_result):
+    from regional_knowledge.kaggle_dataset_publisher import DatasetPublicationError
+    p=prepared(tmp_path);latest=replace(p.checkpoint,dataset_version=2)
+    files=[dict(name=f.name,size=f.size,sha256=f.sha256,token='current-token',url='https://storage.googleapis.com/fixture')
+           for f in (latest.manifest,latest.control,latest.journal,latest.archive)]
+    package=dict(files=files,previous_version=1,base_sequence=7,database_generation='db',manifest_sha256=latest.manifest.sha256)
+    old=dict(package,previous_version=None,files=[dict(f,token='old-token') for f in files])
+    with p.q.connect() as db:
+        db.execute("UPDATE rkb_dataset_seed SET state='verified',package_json=? WHERE version=1",(json.dumps(old),))
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('foreign','other-owner/unrelated','verified','{}',2)")
+        db.execute("INSERT INTO rkb_dataset_seed VALUES(?,?,'verified',?,2)",('checkpoint-2',p.publisher.ref,json.dumps(package)))
+        db.execute('UPDATE rkb_dataset_recovery_store SET latest_json=?',(json.dumps(latest.wire()),))
+    publishes=[];verified=[False];native=[];provider_previous=[2]
+    result_version=3 if first_result=='unknown' else 4
+    class Publisher:
+        ref=p.publisher.ref
+        def observe(self):return provider_previous[0]
+        def finalize(self,**kw):
+            assert kw['delete_old_versions'] is True and kw['operation'].startswith('dataset-prune:')
+            assert [f.sha256 for f in kw['files']]==[f['sha256'] for f in files]
+            publishes.append(kw['operation'])
+            if len(publishes)==1:
+                if first_result=='unknown':raise TimeoutError('lost prune acknowledgment')
+                provider_previous[0]=3
+                raise DatasetPublicationError('dataset_publication_predecessor_changed')
+            assert first_result=='predecessor_changed' and kw['previous_version']==3
+            return result_version
+        def read_control(self,file,*,version):
+            assert version==result_version
+            return p.publisher.read_control(file,version=1)
+    p.store.publisher=Publisher()
+    startup=NS(config=NS(queue=p.q,spool=NS(journal=NS(store=p.store)),writer_owner=p.guard,
+                         writer_generation='writer'),coverage=NS(applied_sequence=100),
+               checkpoint_binding_current=lambda _:True)
+    async def native_verify(binding,operation,previous):
+        assert operation.startswith('dataset-prune:'),'a newer snapshot must not pass an unknown destructive request'
+        native.append(operation)
+        if not verified[0]:raise DatasetPublicationError('prune remains pending')
+        with p.q.connect() as db:db.execute("UPDATE rkb_dataset_seed SET state='published',version=? WHERE operation_key=?",(result_version,operation,))
+        alias=replace(latest,dataset_version=result_version)
+        observed=dict(dataset_ref=Publisher.ref,dataset_version=result_version,base_sequence=7,
+                      archive_sha256=alias.archive.sha256,archive_size=alias.archive.size)
+        return alias,observed,p.ref,result_version
+    def owner():
+        result=object.__new__(SourceDatasetCheckpoints)
+        result.startup,result.store,result._capture_verify=startup,p.store,native_verify
+        return result
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    with pytest.raises(CheckpointPending) as first:await owner()._prune_verified('binding',latest)
+    assert type(first.value.__cause__) is (TimeoutError if first_result=='unknown' else DatasetPublicationError)
+    with p.q.connect(write=False) as db:
+        retained=db.execute("SELECT operation_key,package_json FROM rkb_dataset_seed WHERE operation_key LIKE 'dataset-prune:%'").fetchone()
+    with pytest.raises(CheckpointPending) as second:await owner()._refresh('binding')
+    assert type(second.value.__cause__) is DatasetPublicationError
+    assert len(publishes)==(1 if first_result=='unknown' else 2) and p.store.latest_checkpoint==latest
+    with p.q.connect(write=False) as db:
+        after=tuple(db.execute("SELECT operation_key,package_json FROM rkb_dataset_seed WHERE operation_key LIKE 'dataset-prune:%'").fetchone())
+        assert after[0]==retained[0]
+        if first_result=='unknown':assert after==tuple(retained)
+    verified[0]=True
+    assert await owner()._refresh('binding')
+    assert len(publishes)==(1 if first_result=='unknown' else 2) and p.store.latest_checkpoint.dataset_version==result_version
+    assert p.store.latest_checkpoint.base_sequence==7 and len(native)==2
+
+
+@pytest.mark.asyncio
+async def test_missing_existing_dataset_stops_before_any_archive_upload_or_recreation(tmp_path,monkeypatch):
+    p=control_cycle(tmp_path,monkeypatch);await put_control(p)
+    monkeypatch.setattr(p.store.publisher,'observe',lambda:None)
+    with pytest.raises(SystemExit) as stopped:await p.owner.refresh(p.binding,planned_stop=True)
+    assert stopped.value.code==77 and p.calls==[] and p.store.latest_checkpoint.dataset_version==1

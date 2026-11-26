@@ -547,21 +547,26 @@ async def test_finalized_missing_physical_page_uses_shared_progress_and_existing
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('runtime_state', ['starting', 'draining', 'ready', 'expired', None])
+@pytest.mark.parametrize('runtime_state', ['starting', 'draining', 'ready', 'expired', 'resting', None])
 async def test_activity_waits_for_existing_runtime_but_preserves_cold_demand(watcher, runtime_state):
     w = watcher
     before = read_timestamp(w)
     with w.queue.connect() as db:
         run_id = w.queue._new_run(db, time.time())
-        db.execute('UPDATE runs SET status=? WHERE id=?', (runtime_state or 'expired', run_id))
+        db.execute('UPDATE runs SET status=? WHERE id=?', ('expired' if runtime_state=='resting' else runtime_state or 'expired', run_id))
         db.execute('UPDATE control SET current_run=? WHERE id=1',
-                   (run_id if runtime_state is not None else None,))
+                   (run_id if runtime_state not in (None,'resting') else None,))
+        if runtime_state=='resting':
+            db.execute('UPDATE runs SET ready_at=? WHERE id=?',(time.time()-60,run_id))
+            db.execute('INSERT INTO bge_provider_terminal_receipts VALUES(?,?)',
+                       (run_id,json.dumps({'observed_at':time.time()})))
     result = (await get(w)).json()
-    expected = ('processing', 'wait') if runtime_state in ('starting', 'draining') else ('staged', 'continue_pages')
+    expected = ('processing', 'wait') if runtime_state in ('starting', 'draining', 'resting') else ('staged', 'continue_pages')
     assert (result['state'], result['next_action']) == expected
     assert result['accepted_pages'] == 2 and read_timestamp(w) == before
     with w.queue.connect() as db:
         db.execute("UPDATE runs SET status='ready' WHERE id=?", (run_id,))
+        db.execute('UPDATE control SET current_run=? WHERE id=1',(run_id,))
     resumed = (await get(w)).json()
     assert (resumed['state'], resumed['next_action']) == ('staged', 'continue_pages')
     assert resumed['accepted_pages'] == 2 and resumed['last_operation_at'] == result['last_operation_at']
