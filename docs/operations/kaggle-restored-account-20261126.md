@@ -201,11 +201,11 @@ in for that outcome.
 
 ## November27 preparation delivery (Kaliningrad time)
 
-Launcher113 is installed with the owner-authorized six slots and original
-35–90-minute book rests. Exact refused duplicate tasks are excluded without
-resending their prompts. The private full-import configuration is staged,
-but the actual service still exposes only five read-only MCP tools. Imports
-have not started; previously accepted pages are not new work.
+The owner has replaced preparation-only and six slots with an actual staged
+rollout: one ChatGPT window, then two, gradually up to four. Original
+35–90-minute book rests remain, together with three-hour notebook work
+periods and one full hour off measured from the sealed native terminal.
+Exact refused duplicate tasks remain excluded without resending prompts.
 
 PR884 passed both Python jobs and the notebook-envelope check, merged as
 5775716397582def68c6b1f8b58775a7842a6440. Compatiblef51b5552 was installed
@@ -248,5 +248,27 @@ PR885 removes that unnecessary version equality while preserving verified
 coverage, current Saved identity, generation, cursor, SHA, size and ABI checks.
 Two distinguishing cases fail before the fix;56 affected compatible tests
 and32 integration restart tests pass. Invalid/future/unverified coverage
-remains rejected. As of this report, full CI for PR885 is running and that
-permanent fix is not deployed. Import stays off until delivery is complete.
+remains rejected. PR885 subsequently passed both Python CI jobs and the
+notebook-envelope check, merged as b464d898, and compatible4509e24d was
+installed. A real restart succeeded with the original manifest coverage473
+and current Saved474.
+
+At01:25 Kaliningrad the existing full-import configuration was activated.
+Launcher114 added a single process concurrency setting, limited to1–4;
+stage one is set to1. Launcher115 fixed the existing replacement path for
+a specifically proven pre-Send failure in a book continuation. Unknown
+post-Send delivery and refusal fences remain unchanged. Both changes passed
+exact CI and merged; compatible relay bbcdad33 is installed.
+
+The driver itself created and sent the first Hinz continuation at01:33,
+and the model reported progress. Its ordinary demand launched native282.
+At01:39 it was starting with generation1/channel1; accepted prefix remained
+23153, with no new TEXT or SEM receipts. Root did not dispatch a reader,
+press Send, read original pages or start a diagnostic notebook.
+
+The next acceptance is new ordinary TEXT and SEM plus a native-verified
+Saved covering those operations. Only then advance the existing concurrency
+setting to2 and subsequently up to4. Actual notebook terminal, the full
+hour off and ordinary resume still have to be observed. Existing Saved474
+and the independent backup remain intact; historical pages are not new
+import throughput.
