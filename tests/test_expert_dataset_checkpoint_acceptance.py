@@ -236,7 +236,8 @@ async def test_signed_ingress_quiet_capture_same_pg_seq_then_exact_ack_and_unkno
         assert not await p.owner.refresh(p.binding)
         p.clock[0]=63
         assert await p.owner.refresh(p.binding)
-        assert p.store.latest_checkpoint.dataset_version==3
+        # Verified metadata-only pruning adds one version, without another PG capture.
+        assert p.store.latest_checkpoint.dataset_version==4
         assert p.store.remote_durable(result_key,result_data)
         assert delivery.confirm_dataset_result(*args)['state']=='result_ready'
         assert await delivery.stage_dataset_send(*args) is False
@@ -250,7 +251,7 @@ async def test_signed_ingress_quiet_capture_same_pg_seq_then_exact_ack_and_unkno
         assert not await p.owner.refresh(p.binding)
         p.clock[0]=95
         assert await p.owner.refresh(p.binding)
-        assert p.store.latest_checkpoint.dataset_version==4
+        assert p.store.latest_checkpoint.dataset_version==5
         assert p.store.remote_durable(send_key,send_data)
         assert delivery.confirm_dataset_send(*args)['state']=='send_intent_ready'
         claimed=delivery.claim_send_once(*args)
@@ -269,7 +270,8 @@ async def test_signed_ingress_quiet_capture_same_pg_seq_then_exact_ack_and_unkno
                               'WHERE id=1').fetchone()[0]==sequence
         assert p.calls.count('capture')==3
         assert p.calls.count('finalize')==3
-        assert p.calls.count('verify')==3
+        assert p.calls.count('prune')==1
+        assert p.calls.count('verify')==4
     finally:
         local.spool.close()
         p.guard.close()  # Independent Dataset writer; S3 fixture owner cleans up itself.
@@ -418,13 +420,14 @@ async def test_late_signed_child_after_capture_does_not_inherit_parents_saved_ve
         assert not await p.owner.refresh(p.binding)
         p.clock[0]=63
         assert await p.owner.refresh(p.binding)
-        assert p.store.latest_checkpoint.dataset_version==3
+        assert p.store.latest_checkpoint.dataset_version==4
         assert p.store.remote_durable(child_key,child_data)
         assert (await post(app,child_raw,child_headers)).status_code==200
         assert len(local_rows(env.p))==2
         assert p.calls.count('capture')==2
         assert p.calls.count('finalize')==2
-        assert p.calls.count('verify')==2
+        assert p.calls.count('prune')==1
+        assert p.calls.count('verify')==3
         assert ctl.claim(credentials,request_id=child_id)=={'state':'deferred'}
         assert ctl.claim(credentials,request_id=first_id)['state']=='leased'
         with p.q.connect(write=False) as db:
