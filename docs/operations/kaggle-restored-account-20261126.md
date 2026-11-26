@@ -9,6 +9,9 @@ will never flag an account again.
 
 The owner requested existing-corpus questions and answers, without imports.
 Use the existing `live` MCP profile and leave both import receivers disabled.
+The source-backed live profile keeps the existing read-only `search` and
+`fetch` names as well as `knowledge_search`, so connected clients with an
+earlier tool catalog continue to work. It does not expose import tools.
 There is one normal CPU runtime. Reuse its connection and queue; do not start
 additional diagnostic notebooks, model processes or corpus replays.
 
