@@ -125,7 +125,7 @@ def test_actual_controller_queue_classifies_not_sent_and_preserves_unknown_witho
     monkeypatch.setattr(module,'BgeQueue',lambda path:queue)
     actual_read=Path.read_text
     monkeypatch.setattr(Path,'read_text',lambda path,*args,**kwargs:
-        'KAGGLE_USERNAME=fixture-owner\nKAGGLE_KEY=fixture-secret\n' if str(path)=='/home/dev/.env'
+        'KAGGLE_RKB_USERNAME=fixture-owner\nKAGGLE_RKB_KEY=fixture-secret\n' if str(path)=='/home/dev/.env'
         else actual_read(path,*args,**kwargs))
     monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(queue.path));monkeypatch.setenv('RKB_BGE_BROKER_URL','https://fixture.example')
     monkeypatch.setenv('RKB_BGE_TRANSPORT','http');monkeypatch.delenv('RKB_BGE_TARGET_CONFIG',raising=False)

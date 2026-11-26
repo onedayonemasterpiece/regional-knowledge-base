@@ -26,11 +26,16 @@ class DatasetPublicationError(RuntimeError):
 
 
 def authenticated_service_api():
-    """Reuse the controller's existing service credential source on DevCoveer."""
+    """Use the dedicated RKB pair, never another application's account."""
+    credentials = {}
     for line in Path('/home/dev/.env').read_text().splitlines():
-        if line.startswith(('KAGGLE_USERNAME=', 'KAGGLE_KEY=')):
+        if line.startswith(('KAGGLE_RKB_USERNAME=', 'KAGGLE_RKB_KEY=')):
             key, value = line.split('=', 1)
-            os.environ[key] = shlex.split(value)[0]
+            parsed = shlex.split(value)
+            credentials[key.replace('KAGGLE_RKB_', 'KAGGLE_', 1)] = parsed[0] if parsed else ''
+    if not all(credentials.get(key) for key in ('KAGGLE_USERNAME', 'KAGGLE_KEY')):
+        raise ValueError('rkb_kaggle_credentials_missing')
+    os.environ.update(credentials)
     from kaggle.api.kaggle_api_extended import KaggleApi
     api = KaggleApi()
     api.authenticate()
@@ -113,24 +118,7 @@ class KaggleDatasetPublisher:
             if status == 404:
                 return None
             if status == 403:
-                # Kaggle returns 403 for a new private slug too. Prove absence
-                # with authenticated own inventory; never treat denial alone
-                # as permission to overwrite/create an existing Dataset.
-                cursor, seen = None, set()
-                for _ in range(20):
-                    try:
-                        page = self.api.dataset_list_with_response(mine=True, search=self.slug,
-                            sort_by='updated', page_size=100, page_token=cursor)
-                    except Exception:
-                        raise DatasetPublicationError('dataset_inventory_unavailable') from None
-                    if any(_field(row, 'ref') == self.ref for row in _field(page, 'datasets', []) or []):
-                        raise DatasetPublicationError('dataset_metadata_denied') from None
-                    cursor = _field(page, 'next_page_token')
-                    if not cursor:
-                        return None
-                    if cursor in seen:
-                        break
-                    seen.add(cursor)
+                raise DatasetPublicationError('dataset_metadata_denied') from None
             raise DatasetPublicationError('dataset_metadata_unavailable') from None
         version = _field(value, 'current_version_number')
         if (_field(value, 'is_private') is not True or type(version) is not int or version < 1):
