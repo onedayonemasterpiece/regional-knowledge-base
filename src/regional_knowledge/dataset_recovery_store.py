@@ -15,7 +15,7 @@ import secrets
 import sqlite3
 
 from .kaggle_dataset_base import DatasetCheckpoint
-from .recovery_journal import StoredObject, JournalConflict, JournalLimit
+from .recovery_journal import StoredObject, ObjectRef, JournalConflict, JournalLimit
 
 CONTROL_PAGE_SIZE = 16
 
@@ -44,10 +44,33 @@ class DatasetRecoveryStore:
         if existing is not None:
             if json.loads(existing['checkpoint_json'])!=checkpoint.wire():
                 if not existing['latest_json'] or json.loads(existing['latest_json'])!=checkpoint.wire():
-                    raise JournalConflict('dataset_checkpoint_change_requires_verified_promotion')
-                with queue.connect() as db:
-                    db.execute('UPDATE rkb_dataset_recovery_store SET checkpoint_json=? WHERE storage=?',
-                        (json.dumps(checkpoint.wire(),sort_keys=True,separators=(',',':')),self.storage_identity))
+                    saved=DatasetCheckpoint.from_wire(json.loads(existing['latest_json'] or existing['checkpoint_json']))
+                    if (checkpoint.database_generation!=saved.database_generation
+                            or checkpoint.dataset_version<=saved.dataset_version
+                            or checkpoint.base_sequence<=saved.base_sequence):
+                        raise JournalConflict('dataset_checkpoint_change_requires_verified_promotion')
+                    # Explicit restore input is separate from verified Saved.
+                    # Remember only immutable provider metadata; native prepare
+                    # still verifies the archive/PG before serving or promotion.
+                    manifest_bytes=publisher.read_control(checkpoint.manifest,version=checkpoint.dataset_version)
+                    control_bytes=publisher.read_control(checkpoint.control,version=checkpoint.dataset_version)
+                    manifest=json.loads(manifest_bytes)
+                    control_key=self.prefix+'source-base-control/'+checkpoint.control.sha256
+                    if (manifest_ref!=ObjectRef(self.prefix+'snapshots/manifests/'+checkpoint.manifest.sha256,
+                            checkpoint.manifest.sha256,checkpoint.manifest.size,checkpoint.base_sequence)
+                            or manifest.get('database_generation')!=checkpoint.database_generation
+                            or manifest.get('applied_sequence')!=checkpoint.base_sequence
+                            or manifest.get('source_control')!=dict(key=control_key,
+                                sha256=checkpoint.control.sha256,length=checkpoint.control.size)):
+                        raise JournalConflict('dataset_control_metadata_binding_changed')
+                    with queue.connect() as db:
+                        db.executemany('INSERT OR IGNORE INTO rkb_dataset_recovery_objects VALUES(?,?,?,?,?)',
+                            [(self.storage_identity,key,raw,'dataset:'+str(checkpoint.dataset_version)+':restore',checkpoint.dataset_version)
+                             for key,raw in ((manifest_ref.key,manifest_bytes),(control_key,control_bytes))])
+                else:
+                    with queue.connect() as db:
+                        db.execute('UPDATE rkb_dataset_recovery_store SET checkpoint_json=? WHERE storage=?',
+                            (json.dumps(checkpoint.wire(),sort_keys=True,separators=(',',':')),self.storage_identity))
         else:
             journal_bytes=publisher.read_control(checkpoint.journal,version=checkpoint.dataset_version)
             control_bytes=publisher.read_control(checkpoint.control,version=checkpoint.dataset_version)

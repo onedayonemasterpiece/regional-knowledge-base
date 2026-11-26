@@ -55,6 +55,19 @@ def test_successor_freezes_verified_saved_and_unique_writer_across_restarts(tmp_
     assert next_target.dataset_checkpoint==checkpoint(3,25)
 
 
+def test_explicit_newer_restore_input_is_frozen_without_promoting_saved(tmp_path):
+    queue=BgeQueue(tmp_path/'q.sqlite',clock=lambda:1000.)
+    run=queue.request_startup()['run_id'];saved=checkpoint();candidate=checkpoint(2,20)
+    with queue.connect() as db:
+        db.execute('CREATE TABLE rkb_dataset_recovery_store(checkpoint_json TEXT,latest_json TEXT)')
+        db.execute('INSERT INTO rkb_dataset_recovery_store VALUES(?,NULL)',(json.dumps(saved.wire()),))
+    target=successor_target(queue,restore_target(candidate).wire(),run)
+    assert target.dataset_checkpoint==candidate and target.min_data_seq==20
+    with queue.connect(write=False) as db:
+        row=db.execute('SELECT checkpoint_json,latest_json FROM rkb_dataset_recovery_store').fetchone()
+    assert json.loads(row[0])==saved.wire() and row[1] is None
+
+
 @pytest.mark.parametrize('bad',[checkpoint(2,3),replace(checkpoint(2,20),database_generation='other'),
     replace(checkpoint(2,20),dataset_slug='other-base')])
 def test_successor_rejects_rollback_or_foreign_saved_before_freezing(tmp_path,bad):
