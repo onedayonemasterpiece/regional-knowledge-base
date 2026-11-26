@@ -19,7 +19,8 @@ import uuid
 from .bge_contract import SPACE, validate_vector
 
 IDLE_SECONDS = 1800
-ROTATE_SECONDS = 8 * 3600 + 15 * 60  # Drain/checkpoint before the nine-hour limit.
+ROTATE_SECONDS = 3 * 3600  # Finish accepted work and checkpoint before real rest.
+REST_SECONDS = 3600  # Starts at exact native termination, never at a local Stop request.
 MAX_LIFETIME = 11 * 3600
 HEARTBEAT_SECONDS = 120
 JOB_SECONDS = 180
@@ -233,12 +234,20 @@ class BgeQueue:
         db.execute("update jobs set state='pending',run_id=null,claim=null where state='claimed' and lease_until<=?",(now,))
         self._finalize_provider_terminal_pointers(db)
 
+    @staticmethod
+    def _runtime_rest_until(db):
+        # Reuse the sealed provider receipt; no extra clock, state or scheduler.
+        row=db.execute("SELECT p.receipt_json FROM runs r JOIN bge_provider_terminal_receipts p "
+            "ON p.run_id=r.id WHERE r.ready_at IS NOT NULL ORDER BY r.rowid DESC LIMIT 1").fetchone()
+        return json.loads(row[0])['observed_at']+REST_SECONDS if row else 0
+
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)
         control = db.execute('select * from control where id=1').fetchone()
         if control['startup_failures']>=MAX_STARTUP_FAILURES:
             return control['current_run']
         current = db.execute('select * from runs where id=?',(control['current_run'],)).fetchone()
+        if (current is None or current['launch_state']=='pending') and now<self._runtime_rest_until(db):return None
         if current is None:
             # Reuse a warming successor if the previous serving worker was lost.
             successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
@@ -309,7 +318,7 @@ class BgeQueue:
                 return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
                         'status':'unavailable','reason':'startup_retry_exhausted'}
             return {'protocol':'rkb.startup.v1','startup_ref':startup_ref,
-                    'status':'pending','reason':'target_warming'}
+                    'status':'pending','reason':'runtime_rest' if self.clock()<self._runtime_rest_until(db) else 'target_warming'}
 
     def startup_estimate(self, startup_ref):
         """Read-only, bounded historical hint; never grants launch/read authority.
@@ -1019,7 +1028,8 @@ class BgeQueue:
         successor=db.execute('select * from runs where id=?',(control['successor'],)).fetchone()
         successor_starting=bool(successor and not self._run_expired(successor,now))
         return {'state':run['status'] if run else 'stopped',
-            'reason':'startup_retry_exhausted' if control['startup_failures']>=MAX_STARTUP_FAILURES else None,
+            'reason':'startup_retry_exhausted' if control['startup_failures']>=MAX_STARTUP_FAILURES else
+                ('runtime_rest' if run is None and now<self._runtime_rest_until(db) else None),
             'space':SPACE,'queue_depth':db.execute('select count(*) from jobs where '+LIVE_JOBS).fetchone()[0],
             'successor_starting':successor_starting,
             'lease_remaining_seconds':max(0,run['useful']+IDLE_SECONDS-now) if run else 0}
@@ -1191,6 +1201,8 @@ class BgeQueue:
             # local ready status outlived its process. Do not rewrite that status
             # or any writer/publication state; normal maintenance handles leases.
             db.execute('insert into bge_provider_terminal_receipts values(?,?)',(run['id'],encoded))
+            if run['ready_at'] is not None:
+                _LOG.info('bge_runtime_rest run_id=%s resume_at=%s',run['id'],proof.observed_at+REST_SECONDS)
             db.execute("update runs set channel_active=0,launch_state='terminal' where id=?",
                        (run['id'],))
             table=db.execute("select 1 from sqlite_master where type='table' and name='bge_shared_admission'").fetchone()
@@ -1269,6 +1281,7 @@ class BgeQueue:
         with self.connect() as db:
             row=db.execute('select * from runs where id=?',(run_id,)).fetchone()
             if not row or row['status']!='starting' or row['launch_state']!='pending':return None
+            if self.clock()<self._runtime_rest_until(db):return None
             # The current request is claimed once. Historical run rows retain
             # their original outcomes but do not reserve new development work.
             control=db.execute('select current_run,successor from control where id=1').fetchone()

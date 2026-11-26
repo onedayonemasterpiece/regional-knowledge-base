@@ -239,7 +239,7 @@ def test_scheduled_rotation_drains_before_launching_a_new_owner(tmp_path):
     queue.launch_record(run,'fixture/stable',provider_version=7)
     queue.heartbeat(run,token,ready=True)
     # Drain before nine hours; the new owner must await terminal proof.
-    assert 8 * 3600 <= ROTATE_SECONDS <= 8 * 3600 + 30 * 60
+    assert ROTATE_SECONDS == 3 * 3600
     # Model continuous useful demand without skipping liveness or idle expiry.
     for step in range(1,ROTATE_SECONDS//60+1):
         now[0]=1000.+step*60
