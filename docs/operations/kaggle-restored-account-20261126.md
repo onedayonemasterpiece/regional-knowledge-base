@@ -144,8 +144,8 @@ fences. Development and other non-book jobs do not inherit these book rests.
 Reader pauses alone do not prove the shared notebook is off; the native
 terminal receipt and its one-hour admission delay enforce that separately.
 
-Start with the previously authorized ordinary three-book concurrency, not the
-ten stale active tasks or temporary November 8 surge. Select three existing
+Start with the owner-authorized ordinary six-book concurrency, not all
+ten stale active tasks or temporary November 8 surge. Select six existing
 eligible unfinished books; do not reissue an explicit refusal or accepted
 page. A reader uses ordinary status and the accepted cursor, not a journal
 replay or a second source reader. Increase concurrency only after measured
