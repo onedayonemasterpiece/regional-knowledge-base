@@ -196,12 +196,20 @@ def test_destructive_pruning_is_explicit_and_only_for_verified_package_operation
 
 
 @pytest.mark.parametrize('status',[401,403])
-def test_provider_access_denial_exits_without_publication_or_empty_inventory(status):
+@pytest.mark.parametrize('endpoint',['metadata','status','files'])
+def test_provider_access_denial_exits_without_publication_or_empty_inventory(status,endpoint,caplog):
     api,p,files=setup()
-    def denied(request):
+    def denied(*args,**kwargs):
         error=RuntimeError('private provider message must not be logged')
         error.response=NS(status_code=status)
         raise error
-    api.get_dataset=denied
-    with pytest.raises(SystemExit) as stopped:p.observe()
+    if endpoint=='metadata':api.get_dataset=denied
+    else:
+        api.version=1;api.description=p._description(files,'checkpoint-1')
+        if endpoint=='status':api.dataset_status=denied
+        else:api.dataset_list_files=denied
+    with pytest.raises(SystemExit) as stopped:
+        if endpoint=='metadata':p.observe()
+        else:p.reconcile(files=files,operation='checkpoint-1',expected_version=1)
     assert stopped.value.code==77 and api.mutations==['reserve']
+    assert 'private provider message' not in caplog.text

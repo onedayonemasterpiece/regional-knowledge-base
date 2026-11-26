@@ -78,9 +78,8 @@ class KaggleDatasetPublisher:
             raise SystemExit(77)
 
     @contextmanager
-    def _client(self):
-        try:
-            with self.api.build_kaggle_client() as client:yield client
+    def _provider_boundary(self):
+        try:yield
         except Exception as exc:
             self._access_status(getattr(exc,'status_code',None) or getattr(getattr(exc,'response',None),'status_code',None))
             raise
@@ -102,7 +101,7 @@ class KaggleDatasetPublisher:
         request.content_type = 'application/octet-stream'
         request.last_modified_epoch_seconds = int(now)
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 response = client.blobs.blob_api_client.start_blob_upload(request)
             return DatasetUpload(name, size, sha256, _field(response, 'token'), _field(response, 'create_url'))
         except Exception:
@@ -126,14 +125,12 @@ class KaggleDatasetPublisher:
         request = ApiGetDatasetRequest()
         request.owner_slug, request.dataset_slug = self.owner, self.slug
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 value = client.datasets.dataset_api_client.get_dataset(request)
         except Exception as exc:
             status = getattr(exc, 'status_code', None) or getattr(getattr(exc, 'response', None), 'status_code', None)
             if status == 404:
                 return None
-            if status == 403:
-                raise DatasetPublicationError('dataset_metadata_denied') from None
             raise DatasetPublicationError('dataset_metadata_unavailable') from None
         version = _field(value, 'current_version_number')
         if (_field(value, 'is_private') is not True or type(version) is not int or version < 1):
@@ -146,7 +143,7 @@ class KaggleDatasetPublisher:
         request = ApiGetDatasetRequest()
         request.owner_slug, request.dataset_slug = self.owner, self.slug
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 value = client.datasets.dataset_api_client.get_dataset(request)
         except Exception as error:
             status = getattr(error, 'status_code', None) or getattr(getattr(error, 'response', None), 'status_code', None)
@@ -175,7 +172,7 @@ class KaggleDatasetPublisher:
         request = ApiGetDatasetRequest()
         request.owner_slug, request.dataset_slug = self.owner, self.slug
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 value = client.datasets.dataset_api_client.get_dataset(request)
             matches = [v for v in _field(value, 'versions', []) or []
                        if _field(v, 'version_number') == version]
@@ -200,7 +197,7 @@ class KaggleDatasetPublisher:
         request.file_name,request.dataset_version_number,request.raw=file.name,version,True
         response=None
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 response=client.datasets.dataset_api_client.download_dataset(request)
                 self._access_status(response.status_code)
                 if response.status_code!=200:
@@ -232,7 +229,7 @@ class KaggleDatasetPublisher:
         request.file_name,request.dataset_version_number,request.raw=file.name,version,True
         response=None
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 # Official SDK uses stream=True for HttpRedirect/FileDownload.
                 response=client.datasets.dataset_api_client.download_dataset(request)
                 self._access_status(response.status_code)
@@ -259,14 +256,15 @@ class KaggleDatasetPublisher:
             from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetMetadataRequest
             request = ApiGetDatasetMetadataRequest()
             request.owner_slug, request.dataset_slug = self.owner, self.slug
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 response = client.datasets.dataset_api_client.get_dataset_metadata(request)
-            if (_field(_field(response, 'info'), 'description') != description
-                    or self.api.dataset_status(self.ref) != 'ready'):
-                return False
+            if _field(_field(response, 'info'), 'description') != description:return False
+            with self._provider_boundary():
+                if self.api.dataset_status(self.ref) != 'ready':return False
         observed, cursor, seen = [], None, set()
         for _ in range(10):
-            response = self.api.dataset_list_files(f'{self.ref}/{expected_version}', page_token=cursor, page_size=100)
+            with self._provider_boundary():
+                response = self.api.dataset_list_files(f'{self.ref}/{expected_version}', page_token=cursor, page_size=100)
             if _field(response, 'error_message'):
                 raise DatasetPublicationError('dataset_file_metadata_unavailable')
             for item in _field(response, 'files', []) or []:
@@ -308,7 +306,7 @@ class KaggleDatasetPublisher:
             item.token, item.description = file.token, file.description
             uploaded.append(item)
         try:
-            with self._client() as client:
+            with self._provider_boundary(), self.api.build_kaggle_client() as client:
                 if previous_version is None:
                     request = ApiCreateDatasetRequest()
                     request.owner_slug, request.slug = self.owner, self.slug
