@@ -55,7 +55,9 @@ def _verified_restart_restore(queue, restore, stream):
         key=prefix+'snapshots/manifests/'+checkpoint.manifest.sha256
         manifest=db.execute('SELECT data,covered_version FROM rkb_dataset_recovery_objects '
             'WHERE storage=? AND key=?',(storage,key)).fetchone()
-    if (manifest is None or manifest['covered_version']!=checkpoint.dataset_version
+    # Pruning may reuse these exact immutable bytes from an earlier verified version.
+    if (manifest is None or manifest['covered_version'] is None
+            or not 1<=manifest['covered_version']<=checkpoint.dataset_version
             or len(manifest['data'])!=checkpoint.manifest.size
             or hashlib.sha256(manifest['data']).hexdigest()!=checkpoint.manifest.sha256):
         raise JournalConflict('verified_restart_manifest_unavailable')
