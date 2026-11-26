@@ -784,7 +784,7 @@ async def test_verified_restore_rebinds_only_after_native_terminal(owner,native,
         proof=terminal._NativeTerminalProof(MappingProxyType({k:old_run[k] for k in terminal._SNAPSHOT}),
             1001.,1001.,'COMPLETE',_seal=terminal._OBSERVED)
         assert e.q.retire_provider_reservation(proof)
-        e.q.clock=lambda:4000.
+        e.q.clock=lambda:4601.  # Full native off hour after the sealed1001 receipt.
         e.q.maintenance();state.run=e.q.request_startup()['run_id']
         assert state.run!=e.run
         nonce=e.q.prepare_channel(state.run)
