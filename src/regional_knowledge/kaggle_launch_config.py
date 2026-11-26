@@ -71,10 +71,11 @@ def load_target_launch(path):
 
 
 def successor_target(queue, value, run_id):
-    """Freeze the verified Saved and current run in its existing launch folder.
+    """Freeze the selected restore input and run in its existing launch folder.
 
     A restart reuses these exact pins; a later Saved cannot change a submitted
-    restore. This is launch metadata, not a second recovery pointer.
+    restore. An explicitly configured newer input still needs native restore
+    verification. This is launch metadata, not a second recovery pointer.
     """
     from .kaggle_current_registry import registry_sha256
     from .kaggle_schema_migrate import latest_schema_version
@@ -91,6 +92,11 @@ def successor_target(queue, value, run_id):
     if len(rows)!=1:raise ValueError('one verified Dataset recovery store required')
     checkpoint=json.loads(rows[0]['latest_json'] or rows[0]['checkpoint_json'])
     previous=value['dataset_checkpoint']
+    if (previous['dataset_version']>checkpoint['dataset_version']
+            and previous['base_sequence']>checkpoint['base_sequence']
+            and previous['database_generation']==checkpoint['database_generation']
+            and (previous['owner_slug'],previous['dataset_slug'])==(checkpoint['owner_slug'],checkpoint['dataset_slug'])):
+        checkpoint=previous  # Explicit input; this does not advance verified Saved.
     if (checkpoint['database_generation']!=value['database']['database_generation']
             or checkpoint['base_sequence']<previous['base_sequence']
             or (checkpoint['owner_slug'],checkpoint['dataset_slug'])!=(previous['owner_slug'],previous['dataset_slug'])):
