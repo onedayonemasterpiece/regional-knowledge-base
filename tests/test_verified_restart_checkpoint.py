@@ -173,3 +173,30 @@ def test_store_constructor_can_initialize_or_upgrade_metadata(tmp_path,legacy):
         db.execute('ALTER TABLE rkb_dataset_recovery_store DROP COLUMN latest_json' if legacy
                    else 'DROP TABLE rkb_dataset_recovery_store')
     assert _verified_restart_restore(p.q,config,'stream') is config
+
+
+@pytest.mark.parametrize('already_selected',[False,True])
+def test_verified_pruning_version_reuses_earlier_covered_immutable_manifest(tmp_path,already_selected):
+    p,config,latest,key=setup(tmp_path)
+    reused=replace(latest,dataset_version=3)
+    with p.q.connect() as db:
+        db.execute('UPDATE rkb_dataset_recovery_store SET latest_json=?',(json.dumps(reused.wire()),))
+    if already_selected:
+        config=replace(config,dataset_checkpoint=reused,
+            manifest=ObjectRef(key,reused.manifest.sha256,reused.manifest.size,reused.base_sequence))
+    before=list(p.reads)
+    resumed=_verified_restart_restore(p.q,config,'stream')
+    assert resumed.dataset_checkpoint==reused and resumed.manifest.key==key
+    assert resumed.manifest.sha256==latest.manifest.sha256 and p.reads==before
+    with p.q.connect(write=False) as db:
+        assert db.execute('SELECT covered_version FROM rkb_dataset_recovery_objects WHERE key=?',(key,)).fetchone()[0]==2
+    assert _verified_restart_restore(p.q,resumed,'stream') is resumed
+
+
+@pytest.mark.parametrize('coverage',[0,3])
+def test_invalid_or_future_manifest_coverage_does_not_authorize_restart(tmp_path,coverage):
+    p,config,latest,key=setup(tmp_path)
+    with p.q.connect() as db:
+        db.execute('UPDATE rkb_dataset_recovery_objects SET covered_version=? WHERE key=?',(coverage,key))
+    with pytest.raises(JournalConflict,match='manifest_unavailable'):
+        _verified_restart_restore(p.q,config,'stream')
