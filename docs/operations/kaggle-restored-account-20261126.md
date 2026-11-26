@@ -23,34 +23,42 @@ Never print credentials, signed URLs or private provider error bodies.
 
 ## Dataset history
 
-The owner's ceiling is the current version plus at most three old versions.
-Kaggle's supported create-version request exposes `delete_old_versions`, a
-boolean, rather than a keep-last-three setting. RKB uses that native option:
-new version creation requests deletion of prior version files. This deliberately
-gives up Dataset-history rollback; it does not preserve exactly three previous
-versions. Historical metadata rows can remain visible after their old payloads
-are removed: after the real cleanup, downloading version472's base manifest
-returned HTTP404 even though its number was still listed. Version473 reused the
-same files as474, with no second archive upload. A history-row count alone is
-therefore not a count of retained independent multi-GB snapshots.
+The owner's ceiling is the current version plus at most three old payload
+generations. Kaggle exposes `delete_old_versions`, a boolean, rather than a
+keep-last-three setting. Historical version metadata can remain visible even
+when its unique old file bytes have been removed.
+
+Ordinary capture uses `delete_old_versions=false`: the previous verified copy
+survives while the new archive is read back and checked. After two ordinary
+verified checkpoints, the existing checkpoint owner publishes a metadata-only
+copy of the newest verified package with native pruning enabled. It reuses
+all four exact uploaded files and performs native verification/promotion; it
+does not capture or upload another PG archive. Successful normal cycles leave
+at most two old payload generations before cleanup, reserving one slot for
+provider visibility. This is retention policy, not a Kaggle quota claim or a
+guarantee about delayed external operations.
+
+The pruning request has its own existing seed-table operation key. Its unknown
+submission is read back by that same key; no newer checkpoint or schema
+publication can pass it, because a delayed destructive request could delete
+a newer base. Ordinary imports and reads are not globally paused by this
+publisher fence. A predecessor mismatch detected before create is known not
+sent and may rebind through the existing pending state. A lost response after
+submission never does. The original older, non-pruning unknown intents remain
+intact and do not gain a new global block.
 
 Do not call Dataset deletion with a version number: it deletes the Dataset.
 Do not create rotating Dataset names or accounts to circumvent quotas. No
-separate pruning service, version counter, timer or repeated cleanup request
-is needed. A failed or unknown create-version request is reconciled by its
-existing operation identity and is never blindly resubmitted.
+separate pruning service, scheduler, persisted counter or new phase is used.
+The owner lock, writer guard, pending/publishing/published/verified receipts,
+native readback and Saved pointer already own this work. A current Dataset
+that disappears is not silently recreated by ordinary checkpoint maintenance.
+Native401/403 metadata/file denials exit77 and use the existing systemd fence.
 
-Before installing this retention change for the recovered corpus, finish the
-ordinary physical restore and native verification, retain the independently
-verified recovery notebook output, and verify a new Saved checkpoint. Preserve
-accepted operation receipts and original unknown-publication packages. A green
-PR does not prove provider history was pruned: read the resulting provider
-version history after a successful ordinary publication.
-
-The installation and cleanup are now complete. A new, separately recorded
-retention intent reused the already verified package once. Both the normal
-checkpoint473 and retention version474 passed native readback and became
-verified Saved checkpoints at prefix23153. No old unknown finalize was retried.
+The separately verified recovery notebook output remains the independent
+fallback. The current local accepted journal must be preserved. Green CI and
+this policy do not replace actual verification of the first resumed work/rest
+cycle or a periodic independent backup of later imported data.
 
 ## Rest and request volume
 
@@ -161,11 +169,15 @@ exact receipts prevent parallel retry starts.
 
 Checkpoint publication remains serialized by its existing owner. No per-page
 save or duplicate finalize. Native readback and promotion, not upload alone,
-advance Saved. `delete_old_versions=true` requests native removal of old
+advance Saved. A verified metadata-only copy requests native removal of old
 payloads; historical version metadata can remain visible. Keep the independent
 recovery output and the original unknown intents. Do not claim a literal
 three-row history or create rings of new Dataset names. All restore inputs
 for future runs must resolve the current verified Saved, never deleted472.
+
+The Dev disk currently has about1GiB available; its protected80% steady-state
+storage budget fails. Resolve capacity before activation. Preparation does not
+authorize a paid volume change or deletion of retained recovery evidence.
 
 Before actual activation, inspect the current PG/Saved prefix, current run,
 source/compiler compatibility, private Telegram archive locator, and Dev disk
