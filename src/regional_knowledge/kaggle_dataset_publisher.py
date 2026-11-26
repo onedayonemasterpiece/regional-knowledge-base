@@ -9,6 +9,7 @@ No mutation is retried here; reconcile() is the read-only recovery path.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 import hashlib
 from io import BytesIO
 import json
@@ -70,6 +71,20 @@ class DatasetUpload:
 
 
 class KaggleDatasetPublisher:
+    @staticmethod
+    def _access_status(status):
+        if status in (401,403):
+            logging.getLogger(__name__).error('dataset_provider_access_denied http_status=%s exit_status=77',status)
+            raise SystemExit(77)
+
+    @contextmanager
+    def _client(self):
+        try:
+            with self.api.build_kaggle_client() as client:yield client
+        except Exception as exc:
+            self._access_status(getattr(exc,'status_code',None) or getattr(getattr(exc,'response',None),'status_code',None))
+            raise
+
     def __init__(self, api, *, provider_ref, owner, title='RKB PostgreSQL checkpoints'):
         if (not re.fullmatch(r'[A-Za-z0-9_-]+/[A-Za-z0-9_-]+', provider_ref)
                 or provider_ref.split('/')[0] != owner):
@@ -87,7 +102,7 @@ class KaggleDatasetPublisher:
         request.content_type = 'application/octet-stream'
         request.last_modified_epoch_seconds = int(now)
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 response = client.blobs.blob_api_client.start_blob_upload(request)
             return DatasetUpload(name, size, sha256, _field(response, 'token'), _field(response, 'create_url'))
         except Exception:
@@ -111,7 +126,7 @@ class KaggleDatasetPublisher:
         request = ApiGetDatasetRequest()
         request.owner_slug, request.dataset_slug = self.owner, self.slug
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 value = client.datasets.dataset_api_client.get_dataset(request)
         except Exception as exc:
             status = getattr(exc, 'status_code', None) or getattr(getattr(exc, 'response', None), 'status_code', None)
@@ -131,7 +146,7 @@ class KaggleDatasetPublisher:
         request = ApiGetDatasetRequest()
         request.owner_slug, request.dataset_slug = self.owner, self.slug
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 value = client.datasets.dataset_api_client.get_dataset(request)
         except Exception as error:
             status = getattr(error, 'status_code', None) or getattr(getattr(error, 'response', None), 'status_code', None)
@@ -160,7 +175,7 @@ class KaggleDatasetPublisher:
         request = ApiGetDatasetRequest()
         request.owner_slug, request.dataset_slug = self.owner, self.slug
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 value = client.datasets.dataset_api_client.get_dataset(request)
             matches = [v for v in _field(value, 'versions', []) or []
                        if _field(v, 'version_number') == version]
@@ -185,8 +200,9 @@ class KaggleDatasetPublisher:
         request.file_name,request.dataset_version_number,request.raw=file.name,version,True
         response=None
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 response=client.datasets.dataset_api_client.download_dataset(request)
+                self._access_status(response.status_code)
                 if response.status_code!=200:
                     raise DatasetPublicationError('dataset_control_read_unavailable')
                 data=BytesIO()
@@ -216,9 +232,10 @@ class KaggleDatasetPublisher:
         request.file_name,request.dataset_version_number,request.raw=file.name,version,True
         response=None
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 # Official SDK uses stream=True for HttpRedirect/FileDownload.
                 response=client.datasets.dataset_api_client.download_dataset(request)
+                self._access_status(response.status_code)
                 if (response.status_code!=200 or int(response.headers.get('Content-Length','-1'))!=file.size
                         or origin(response.url)!='https://storage.googleapis.com'
                         or not response.headers.get('ETag')):
@@ -242,7 +259,7 @@ class KaggleDatasetPublisher:
             from kagglesdk.datasets.types.dataset_api_service import ApiGetDatasetMetadataRequest
             request = ApiGetDatasetMetadataRequest()
             request.owner_slug, request.dataset_slug = self.owner, self.slug
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 response = client.datasets.dataset_api_client.get_dataset_metadata(request)
             if (_field(_field(response, 'info'), 'description') != description
                     or self.api.dataset_status(self.ref) != 'ready'):
@@ -266,11 +283,15 @@ class KaggleDatasetPublisher:
         return (sorted(observed) == sorted((f.name, f.size, f.description if historical else None) for f in files)
                 and (historical or self.observe() == expected_version))
 
-    def finalize(self, *, files, operation, previous_version):
+    def finalize(self, *, files, operation, previous_version, delete_old_versions=False):
         from kagglesdk.datasets.types.dataset_api_service import (
             ApiCreateDatasetRequest, ApiCreateDatasetVersionRequest,
             ApiCreateDatasetVersionRequestBody, ApiDatasetNewFile)
+        if type(delete_old_versions) is not bool or delete_old_versions and not operation.startswith('dataset-prune:'):
+            raise DatasetPublicationError('dataset_prune_requires_verified_package_operation')
         description = self._description(files, operation)
+        if delete_old_versions and previous_version is None:
+            raise DatasetPublicationError('dataset_prune_existing_version_required')
         if previous_version is not None and (type(previous_version) is not int or previous_version < 1):
             raise DatasetPublicationError('dataset_previous_version_invalid')
         expected = 1 if previous_version is None else previous_version + 1
@@ -287,7 +308,7 @@ class KaggleDatasetPublisher:
             item.token, item.description = file.token, file.description
             uploaded.append(item)
         try:
-            with self.api.build_kaggle_client() as client:
+            with self._client() as client:
                 if previous_version is None:
                     request = ApiCreateDatasetRequest()
                     request.owner_slug, request.slug = self.owner, self.slug
@@ -297,7 +318,7 @@ class KaggleDatasetPublisher:
                 else:
                     body = ApiCreateDatasetVersionRequestBody()
                     body.version_notes, body.description, body.files = operation, description, uploaded
-                    body.delete_old_versions = True
+                    body.delete_old_versions = delete_old_versions
                     request = ApiCreateDatasetVersionRequest()
                     request.owner_slug, request.dataset_slug, request.body = self.owner, self.slug, body
                     client.datasets.dataset_api_client.create_dataset_version(request)

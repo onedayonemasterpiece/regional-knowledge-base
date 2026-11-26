@@ -162,6 +162,7 @@ class _SchemaCycleCapture(_WorkCycleCapture):
 
 
 class SourceDatasetCheckpoints:
+    MAX_OLD_VERSIONS = 3
     def __init__(self,startup,*,interval_seconds=1800,quiet_seconds=900,clock=time.monotonic,wall_clock=time.time):
         self.startup=startup;self.store=startup.config.spool.journal.store
         if (type(self.store) is not DatasetRecoveryStore or not 1<=interval_seconds<=3600
@@ -291,6 +292,7 @@ class SourceDatasetCheckpoints:
         interleave. The operation key survives lost publication responses.
         """
         async with self._refresh_lock:
+            await self._prune_verified(binding,self.store.latest_checkpoint,pending_only=True)
             if self._versions().get('schema_version')!=schema_version:
                 # Deliberately unavailable until PR-2's version-based native
                 # capture is installed. Never label a legacy hash-pinned base
@@ -312,11 +314,83 @@ class SourceDatasetCheckpoints:
                     (operation_key,version))
             _LOG.info('schema_checkpoint_verified schema_version=%s dataset_version=%s base_sequence=%s',
                 schema_version,version,expected_sequence)
-            return checkpoint
+            await self._prune_verified(binding,checkpoint)
+            return self.store.latest_checkpoint
+
+    async def _prune_verified(self,binding,latest,*,pending_only=False):
+        """Reuse a verified package; an unknown destructive request owns this publisher."""
+        with self.startup.config.queue.connect() as db:
+            row=db.execute("SELECT * FROM rkb_dataset_seed WHERE provider_ref=? AND operation_key LIKE 'dataset-prune:%' "
+                "AND state IN ('pending','publishing','published') ORDER BY rowid LIMIT 1",(self.store.publisher.ref,)).fetchone()
+            if row is None:
+                if pending_only:return False
+                source=db.execute("SELECT * FROM rkb_dataset_seed WHERE provider_ref=? AND version=? AND state='verified'",
+                    (self.store.publisher.ref,latest.dataset_version)).fetchone()
+                if source is None or source['operation_key'].startswith('dataset-prune:'):return False
+                package=json.loads(source['package_json'])
+                recent=db.execute("SELECT operation_key,package_json FROM rkb_dataset_seed WHERE state='verified' "
+                    "AND provider_ref=? AND version<=? ORDER BY version DESC LIMIT ?",
+                    (self.store.publisher.ref,latest.dataset_version,self.MAX_OLD_VERSIONS+1)).fetchall()
+                unpruned=0
+                for entry in recent:
+                    item=json.loads(entry['package_json'])
+                    older=db.execute("SELECT package_json FROM rkb_dataset_seed WHERE provider_ref=? AND version=? AND state='verified'",
+                        (self.store.publisher.ref,item.get('previous_version'))).fetchone()
+                    if entry['operation_key'].startswith('dataset-prune:') or (older and
+                            json.loads(older[0]).get('files')==item.get('files')):break
+                    unpruned+=1
+                # Leave one old-version slot for in-flight provider visibility.
+                if unpruned<self.MAX_OLD_VERSIONS-1:return False
+                files={f['name']:f for f in package['files']}
+                for pin in (latest.manifest,latest.control,latest.journal,latest.archive):
+                    if (files[pin.name]['sha256'],files[pin.name]['size'])!=(pin.sha256,pin.size):
+                        raise CheckpointPending('dataset_prune_verified_package_changed')
+                operation='dataset-prune:'+sha(encode([self.store.publisher.ref,latest.dataset_version]))
+                package['previous_version']=latest.dataset_version
+                db.execute("INSERT INTO rkb_dataset_seed VALUES(?,?,'pending',?,NULL)",
+                    (operation,self.store.publisher.ref,json.dumps(package,separators=(',',':'))))
+                row=db.execute('SELECT * FROM rkb_dataset_seed WHERE operation_key=?',(operation,)).fetchone()
+            operation=row['operation_key'];package=json.loads(row['package_json'])
+        if (package['base_sequence'],package['manifest_sha256'])!=(latest.base_sequence,latest.manifest.sha256):
+            raise CheckpointPending('dataset_prune_saved_prefix_changed')
+        try:
+            if row['state']=='pending':
+                from .kaggle_dataset_publisher import DatasetUpload,DatasetPublicationError
+                async with self.startup.config.writer_owner(self.startup.config.writer_generation):
+                    if not self.startup.checkpoint_binding_current(binding):raise CheckpointPending('dataset_prune_writer_changed')
+                    package['previous_version']=await asyncio.to_thread(self.store.publisher.observe)
+                    with self.startup.config.queue.connect() as db:
+                        db.execute("UPDATE rkb_dataset_seed SET state='publishing',package_json=? WHERE operation_key=?",
+                            (json.dumps(package,separators=(',',':')),operation))
+                    _LOG.info('dataset_verified_files_prune_requested previous_version=%s archive_uploads=0',package['previous_version'])
+                    try:
+                        version=await asyncio.to_thread(self.store.publisher.finalize,
+                            files=tuple(DatasetUpload(**f) for f in package['files']),operation=operation,
+                            previous_version=package['previous_version'],delete_old_versions=True)
+                    except DatasetPublicationError as exc:
+                        if exc.args==('dataset_publication_predecessor_changed',):
+                            # finalize rejected before create: only this known-not-sent
+                            # intent may rebind. Unknown submitted requests stay immutable.
+                            with self.startup.config.queue.connect() as db:
+                                db.execute("UPDATE rkb_dataset_seed SET state='pending' WHERE operation_key=?",(operation,))
+                        raise
+                    with self.startup.config.queue.connect() as db:
+                        db.execute("UPDATE rkb_dataset_seed SET state='published',version=? WHERE operation_key=?",(version,operation))
+            checkpoint,observed,manifest_ref,version=await self._capture_verify(binding,operation,latest)
+            await asyncio.to_thread(self.store.promote,checkpoint,observed,manifest_ref=manifest_ref,
+                current=lambda:self.startup.checkpoint_binding_current(binding))
+            with self.startup.config.queue.connect() as db:
+                db.execute("UPDATE rkb_dataset_seed SET state='verified' WHERE operation_key=?",(operation,))
+            _LOG.info('dataset_verified_files_pruned version=%s base_sequence=%s archive_uploads=0',version,checkpoint.base_sequence)
+            return True
+        except CheckpointPending:raise
+        except Exception as exc:
+            raise CheckpointPending(type(exc).__name__) from exc
 
     async def _refresh(self,binding,*,planned_stop=False):
         startup=self.startup;spool=startup.config.spool;queue=startup.config.queue
         latest=self.store.latest_checkpoint;proof=startup.coverage
+        if await self._prune_verified(binding,latest,pending_only=True):return True
         with queue.connect(write=False) as db:
             # Resume this prefix without resubmission. An older unknown intent
             # stays intact while a newer accepted prefix gets its own checkpoint.
@@ -411,4 +485,5 @@ class SourceDatasetCheckpoints:
         self.dirty_since=None
         _LOG.info('dataset_checkpoint_verified provider_ref=%s version=%s base_sequence=%s settled=%s pending_next_checkpoint=%s',
             self.store.publisher.ref,version,checkpoint.base_sequence,len(keys)-unsettled,unsettled)
+        await self._prune_verified(binding,checkpoint)
         return True

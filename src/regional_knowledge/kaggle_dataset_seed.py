@@ -151,6 +151,9 @@ class SourceDatasetSeed:
             # directly to Kaggle. No provider credential reaches the notebook.
             bridge.snapshot_tickets = self.tickets
             async with self.capture_guard(binding):
+                if self.concurrent_capture and await asyncio.to_thread(self.publisher.observe) is None:
+                    _LOG.error('dataset_checkpoint_existing_dataset_missing exit_status=77')
+                    raise SystemExit(77)
                 proof = self.startup.coverage
                 await self._prepare_prefix(proof)
                 # Read the old accepted/applied boundary and its compact source
