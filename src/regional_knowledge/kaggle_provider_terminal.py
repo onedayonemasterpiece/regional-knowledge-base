@@ -58,6 +58,9 @@ def _request(name, ref, number):
 
 def _body(response, maximum, deadline, monotonic):
     try:
+        if response.status_code in (401,403):
+            from requests import HTTPError
+            raise HTTPError('native access denied',response=response)
         if response.status_code != 200:
             raise ValueError('native response not successful')
         length = response.headers.get('Content-Length')
@@ -180,7 +183,8 @@ def observe_version_terminal(api, run, *, clock=time.time, monotonic=time.monoto
                 or ended < began or began <= run['heartbeat']):
             return None
         return _NativeTerminalProof(snapshot, began, ended, phase, _seal=_OBSERVED)
-    except Exception:
+    except Exception as error:
+        if getattr(getattr(error,'response',None),'status_code',None) in (401,403):raise
         # Body/error text may contain secrets. Controller records only UNKNOWN;
         # failed capability/transport never retires a reservation.
         return None

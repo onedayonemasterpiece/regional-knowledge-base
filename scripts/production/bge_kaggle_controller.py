@@ -188,8 +188,11 @@ def reconcile_provider_history(api, queue, *, limit=2, current_only=False):
                     logging.info(json.dumps({'event':'bge_provider_session_unknown',
                         'run_id':run['id'],'provider_version':run['provider_version']}))
         except Exception as error:
+            facts=provider_error_facts(error)
             logging.warning(json.dumps({'event':'bge_provider_reconciliation_failed',
-                'run_id':run['id'],'error_type':type(error).__name__}))
+                'run_id':run['id'],**facts}))
+            if facts.get('http_status') in (401,403):
+                raise SystemExit(77) from None
         finally:
             if not current_only:queue.advance_provider_reconciliation(run['_cursor'])
     return retired
@@ -347,6 +350,7 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                                 logging.info(json.dumps({'event':'bge_dataset_preflight',
                                     'run_id':run_id,'ready':dataset_probe.ready,'reason':dataset_probe.reason,
                                     'dataset_count':dataset_probe.dataset_count,'file_count':dataset_probe.file_count}))
+                                if dataset_probe.reason=='dataset_access_denied':raise SystemExit(77)
                         if dataset_probe is None or not dataset_probe.ready:continue
                     token=queue.launch_claim(run_id,provider_ref=ref)
                     if token is None:continue
@@ -409,6 +413,8 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
                 # No error.message, URL, notebook bytes, token, or tracebacks
                 # enter the durable journal. The step is a fixed source label.
                 logging.warning(json.dumps(provider_boundary_report(error,run_id,boundary,preparation_step)))
+                if provider_error_facts(error).get('http_status') in (401,403):
+                    raise SystemExit(77) from None
         time.sleep(5)
 
 if __name__=='__main__':main()

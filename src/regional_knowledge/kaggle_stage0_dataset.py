@@ -103,7 +103,10 @@ def probe_stage0_datasets(api,stage0):
             # tick, never to make a launch claim while still warming.
             if _observation(api,owner,slug)!=before or before[1] and api.dataset_status(ref)!='ready':
                 return result(False,'dataset_changed_during_probe')
-        except Exception:
+        except Exception as error:
             # SDK errors may contain signed URLs, private refs or credentials.
+            status=(getattr(error,'status_code',None)
+                    or getattr(getattr(error,'response',None),'status_code',None))
+            if status in (401,403):return result(False,'dataset_access_denied')
             return result(False,'dataset_observation_unavailable')
     return result(True,'ready')
