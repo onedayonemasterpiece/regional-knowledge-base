@@ -8,7 +8,6 @@ import ast
 import logging
 import os
 from pathlib import Path
-import shlex
 import re
 import sqlite3
 import time
@@ -290,11 +289,8 @@ def main(*, target_spec=None, recovery_journal=None, target_config_path=None):
         if re.fullmatch(r'gcr\.io/kaggle-images/python@sha256:[0-9a-f]{64}',image) is None:
             raise ValueError('target launch requires exact RKB_BGE_DOCKER_IMAGE digest')
     else:image=None
-    for line in Path('/home/dev/.env').read_text().splitlines():
-        if line.startswith(('KAGGLE_USERNAME=','KAGGLE_KEY=')):
-            key,value=line.split('=',1);os.environ[key]=shlex.split(value)[0]
-    from kaggle.api.kaggle_api_extended import KaggleApi
-    api=KaggleApi();api.authenticate()
+    from regional_knowledge.kaggle_dataset_publisher import authenticated_service_api
+    api=authenticated_service_api()
     queue=BgeQueue(os.environ['RKB_BGE_QUEUE_PATH'])
     template=Path(__file__).with_name('bge_kaggle_worker.py').read_text()
     broker=os.environ['RKB_BGE_BROKER_URL']

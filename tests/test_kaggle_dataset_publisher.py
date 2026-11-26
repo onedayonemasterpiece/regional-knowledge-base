@@ -116,7 +116,7 @@ def test_real_kaggle_json_upload_origin_is_supported():
     assert value.size==56_422_400
 
 
-def test_403_requires_independent_owned_inventory_absence():
+def test_403_never_becomes_permission_to_create_from_empty_inventory():
     api, p, files = setup()
     def denied(request):
         exc = RuntimeError('denied')
@@ -124,7 +124,8 @@ def test_403_requires_independent_owned_inventory_absence():
         raise exc
     api.get_dataset = denied
     api.dataset_list_with_response = lambda **kwargs: NS(datasets=[], next_page_token=None)
-    assert p.observe() is None
+    with pytest.raises(DatasetPublicationError, match='metadata_denied'):
+        p.observe()
     api.dataset_list_with_response = lambda **kwargs: NS(datasets=[NS(ref=p.ref)], next_page_token=None)
     with pytest.raises(DatasetPublicationError, match='metadata_denied'):
         p.observe()
