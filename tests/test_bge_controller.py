@@ -92,7 +92,8 @@ def maintenance_main_fixture(monkeypatch,tmp_path):
         SimpleNamespace(KaggleApi=lambda:api))
     read_text=Path.read_text
     monkeypatch.setattr(Path,'read_text',lambda self,*a,**kw:
-        '' if self==Path('/home/dev/.env') else read_text(self,*a,**kw))
+        'KAGGLE_RKB_USERNAME=fixture-owner\nKAGGLE_RKB_KEY=fixture-secret\n'
+        if self==Path('/home/dev/.env') else read_text(self,*a,**kw))
     monkeypatch.setenv('RKB_BGE_TARGET_CONFIG','')
     monkeypatch.setenv('RKB_BGE_QUEUE_PATH',str(queue.path))
     monkeypatch.setenv('RKB_BGE_BROKER_URL','https://fixture.invalid')
