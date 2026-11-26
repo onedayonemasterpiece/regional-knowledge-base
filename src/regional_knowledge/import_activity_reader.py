@@ -76,6 +76,7 @@ class ImportActivityReader:
             ).fetchone()
             warming = db.execute("SELECT 1 FROM control c JOIN runs r ON r.id=c.current_run "
                                  "WHERE c.id=1 AND r.status IN ('starting','draining')").fetchone()
+            warming = warming or self.importer.queue._status(db,self.importer.queue.clock())['reason']=='runtime_rest'
             pending = native["pending_operation_key"] if native else None
             # A committed catalog is not an in-flight save; status settles its local cursor later.
             if pending and pending.startswith(f"source-catalog:{ingestion_id}:") and db.execute(
