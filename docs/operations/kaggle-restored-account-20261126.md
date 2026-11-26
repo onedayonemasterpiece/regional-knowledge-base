@@ -23,34 +23,42 @@ Never print credentials, signed URLs or private provider error bodies.
 
 ## Dataset history
 
-The owner's ceiling is the current version plus at most three old versions.
-Kaggle's supported create-version request exposes `delete_old_versions`, a
-boolean, rather than a keep-last-three setting. RKB uses that native option:
-new version creation requests deletion of prior version files. This deliberately
-gives up Dataset-history rollback; it does not preserve exactly three previous
-versions. Historical metadata rows can remain visible after their old payloads
-are removed: after the real cleanup, downloading version472's base manifest
-returned HTTP404 even though its number was still listed. Version473 reused the
-same files as474, with no second archive upload. A history-row count alone is
-therefore not a count of retained independent multi-GB snapshots.
+The owner's ceiling is the current version plus at most three old payload
+generations. Kaggle exposes `delete_old_versions`, a boolean, rather than a
+keep-last-three setting. Historical version metadata can remain visible even
+when its unique old file bytes have been removed.
+
+Ordinary capture uses `delete_old_versions=false`: the previous verified copy
+survives while the new archive is read back and checked. After two ordinary
+verified checkpoints, the existing checkpoint owner publishes a metadata-only
+copy of the newest verified package with native pruning enabled. It reuses
+all four exact uploaded files and performs native verification/promotion; it
+does not capture or upload another PG archive. Successful normal cycles leave
+at most two old payload generations before cleanup, reserving one slot for
+provider visibility. This is retention policy, not a Kaggle quota claim or a
+guarantee about delayed external operations.
+
+The pruning request has its own existing seed-table operation key. Its unknown
+submission is read back by that same key; no newer checkpoint or schema
+publication can pass it, because a delayed destructive request could delete
+a newer base. Ordinary imports and reads are not globally paused by this
+publisher fence. A predecessor mismatch detected before create is known not
+sent and may rebind through the existing pending state. A lost response after
+submission never does. The original older, non-pruning unknown intents remain
+intact and do not gain a new global block.
 
 Do not call Dataset deletion with a version number: it deletes the Dataset.
 Do not create rotating Dataset names or accounts to circumvent quotas. No
-separate pruning service, version counter, timer or repeated cleanup request
-is needed. A failed or unknown create-version request is reconciled by its
-existing operation identity and is never blindly resubmitted.
+separate pruning service, scheduler, persisted counter or new phase is used.
+The owner lock, writer guard, pending/publishing/published/verified receipts,
+native readback and Saved pointer already own this work. A current Dataset
+that disappears is not silently recreated by ordinary checkpoint maintenance.
+Native401/403 metadata/file denials exit77 and use the existing systemd fence.
 
-Before installing this retention change for the recovered corpus, finish the
-ordinary physical restore and native verification, retain the independently
-verified recovery notebook output, and verify a new Saved checkpoint. Preserve
-accepted operation receipts and original unknown-publication packages. A green
-PR does not prove provider history was pruned: read the resulting provider
-version history after a successful ordinary publication.
-
-The installation and cleanup are now complete. A new, separately recorded
-retention intent reused the already verified package once. Both the normal
-checkpoint473 and retention version474 passed native readback and became
-verified Saved checkpoints at prefix23153. No old unknown finalize was retried.
+The separately verified recovery notebook output remains the independent
+fallback. The current local accepted journal must be preserved. Green CI and
+this policy do not replace actual verification of the first resumed work/rest
+cycle or a periodic independent backup of later imported data.
 
 ## Rest and request volume
 
@@ -117,3 +125,128 @@ the final API-only release; no additional compute notebook was started for it.
 
 Official references: [Dataset version publication and pruning](https://github.com/Kaggle/kaggle-cli/blob/main/docs/datasets.md),
 [Kaggle notebook lifecycle](https://www.kaggle.com/docs/notebooks).
+
+
+## Safe mass-import preparation requested November 26
+
+Preparation does not itself enable readers. Keep the read-only MCP profile and
+import-activity receiver disabled while staging the launch configuration.
+Never automatically reactivate all historical `active` Launcher tasks: their
+last reports include explicit refusals, finished books and unknown deliveries.
+
+Reuse the existing run lifecycle: after three hours the current notebook drains
+accepted work, performs its existing checkpoint-before-stop path, and ends.
+A subsequent productive notebook cannot launch until one hour after the exact
+native terminal receipt. A local lease expiry or Stop request does not start
+that hour. Pending demand survives the rest and resumes through ordinary
+maintenance. Failed cold starts that never reached READY retain the existing
+finite startup-failure budget rather than gaining an artificial rest.
+This is an owner workload policy, not a documented Kaggle quota or a guarantee
+against moderation false positives. Queries share the notebook's off window.
+The existing idle drain after thirty minutes without useful work remains.
+
+Restore Launcher book cycles independently: no new turn after three hours,
+finish the issued turn, then the existing full 35–90-minute pause. Preserve
+book IDs, cycle clocks, accepted pages, unknown sends and explicit-refusal
+fences. Development and other non-book jobs do not inherit these book rests.
+Reader pauses alone do not prove the shared notebook is off; the native
+terminal receipt and its one-hour admission delay enforce that separately.
+
+Start with the owner-authorized ordinary six-book concurrency, not all
+ten stale active tasks or temporary November 8 surge. Select six existing
+eligible unfinished books; do not reissue an explicit refusal or accepted
+page. A reader uses ordinary status and the accepted cursor, not a journal
+replay or a second source reader. Increase concurrency only after measured
+full-cycle throughput and storage headroom, under the owner's existing limits.
+
+Use one private CPU notebook, one stable slug, the dedicated RKB credential
+pair and existing shared admission. Preserve at least one query slot. On an
+actual 401/403, stop that provider path; do not switch identities or turn a
+denial into an empty Dataset inventory. Keep systemd's exit77 denial fence
+and bounded restarts. Honor provider quota and Retry-After; do not quota-poll
+or add keepalive queries. The controller's existing single launch intent and
+exact receipts prevent parallel retry starts.
+
+Checkpoint publication remains serialized by its existing owner. No per-page
+save or duplicate finalize. Native readback and promotion, not upload alone,
+advance Saved. A verified metadata-only copy requests native removal of old
+payloads; historical version metadata can remain visible. Keep the independent
+recovery output and the original unknown intents. Do not claim a literal
+three-row history or create rings of new Dataset names. All restore inputs
+for future runs must resolve the current verified Saved, never deleted472.
+
+The corpus, scans, models and PostgreSQL working data remain in Kaggle. Dev
+keeps its bounded raw spool and durable control journal. The root operator
+incorrectly turned a shared-volume20% free-space observation into a demand for
+20GB of additional import space. That new activation condition was withdrawn
+after the owner challenged it. It was not a measured import requirement.
+The overall protected capacity criteria remain separate and are not declared
+passed by this correction. No paid resize was performed.
+
+Before actual activation, inspect the current PG/Saved prefix, current run,
+source/compiler compatibility, private Telegram archive locator, and Dev disk
+headroom. Restore intake only for the next ordinary matching worker; enabling
+an API receiver does not give an already running query-only worker Telegram
+capabilities. Do not rotate a notebook merely to test readiness. Stage full
+import settings privately and leave them disconnected until launch.
+
+Measure the first resumed work across a complete work/rest cycle: unique new
+TEXT physical pages and SEM separately, accepted versus Saved, provider
+versions and request errors, actual assigned slot-hours including rest and
+outage, plus runtime-off duration. Packet speed is not sustained throughput.
+A fresh capture/restore and exact terminal after productive import still need
+live observation once import is actually authorized; local tests cannot stand
+in for that outcome.
+
+
+## November27 preparation delivery (Kaliningrad time)
+
+Launcher113 is installed with the owner-authorized six slots and original
+35–90-minute book rests. Exact refused duplicate tasks are excluded without
+resending their prompts. The private full-import configuration is staged,
+but the actual service still exposes only five read-only MCP tools. Imports
+have not started; previously accepted pages are not new work.
+
+PR884 passed both Python jobs and the notebook-envelope check, merged as
+5775716397582def68c6b1f8b58775a7842a6440. Compatiblef51b5552 was installed
+in the existing API/controller units. Native281 had already ended normally;
+no notebook was started for the host release. Existing Saved474/base23153
+and all original unknown publication intents were retained.
+
+Independent backup of Saved474 completed at01:07 on November27: four files,
+4,671,112,994 bytes in the existing private Yandex Object Storage bucket. The
+PG archive is3,920,465,920bytes, SHA-256
+5814fba864fec5bdba259fd35fc375ef566f81cb3501ba88a11544e11bc71f2f.
+Source size/hash were checked while streaming; S3 object metadata was read
+back, and the final index was written last and then read successfully. No
+archive was stored on Dev, no new PG capture or Kaggle publication occurred.
+The first operator readback mistook metadata key `Sha256` for missing
+`sha256`; the second invocation reused the already uploaded archive and only
+completed the remaining files/index. A PG restore from this independent S3
+copy has not been run; the identical source Saved474 had native verification.
+
+The existing native Codex wake mechanism can perform the weekly copy. It
+reuses the same immutable Saved manifest key: unchanged Saved means no new
+archive transfer. Do not add a service, keepalive notebook, second reader,
+new Dataset ring, credential identity or repeated finalize. The next weekly
+backup deadline is December4 at01:07 Kaliningrad; a pending native receipt
+will be required before claiming that future work is scheduled.
+
+Disk cleanup removed11 own clean merged worktrees and34 inactive immutable
+source releases after exact ancestry and live-reference checks. Git history
+and active/rollback releases remain. This recovered2,890,000,000bytes;
+about3.5GB was available afterwards. Production data, retained recovery
+evidence, accepted journals, private configurations and other projects were
+not deleted. Earlier identical synthetic test bytes were deduplicated while
+preserving their paths and content.
+
+A restart exposed another precise issue: the same manifest reused by verified
+versions473 and474 retained first coverage473 in the local metadata cache.
+The restart selector required equality with474 and exited. Reading the exact
+verified474 manifest and reconciling its local alias restored the API.
+PR885 removes that unnecessary version equality while preserving verified
+coverage, current Saved identity, generation, cursor, SHA, size and ABI checks.
+Two distinguishing cases fail before the fix;56 affected compatible tests
+and32 integration restart tests pass. Invalid/future/unverified coverage
+remains rejected. As of this report, full CI for PR885 is running and that
+permanent fix is not deployed. Import stays off until delivery is complete.
