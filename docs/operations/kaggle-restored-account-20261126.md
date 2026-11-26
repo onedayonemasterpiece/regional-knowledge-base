@@ -26,9 +26,13 @@ Never print credentials, signed URLs or private provider error bodies.
 The owner's ceiling is the current version plus at most three old versions.
 Kaggle's supported create-version request exposes `delete_old_versions`, a
 boolean, rather than a keep-last-three setting. RKB uses that native option:
-each successful new version replaces the previous history, leaving the current
-version and zero old versions. This deliberately gives up Dataset-history
-rollback; it does not claim to preserve three previous versions.
+new version creation requests deletion of prior version files. This deliberately
+gives up Dataset-history rollback; it does not preserve exactly three previous
+versions. Historical metadata rows can remain visible after their old payloads
+are removed: after the real cleanup, downloading version472's base manifest
+returned HTTP404 even though its number was still listed. Version473 reused the
+same files as474, with no second archive upload. A history-row count alone is
+therefore not a count of retained independent multi-GB snapshots.
 
 Do not call Dataset deletion with a version number: it deletes the Dataset.
 Do not create rotating Dataset names or accounts to circumvent quotas. No
@@ -43,6 +47,11 @@ accepted operation receipts and original unknown-publication packages. A green
 PR does not prove provider history was pruned: read the resulting provider
 version history after a successful ordinary publication.
 
+The installation and cleanup are now complete. A new, separately recorded
+retention intent reused the already verified package once. Both the normal
+checkpoint473 and retention version474 passed native readback and became
+verified Saved checkpoints at prefix23153. No old unknown finalize was retried.
+
 ## Rest and request volume
 
 The existing queue requests idle drain after 1,800 seconds without useful work.
@@ -50,6 +59,14 @@ Idle shutdown must not itself generate demand for another notebook. Keep this
 normal idle behavior; do not run synthetic queries to keep compute alive.
 Long sessions retain the existing finite lifetime and checkpoint-before-stop
 path. Provider Retry-After and quota responses take precedence over demand.
+There is no separate mandatory hour-long cooldown under continuous genuine
+demand in this query-only release. Define and verify that workload policy before
+resuming mass import; idle shutdown is not a claim to have implemented it.
+
+Both existing units are enabled for reboot. Existing systemd restart bounds
+are three starts within300 seconds and a30-second restart delay; code77 does
+not restart. No new service or agent timer was added. The account appeal's
+false-positive finding remains the attribution, not any inferred resource cause.
 
 Reuse existing bounded status observation and the same in-flight startup ref.
 Read local progress while restore runs rather than repeatedly asking Kaggle
@@ -66,7 +83,37 @@ compressed archive was independently streamed and SHA-256 checked on November
 26; no second full replay was run. The recorded PostgreSQL restore and SQL
 probe for that recovery output succeeded during the recovery task.
 
-The ordinary service starts from version 472 and reconciles the short accepted
-tail. It must report actual native coverage and query results before claiming
-it has reached or exceeded recovery output 40. The four trailing pending or
-unknown operations retain their original identities and guards.
+The ordinary service restored version472, applied43 original accepted commands
+and verified both PG and the search projection at23153 with no pending write.
+The four trailing commands used their original identities. This is a longer
+verified accepted prefix than the recovery output's23149. A fresh COUNT of every
+domain table was not performed; the earlier66-source/10666-page totals belong
+to the recovery report, not a new census of the current PG.
+
+Three real OAuth/MCP evidence searches returned sources in1.0–1.6 seconds.
+The connected app itself was then tested: its existing `search` returned a
+sourced answer about the university's400th anniversary, and `fetch` read the
+same passage with bibliography and page. That separate query took about8.5s;
+these are measured examples, not a general latency guarantee. The earlier
+`Unknown tool: search` failure was fixed by reusing the same existing authorized
+source read declarations in the live profile, without enabling import methods.
+
+The compressed recovery archive's full byte hash was checked independently.
+The existing full PostgreSQL restore and SQL-probe evidence for that archive
+comes from the recovery task. The current runtime's physical restore and native
+verification were performed again on the selected Dataset plus its short tail.
+Book-by-book semantic completeness was not re-reviewed. Imports remain off.
+
+Source fixes and their exact full CI: PRs
+[879](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/879),
+[880](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/880),
+[881](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/881),
+[882](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/882), and
+[883](https://github.com/onedayonemasterpiece/regional-knowledge-base/pull/883).
+All were merged after both Python CI jobs passed. The installed compatible
+release preserves the accepted-command compiler rather than blindly replacing
+it with the integration compiler. The existing notebook was retained across
+the final API-only release; no additional compute notebook was started for it.
+
+Official references: [Dataset version publication and pruning](https://github.com/Kaggle/kaggle-cli/blob/main/docs/datasets.md),
+[Kaggle notebook lifecycle](https://www.kaggle.com/docs/notebooks).
