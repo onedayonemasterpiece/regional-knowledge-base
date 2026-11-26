@@ -14,7 +14,7 @@ from test_stage0_dataset_readiness import Api
 
 
 @pytest.mark.parametrize('scenario',[
-    'warming_then_ready','warming_only','observation_error','writer_conflict','lost_push_ack','already_unknown','incompatible_latest',
+    'warming_then_ready','warming_only','observation_error','writer_conflict','lost_push_ack','already_unknown','incompatible_latest','denied401','denied403',
 ])
 def test_main_observes_dataset_before_claim_and_preserves_existing_launch_boundaries(
         tmp_path,monkeypatch,caplog,scenario):
@@ -46,7 +46,12 @@ def test_main_observes_dataset_before_claim_and_preserves_existing_launch_bounda
                             for size in (1,2,1,2,1,2)]
         def authenticate(self):pass
         def get_dataset(self,request):
-            events.append('dataset_observation');return super().get_dataset(request)
+            events.append('dataset_observation')
+            if scenario.startswith('denied'):
+                error=RuntimeError('private provider detail')
+                error.response=SimpleNamespace(status_code=int(scenario[-3:]))
+                raise error
+            return super().get_dataset(request)
         def dataset_status(self,ref):
             if scenario=='observation_error':raise RuntimeError('private signed provider detail')
             return super().dataset_status(ref)
@@ -80,6 +85,12 @@ def test_main_observes_dataset_before_claim_and_preserves_existing_launch_bounda
         ticks.append(list(events));now[0]+=15
         if len(ticks)==3:raise StopLoop
     monkeypatch.setattr(module.time,'sleep',tick)
+    if scenario.startswith('denied'):
+        with pytest.raises(SystemExit) as stopped:module.main(target_spec=target)
+        assert stopped.value.code==77
+        assert events.count('dataset_observation')==1 and not ticks
+        assert 'claim' not in events and 'push' not in events
+        return
     with pytest.raises(StopLoop):module.main(target_spec=target)
     state=maintenance()[0]
     if scenario=='warming_then_ready':

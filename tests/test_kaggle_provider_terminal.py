@@ -272,6 +272,35 @@ def test_live_known_successor_is_not_probed_or_retired(env):
     assert q.launch_claim(successor, provider_ref=REF) is not None
 
 
+@pytest.mark.parametrize('status',[401,403])
+def test_history_access_denial_stops_controller_without_retiring_original(env,caplog,status):
+    q,now,rid,row=env
+    api=API(row())
+    def denied():
+        error=RuntimeError('PRIVATE provider payload')
+        error.response=SimpleNamespace(status_code=status)
+        raise error
+    api.on_status=denied
+    with pytest.raises(SystemExit) as stopped:
+        controller().reconcile_provider_history(api,q)
+    assert stopped.value.code==77 and len(api.calls)==1
+    assert row()['launch_state']=='dispatched'
+    with q.connect(write=False) as db:
+        assert db.execute('select count(*) from bge_provider_terminal_receipts').fetchone()[0]==0
+    assert 'PRIVATE' not in caplog.text
+
+
+@pytest.mark.parametrize('status',[401,403])
+def test_denied_native_response_keeps_status_without_reading_private_body(status):
+    from requests import HTTPError
+    response=Response();response.status_code=status
+    response.iter_content=lambda **kw:pytest.fail('private denial body read')
+    with pytest.raises(HTTPError) as denied:
+        native._body(response,1024,10.,lambda:1.)
+    assert denied.value.response is response and response.closed
+    assert str(denied.value)=='native access denied'
+
+
 def test_archived_unknown_does_not_block_current_development_after_retirement(env):
     q, now, rid, row = env
     with q.connect() as db:
