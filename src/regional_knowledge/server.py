@@ -1439,7 +1439,7 @@ def build_server(
                 **({'document_ids': document_ids} if document_ids is not None else {}),
             )))
 
-        return mcp
+        if selected != 'kaggle_source':return mcp
 
     _search_policy = (
         "Search/fetch checklist:\n"
@@ -1509,6 +1509,8 @@ def build_server(
         if id is None or any(value is not None for value in (page_start,page_end,after_ordinal)):
             raise ToolError('{"status":"invalid_query","reason":"invalid_input"}')
         return await backend.fetch(id, _principal())
+
+    if profile == 'live':return mcp
 
     from .illustration_ui import (
         ILLUSTRATION_UI_URI, ILLUSTRATION_UI_MIME,
