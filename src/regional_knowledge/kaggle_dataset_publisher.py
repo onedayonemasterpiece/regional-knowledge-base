@@ -297,7 +297,7 @@ class KaggleDatasetPublisher:
                 else:
                     body = ApiCreateDatasetVersionRequestBody()
                     body.version_notes, body.description, body.files = operation, description, uploaded
-                    body.delete_old_versions = False
+                    body.delete_old_versions = True
                     request = ApiCreateDatasetVersionRequest()
                     request.owner_slug, request.dataset_slug, request.body = self.owner, self.slug, body
                     client.datasets.dataset_api_client.create_dataset_version(request)

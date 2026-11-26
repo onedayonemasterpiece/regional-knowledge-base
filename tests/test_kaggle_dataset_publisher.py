@@ -53,7 +53,7 @@ class FakeApi:
             raise TimeoutError('lost acknowledgment')
 
     def create_dataset_version(self, request):
-        assert request.body.delete_old_versions is False
+        assert request.body.delete_old_versions is True
         self.version += 1
         self.description = request.body.description
         self.mutations.append('version')
@@ -76,7 +76,7 @@ def test_direct_grant_then_lost_create_ack_reconciles_without_duplicate():
     assert 'private-token' not in repr(files[0]) and 'secret=' not in repr(files[0])
 
 
-def test_new_version_keeps_previous_and_requires_exact_package():
+def test_new_version_prunes_history_and_requires_exact_package():
     api, p, files = setup()
     p.finalize(files=files, operation='checkpoint-7', previous_version=None)
     assert p.finalize(files=files, operation='checkpoint-8', previous_version=1) == 2
