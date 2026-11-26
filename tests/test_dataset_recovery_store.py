@@ -54,6 +54,43 @@ def prepared(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('case',['newer','regressed','different_database','control_mismatch'])
+async def test_explicit_newer_restore_input_never_promotes_saved(tmp_path,case):
+    from dataclasses import replace
+    from regional_knowledge.recovery_journal import JournalConflict
+    p=prepared(tmp_path);sequence=6 if case=='regressed' else 8
+    generation='another-db' if case=='different_database' else 'db'
+    control=encode(dict(codec='rkb.source-base-control.v1',database_generation=generation,sequence=sequence))
+    control_key=p.prefix+'source-base-control/'+sha(control)
+    manifest=encode(dict(database_generation=generation,applied_sequence=sequence,
+        source_control=dict(key=control_key,sha256='0'*64 if case=='control_mismatch' else sha(control),length=len(control))))
+    candidate=replace(p.checkpoint,dataset_version=2,database_generation=generation,base_sequence=sequence,
+        manifest=DatasetFile('base-manifest.json',len(manifest),sha(manifest)),
+        control=DatasetFile('source-control.json',len(control),sha(control)))
+    ref=ObjectRef(p.prefix+'snapshots/manifests/'+sha(manifest),sha(manifest),len(manifest),sequence)
+    reads=[]
+    class Publisher:
+        ref=p.publisher.ref
+        def read_control(self,file,*,version):
+            assert version==2 and file.name!='journal-control.json'
+            reads.append(file.name)
+            return {'base-manifest.json':manifest,'source-control.json':control}[file.name]
+    if case!='newer':
+        with pytest.raises(JournalConflict):
+            DatasetRecoveryStore(p.q,checkpoint=candidate,manifest_ref=ref,publisher=Publisher(),writer_guard=p.guard,stream='stream')
+        assert p.store.latest_checkpoint==p.checkpoint
+        return
+    restored=DatasetRecoveryStore(p.q,checkpoint=candidate,manifest_ref=ref,publisher=Publisher(),writer_guard=p.guard,stream='stream')
+    assert restored.checkpoint==candidate and restored.latest_checkpoint==p.checkpoint
+    assert sorted(reads)==['base-manifest.json','source-control.json']
+    assert (await restored.read(ref.key,max_bytes=4096)).data==manifest
+    assert (await restored.read(control_key,max_bytes=4096)).data==control
+    assert (await restored.read(p.prefix+'commands/one',max_bytes=100)).data==b'original accepted command'
+    assert DatasetSnapshotTransport(restored).matches(BlobRef('dataset-blobs/op/'+candidate.archive.name,
+        candidate.archive.size,candidate.archive.sha256,'etag'))
+
+
+@pytest.mark.asyncio
 async def test_pending_write_work_does_not_scale_with_saved_journal_history(tmp_path,monkeypatch):
     p=prepared(tmp_path);key=p.prefix+'outcomes/pending'
     assert await p.store.compare_and_swap(key,b'pending',expected_token=None,writer_generation='writer')
