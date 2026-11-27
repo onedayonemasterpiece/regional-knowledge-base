@@ -723,7 +723,7 @@ class NativeSourceIntake:
             if missing:
                 return self.importer._output(row, 'needs_review',
                     'Continue the existing import on pages without an APPLIED semantic packet; '
-                    'retain exact text and correct the reviewed semantic input, then finalize.',
+                    'use the returned accepted_page for the existing semantic correction path, retaining its exact text and identities; correct the reviewed semantic input, then finalize.',
                     'continue_pages', next_cursor=str(min(missing)), source_archive_status='verified')
         if state['packet_mode'] and (state.get('read_completion_requested') or state['phase']=='finalized'):
             receipt=receipt or await self.importer._receipt(access,row)
@@ -988,7 +988,7 @@ class NativeSourceIntake:
         await self._check(access,row)
         state=await asyncio.to_thread(self._state,row)
         if state is None: raise _failure('stage_before_validate',status='invalid_query')
-        return self._output(row,await self._packet_progress(access,row,await self._drive(access,row,state)))
+        return await self.status(access, row)
 
     @_timed_native_phase('materialize')
     async def finalize(self, access, row, *, receipt=None):

@@ -2081,6 +2081,11 @@ async def test_completion_resumes_older_rejected_semantic_packet(native_intake, 
             assert (await call(s, book, 'status')).state == 'finalized'
         resumed = await call(s, book, 'status')
         assert (resumed.next_action, resumed.next_cursor) == ('continue_pages', '0')
+        before_validate = operation_count(s)
+        validated = await call(s, book, 'validate')
+        assert (validated.state, validated.next_action, validated.next_cursor) == (resumed.state, resumed.next_action, resumed.next_cursor)
+        assert 'accepted_page' in validated.message
+        assert operation_count(s) == before_validate
     with pytest.raises(ToolError, match='native_candidate_already_sealed'):
         await stage(s, book, batch(s, book, first=1, count=1))
     # Normal model-authored same-text input, not a replay of accepted commands.
