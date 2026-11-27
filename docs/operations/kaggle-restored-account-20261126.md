@@ -530,3 +530,28 @@ alone does not establish semantic completeness.
 Latest verified Saved517 remains atbase24152. The next ordinary capture
 completed through24387 at18:44:19UTC; publication and native verification
 are still running. Newer pages are not yet claimed as saved in517.
+
+
+## 27 November, 19:02 UTC: bounded retention and fifth-window rollout
+
+Read-only Kaggle metadata at18:52UTC listed just two retained Ready versions,
+517 and518. The existing retention maximum is three old versions plus current;
+verified pruning periodically removes the old payload versions. Version numbers
+continue increasing and do not represent the number of retained copies. The
+account moderation false-positive trigger remains unknown; bounded retention
+does not guarantee that moderation will never recur.
+
+Saved518/base24387 has now passed native verification. Native297 startup,
+physical restore and117 accepted suffix operations took12minutes48seconds from
+launch to READY. The three-hour work cycle and real one-hour OFF remain enabled.
+
+The owner authorized a fifth window. Root first changed the setting before
+checking the deployed upper bound; this caused a34second relay startup failure.
+The setting was reverted to4 and the relay restored. PR117 then fixed the
+existing constructor bound in one production line, preserving default4 and
+rejecting6. Compatible197tests and integration214tests passed, exact CI46053207010
+passed, and main37a5ddd contains compatible64f47a1. That compatible relay is now
+live with actual environment capacity5; queues, credentials and rest clocks
+were preserved. The ordinary fifth-reader job e8de6e77 for Armstedt/Fischer
+Heimatkunde was claimed at19:01UTC. Its133TEXT/131SEM baseline is historical;
+new fifth-reader pages and their verified saving are the next acceptance step.
