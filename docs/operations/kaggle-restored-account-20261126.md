@@ -427,3 +427,19 @@ import tasks remain selected, with TEXT/SEM74/74,203/203,106/106,313/306.
 Their new work after Saved510 is not yet covered by a fresh verified Saved.
 Next steps are exact CI/main, compatible host delivery at a reconciled
 lifecycle boundary, ordinary restore/READY and the actual new Saved.
+
+## November27,17:38 Kaliningrad: archive locator repair deployed
+
+PR889 full CI46004315227 passed both Python versions; envelope46004315360
+passed. Main1607ac59 contains the tested change. Ancestry-only PR890 has
+exactly the same tree and records compatible348378df in main4ada6eb2;
+unchanged successful tests were reused.
+
+Host API348378df was installed at15:38:03UTC, PID1535845, health passed.
+This repaired the known pre-dispatch404 while295 had channel0 and only
+an unexecuted prepare claim: no physical restore or capture was running.
+The same current owner, controller, four readers and13 retained publication
+packages were preserved. No notebook launch/Stop/rotation or provider
+publication was issued by root. The ordinary controller must now complete
+the dead old-code attempt and restore through the published511 copy.
+New physical verification, READY and Saved are still outstanding.
