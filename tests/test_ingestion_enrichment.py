@@ -283,8 +283,8 @@ async def test_mcp_contract_has_inline_metadata_and_distinct_coverage(monkeypatc
     server = build_server()
     tools = {tool.name: tool for tool in await server.list_tools()}
     schema = tools['book_ingest'].input_schema
-    candidate = schema['$defs']['StageStoryCandidateInput']['properties']
+    candidate = schema['properties']['story_candidates']['anyOf'][0]['items']['properties']
     assert {'event_dates', 'observations', 'entity_keys'} <= set(candidate)
-    assert 'knowledge_reviewed' in schema['$defs']['StagePageInput']['properties']
+    assert 'knowledge_reviewed' in schema['properties']['pages']['anyOf'][0]['items']['properties']
     assert 'knowledge_extraction' in tools['book_ingest'].output_schema['properties']
     assert 'organization' in tools['book_ingest'].description

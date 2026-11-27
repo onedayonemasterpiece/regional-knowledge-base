@@ -558,7 +558,8 @@ async def test_native_stage_shape_guide_survives_flattened_arrays_and_stages_wit
     tool = next(t for t in await server.list_tools() if t.name == 'book_ingest')
     # Some connectors expose pages/chunks as Array<unknown>. Required nested
     # structure must remain discoverable in the tool's ordinary description.
-    for name in tool.input_schema['$defs']['StageRegionInput']['required']:
+    region = tool.input_schema['properties']['pages']['anyOf'][0]['items']['properties']['regions']['items']
+    for name in region['required']:
         assert name in tool.description
     def without_nulls(value):
         if isinstance(value, dict):
