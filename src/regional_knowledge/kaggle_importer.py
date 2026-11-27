@@ -219,6 +219,29 @@ class KaggleSourceImporter:
             access.context, access.binding, render=render)
         return output
 
+    async def _resume_unsubmitted_case(self, principal, access):
+        # A frozen Case request can lose its HTTP turn before remote acceptance.
+        # Reuse its normal status/reconciliation path under the same current actor.
+        def pending():
+            with self.queue.connect(write=False) as db:
+                return db.execute(
+                    "SELECT operation_key,sequence FROM rkb_control_operations WHERE sequence="
+                    "(SELECT sequence FROM rkb_control_spool_meta WHERE id=1) "
+                    "AND person_id=? AND database_generation=? AND operation_key LIKE 'case-op:%' "
+                    "AND seal_state='NOT_SENT' AND apply_state='NOT_SENT' AND outcome_state='NOT_SENT'",
+                    (access.authority.person_id, access.binding.database_generation)).fetchone()
+        row = await asyncio.to_thread(pending)
+        if row is None:
+            return
+        from .read_issuance import capture_read_output
+        with capture_read_output() as outputs:
+            try:
+                await self.startup.cases_backend.disagreement_edit('operation_status', row['operation_key'], principal)
+                _LOG.info('book_prior_case_reconciled sequence=%s', row['sequence'])
+            finally:
+                for output in outputs:
+                    output.release()
+
     def _row(self, actor, ingestion_id=None, document_id=None):
         if ingestion_id is None and document_id is None:
             raise failure('ingestion_id_required', status='invalid_query')
@@ -999,6 +1022,8 @@ class KaggleSourceImporter:
                         row = await asyncio.to_thread(self._row, access.authority.person_id, ingestion_id, document_id)
                         if command != 'status':
                             await asyncio.to_thread(self._record_reader_operation, row['ingestion_id'], access.authority.person_id)
+                        if command == 'status':
+                            await self._resume_unsubmitted_case(principal, access)
                         if command == 'stage':
                             output = await self._stage(access, row, payload, source_import)
                         elif command == 'validate':
