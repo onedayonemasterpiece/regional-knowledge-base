@@ -555,3 +555,14 @@ live with actual environment capacity5; queues, credentials and rest clocks
 were preserved. The ordinary fifth-reader job e8de6e77 for Armstedt/Fischer
 Heimatkunde was claimed at19:01UTC. Its133TEXT/131SEM baseline is historical;
 new fifth-reader pages and their verified saving are the next acceptance step.
+
+
+## 27 November, 22:05 UTC: verified saving and a real post-rest stall
+
+Saved522/base24745 is native verified. The fifth Heimatkunde reader accepted and saved12 new complete physical pages plus two historical semantic repairs. The prior297 completed its planned drain with exact sealed COMPLETE at20:31:05UTC. The next ordinary298 launched after3608seconds OFF and reached READY in6minutes45seconds. This verifies the planned-drain repair; it does not prove resumed importing.
+
+The import stall began before the rest: the last new page TEXT/SEM was created at19:31UTC. A Case request reserved sequence24746 at19:32UTC but never reached remote acceptance. That unsubmitted canonical tail causes prior_write_pending for subsequent page stages. Accepted max remains24745. Root has not replayed or cleared the operation.
+
+A separate rest-overlap defect was reproduced and fixed in Launcher118: future rest deadlines count from the last actual work, rather than starting a fresh full rest after the runtime becomes ready. Compatible198 and integration215 tests passed, exact CI46071963057 passed, maina6b2f49 contains compatible9b463. That relay is live with capacity5; existing cycle clocks were preserved. Their ordinary90minute idle expiry has released the earlier book pauses.
+
+PR891 is running exact full CI for the API changes: reconcile the same actor/database unsubmitted Case tail using the existing operation_status path on an ordinary owned book status request, and expose nested stage DTO fields inline to connected clients. Unknown, foreign actor and current authorization denials keep their fences; original command bytes and sequence stay immutable. Production+44lines, no new state, queue, timer or retry loop. Compiler72 and native worker code are unchanged. This API candidate is not deployed yet. New accepted pages and their next native-verified checkpoint remain the product acceptance criteria.
