@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 
 from .kaggle_dataset_publisher import DatasetPublicationError, DatasetUpload
@@ -87,8 +88,29 @@ class DatasetSnapshotTicketIssuer:
             raise DatasetPublicationError('dataset_download_checkpoint_binding')
         generation=getattr(binding,'writer_generation',None) or self.guard.writer_generation
         async with self.guard(generation):
+            # Pruning copies the exact verified files before deleting old versions.
+            # A crash before promotion must not strand their immutable archive link.
+            from .kaggle_pg_snapshot_native import encode, sha
+            operation='dataset-prune:'+sha(encode([self.publisher.ref,checkpoint.dataset_version]))
+            with self.queue.connect(write=False) as db:
+                row=db.execute("SELECT * FROM rkb_dataset_seed WHERE operation_key=? AND provider_ref=? "
+                    "AND state IN ('publishing','published','verified')",(operation,self.publisher.ref)).fetchone()
+            version=checkpoint.dataset_version
+            if row is not None:
+                package=json.loads(row['package_json'])
+                pins={f.name:(f.size,f.sha256) for f in (checkpoint.manifest,checkpoint.archive,checkpoint.control,checkpoint.journal)}
+                if (package['database_generation']!=checkpoint.database_generation
+                        or package['base_sequence']!=checkpoint.base_sequence
+                        or {f['name']:(f['size'],f['sha256']) for f in package['files']}!=pins):
+                    raise DatasetPublicationError('dataset_prune_verified_package_changed')
+                candidate=row['version'] or await asyncio.to_thread(self.publisher.published_version,operation=operation)
+                if candidate is not None and await asyncio.to_thread(self.publisher.reconcile,
+                        files=tuple(DatasetUpload(**f) for f in package['files']),operation=operation,expected_version=candidate):
+                    version=candidate
+                    logging.getLogger(__name__).info(
+                        "dataset_prune_archive_relocated saved_version=%s archive_version=%s",checkpoint.dataset_version,version)
             url,etag=await asyncio.to_thread(self.publisher.snapshot_download_link,
-                checkpoint.archive,version=checkpoint.dataset_version)
+                checkpoint.archive,version=version)
             if not self.current(binding):raise DatasetPublicationError('dataset_capture_writer_changed')
             return SnapshotTicket('GET',hashlib.sha256(operation_key.encode()).hexdigest(),ref.key,
                 ref.size,ref.sha256,self.clock()+600,url,(('If-Match',etag),))
