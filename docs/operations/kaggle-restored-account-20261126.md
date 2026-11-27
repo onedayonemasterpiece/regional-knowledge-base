@@ -443,3 +443,30 @@ packages were preserved. No notebook launch/Stop/rotation or provider
 publication was issued by root. The ordinary controller must now complete
 the dead old-code attempt and restore through the published511 copy.
 New physical verification, READY and Saved are still outstanding.
+
+## November27,18:09 Kaliningrad: recovery and a new verified Saved completed
+
+The ordinary controller sealed295 ERROR and created296. Its physical prepare
+completed at15:49:24UTC; all87 accepted suffix operations were restored,
+finish/verify completed, and runtime296 became READY at15:53:57UTC.
+TEXT23986 was reconciled from SENT_UNKNOWN to APPLIED without root replay;
+SEM23987 then completed through the normal path.
+
+The retained511 copy passed native readback and was promoted. The following
+ordinary checkpoint512 passed native download SHA/size verification and was
+observed as the verified pointer at16:09UTC, base23987. Its coverage includes
+all four books and Chronicle physical312–313 with both TEXT and SEMANTIC.
+The native producer performed its normal pg_verifybackup; no additional
+independent restore of512 was launched merely to retest the same snapshot.
+
+All four ordinary replacement readers were delivered and started. By16:09:19UTC
+they had accepted25 new TEXT pages,24 of which also had SEMANTIC: Kunde3,
+Gubin4, Glinski13, Chronicle4 complete pages. This excludes baseline TEXT
+pages and semantic-only corrections. These newer operations are after the
+Saved512 prefix and are being captured by the next ordinary checkpoint;
+this report does not claim every current write is already in512.
+
+No full hour has elapsed since the four replacements were created at
+15:54:52UTC. No hourly speed or causal code uplift is claimed. Book rests,
+the four-window cap and real notebook OFF policy remain in place; the next
+planned drain still needs live verification with888 installed.
