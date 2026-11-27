@@ -300,3 +300,39 @@ channel and reconnecting; the cause of that failure has not been established
 from the available receipts. At03:01 the first book had47 new physical
 pages with TEXT and SEM. Its next stage operation is SENT_UNKNOWN and must
 not be replayed manually. Concurrency remains1; rollout to2–4 is incomplete.
+
+
+## November 27, 11:48 Kaliningrad: import and durable-save acceptance
+
+The earlier Saved474 observation above is historical. At09:09 UTC the
+ordinary system had promoted Saved501/base23623, and native285 was READY.
+Passive APPLIED receipts counted182 new unique physical pages since the
+restart baseline23153, all with TEXT and SEM. Two additional semantic
+completions concerned older TEXT pages and were not counted as new pages.
+The native verification of later snapshots succeeded; the earlier282
+transfer failure is not established as a deterministic recurring defect.
+
+Two completed notebook cycles had actual off periods of3673.549 and
+3607.900 seconds between observed sealed terminal and next ordinary launch.
+No operator Stop or forced rotation was used. Hinz and Kiseliūnaitė later
+received explicit client safety rejections; their rejected calls were not
+resubmitted. The ordinary driver proceeded with other authorized books.
+
+The existing Launcher setting was advanced from1 to2 at09:14 UTC. The
+second ordinary reader83584524 was delivered and reported model progress.
+By09:46 UTC Städtehandbuch had322 TEXT/SEM pages against its308-page
+baseline, adding14 new physical pages. Native-verified Saved503/base23644
+contains eight of those new pages, physical314–321, with both components.
+The first selected book is on its existing rest until10:18:04 UTC; its
+clock was not reset.
+
+The count3 transition was attempted but stopped before changing settings:
+a different browser delivery was still claimed. The actual concurrency
+limit remains2. Next acceptance is ordinary third-reader delivery, new
+TEXT/SEM and native-verified Saved, followed by the fourth window.
+
+PR887 passed both Python CI jobs and its envelope check, then merged.
+Compatible ce51b8d4 was installed only in the existing controller for the
+next ordinary worker. Current worker285 and APIb731 were unchanged. The
+four fixed transfer failure codes improve error classification; they do
+not repair the still-unidentified cause of the earlier IO disconnect.
