@@ -160,3 +160,27 @@ async def test_first_base_admission_reads_shared_startup_coverage(owner):
         await startup.snapshot.aclose()
         await startup.source_dispatch.aclose()
         startup.config.spool.close();startup.config.writer_owner.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_source_binding_survives_drain_while_fresh_imports_close(owner):
+    from regional_knowledge.kaggle_service_startup import TargetServiceStartup
+    e=owner
+    startup=object.__new__(TargetServiceStartup)
+    startup.config=SimpleNamespace(queue=e.q,writer_generation='writer-1',writer_current=e.w.current)
+    startup.closed=False;startup.running=True
+    startup.snapshot=SimpleNamespace(verified=True)
+    startup.coverage=SimpleNamespace(current=lambda:True)
+    startup.binding=current_binding(e.q)
+    b=startup.binding
+    identity=dict(run_id=b.run_id,runtime_incarnation=b.runtime_incarnation,
+        connection_generation=b.connection_generation,database_generation=b.database_generation,
+        writer_generation='writer-1')
+    assert startup.imports_current() and startup.command_binding_current(**identity)
+    with e.q.connect() as db:db.execute("UPDATE runs SET status='draining' WHERE id=?",(e.run,))
+    assert not startup.imports_current(),'fresh public imports must remain closed during drain'
+    assert startup.command_binding_current(**identity),'same accepted command must finish before checkpoint/STOP'
+    assert not startup.command_binding_current(**dict(identity,connection_generation=b.connection_generation+1))
+    assert not startup.command_binding_current(**dict(identity,writer_generation='other'))
+    with e.q.connect() as db:db.execute("UPDATE runs SET status='expired' WHERE id=?",(e.run,))
+    assert not startup.command_binding_current(**identity)
