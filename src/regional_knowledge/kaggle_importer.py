@@ -45,7 +45,10 @@ from .stage_graph import StagedGraph, compile_model_stage, merge_stage, validate
 _NATIVE_STAGE_INPUT_GUIDE = (f"Current native stage packets allow 1-{MAX_BATCH_PAGES} issued, visually reviewed pages; this is separate from the book_pages request size, so reviewed pages from several responses may share one stage packet within existing payload and chunk bounds. "
     "For a newly visually reviewed, unaccepted page, use page_id, physical_page_index, source_material='visual_reviewed', source_review_note (1-500 characters), and regions. "
     "Each region needs region_key, kind (heading, body, caption, footnote, figure, table, header, footer, page_number or marginalia), bbox={left,top,right,bottom} with integer coordinates 0..1000 and left<right/top<bottom, and reading_order unique within its page; put verbatim text in source_text. "
-    "Each chunk needs chunk_key and title with region_refs=[{page_id,region_key}] OR exact span_refs, never both. source_image_receipt_sha256 is optional: native stage resolves its previously issued owned receipt without another image read. " + CATALOG_STAGE_GUIDE)
+    "Each chunk needs chunk_key and title with region_refs=[{page_id,region_key}] OR exact span_refs, never both. source_image_receipt_sha256 is optional: native stage resolves its previously issued owned receipt without another image read. "
+    "Each story needs candidate_key, title, summary, proposition and evidence_refs. Each evidence_refs item needs page_id, region_key and a passage via chunk_key, accepted chunk_id or original_excerpt; never combine chunk_key with chunk_id. "
+    "basic_variant={body,blocks:[{start,end,evidence_indexes}]}: contiguous zero-based Unicode offsets must cover the whole body; evidence_indexes are zero-based positions in that story's evidence_refs. "
+    "For source_unit_boundaries set page.source_unit_version=1 and use the same article_id in its chunks. Boundaries require article_id, action='start' or 'end' and region_key; a start also needs offset in that region's text, kind='chapter', 'article' or 'section' and title; an end must omit kind and title. " + CATALOG_STAGE_GUIDE)
 _LOG = logging.getLogger(__name__)
 MAX_BYTES = 128 * 1024 * 1024
 MAX_PAGES = 2500
