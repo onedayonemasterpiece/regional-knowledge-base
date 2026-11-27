@@ -6,13 +6,17 @@ from dataclasses import dataclass, field
 import logging
 
 from .kaggle_pg_snapshot_native import BlobRef, SnapshotError, sha
-from .native_snapshot_transfer import SnapshotTicket
+from .native_snapshot_transfer import SnapshotTicket, SnapshotTransferError
 
 LOG=logging.getLogger(__name__)
 
-# Only exact SnapshotError literals emitted by kaggle_pg_snapshot_native may be
-# classified. Never log exception text, arguments or substrings of a message.
+# Only exact literals from the snapshot and transfer error types are classified.
+# Never log exception text, arguments or substrings of a message.
 _SNAPSHOT_FAILURE_CODES={
+    'snapshot_transfer_download_identity':'download_identity',
+    'snapshot_transfer_download_bytes':'download_bytes',
+    'snapshot_transfer_download_unavailable':'download_unavailable',
+    'snapshot_transfer_scope_or_expiry':'transfer_scope',
     'snapshot_exact_runtime_versions_required':'versions',
     'snapshot_native_version_mismatch':'versions',
     'snapshot_resident_model_tokenizer_changed':'versions',
@@ -106,7 +110,7 @@ class SnapshotIo:
         if operation.task.done():
             try:return dict(status='complete',value=operation.task.result())
             except Exception as error:
-                literal=(error.args[0] if type(error) is SnapshotError and len(error.args)==1
+                literal=(error.args[0] if type(error) in (SnapshotError,SnapshotTransferError) and len(error.args)==1
                          and type(error.args[0]) is str else None)
                 code=_SNAPSHOT_FAILURE_CODES.get(literal,'unclassified')
                 if not operation.failure_logged:

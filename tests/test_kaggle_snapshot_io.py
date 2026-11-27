@@ -360,13 +360,23 @@ async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(
     ('snapshot_disk_budget','disk'),
     ('snapshot_archive_byte_budget','archive'),
     ('snapshot_native_command_failed','subprocess'),
+    ('snapshot_transfer_download_identity','download_identity'),
+    ('snapshot_transfer_download_bytes','download_bytes'),
+    ('snapshot_transfer_download_unavailable','download_unavailable'),
+    ('snapshot_transfer_scope_or_expiry','transfer_scope'),
+    ('unknown_transfer','unclassified'),
     ('unknown_snapshot','unclassified'),
     ('extra_args','unclassified'),
     ('other_exception','unclassified'),
 ])
 async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_once(caplog,cause,safe_code):
     secret='postgres://fixture:DO_NOT_LOG@private.invalid/path?token=fixture'
-    if cause=='unknown_snapshot':
+    from regional_knowledge.native_snapshot_transfer import SnapshotTransferError
+    if cause=='unknown_transfer':
+        original=SnapshotTransferError('snapshot_transfer_download_bytes '+secret)
+    elif cause.startswith('snapshot_transfer_'):
+        original=SnapshotTransferError(cause)
+    elif cause=='unknown_snapshot':
         original=SnapshotError('snapshot_disk_budget '+secret)
     elif cause=='extra_args':
         original=SnapshotError('snapshot_disk_budget',secret)
