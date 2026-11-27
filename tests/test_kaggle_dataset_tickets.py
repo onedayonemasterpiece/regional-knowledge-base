@@ -72,3 +72,47 @@ async def test_lost_reservation_response_does_not_allocate_another_blob(tmp_path
     with pytest.raises(DatasetPublicationError, match='grant_unresolved'):
         await issuer.issue_upload(binding, 'capture', size=123, sha256='a'*64)
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('changed', [None, 'archive', 'base_sequence', 'database_generation', 'provider_receipt'])
+async def test_download_survives_prune_before_saved_promotion(tmp_path, changed):
+    import json
+    from regional_knowledge.kaggle_dataset_base import DatasetCheckpoint, DatasetFile
+    from regional_knowledge.kaggle_pg_snapshot_native import encode, sha
+    queue = Queue(tmp_path/'queue.sqlite')
+    binding = NS(run_id='run', runtime_incarnation='inc', writer_generation='writer')
+    files = [DatasetFile(n, 123, str(i)*64) for i,n in enumerate(
+        ('base-manifest.json','pg-archive.blob','source-control.json','journal-control.json'), 1)]
+    saved = DatasetCheckpoint('owner','rkb-pg',510,'database',87,*files)
+    operation = 'dataset-prune:'+sha(encode(['owner/rkb-pg',510]))
+    package = dict(base_sequence=87,database_generation='database',files=[dict(f.wire(),
+        token='private',url='https://storage.googleapis.com/blob') for f in files])
+    if changed == 'archive':package['files'][1]['sha256']='a'*64
+    if changed == 'base_sequence':package['base_sequence']=88
+    if changed == 'database_generation':package['database_generation']='other'
+    calls=[]
+    class Publisher:
+        ref='owner/rkb-pg'
+        def reconcile(self, **kw):
+            assert kw['operation']==operation and kw['expected_version']==511
+            return changed != 'provider_receipt'
+        def snapshot_download_link(self, file, *, version):
+            calls.append(version)
+            if version==510:raise DatasetPublicationError('dataset_archive_link_unavailable')
+            return 'https://storage.googleapis.com/blob','etag'
+    @asynccontextmanager
+    async def guard(generation):yield
+    issuer=DatasetSnapshotTicketIssuer(queue,Publisher(),current=lambda b:b is binding,writer_guard=guard)
+    issuer.download_checkpoint=saved
+    with queue.connect() as db:
+        db.execute('CREATE TABLE rkb_dataset_seed(operation_key TEXT,provider_ref TEXT,state TEXT,package_json TEXT,version INTEGER)')
+        db.execute('INSERT INTO rkb_dataset_seed VALUES(?,?,?,?,?)',(operation,'owner/rkb-pg','published',json.dumps(package),511))
+    ref=BlobRef('dataset-blobs/operation/pg-archive.blob',123,files[1].sha256,'etag')
+    if changed:
+        with pytest.raises(DatasetPublicationError):await issuer.issue_download(binding,'prepare',ref)
+        assert 511 not in calls
+    else:
+        result=await issuer.issue_download(binding,'prepare',ref)
+        assert result.sha256==files[1].sha256 and calls==[511]
+        assert issuer.download_checkpoint==saved  # Physical verification still owns promotion.
