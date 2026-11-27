@@ -367,3 +367,38 @@ resubmit, notebook Stop or forced rotation was used.
 Remaining acceptance: new fourth-reader TEXT/SEM, native-verified Saved
 covering those operations, and continued operation across scheduled rests.
 The API and running native worker were not changed by this relay release.
+
+
+## November 27, 14:22 Kaliningrad: accepted-command drain defect fixed
+
+All four readers produced accepted work. Chronicle added one new physical
+page312 with TEXT23977/SEM23978 and filled semantic coverage for two older
+pages. At the three-hour boundary, the controller requested ordinary
+drain285 at11:52UTC. The API then rejected its accepted source-command
+binding at kaggle_source_commands.py:414, closed WSS4403, and the exact
+worker log reported server revoked worker authority. The exact controller
+terminal receipt was ERROR at11:53:06UTC. This is a source-binding defect
+during planned drain, not an inferred Kaggle restriction or CPU crash.
+
+PR888 reuses existing allow_draining for the exact accepted-command lookup
+and validation. Fresh public reads/import admission still closes; run,
+incarnation, connection, database, writer, snapshot and schema checks remain.
+Two production lines changed, net0. The distinguishing actual-queue test
+failed on old code. Local affected checks had103PASS and four unrelated
+PDF tests failed to import missing pymupdf; integration new test passed.
+Full CI45996100028 passed on both Python3.12 and3.13, envelope45996099863
+passed, and main9685b035 contains compatible51b7cf81.
+
+The compatible host API was installed at12:21:32UTC, PID1402656, during
+the existing exact terminal OFF interval. Health passed; controller and
+Kaggle were not restarted, and13 retained publication packages were kept.
+The real hourOFF ends12:53:06UTC/14:53Kaliningrad. No provider mutation,
+manual reader, Stop, forced rotation or unknown resubmission was used.
+
+Latest verified Saved510/base23899 does not yet cover Chronicle23977/23978.
+Text23986 remains SENT_UNKNOWN; its original receipt must be reconciled,
+not manually replayed. Remaining product checks are ordinary successor
+restore/physical verification, new Saved covering the accepted suffix,
+all four readers continuing, and the next drain completing its checkpoint
+without this source-binding4403. Deployment alone does not complete those
+checks.
