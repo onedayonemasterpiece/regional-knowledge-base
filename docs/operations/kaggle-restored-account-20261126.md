@@ -495,3 +495,19 @@ the remaining55 complete pages have APPLIED control receipts and still need
 the next verified checkpoint. The accepted journal maximum is24147.
 The next check is the ordinary successor, physical restore and fresh Saved.
 A successful next planned drain with888 still remains to be demonstrated.
+
+
+## 27 November, 18:09 UTC: Saved515 verified and import resumes
+
+Runtime297 completed physical restore, all117 accepted suffix commands and
+finish/verification, reaching READY at17:43:15UTC. Saved515/base24147 was
+promoted after native verification at18:03:43UTC. Coverage of all four books
+proves that the former55 journal-only complete pages are now in the verified
+dataset; all78 new complete pages counted since512 are saved.
+
+Chronicle subsequently accepted21 additional complete pages and one additional
+TEXT awaiting SEMANTIC. These newer pages belong to the next checkpoint.
+The ordinary driver created three replacement readers: Gubin SENT, Glinski
+claimed and Kunde queued at18:09; Chronicle is SENT with model progress.
+The four-window cap and normal delivery remain in effect. The cause of the
+previous296 early ERROR and the next successful planned drain remain open.
