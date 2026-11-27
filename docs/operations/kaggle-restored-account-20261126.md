@@ -336,3 +336,34 @@ Compatible ce51b8d4 was installed only in the existing controller for the
 next ordinary worker. Current worker285 and APIb731 were unchanged. The
 four fixed transfer failure codes improve error classification; they do
 not repair the still-unidentified cause of the earlier IO disconnect.
+
+
+## November 27, 13:38 Kaliningrad: four readers delivered
+
+The concurrency setting is now4. All four ordinary reader jobs have been
+delivered and reported model started: Gubin/Строкин, Glinski, Kunde des
+Samlandes and Chronicle of the Prussian Land. Passive receipt counts are
+63/63,185/185,99/99 and312/303 TEXT/SEM respectively. These are cumulative
+book totals, not new-page counts. The fourth reader has not yet added a
+new physical page; its initial activity points to earlier semantic review.
+Latest native-verified Saved508 covers accepted prefix23847.
+
+The fourth slot was initially delayed by an inherited8 November book
+cycle. On re-enabling the slot, advanceBookRest assigned another35–90min
+rest despite weeks without work. PR116 fixes this normal expiry rule:
+when no issued turn or packet works and the existing maximum90min rest
+has fully passed since last recorded work, that rest is already served.
+No manual clock or queue edit is needed. Fresh rest and unfinished-turn
+guards remain. Production net10 lines; fictional RED in two stale-cycle
+cases,196 compatible and213 integration tests passed. Exact CI45990709712
+passed; main0edcf208 contains compatible46175b0, installed at11:28:52UTC.
+
+The ordinary driver then created the fourth job. Chrome stopped its first
+submission before Send; the existing proven-unsent handler created one
+fresh-chat successor, which was delivered and reported model started.
+The original blocked receipt remains. No operator UI, Send, dispatch,
+resubmit, notebook Stop or forced rotation was used.
+
+Remaining acceptance: new fourth-reader TEXT/SEM, native-verified Saved
+covering those operations, and continued operation across scheduled rests.
+The API and running native worker were not changed by this relay release.
