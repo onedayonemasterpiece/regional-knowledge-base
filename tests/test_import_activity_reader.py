@@ -368,6 +368,9 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
         pytest.fail('An unpublished page must not read an accepted journal stage')
     w.importer.native_intake=SimpleNamespace(stage=stage,spool=SimpleNamespace(get=journal_get))
     w.importer._native_status=stage
+    case_readbacks = []
+    async def case_status(*args):case_readbacks.append(args)
+    w.importer._resume_unsubmitted_case=case_status
     with w.queue.connect() as db:
         db.execute('UPDATE rkb_source_intake_control SET last_operation_at=? WHERE ingestion_id=?',
                    (time.time()-21*60,w.ingestion))
@@ -376,6 +379,7 @@ async def test_status_preserves_reader_silence_but_pages_and_stage_refresh_it(wa
         await w.importer.book_ingest(command='status',principal=object(),ingestion_id=w.ingestion)
         assert read_timestamp(w)==before,'an observer must not restart the 20-minute reader silence clock'
         assert time.time()-read_timestamp(w)>20*60
+    assert len(case_readbacks)==2, 'ordinary status performs readback without resetting reader work clock'
     await w.importer.book_pages(principal=object(),ingestion_id=w.ingestion)
     after_pages=read_timestamp(w)
     assert after_pages>before
