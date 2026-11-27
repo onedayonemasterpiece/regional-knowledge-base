@@ -635,3 +635,18 @@ async def test_first_fresh11_import_waits_for_geo_installation_and_rechecks_befo
     assert len(s.token_calls)==tokens
     with s.t.queue.connect(write=False) as db:
         assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0]==1
+
+
+@pytest.mark.asyncio
+async def test_target_import_publishes_nested_dto_fields_inline(intake):
+    from regional_knowledge.server import build_server
+    server = build_server(target_startup=intake.startup)
+    tool = next(t for t in await server.list_tools() if t.name == "book_ingest")
+    assert '"$ref"' not in json.dumps(tool.input_schema)
+    pages = tool.input_schema["properties"]["pages"]["anyOf"][0]["items"]
+    region = pages["properties"]["regions"]["items"]
+    assert "reading_order" in region["required"]
+    assert region["properties"]["bbox"]["properties"]["left"]["maximum"] == 1000
+    # Native authorization/materialization remains the original typed call path.
+    original = server._tool_manager.get_tool("book_ingest").fn_metadata.arg_model.model_json_schema()
+    assert "$defs" in original
