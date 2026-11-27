@@ -511,3 +511,22 @@ The ordinary driver created three replacement readers: Gubin SENT, Glinski
 claimed and Kunde queued at18:09; Chronicle is SENT with model progress.
 The four-window cap and normal delivery remain in effect. The cause of the
 previous296 early ERROR and the next successful planned drain remain open.
+
+
+## 27 November, 18:44 UTC: all four flows and first complete restored hour
+
+During60.9946minutes from297 READY at17:43:15UTC, the four assignments accepted
+118 new physical pages with TEXT and SEMANTIC receipts: Gubin27, Glinski11,
+Kunde25, Chronicle55. The full-capacity rate is116.08pages/hour total and
+29.02per window/hour, including waits and browser delivery. This is observed
+throughput, not a causal code-uplift measurement.
+
+Glinski now has an ordinary fresh-chat successor, SENT/modelSTARTED, and is
+publishing. Chronicle has384TEXT pages and377SEM pages; finish is pending,
+and seven historical semantic gaps remain separate. Kunde reports incomplete
+entity enrichment on dense tables under the32entity bound; receipt coverage
+alone does not establish semantic completeness.
+
+Latest verified Saved517 remains atbase24152. The next ordinary capture
+completed through24387 at18:44:19UTC; publication and native verification
+are still running. Newer pages are not yet claimed as saved in517.
