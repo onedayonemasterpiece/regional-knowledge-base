@@ -341,10 +341,10 @@ class TargetServiceStartup:
     def command_binding_current(self,*,run_id,runtime_incarnation,connection_generation,
                                 database_generation,writer_generation):
         try:
-            binding=current_binding(self.config.queue)
+            binding=current_binding(self.config.queue,allow_draining=True)
             snapshot=getattr(self,'snapshot',None)
             schema=getattr(self,'schema_migrations',None)
-            return ((schema is None or schema.writes_allowed()) and (snapshot is None or snapshot.verified) and writer_generation==self.config.writer_generation and self.binding_current(binding)
+            return ((schema is None or schema.writes_allowed()) and (snapshot is None or snapshot.verified) and writer_generation==self.config.writer_generation and self.binding_current(binding,allow_draining=True)
                 and (binding.run_id,binding.runtime_incarnation,binding.connection_generation,binding.database_generation)
                 ==(run_id,runtime_incarnation,connection_generation,database_generation))
         except Exception:return False
