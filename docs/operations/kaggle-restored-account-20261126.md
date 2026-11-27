@@ -470,3 +470,28 @@ No full hour has elapsed since the four replacements were created at
 15:54:52UTC. No hourly speed or causal code uplift is claimed. Book rests,
 the four-window cap and real notebook OFF policy remain in place; the next
 planned drain still needs live verification with888 installed.
+
+
+## 27 November, 17:01 UTC: first four-window interval and early runtime error
+
+From 15:54:52 to 17:01:10 UTC (66.31 minutes), the same four assignments
+accepted 78 new physical pages with both TEXT and SEMANTIC receipts:
+Gubin 11, Glinski 38, Kunde 14, Chronicle 15. Baseline pages and old
+semantic-only corrections are excluded. Including all waits and downtime,
+this is 70.58 pages/hour total, or 17.64 per assigned window/hour.
+This measurement does not establish causal code uplift.
+
+Runtime296 ended early. The API logged peer_disconnect/1000 at16:28:25UTC;
+the controller obtained the exact sealed provider ERROR at16:30:21UTC.
+This was not the planned three-hour drain. The returned exact v296 output
+and stream contain reconnect ConnectionError events but no terminal exception;
+the reason for the provider ERROR has not been established. No speculative
+source patch or manual restart was performed.
+
+The controller enforced one hour OFF until17:30:21UTC (19:30:21 Kaliningrad).
+All four book assignments remain selected and are waiting for the runtime.
+Latest native-verified Saved514/base24030 covers23 of the78 new pages;
+the remaining55 complete pages have APPLIED control receipts and still need
+the next verified checkpoint. The accepted journal maximum is24147.
+The next check is the ordinary successor, physical restore and fresh Saved.
+A successful next planned drain with888 still remains to be demonstrated.
