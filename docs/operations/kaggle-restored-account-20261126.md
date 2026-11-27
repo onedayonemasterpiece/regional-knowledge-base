@@ -566,3 +566,25 @@ The import stall began before the rest: the last new page TEXT/SEM was created a
 A separate rest-overlap defect was reproduced and fixed in Launcher118: future rest deadlines count from the last actual work, rather than starting a fresh full rest after the runtime becomes ready. Compatible198 and integration215 tests passed, exact CI46071963057 passed, maina6b2f49 contains compatible9b463. That relay is live with capacity5; existing cycle clocks were preserved. Their ordinary90minute idle expiry has released the earlier book pauses.
 
 PR891 is running exact full CI for the API changes: reconcile the same actor/database unsubmitted Case tail using the existing operation_status path on an ordinary owned book status request, and expose nested stage DTO fields inline to connected clients. Unknown, foreign actor and current authorization denials keep their fences; original command bytes and sequence stay immutable. Production+44lines, no new state, queue, timer or retry loop. Compiler72 and native worker code are unchanged. This API candidate is not deployed yet. New accepted pages and their next native-verified checkpoint remain the product acceptance criteria.
+
+
+## 27 November23:21UTC: import resumed and new verified checkpoint526
+
+PR891 passed both exact Python CI jobs and envelope checks, was merged and delivered as compatible553d8e0f to the existing298 runtime at22:23:33UTC. An ordinary owned reader status request applied the original Case24746 without changing its bytes, sequence or request key. It is now DURABLE. The first subsequent new physical page was verified in524/525.
+
+At23:21UTC native-verified Saved526 covers base24825. Its receipt coverage adds 40 new complete physical pages after522. More recent accepted operations remain outside that prefix until the next ordinary checkpoint. Gubin, Neman and Kunde are advancing. The fifth book's real rest ended23:15:23UTC and its ordinary reader was delivered. Popov still has seven historical semantic gaps; do not count historical finalized status as their repair.
+
+PR892 passed exact fullCI46079364607 on both Python versions and envelope46079364646 and was merged. Its compatible6d57ab81 release is not installed at this observation: the host handover is waiting for current native capture/verification to finish. The change reuses status from validate so seven semantic gaps cannot be falsely reported as done, and gives ordinary authors the existing nested story input contract. Production net+3, no new state, retry, timer, queue, worker SQL or native compiler change.
+
+The release script initially treated abandoned old native handles as permanently active. Its operational guard now uses the existing native maximum900second asynchronous timeout and recognizes terminal rejection as well as completion; current active native capture/verification still blocks the handover. No historical publication is resubmitted by this correction.
+
+First full post891 interval22:23:33–23:23:42UTC measured86 new complete physical pages in60.1511minutes:85.78total/hour and17.16 per full capacity5. Waits, book rest, validation failures and browser delivery remain in the denominator. Four books contributed pages; Popov contributed zero. This is measured throughput, not proof that a particular change caused a speed increase. The fifth ordinary reader accepted four new complete pages after its real book rest.
+
+
+## 27 November23:29UTC: compatible892 delivered
+
+Compatible6d57ab81955188e099c40c9ed782dd30a6b9d42f is now installed as API2147136; release health check succeeded. Native298 and the controller remain unchanged, and all15 retained publishing intents kept their exact original package bytes. The release itself performed zero provider mutations and zero native rotations.
+
+Correction to the earlier handover discussion: the newly added asynchronous-handle gate was removed, rather than retained as a permanent900second release gate. It was root overblocking: abandoned handles survived in the host ledger although ordinary later work completed. Existing immutable job reconciliation, SnapshotIo same-identity rebind, retained publication intent and current claimed-job handover already own this transition. No production timeout, state or retry mechanism was added. Two final preflight attempts stopped before effects when a claimed job appeared; the bounded existing wait was moved immediately before the handover, after local materialization.
+
+At23:29UTC current receipt totals are Gubin160/160 TEXT/SEM, Neman55/55, Kunde224/224 and Heimatkunde158/155; these are cumulative book counts. Popov remains18/11. Its seven historical semantic gaps are still open; the newly installed correction must be exercised by its ordinary author. Latest verified checkpoint remains526/base24825, with40 new complete pages after522. More recent pages are accepted but are not yet part of526.
