@@ -505,6 +505,22 @@ class KnowledgeMCPServer(MCPServer):
         return app
 
 
+def _inline_import_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Expose nested DTO fields to clients that render local refs as unknown."""
+    definitions = schema.get("$defs", {})
+
+    def inline(value):
+        if isinstance(value, list):
+            return [inline(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "$ref" in value:
+            value = {**definitions[value["$ref"].removeprefix("#/$defs/")], **value}
+        return {key: inline(item) for key, item in value.items() if key not in ("$ref", "$defs")}
+
+    return inline(schema)
+
+
 def build_server(
     backend: KnowledgeBackend | None = None,
     *,
@@ -1985,6 +2001,9 @@ def build_server(
         # by capability authorization for other MCP tools.
         return ProfileOutput(id=_principal().subject)
 
+    # Only declaration rendering changes; the original Pydantic call validator remains.
+    ingest_tool = mcp._tool_manager.get_tool("book_ingest")
+    ingest_tool.parameters = _inline_import_schema(ingest_tool.parameters)
     return mcp
 
 

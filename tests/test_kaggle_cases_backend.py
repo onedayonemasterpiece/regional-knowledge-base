@@ -67,6 +67,53 @@ async def test_normal_create_remote_accepts_once_same_spool_and_queues_exact_nat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fence', ['none', 'foreign_actor', 'unknown', 'denied'])
+async def test_book_status_resumes_only_own_unsubmitted_case_via_existing_status(env, auth, monkeypatch, fence):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from regional_knowledge.kaggle_importer import KaggleSourceImporter
+    from regional_knowledge.read_issuance import capture_read_output
+
+    value, principal, binding = await backend(env, auth, monkeypatch)
+    key = value._key(auth.p.other.subject, 'interrupted-before-case-seal')
+    check = value._check
+    async def interrupted(*args, **kwargs):
+        if await value._entry(key) is not None:
+            raise ToolError('fictional connection ended after local freeze')
+        return await check(*args, **kwargs)
+    monkeypatch.setattr(value, '_check', interrupted)
+    with pytest.raises(ToolError):
+        await value.disagreement_edit('create', key, principal, command=create())
+    frozen = await env.spool.get(key)
+    assert frozen.seal_state == 'NOT_SENT'
+    monkeypatch.setattr(value, '_check', check)
+    importer = object.__new__(KaggleSourceImporter)
+    importer.queue = env.q
+    importer.startup = SimpleNamespace(cases_backend=value)
+    actor = auth.p.owner.subject if fence == 'foreign_actor' else auth.p.other.subject
+    access = SimpleNamespace(authority=SimpleNamespace(person_id=actor), binding=binding)
+    if fence == 'unknown':
+        with env.q.connect() as db:
+            db.execute("UPDATE rkb_control_operations SET seal_state='SENT_UNKNOWN' WHERE operation_key=?", (key,))
+    if fence == 'denied':
+        async def denied(*args, **kwargs):
+            raise ToolError('current access denied')
+        monkeypatch.setattr(value, '_check', denied)
+        with pytest.raises(ToolError, match='current access denied'):
+            await importer._resume_unsubmitted_case(principal, access)
+    else:
+        with capture_read_output() as outputs:
+            await importer._resume_unsubmitted_case(principal, access)
+            assert outputs == []  # Private Case response never leaks into book output.
+    after = await env.spool.get(key)
+    assert after.command_bytes == frozen.command_bytes
+    assert after.command.sequence == frozen.command.sequence
+    assert (after.accepted is not None) == (fence == 'none')
+    with env.q.connect(write=False) as db:
+        assert db.execute('SELECT count(*) FROM rkb_control_operations').fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM jobs WHERE kind='source_command'").fetchone()[0] == (1 if fence == 'none' else 0)
+
+
+@pytest.mark.asyncio
 async def test_staged_case_racing_remote_acceptance_returns_pending_and_reuses_same_intent(env,auth,monkeypatch):
     import base64
     import hashlib
