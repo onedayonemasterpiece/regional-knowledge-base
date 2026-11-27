@@ -272,3 +272,20 @@ setting to2 and subsequently up to4. Actual notebook terminal, the full
 hour off and ordinary resume still have to be observed. Existing Saved474
 and the independent backup remain intact; historical pages are not new
 import throughput.
+
+
+At02:17 Kaliningrad on November27, native282 is Ready and Hinz has22 newly
+accepted physical pages with both TEXT and SEM, above the old five-page
+baseline. One semantic rejection was corrected by the ordinary reader.
+Concurrency remains1.
+
+Kaggle has Ready475–477, but local verified Saved remains474: advancing
+imports caused the deployed checkpoint selector to skip readback of a
+committed snapshot with an earlier prefix. Main already contained fix
+d198c5ce; it was omitted from the compatible runtime release. PR886 contains
+compatible b7312a9e through an ancestry-only merge whose integration tree
+equals main b464d898. All77 focused compatible tests passed; full CI is
+running. Deployment has not started. Acceptance will be ordinary native
+verification and promotion of the existing Ready package, without another
+upload or notebook rotation. No request to resubmit an unknown publication
+was made.
