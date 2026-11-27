@@ -289,3 +289,14 @@ running. Deployment has not started. Acceptance will be ordinary native
 verification and promotion of the existing Ready package, without another
 upload or notebook rotation. No request to resubmit an unknown publication
 was made.
+
+
+At02:50 Kaliningrad PR886 had passed both full CI Python jobs and merged
+as9307734c. Compatible b7312a9e was installed in the API, with the notebook
+and controller unchanged. The ordinary native readback of existing483
+started, then returned snapshot_io_rejected with failure_code unclassified.
+Local Saved remains474. From02:52 the same notebook began closing its
+channel and reconnecting; the cause of that failure has not been established
+from the available receipts. At03:01 the first book had47 new physical
+pages with TEXT and SEM. Its next stage operation is SENT_UNKNOWN and must
+not be replayed manually. Concurrency remains1; rollout to2–4 is incomplete.
