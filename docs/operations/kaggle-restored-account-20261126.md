@@ -402,3 +402,28 @@ restore/physical verification, new Saved covering the accepted suffix,
 all four readers continuing, and the next drain completing its checkpoint
 without this source-binding4403. Deployment alone does not complete those
 checks.
+
+## November 27, 15:10 Kaliningrad: retained archive exists, locator failed after pruning
+
+The controller launched286 after3606.962 seconds of real OFF. Its restore
+never read the archive: the host requested deleted Dataset version510 and
+received404. Retention had published the identical four files as Ready511
+before deleting older versions, but verification/promotion was interrupted.
+Read-only reconciliation of511 passed, including the 4043663360-byte PG
+archive; its download link passed the existing size/origin/ETag checks.
+No archive body was downloaded to Dev and no provider mutation was sent.
+
+PR889 resolves the existing retained prune operation when issuing the
+immutable archive download. Database generation, accepted prefix and all
+four name/size/SHA pins must match, and the existing publisher reconciles
+the exact provider package. Native archive verification and Saved promotion
+remain mandatory. This does not repeat a finalize or change unknown intents.
+Production net22 lines, budget25; local125 checks passed. Full CI46004315227
+on both Python versions is running; envelope46004315360 passed. Compatible
+348378df descends from actual API51b7. Deployment has not run.
+
+The controller sealed286 terminalERROR and ordinarily created287. All four
+import tasks remain selected, with TEXT/SEM74/74,203/203,106/106,313/306.
+Their new work after Saved510 is not yet covered by a fresh verified Saved.
+Next steps are exact CI/main, compatible host delivery at a reconciled
+lifecycle boundary, ordinary restore/READY and the actual new Saved.
