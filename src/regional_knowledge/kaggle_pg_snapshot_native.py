@@ -10,6 +10,7 @@ from dataclasses import dataclass, asdict, replace
 import hashlib
 import json
 import math
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -18,6 +19,7 @@ import secrets
 import stat
 import tarfile
 import psycopg
+from .native_snapshot_transfer import MAX_SNAPSHOT_BYTES
 
 from .kaggle_database_probe import native_probe_for_schema, PGVECTOR_VERSIONS
 from .kaggle_apply import handover_writer
@@ -91,8 +93,8 @@ def compatible_versions(base,expected):
 
 @dataclass(frozen=True)
 class SnapshotLimits:
-    max_archive_bytes: int = 8*1024**3
-    max_unpacked_bytes: int = 16*1024**3
+    max_archive_bytes: int = MAX_SNAPSHOT_BYTES
+    max_unpacked_bytes: int = MAX_SNAPSHOT_BYTES
     max_files: int = 200000
     max_receipts: int = 2000000
     max_control_bytes: int = 1024**2
@@ -169,6 +171,19 @@ def private_workspace(path,required_bytes,*,native_uid=None,native_gid=None):
     if shutil.disk_usage(root.parent).free<required_bytes:raise SnapshotError('snapshot_disk_budget')
     root.mkdir(mode=0o700) # exclusive; existing/partial/live directories are refused
     return root
+
+
+def backup_workspace_bytes(data_root):
+    # Basebackup and the uncompressed tar coexist. Count bytes without hashing
+    # the live cluster; tar/PAX headers and final record padding also need space.
+    size=0
+    for directory,dirs,files in os.walk(data_root,followlinks=False):
+        for name in dirs+files:
+            try:info=(Path(directory)/name).lstat()
+            except FileNotFoundError:continue  # PG may remove a WAL/temp file.
+            size+=4096
+            if stat.S_ISREG(info.st_mode):size+=info.st_size
+    return size*2+10240
 
 
 def inventory_tree(root,limits):
@@ -345,7 +360,6 @@ class NativeSnapshotFactory:
                     or fields['applied_seq']<expected_sequence
                     ):
                 raise SnapshotError('native_backup_current_prefix')
-            root=await _blocking(self._workspace,workspace,self.limits.max_unpacked_bytes*2)
             async with self.acquire() as connection:
                 async with connection.transaction():
                     await connection.execute("SET LOCAL statement_timeout='2000ms'")
@@ -364,6 +378,14 @@ class NativeSnapshotFactory:
                     if {row[0] for row in await cursor.fetchall()}!={'postgres',self.database.dbname}:
                         raise SnapshotError('native_backup_cluster_not_dedicated')
                     prefix=await applied_prefix(connection,expected_sequence,self.limits)
+                    cursor=await connection.execute("SELECT current_setting('data_directory')")
+                    data_root=(await cursor.fetchone())[0]
+            required=await _blocking(backup_workspace_bytes,data_root)
+            logger=logging.getLogger(__name__)
+            log=logger.warning if required//2>=min(self.limits.max_archive_bytes,self.limits.max_unpacked_bytes)*.8 else logger.info
+            log('snapshot_capacity required_scratch_bytes=%s max_archive_bytes=%s max_unpacked_bytes=%s',
+                required,self.limits.max_archive_bytes,self.limits.max_unpacked_bytes)
+            root=await _blocking(self._workspace,workspace,required)
             await self._run(self.tools.pg_basebackup.path,'--pgdata',str(root/'base'),
                 '--wal-method=stream','--checkpoint=fast','--manifest-checksums=SHA256','--no-password',
                 '--host',self.database.socket,'--port',str(self.database.port),'--username','rkb_bootstrap',

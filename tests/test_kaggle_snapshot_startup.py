@@ -184,3 +184,22 @@ async def test_accepted_source_binding_survives_drain_while_fresh_imports_close(
     assert not startup.command_binding_current(**dict(identity,writer_generation='other'))
     with e.q.connect() as db:db.execute("UPDATE runs SET status='expired' WHERE id=?",(e.run,))
     assert not startup.command_binding_current(**identity)
+
+
+def test_snapshot_configuration_accepts_platform_budget_and_preserves_explicit_lower_budget():
+    from regional_knowledge.kaggle_recovery_composition import SnapshotRecoveryConfig
+    from regional_knowledge.kaggle_restore_startup import SourceRestoreConfig
+    from regional_knowledge.native_snapshot_transfer import MAX_SNAPSHOT_BYTES
+    from regional_knowledge.recovery_journal import ObjectRef
+    from dataclasses import replace
+    versions=dict(schema_version=49,server_version_num=170011,pgvector_version='0.8.4',model_sha256='a'*64,tokenizer_sha256='b'*64)
+    origin=('https://storage.googleapis.com',)
+    capture=SourceSnapshotConfig('capture',versions,origin)
+    restore=SourceRestoreConfig(ObjectRef('base/manifest','c'*64,10,1),'restore',versions,'d'*64,origin)
+    binary={name:dict(path='bin/'+name,version_output=name+' (PostgreSQL) 17.11') for name in ('postgres','pg_basebackup','pg_verifybackup')}
+    recovery=SnapshotRecoveryConfig(binary,origin,1001,1001)
+    for config in (capture,restore,recovery):
+        assert config.max_archive_bytes==MAX_SNAPSHOT_BYTES
+        assert type(config).from_wire(config.wire()).max_archive_bytes==MAX_SNAPSHOT_BYTES
+        assert replace(config,max_archive_bytes=1024).max_archive_bytes==1024
+        with pytest.raises(ValueError):replace(config,max_archive_bytes=MAX_SNAPSHOT_BYTES+1)

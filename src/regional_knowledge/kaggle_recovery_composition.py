@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from types import MappingProxyType
+from .native_snapshot_transfer import MAX_SNAPSHOT_BYTES
 
 
 @dataclass(frozen=True)
@@ -16,8 +17,8 @@ class SnapshotRecoveryConfig:
     allowed_origins: tuple[str,...]
     native_uid: int
     native_gid: int
-    max_archive_bytes: int = 8*1024**3
-    max_unpacked_bytes: int = 16*1024**3
+    max_archive_bytes: int = MAX_SNAPSHOT_BYTES
+    max_unpacked_bytes: int = MAX_SNAPSHOT_BYTES
     seconds: int = 900
     drill_empty: bool = False
 
@@ -28,8 +29,8 @@ class SnapshotRecoveryConfig:
                 or len(set(self.allowed_origins))!=len(self.allowed_origins)
                 or any(origin(value)!=value for value in self.allowed_origins)
                 or any(type(value) is not int or not 1<=value<2**31 for value in (self.native_uid,self.native_gid))
-                or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=8*1024**3
-                or type(self.max_unpacked_bytes) is not int or not 1<=self.max_unpacked_bytes<=16*1024**3
+                or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=MAX_SNAPSHOT_BYTES
+                or type(self.max_unpacked_bytes) is not int or not 1<=self.max_unpacked_bytes<=MAX_SNAPSHOT_BYTES
                 or type(self.seconds) is not int or not 1<=self.seconds<=900 or type(self.drill_empty) is not bool):
             raise ValueError('exact bounded native recovery deployment required')
         frozen={}

@@ -13,6 +13,10 @@ import time
 from urllib.parse import urlsplit
 
 
+# Kaggle Dataset technical specification: https://www.kaggle.com/docs/datasets
+MAX_SNAPSHOT_BYTES = 200_000_000_000  # Decimal GB, not GiB; deployment may set a lower budget.
+
+
 class SnapshotTransferError(RuntimeError):
     pass
 
@@ -61,7 +65,7 @@ class SnapshotTicket:
     def __post_init__(self):
         origin(self.url)
         if (self.method not in ('PUT', 'GET') or type(self.size) is not int
-                or not 1 <= self.size <= 8 * 1024**3
+                or not 1 <= self.size <= MAX_SNAPSHOT_BYTES
                 or type(self.expires_at) not in (int, float) or not math.isfinite(self.expires_at)
                 or any(type(x) is not str or len(x) != 64 or set(x) - set('0123456789abcdef')
                        for x in (self.operation_ref, self.sha256))
@@ -113,7 +117,7 @@ class NativeSnapshotTransfer:
     def __init__(self, *, allowed_origins, max_bytes, timeout_seconds=600, clock=time.time):
         if (type(allowed_origins) is not frozenset or not 1 <= len(allowed_origins) <= 4
                 or any(origin(s) != s for s in allowed_origins)
-                or type(max_bytes) is not int or not 1 <= max_bytes <= 8 * 1024**3
+                or type(max_bytes) is not int or not 1 <= max_bytes <= MAX_SNAPSHOT_BYTES
                 or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 900):
             raise ValueError('explicit bounded snapshot transfer deployment required')
         self.allowed_origins, self.max_bytes = allowed_origins, max_bytes
