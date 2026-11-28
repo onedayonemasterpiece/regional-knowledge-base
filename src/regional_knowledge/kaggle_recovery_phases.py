@@ -320,7 +320,7 @@ class WorkerRecoveryPhases:
             if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
             return await self.drill(phase,args,key,binding,frame)
         if phase=='snapshot_probe':
-            if args or self.snapshot_io is None:raise SnapshotError('snapshot_probe_arguments')
+            if args != {} or self.snapshot_io is None:raise SnapshotError('snapshot_probe_arguments')
             from .kaggle_snapshot_probe import run
             return self.snapshot_io.start(key,binding,
                 lambda operation:run(self.factory,operation.binding,self.workspace(key,'probe')),

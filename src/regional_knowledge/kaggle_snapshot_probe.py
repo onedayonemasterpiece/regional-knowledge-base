@@ -77,7 +77,7 @@ async def run(factory, binding, workspace):
         return result
     except Exception as error:
         result['error_type'] = type(error).__name__
-        if type(error) is SnapshotError and len(error.args)==1 and error.args[0] in _SNAPSHOT_FAILURE_CODES:
+        if type(error) is SnapshotError and len(error.args)==1 and type(error.args[0]) is str and error.args[0] in _SNAPSHOT_FAILURE_CODES:
             result['error_code']=error.args[0]
         result['os_errno'] = getattr(error, 'errno', None)
         result['sqlstate'] = getattr(error, 'sqlstate', None)
