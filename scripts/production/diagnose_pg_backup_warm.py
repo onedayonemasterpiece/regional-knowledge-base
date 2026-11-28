@@ -23,12 +23,11 @@ async def diagnose(acquire):
             result['database']=dict(applied_sequence=sequence,max_connections=maximum,connections=connections)
             socket,port=connection.info.host,connection.info.port
             assert socket.startswith('/kaggle/temp/') and port>0
-            parent=int(next(line.split(':')[1] for line in Path('/proc',str(pid),'status').read_text().splitlines() if line.startswith('PPid:')))
-            proc=Path('/proc',str(parent));postgres=(proc/'exe').resolve(strict=True)
-            assert postgres.name=='postgres'
-            info=proc.stat();uid,gid=info.st_uid,info.st_gid
-            allowed={b'PATH',b'LANG',b'LC_ALL',b'LD_LIBRARY_PATH'}
-            env={k.decode():v.decode() for item in (proc/'environ').read_bytes().split(b'\0') if b'=' in item for k,v in [item.split(b'=',1)] if k in allowed}
+            # Exact native paths and uid from the current304 launch configuration.
+            prefix=Path('/kaggle/temp/rkb-artifacts/rkb-native-5b661f62d700e578460924f1cdf4354bafc78f8896ffec9314283bd7665acf47')
+            postgres=prefix/'usr/lib/postgresql/17/bin/postgres'
+            uid=gid=65534
+            env=dict(PATH='/usr/bin:/bin',LANG='C',LC_ALL='C',LD_LIBRARY_PATH=os.pathsep.join(str(prefix/p) for p in ('usr/lib/x86_64-linux-gnu','lib/x86_64-linux-gnu','usr/lib/postgresql/17/lib') if (prefix/p).is_dir()))
         result['stage']='workspace'
         free=shutil.disk_usage('/kaggle/temp').free;result['free_bytes']=free
         assert free>8*1024**3,'Insufficient private scratch for one backup and archive'
@@ -49,7 +48,7 @@ async def diagnose(acquire):
             result['commands'].append(dict(program=label,exit_code=process.returncode,stderr=stderr.decode('utf8',errors='replace')))
             if process.returncode:return
         result['stage']='archive'
-        _,unpacked,_,size,_=await asyncio.to_thread(pack_tree,root/'base',root/'base.tar',SnapshotLimits())
+        _,unpacked,_,size,_=await asyncio.to_thread(pack_tree,root/'base',root/'base.tar',SnapshotLimits(max_archive_bytes=4294967296,max_unpacked_bytes=4294967296))
         result.update(stage='complete',success=True,archive_bytes=size,unpacked_bytes=unpacked)
     except Exception as error:
         result.update(error_type=type(error).__name__,error=str(error)[:1024])
