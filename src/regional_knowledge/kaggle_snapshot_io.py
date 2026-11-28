@@ -13,6 +13,7 @@ LOG=logging.getLogger(__name__)
 # Only exact literals from the snapshot and transfer error types are classified.
 # Never log exception text, arguments or substrings of a message.
 _SNAPSHOT_FAILURE_CODES={
+    'snapshot_byte_budget':'bytes',
     'snapshot_receipt_metadata_bound':'prefix',
     'snapshot_stage0_private_output_exclusion_required':'workspace',
     'native_restore_binding_changed':'binding',
