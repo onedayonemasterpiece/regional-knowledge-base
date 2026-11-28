@@ -384,6 +384,7 @@ async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(
     ('unknown_snapshot','unclassified'),
     ('extra_args','unclassified'),
     ('other_exception','unclassified'),
+    ('os_error','unclassified'),
 ])
 async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_once(caplog,cause,safe_code):
     secret='postgres://fixture:DO_NOT_LOG@private.invalid/path?token=fixture'
@@ -398,6 +399,8 @@ async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_o
         original=SnapshotError('snapshot_disk_budget',secret)
     elif cause=='other_exception':
         original=RuntimeError(secret)
+    elif cause=='os_error':
+        original=OSError(28,secret)
     else:
         original=SnapshotError(cause)
     binding=('run','incarnation',1)
@@ -417,8 +420,8 @@ async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_o
                     status='rejected',reason='snapshot_io_rejected',failure_code=safe_code)
         records=[record.getMessage() for record in caplog.records
                  if record.name=='regional_knowledge.kaggle_snapshot_io']
-        logged_code=cause if cause not in ('unknown_transfer','unknown_snapshot','extra_args','other_exception') else safe_code
-        assert records==[f'snapshot_io failed code={logged_code} error_type={type(original).__name__}']
+        logged_code=cause if cause not in ('unknown_transfer','unknown_snapshot','extra_args','other_exception','os_error') else safe_code
+        assert records==[f'snapshot_io failed code={logged_code} error_type={type(original).__name__} errno={getattr(original,'errno',None)}']
         assert secret not in caplog.text
         assert task.exception() is original
         assert io.start('one-failed-capture',binding,failed_capture)==started
