@@ -22,7 +22,10 @@ async def test_dataset_ready_routes_without_opening_history(service):
     startup.restorer=SimpleNamespace(complete=True,proof=SimpleNamespace(
         applied_sequence=0,control=json.dumps(dict(sequence=0,heads=[])).encode()))
     async def no_checkpoint(binding):return False
-    startup.dataset_checkpoints=SimpleNamespace(refresh=no_checkpoint,kick=lambda binding:None)
+    startup.dataset_checkpoints=SimpleNamespace(refresh=no_checkpoint,kick=lambda binding,**kwargs:None,
+        store=SimpleNamespace(publisher=SimpleNamespace(ref='owner/checkpoints')))
+    with s.config.queue.connect() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS rkb_dataset_seed(operation_key TEXT,provider_ref TEXT,state TEXT,package_json TEXT,version INTEGER)")
     startup.running=True
     assert not s.adapter.available
     assert await startup.refresh()
