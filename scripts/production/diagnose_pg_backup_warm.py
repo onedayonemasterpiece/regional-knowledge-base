@@ -14,7 +14,7 @@ async def tail(stream):
     return value
 
 async def diagnose(acquire):
-    result=dict(event='rkb_snapshot_diagnostic_v304',stage='database',success=False,provider_calls=0,saved_promoted=False,commands=[])
+    result=dict(event='rkb_snapshot_diagnostic_v304',stage='database',success=False,provider_calls=0,saved_promoted=False,commands=[],diagnostic_case='existing_8GiB_16GiB_limits')
     root=None;started=time.monotonic()
     try:
         async with acquire() as connection:
@@ -47,8 +47,9 @@ async def diagnose(acquire):
                 if process.returncode is None:os.killpg(process.pid,signal.SIGKILL);await process.wait()
             result['commands'].append(dict(program=label,exit_code=process.returncode,stderr=stderr.decode('utf8',errors='replace')))
             if process.returncode:return
+        result['native_tree_bytes']=sum(p.stat().st_size for p in (root/'base').rglob('*') if p.is_file())
         result['stage']='archive'
-        _,unpacked,_,size,_=await asyncio.to_thread(pack_tree,root/'base',root/'base.tar',SnapshotLimits(max_archive_bytes=4294967296,max_unpacked_bytes=4294967296))
+        _,unpacked,_,size,_=await asyncio.to_thread(pack_tree,root/'base',root/'base.tar',SnapshotLimits(max_archive_bytes=8589934592,max_unpacked_bytes=17179869184))
         result.update(stage='complete',success=True,archive_bytes=size,unpacked_bytes=unpacked)
     except Exception as error:
         result.update(error_type=type(error).__name__,error=str(error)[:1024])
