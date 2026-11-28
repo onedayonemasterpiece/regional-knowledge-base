@@ -41,6 +41,7 @@ _SNAPSHOT_FAILURE_CODES={
     'snapshot_applied_cursor_differs':'prefix',
     'snapshot_disk_budget':'disk',
     'snapshot_archive_byte_budget':'archive',
+    'snapshot_byte_budget':'archive',
     'snapshot_required_native_members_missing':'archive',
     'snapshot_native_inventory_differs':'archive',
     'snapshot_tar_header_budget':'archive',
