@@ -13,6 +13,17 @@ LOG=logging.getLogger(__name__)
 # Only exact literals from the snapshot and transfer error types are classified.
 # Never log exception text, arguments or substrings of a message.
 _SNAPSHOT_FAILURE_CODES={
+    'native_backup_scoped_transport_unavailable':'transport',
+    'native_backup_version_or_writer':'versions',
+    'native_backup_pgvector_version':'versions',
+    'native_backup_cluster_not_dedicated':'cluster',
+    'native_backup_source_changed':'source_changed',
+    'native_backup_upload_receipt':'upload_receipt',
+    'snapshot_private_workspace_required':'workspace',
+    'snapshot_member_path_budget':'archive',
+    'snapshot_nonregular_member':'archive',
+    'snapshot_file_budget':'archive',
+    'snapshot_live_or_replica_state_refused':'archive',
     'snapshot_transfer_download_identity':'download_identity',
     'snapshot_transfer_download_bytes':'download_bytes',
     'snapshot_transfer_download_unavailable':'download_unavailable',
@@ -115,7 +126,7 @@ class SnapshotIo:
                 code=_SNAPSHOT_FAILURE_CODES.get(literal,'unclassified')
                 if not operation.failure_logged:
                     operation.failure_logged=True
-                    LOG.warning('snapshot_io failed code=%s',code)
+                    LOG.warning('snapshot_io failed code=%s error_type=%s',code,type(error).__name__)
                 return dict(status='rejected',reason='snapshot_io_rejected',failure_code=code)
         return dict(status='upload_required' if operation.upload and operation.upload_task is None else 'pending',
                     handle=handle)
