@@ -356,6 +356,10 @@ async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('cause','safe_code'),[
     ('snapshot_native_version_mismatch','versions'),
+    ('snapshot_receipt_metadata_bound','prefix'),
+    ('snapshot_stage0_private_output_exclusion_required','workspace'),
+    ('native_restore_binding_changed','binding'),
+    ('snapshot_transfer_upload_unknown','upload_unknown'),
     ('native_backup_scoped_transport_unavailable','transport'),
     ('native_backup_version_or_writer','versions'),
     ('native_backup_pgvector_version','versions'),

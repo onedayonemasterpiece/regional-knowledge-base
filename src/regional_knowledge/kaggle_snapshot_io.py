@@ -13,6 +13,10 @@ LOG=logging.getLogger(__name__)
 # Only exact literals from the snapshot and transfer error types are classified.
 # Never log exception text, arguments or substrings of a message.
 _SNAPSHOT_FAILURE_CODES={
+    'snapshot_receipt_metadata_bound':'prefix',
+    'snapshot_stage0_private_output_exclusion_required':'workspace',
+    'native_restore_binding_changed':'binding',
+    'snapshot_transfer_upload_unknown':'upload_unknown',
     'native_backup_scoped_transport_unavailable':'transport',
     'native_backup_version_or_writer':'versions',
     'native_backup_pgvector_version':'versions',
