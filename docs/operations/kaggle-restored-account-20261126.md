@@ -716,3 +716,9 @@ The same native307 remains READY, generation3. Ordinary publication and native v
 The new16:13:16–17:45:15 UTC interval accepted113 complete pages in91.98325 minutes:73.709 total pages/hour,14.742 per configured window at capacity5. Actual assigned time fell4→3→2 and totals4.59712 window-hours (24.581 pages per assigned window-hour). Rest, delivery and free-slot gaps remain in the full-capacity metric; this is not a causal release uplift.
 
 Kants Welt is finalized. The Geier queue's failure records a prior explicit safety rejection on Armstedt/Fischer, which is preserved. Mähnert is resting until19:51:12 Kaliningrad after a transport/context failure; Herrmann's ordinary successor is importing. Capacity remains5, with two remaining authorized assignments. Previously dispatched/refused books are not restarted to fill empty slots. Planned drain307 near21:04 Kaliningrad and the subsequent real hour OFF remain the next lifecycle acceptance. Early ERROR296/303/306 causes remain unresolved. No release or passed tests were repeated.
+
+## 28 November, 21:44 Kaliningrad: clean planned drain and full Saved coverage
+
+Native307 completed its planned drain with an exact persisted provider COMPLETE receipt observed at21:16:47.190 Kaliningrad. The current runtime is absent and the normal controller retains a pending startup request during real OFF until22:16:47.190. Root did not Stop, rotate or restart the notebook. This verifies the clean terminal portion of the drain fix; successor startup and resumed import remain the next acceptance.
+
+Saved561/base27133 is native verified and covers the entire accepted prefix at shutdown. All489 complete new physical TEXT/SEM pages accepted after539 are inside561. Three additional TEXT pages await ordinary semantic completion; their accepted TEXT is also saved. Both remaining assignments wait during OFF. This is no longer an accepted-journal-only checkpoint gap. Earlier ERROR296/303/306 root causes remain unresolved.
