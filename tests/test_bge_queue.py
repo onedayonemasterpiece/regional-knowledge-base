@@ -307,6 +307,13 @@ def test_legacy_failure_budget_resets_only_after_proven_ready_and_successful_wor
         assert db.execute('select startup_failures from control where id=1').fetchone()[0]==0
     now[0]+=61
     queue.maintenance()
+    # Synthetic exact terminal proof: failure-budget reset does not bypass cooldown.
+    from regional_knowledge.kaggle_provider_terminal import _NativeTerminalProof, _SNAPSHOT, _OBSERVED
+    with queue.connect(write=False) as db:
+        previous=dict(db.execute('SELECT * FROM runs WHERE id=?',(run,)).fetchone())
+    proof=_NativeTerminalProof({k:previous[k] for k in _SNAPSHOT},now[0],now[0],'ERROR',_seal=_OBSERVED)
+    assert queue.retire_provider_reservation(proof)
+    now[0]+=3600
     second=queue.enqueue('indexer','new-cycle',['another passage'],kind='document')
     next_run=next(x['id'] for x in queue.maintenance() if x['status']=='starting')
     assert next_run!=run

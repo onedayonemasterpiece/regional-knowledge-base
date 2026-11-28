@@ -670,9 +670,41 @@ def test_productive_runtime_rest_survives_restart_and_demand_without_releasing_u
         assert reopened.launch_claim(pending,provider_ref=REF) is None
         reopened.maintenance()
         with reopened.connect(write=False) as db:
-            assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==2
+            assert db.execute('SELECT count(*) FROM runs').fetchone()[0]==1
     now[0]=off+3600
     successor=reopened.request_startup()['run_id']
     assert successor and successor!=rid
     with reopened.connect(write=False) as db:
         assert db.execute('SELECT count(*) FROM bge_provider_terminal_receipts').fetchone()[0]==1
+
+
+def test_latest_productive_runtime_without_terminal_cannot_use_an_older_cooled_receipt(env):
+    q,now,rid,row=env
+    with q.connect() as db:
+        db.execute('UPDATE runs SET ready_at=1100 WHERE id=?',(rid,))
+    first=observe(API(row()),row,now)
+    assert first is not None and q.retire_provider_reservation(first)
+    now[0]+=3600
+    active=q.request_startup()['run_id']
+    assert active and q.launch_claim(active,provider_ref=REF)
+    q.launch_record(active,REF,provider_version=94)
+    now[0]+=200
+    with q.connect() as db:
+        db.execute("UPDATE runs SET status='expired',ready_at=?,heartbeat=? WHERE id=?",(now[0]-100,now[0]-1,active))
+        db.execute('UPDATE control SET current_run=NULL,successor=NULL')
+        pending=q._new_run(db,now[0])
+        db.execute('UPDATE control SET successor=?',(pending,))
+    assert q.request_startup()['run_id'] is None
+    assert q.launch_claim(pending,provider_ref=REF) is None
+    def latest():
+        with q.connect(write=False) as db:
+            return dict(db.execute('SELECT * FROM runs WHERE id=?',(active,)).fetchone())
+    proof=observe(API(latest()),latest,now)
+    assert proof is not None and q.retire_provider_reservation(proof)
+    off=now[0]
+    now[0]=off+3599
+    assert q.launch_claim(pending,provider_ref=REF) is None
+    now[0]=off+3600
+    resumed=q.request_startup()['run_id']
+    assert resumed and resumed!=active
+    assert q.launch_claim(resumed,provider_ref=REF)
