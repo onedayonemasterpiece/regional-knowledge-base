@@ -420,14 +420,20 @@ class TargetServiceStartup:
         # restored Dataset cursor blocks the next book packet until Saved.
         # Request the existing planned-stop capture only for a verified cursor;
         # UNKNOWN, incomplete and durable outcomes retain the normal policy.
+        # A covering retained publication already owns this urgent save;
+        # reconcile it on the existing cadence instead of forcing new archives.
         if dataset:
             with self.config.queue.connect(write=False) as db:
                 case_terminal=db.execute(
-                    "SELECT 1 FROM rkb_control_operations INDEXED BY rkb_control_pending "
+                    "SELECT 1 FROM rkb_control_operations AS op INDEXED BY rkb_control_pending "
                     "WHERE outcome_state<>'DURABLE' AND sequence<=? "
                     "AND seal_state='ACCEPTED' AND apply_state IN ('APPLIED','REJECTED_PRECONDITION') AND outcome_state='NOT_SENT' "
-                    "AND json_extract(CAST(command_bytes AS TEXT),'$.route') LIKE 'disagreement.%' LIMIT 1",
-                    (self.coverage.applied_sequence,)).fetchone() is not None
+                    "AND json_extract(CAST(command_bytes AS TEXT),'$.route') LIKE 'disagreement.%' "
+                    "AND NOT EXISTS (SELECT 1 FROM rkb_dataset_seed s WHERE s.provider_ref=? "
+                    "AND s.state IN ('publishing','published') AND s.package_json IS NOT NULL "
+                    "AND json_extract(s.package_json,'$.database_generation')=op.database_generation "
+                    "AND json_extract(s.package_json,'$.base_sequence')>=op.sequence) LIMIT 1",
+                    (self.coverage.applied_sequence,self.dataset_checkpoints.store.publisher.ref)).fetchone() is not None
             if case_terminal:
                 self.dataset_checkpoints.kick(binding,planned_stop=True)
                 return
