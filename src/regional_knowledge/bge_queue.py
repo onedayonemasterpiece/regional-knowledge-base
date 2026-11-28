@@ -236,10 +236,10 @@ class BgeQueue:
 
     @staticmethod
     def _runtime_rest_until(db):
-        # Reuse the sealed provider receipt; no extra clock, state or scheduler.
-        row=db.execute("SELECT p.receipt_json FROM runs r JOIN bge_provider_terminal_receipts p "
+        # Keep the latest productive runtime even before its terminal proof arrives.
+        row=db.execute("SELECT p.receipt_json FROM runs r LEFT JOIN bge_provider_terminal_receipts p "
             "ON p.run_id=r.id WHERE r.ready_at IS NOT NULL ORDER BY r.rowid DESC LIMIT 1").fetchone()
-        return json.loads(row[0])['observed_at']+REST_SECONDS if row else 0
+        return (json.loads(row[0])['observed_at']+REST_SECONDS if row[0] else math.inf) if row else 0
 
     def _ensure(self, db, now, *, useful=True):
         self._expire(db,now)

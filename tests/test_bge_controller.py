@@ -23,8 +23,8 @@ def test_archived_unknown_does_not_block_one_current_request(tmp_path):
         assert db.execute('select count(*) from runs').fetchone()[0]==2
 
 
-def test_healthy_ready_run_allows_one_intentional_warming_successor(tmp_path):
-    """Expected bounded hot rotation remains possible for the same slug."""
+def test_healthy_ready_run_keeps_successor_pending_until_terminal_and_rest(tmp_path):
+    """A productive notebook cannot overlap a replacement during its work cycle."""
     from regional_knowledge.bge_queue import BgeQueue
     q=BgeQueue(tmp_path/'hot-rotation.sqlite',clock=lambda:1000.)
     run=q.request_startup()['run_id']
@@ -35,9 +35,9 @@ def test_healthy_ready_run_allows_one_intentional_warming_successor(tmp_path):
     with q.connect() as db:
         new=q._new_run(db,1000.)
         db.execute('update control set successor=? where id=1',(new,))
-    assert q.launch_claim(new,provider_ref=ref) is not None
+    assert q.launch_claim(new,provider_ref=ref) is None
     with q.connect(write=False) as db:
-        assert db.execute('select launch_state from runs where id=?',(new,)).fetchone()[0]=='dispatching'
+        assert db.execute('select launch_state from runs where id=?',(new,)).fetchone()[0]=='pending'
 
 def test_preparation_failure_receipt_identifies_stage_without_secrets():
     """Installed logs give root-cause boundary without echoing env/token/URL."""
