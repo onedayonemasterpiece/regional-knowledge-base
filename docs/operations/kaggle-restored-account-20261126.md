@@ -624,3 +624,16 @@ PR897 removes independent 8/16 GiB protocol/configuration ceilings across upload
 
 
 PR897 passed the exact full Python CI and launch-envelope check and was merged. Compatible API and controller release2de67248 is now live; existing private source/target configuration allows the documented provider ceiling. Current304 remains READY and Saved539/base26103 is retained. The running notebook still uses its temporary 8/16 GiB snapshot implementation until the next ordinary launch; this host update does not replace its executor. The new worker receives the corrected scratch estimate and all-consumer capacity code through the updated controller. No forced notebook restart or new provider publication was used for this release.
+
+
+## 28 November, 12:58 UTC: reboot recovery and resumed accepted pages
+
+The host rebooted at11:49:47UTC. Existing enabled API, controller and Launcher units started automatically, but root had left import capacity at zero. The existing resume helper's artificial global browser-queue and READY gates were removed; capacity five was applied at12:08:04UTC and reconciled against the actual process. No browser job was manually dispatched or resent.
+
+The local volume then produced Launcher ENOSPC and SQLite SQLITE_IOERR_SHMSIZE errors. A read-only SQLite quick_check passed. Dry-reviewed obsolete clean main-contained source worktrees were removed, retaining Git commits, runtime releases, PostgreSQL, journals and retained incident artifacts. Free space increased to about1.3GB. This fixes the observed local space shortage; it is not a claim that earlier unrelated Kaggle errors have the same cause.
+
+Productive304's exact terminal was observed at11:08:43UTC. Its full hour OFF ended12:08:43UTC. One existing durable startup demand continued through nonproductive305 and ordinary306; root did not rotate notebooks.306 finished physical restore/verification and became READY at12:26:11UTC. Compatible897's matching worker was delivered through this ordinary launch.
+
+Saved541/base26105 is native verified and promoted. At12:55UTC, immutable accepted receipts show36new complete physical pages since Saved539/base26103:15 Wermke,10 Herrmann and11 Neman. Neman finished228/228 pages. These36pages are not all in541: it contains only one newTEXT before its semantic receipt. The next ordinary archive was uploaded and native verification started at12:55:46UTC; its result was still pending at this observation.
+
+Three browser deliveries separately returned needs_review because Chrome reported Frame0 showing an error page. Their outcomes were not converted into proof of non-delivery or manually retried. Four queues still had unfinished work, while the fifth completed its five-book list. An already-authorized unstarted Meyer book was moved from an existing future list into that completed slot, preserving current readers, job history, rest clocks and private prompts. Ordinary delivery and new verified saving remain the acceptance criteria; configured capacity five is not evidence of five working readers.
