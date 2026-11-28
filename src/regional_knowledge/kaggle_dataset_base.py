@@ -15,13 +15,14 @@ import json
 import os
 import re
 import stat
+from .native_snapshot_transfer import MAX_SNAPSHOT_BYTES
 
 
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _PART = re.compile(r"[a-z0-9][a-z0-9-]{1,98}[a-z0-9]\Z")
 _NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}\Z")
 MAX_CONTROL_BYTES = 1024 * 1024
-MAX_ARCHIVE_BYTES = 8 * 1024 ** 3
+MAX_ARCHIVE_BYTES = MAX_SNAPSHOT_BYTES
 
 
 class DatasetBaseUnavailable(RuntimeError):

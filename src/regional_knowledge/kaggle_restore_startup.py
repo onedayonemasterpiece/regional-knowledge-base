@@ -9,6 +9,7 @@ import re
 from .kaggle_pg_snapshot_native import SnapshotLimits,SnapshotError,validate_versions
 from .recovery_journal import ObjectRef
 
+from .native_snapshot_transfer import MAX_SNAPSHOT_BYTES
 
 @dataclass(frozen=True)
 class SourceRestoreConfig:
@@ -17,7 +18,7 @@ class SourceRestoreConfig:
     versions: object
     launch_config_sha256: str
     allowed_origins: tuple[str,...]
-    max_archive_bytes: int = 8*1024**3
+    max_archive_bytes: int = MAX_SNAPSHOT_BYTES
     seconds: int = 900
     dataset_checkpoint: object = None
 
@@ -35,7 +36,7 @@ class SourceRestoreConfig:
                 or type(self.allowed_origins) is not tuple or not 1<=len(self.allowed_origins)<=4
                 or len(set(self.allowed_origins))!=len(self.allowed_origins)
                 or any(origin(value)!=value for value in self.allowed_origins)
-                or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=8*1024**3
+                or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=MAX_SNAPSHOT_BYTES
                 or type(self.seconds) is not int or not 1<=self.seconds<=900):
             raise ValueError('exact bounded existing snapshot restore configuration required')
         object.__setattr__(self,'versions',MappingProxyType(dict(self.versions)))

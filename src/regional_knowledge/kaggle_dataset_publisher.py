@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 import shlex
 
-from .native_snapshot_transfer import origin
+from .native_snapshot_transfer import origin, MAX_SNAPSHOT_BYTES
 
 
 class DatasetPublicationError(RuntimeError):
@@ -57,7 +57,7 @@ class DatasetUpload:
 
     def __post_init__(self):
         if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}', self.name)
-                or type(self.size) is not int or not 1 <= self.size <= 8 * 1024**3
+                or type(self.size) is not int or not 1 <= self.size <= MAX_SNAPSHOT_BYTES
                 or not re.fullmatch(r'[0-9a-f]{64}', self.sha256)
                 or not self.token or len(self.token) > 8192):
             raise DatasetPublicationError('dataset_blob_identity_invalid')

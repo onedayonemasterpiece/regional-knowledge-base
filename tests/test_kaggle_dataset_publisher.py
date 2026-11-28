@@ -213,3 +213,19 @@ def test_provider_access_denial_exits_without_publication_or_empty_inventory(sta
         else:p.reconcile(files=files,operation='checkpoint-1',expected_version=1)
     assert stopped.value.code==77 and api.mutations==['reserve']
     assert 'private provider message' not in caplog.text
+
+
+def test_snapshot_metadata_above_eight_gib_keeps_direct_transfer_scope():
+    import hashlib
+    from regional_knowledge.native_snapshot_transfer import SnapshotTicket,NativeSnapshotTransfer,SnapshotTransferError
+    from regional_knowledge.kaggle_dataset_base import DatasetFile,DatasetBaseUnavailable
+    size=20*1024**3
+    upload=DatasetUpload('pg-archive.blob',size,'a'*64,'private-token','https://storage.googleapis.com/blob')
+    DatasetFile(upload.name,size,upload.sha256)
+    ticket=SnapshotTicket('PUT',hashlib.sha256(b'save').hexdigest(),'pg/archive',size,'a'*64,9999999999.,
+        upload.url,(('Content-Length',str(size)),('Content-Type','application/octet-stream')),upload_kind='kaggle-dataset')
+    transfer=NativeSnapshotTransfer(allowed_origins=frozenset({'https://storage.googleapis.com'}),max_bytes=200_000_000_000)
+    assert transfer._check(ticket,'PUT','save')>0
+    with pytest.raises(SnapshotTransferError):transfer._check(ticket,'PUT','other-operation')
+    with pytest.raises(DatasetPublicationError):DatasetUpload(upload.name,200_000_000_001,'a'*64,'token',upload.url)
+    with pytest.raises(DatasetBaseUnavailable):DatasetFile(upload.name,200_000_000_001,'a'*64)
