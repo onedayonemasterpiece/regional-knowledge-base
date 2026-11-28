@@ -703,3 +703,8 @@ Prefix26869 is now a published version552 and prefix26900 retains its pending pu
 Dev free space had fallen to166MB. A recorded dry review selected eight clean, main-contained old source worktrees owned by the current user, with no active process cwd and no untracked content except reproducible Python/test caches. Removing those worktrees freed507,346,944bytes; Git branches/commits, active release sources, runtime databases/journal and retained evidence were preserved. After materializing the release about599MBremained. This is cleanup evidence, not a claim that the broader storage-headroom gate passed. Root did not download PG to Dev or repeat the Yandex backup.
 
 The next planned runtime boundary remains about21:04Kaliningrad. Its exact terminal, real hourOFF and ordinary successor still need live observation; the earlyERROR306cause remains unresolved.
+
+
+### 19:08 Kaliningrad: Saved552 verified and promoted
+
+Ordinary native readback completed and the pointer advanced to Saved552/base26869 after the compatible API release. The bounded immutable-receipt audit at19:08:09Kaliningrad counts389new complete physical pages accepted after539, with352complete and353TEXT pages inside552.37newer complete pages are outside that Saved boundary; two latestTEXT pages await SEM. Wermke's68new complete pages plus its153baseline pages give all221TEXT/SEM pages inside552. Meyer52/52 and Neman228/228were already covered. Root did not repeat finalize/upload or promote the pointer manually. Prefix26900continues through the ordinary publication/readback path.
