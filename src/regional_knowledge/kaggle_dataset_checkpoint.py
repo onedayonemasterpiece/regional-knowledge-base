@@ -473,7 +473,7 @@ class SourceDatasetCheckpoints:
                 if db.execute("SELECT 1 FROM rkb_dataset_seed WHERE operation_key=? "
                         "AND state='publishing' AND package_json IS NOT NULL",(operation,)).fetchone():
                     self.dirty_since=self.clock()
-                else:
+                elif type(exc) is SnapshotError and exc.args in (('snapshot_io_pending_reconciliation',),('snapshot_capture_rejected',)):
                     self.dirty_since=self.last_change=self.clock()
             raise CheckpointPending(type(exc).__name__,
                 exc.args[0] if len(exc.args)==1 and type(exc.args[0]) is str else '') from exc

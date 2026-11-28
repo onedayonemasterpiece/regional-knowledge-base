@@ -690,7 +690,7 @@ async def test_failed_native_capture_restarts_existing_quiet_and_periodic_window
     attempts=[]
     async def fail_capture(*args,**kwargs):
         attempts.append(p.clock[0])
-        raise SnapshotError('snapshot_io_rejected')
+        raise SnapshotError('snapshot_io_pending_reconciliation')
     monkeypatch.setattr(p.owner,'_capture_verify',fail_capture)
     p.clock[0]=1801
     with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
