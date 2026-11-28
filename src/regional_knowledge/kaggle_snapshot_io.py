@@ -130,7 +130,7 @@ class SnapshotIo:
                 code=_SNAPSHOT_FAILURE_CODES.get(literal,'unclassified')
                 if not operation.failure_logged:
                     operation.failure_logged=True
-                    LOG.warning('snapshot_io failed code=%s error_type=%s',code,type(error).__name__)
+                    LOG.warning('snapshot_io failed code=%s error_type=%s',literal if literal in _SNAPSHOT_FAILURE_CODES else code,type(error).__name__)
                 return dict(status='rejected',reason='snapshot_io_rejected',failure_code=code)
         return dict(status='upload_required' if operation.upload and operation.upload_task is None else 'pending',
                     handle=handle)
