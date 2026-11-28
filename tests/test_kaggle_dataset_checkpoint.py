@@ -679,3 +679,26 @@ async def test_missing_existing_dataset_stops_before_any_archive_upload_or_recre
     monkeypatch.setattr(p.store.publisher,'observe',lambda:None)
     with pytest.raises(SystemExit) as stopped:await p.owner.refresh(p.binding,planned_stop=True)
     assert stopped.value.code==77 and p.calls==[] and p.store.latest_checkpoint.dataset_version==1
+
+
+@pytest.mark.asyncio
+async def test_failed_native_capture_restarts_existing_quiet_and_periodic_windows(tmp_path,monkeypatch):
+    from regional_knowledge.kaggle_dataset_checkpoint import CheckpointPending
+    from regional_knowledge.kaggle_pg_snapshot_native import SnapshotError
+    p=control_cycle(tmp_path,monkeypatch,interval=1800,quiet=900)
+    await put_control(p)
+    attempts=[]
+    async def fail_capture(*args,**kwargs):
+        attempts.append(p.clock[0])
+        raise SnapshotError('snapshot_io_pending_reconciliation')
+    monkeypatch.setattr(p.owner,'_capture_verify',fail_capture)
+    p.clock[0]=1801
+    with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
+    saved=p.store.latest_checkpoint
+    for moment in (1806,1811,2699):
+        p.clock[0]=moment
+        assert not await p.owner.refresh(p.binding)
+    assert attempts==[1801] and p.store.latest_checkpoint==saved
+    p.clock[0]=2701
+    with pytest.raises(CheckpointPending):await p.owner.refresh(p.binding)
+    assert attempts==[1801,2701]
