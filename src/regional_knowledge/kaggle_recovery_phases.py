@@ -18,7 +18,7 @@ MAX_PHASE_RESULT_BYTES = 120 * 1024  # Reserve result envelope/claim identity by
 from .original_intake import PHASES as ORIGINAL_PHASES
 from .kaggle_snapshot_drill import DRILL_PHASES
 PHASES = frozenset({'capture','prepare','apply','finish','verify','source_history',
-    'dataset_verify','snapshot_status','capture_upload','schema_bundle_stage','schema_migrate','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
+    'dataset_verify','snapshot_probe','snapshot_status','capture_upload','schema_bundle_stage','schema_migrate','read_handler_status','read_handler_stage','read_handler_activate','read_handler_rollback'})|ORIGINAL_PHASES|DRILL_PHASES
 
 
 def _download_ticket_matches(blob,ticket,dataset_checkpoint=None):
@@ -209,7 +209,7 @@ class WorkerRecoveryPhases:
             if prior is not None:
                 if prior['request_sha256']!=request:raise SnapshotError('recovery_phase_operation_changed')
                 return prior
-            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify','snapshot_status','capture_upload'):
+            if frame['phase'] in ('read_handler_stage','read_handler_activate','read_handler_rollback','capture','dataset_verify','snapshot_probe','snapshot_status','capture_upload'):
                 # Expected candidate/transfer/probe refusal is the outcome of
                 # THIS durable maintenance operation, not a fatal worker
                 # transport failure. BgeWssTransport._failure would otherwise
@@ -221,7 +221,7 @@ class WorkerRecoveryPhases:
                 except Exception:
                     reason=('snapshot_capture_rejected' if frame['phase']=='capture' else
                         'dataset_checkpoint_verify_rejected' if frame['phase']=='dataset_verify' else
-                        'snapshot_io_rejected' if frame['phase'] in ('snapshot_status','capture_upload') else 'read_handler_maintenance_rejected')
+                        'snapshot_io_rejected' if frame['phase'] in ('snapshot_probe','snapshot_status','capture_upload') else 'read_handler_maintenance_rejected')
                     value={'status':'rejected','reason':reason}
             else:
                 try:
@@ -319,6 +319,12 @@ class WorkerRecoveryPhases:
         if phase in DRILL_PHASES:
             if self.drill is None:raise SnapshotError('drill_fixed_owner_unavailable')
             return await self.drill(phase,args,key,binding,frame)
+        if phase=='snapshot_probe':
+            if args or self.snapshot_io is None:raise SnapshotError('snapshot_probe_arguments')
+            from .kaggle_snapshot_probe import run
+            return self.snapshot_io.start(key,binding,
+                lambda operation:run(self.factory,operation.binding,self.workspace(key,'probe')),
+                phase='snapshot_probe')
         if phase=='read_handler_status':
             from .kaggle_warm_read import ReadHandlerSlot
             if args:

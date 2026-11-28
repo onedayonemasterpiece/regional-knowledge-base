@@ -189,7 +189,7 @@ class RecoveryPhaseDispatch:
         return await self._resolve_io(binding,phase,arguments,operation_key,value)
 
     async def _resolve_io(self,binding,phase,arguments,operation_key,value,*,page_read=None):
-        if phase in ('capture','dataset_verify','original_pages') and isinstance(value,dict) and value.get('status')=='pending':
+        if phase in ('capture','dataset_verify','snapshot_probe','original_pages') and isinstance(value,dict) and value.get('status')=='pending':
             handle=value.get('handle')
             if not isinstance(handle,str):raise SnapshotError('snapshot_io_receipt_invalid')
             async with asyncio.timeout(self.timeout):
