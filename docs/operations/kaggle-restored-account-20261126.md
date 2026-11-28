@@ -708,3 +708,11 @@ The next planned runtime boundary remains about21:04Kaliningrad. Its exact termi
 ### 19:08 Kaliningrad: Saved552 verified and promoted
 
 Ordinary native readback completed and the pointer advanced to Saved552/base26869 after the compatible API release. The bounded immutable-receipt audit at19:08:09Kaliningrad counts389new complete physical pages accepted after539, with352complete and353TEXT pages inside552.37newer complete pages are outside that Saved boundary; two latestTEXT pages await SEM. Wermke's68new complete pages plus its153baseline pages give all221TEXT/SEM pages inside552. Meyer52/52 and Neman228/228were already covered. Root did not repeat finalize/upload or promote the pointer manually. Prefix26900continues through the ordinary publication/readback path.
+
+## 28 November, 19:48 Kaliningrad: Saved555 and next elapsed interval
+
+The same native307 remains READY, generation3. Ordinary publication and native verification advanced Saved to555/base26969. Of409 complete new physical TEXT/SEM pages accepted since539,394 are inside555;15 newer complete pages remain in the accepted journal. Neman228/228, Meyer52/52, Wermke221/221 and Kants Welt396/396 have full TEXT/SEM coverage in555. No root upload/finalize/resubmission, manual promotion or runtime restart was used. This coverage does not constitute an independent page-quality review.
+
+The new16:13:16–17:45:15 UTC interval accepted113 complete pages in91.98325 minutes:73.709 total pages/hour,14.742 per configured window at capacity5. Actual assigned time fell4→3→2 and totals4.59712 window-hours (24.581 pages per assigned window-hour). Rest, delivery and free-slot gaps remain in the full-capacity metric; this is not a causal release uplift.
+
+Kants Welt is finalized. The Geier queue's failure records a prior explicit safety rejection on Armstedt/Fischer, which is preserved. Mähnert is resting until19:51:12 Kaliningrad after a transport/context failure; Herrmann's ordinary successor is importing. Capacity remains5, with two remaining authorized assignments. Previously dispatched/refused books are not restarted to fill empty slots. Planned drain307 near21:04 Kaliningrad and the subsequent real hour OFF remain the next lifecycle acceptance. Early ERROR296/303/306 causes remain unresolved. No release or passed tests were repeated.
