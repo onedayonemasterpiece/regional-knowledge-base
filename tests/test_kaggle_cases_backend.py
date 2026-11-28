@@ -213,13 +213,15 @@ async def test_verified_case_terminal_requests_early_dataset_saved_after_native_
     assert entry.accepted is not None and entry.apply_state=='NOT_SENT'
     calls=[]
     startup=SimpleNamespace(config=SimpleNamespace(queue=env.q),
-        dataset_checkpoints=SimpleNamespace(kick=lambda binding,*,planned_stop=False:
+        dataset_checkpoints=SimpleNamespace(store=SimpleNamespace(publisher=SimpleNamespace(ref='owner/checkpoints')),kick=lambda binding,*,planned_stop=False:
             calls.append((binding,planned_stop))))
     control={'sequence':0,'heads':[]}
     async def cursor():
         startup.coverage=await env.spool.dataset_cursor(binding,control=control,
             current=lambda candidate:candidate is binding)
         return startup.coverage
+    with env.q.connect() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS rkb_dataset_seed(operation_key TEXT,provider_ref TEXT,state TEXT,package_json TEXT,version INTEGER)")
     await cursor()
     TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
     assert calls==[(binding,False)]  # accepted is not native APPLIED
@@ -241,6 +243,19 @@ async def test_verified_case_terminal_requests_early_dataset_saved_after_native_
     assert (await cursor()).applied_sequence==command.sequence
     TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
     assert calls[-1]==(binding,True)  # terminal APPLIED or REJECTED_PRECONDITION
+    # An immutable unknown publication covering this Case retains ordinary
+    # readback/cadence; maintenance must not force a fresh archive each tick.
+    import json
+    with env.q.connect() as db:
+        db.execute("INSERT INTO rkb_dataset_seed VALUES('unknown','owner/checkpoints','publishing',?,NULL)",
+            (json.dumps(dict(base_sequence=command.sequence,database_generation=entry.database_generation)),))
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
+    assert calls[-1]==(binding,False)
+    with env.q.connect() as db:
+        db.execute("UPDATE rkb_dataset_seed SET package_json=?",(json.dumps(dict(
+            base_sequence=command.sequence-1,database_generation=entry.database_generation)),))
+    TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=True)
+    assert calls[-1]==(binding,True)  # older unknown never blocks a newer Case
     # Even with a terminal Case, the history-only path keeps its old cadence.
     TargetServiceStartup._kick_dataset_checkpoint(startup,binding,dataset=False)
     assert calls[-1]==(binding,False)
