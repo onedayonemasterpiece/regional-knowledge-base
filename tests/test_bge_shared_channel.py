@@ -654,9 +654,17 @@ def test_native_scheduled_rotation_serial_handoff_keeps_reads_and_wakes_without_
                 assert checkpoints==[(original,generation)]
             # Synthetic native terminal observed after checkpoint/STOP. The
             # production controller requires sealed exact-session evidence.
-            with q.connect() as db:
-                db.execute("UPDATE runs SET launch_state='terminal',channel_active=0 WHERE id=?",(original,))
-            now[0]+=HEARTBEAT_SECONDS+1
+            from regional_knowledge.kaggle_provider_terminal import _NativeTerminalProof, _SNAPSHOT, _OBSERVED
+            now[0]+=1  # Observation starts strictly after the last worker heartbeat.
+            with q.connect(write=False) as db:
+                sealed=dict(db.execute('SELECT * FROM runs WHERE id=?',(original,)).fetchone())
+            proof=_NativeTerminalProof({k:sealed[k] for k in _SNAPSHOT},now[0],now[0],'COMPLETE',_seal=_OBSERVED)
+            assert q.retire_provider_reservation(proof)
+            off=now[0]
+            now[0]=off+3599
+            q.maintenance()
+            assert q.request_startup()['run_id'] is None
+            now[0]=off+3600
             q.maintenance()
             with q.connect(write=False) as db:
                 next_run=db.execute('SELECT current_run FROM control').fetchone()[0]
