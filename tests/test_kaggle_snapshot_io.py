@@ -356,6 +356,21 @@ async def test_known_migration_busy_retries_one_new_job_and_then_reuses_success(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(('cause','safe_code'),[
     ('snapshot_native_version_mismatch','versions'),
+    ('snapshot_receipt_metadata_bound','prefix'),
+    ('snapshot_stage0_private_output_exclusion_required','workspace'),
+    ('native_restore_binding_changed','binding'),
+    ('snapshot_transfer_upload_unknown','upload_unknown'),
+    ('native_backup_scoped_transport_unavailable','transport'),
+    ('native_backup_version_or_writer','versions'),
+    ('native_backup_pgvector_version','versions'),
+    ('native_backup_cluster_not_dedicated','cluster'),
+    ('native_backup_source_changed','source_changed'),
+    ('native_backup_upload_receipt','upload_receipt'),
+    ('snapshot_private_workspace_required','workspace'),
+    ('snapshot_member_path_budget','archive'),
+    ('snapshot_nonregular_member','archive'),
+    ('snapshot_file_budget','archive'),
+    ('snapshot_live_or_replica_state_refused','archive'),
     ('snapshot_applied_prefix_gap','prefix'),
     ('snapshot_disk_budget','disk'),
     ('snapshot_archive_byte_budget','archive'),
@@ -401,7 +416,8 @@ async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_o
                     status='rejected',reason='snapshot_io_rejected',failure_code=safe_code)
         records=[record.getMessage() for record in caplog.records
                  if record.name=='regional_knowledge.kaggle_snapshot_io']
-        assert records==[f'snapshot_io failed code={safe_code}']
+        logged_code=cause if cause not in ('unknown_transfer','unknown_snapshot','extra_args','other_exception') else safe_code
+        assert records==[f'snapshot_io failed code={logged_code} error_type={type(original).__name__}']
         assert secret not in caplog.text
         assert task.exception() is original
         assert io.start('one-failed-capture',binding,failed_capture)==started
