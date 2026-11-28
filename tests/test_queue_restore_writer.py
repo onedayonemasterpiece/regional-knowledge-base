@@ -35,6 +35,13 @@ async def recovery_owner(owner):
     with q.connect(write=False) as db:
         terminal=db.execute('select status,launch_state from runs where id=?',(e.run,)).fetchone()
         assert tuple(terminal)==('expired','terminal')
+    # Exact terminal plus the real hour OFF precede the next fixture worker.
+    from regional_knowledge.kaggle_provider_terminal import _NativeTerminalProof, _SNAPSHOT, _OBSERVED
+    with q.connect(write=False) as db:
+        sealed=dict(db.execute('SELECT * FROM runs WHERE id=?',(e.run,)).fetchone())
+    proof=_NativeTerminalProof({k:sealed[k] for k in _SNAPSHOT},1002.,1002.,'COMPLETE',_seal=_OBSERVED)
+    assert q.retire_provider_reservation(proof)
+    q.clock=lambda:4602.
     from regional_knowledge.bge_queue import StaleAttachment
     with pytest.raises(StaleAttachment,match='terminal'):
         q.launch_record(e.run,old['provider_ref'],provider_version=old['provider_version'])

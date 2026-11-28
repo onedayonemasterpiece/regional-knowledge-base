@@ -282,11 +282,14 @@ def successful_history(queue, *, provider='owner/stable-slug', count=8):
     durations=[233.504,222.540,291.760,232.954,247.107,476.196,223.425,574.478]
     with queue.connect() as db:
         for number,duration in enumerate(durations[:count]):
-            started=number*1000
+            started=number*1000-4000
             db.execute("""insert into runs(id,status,token_hash,started,heartbeat,useful,
                 ready_at,provider_ref,provider_version,launch_state)
                 values(?,?,?,?,?,?,?,?,?,?)""",(f'history-{provider}-{number}','expired','synthetic',
                 started,started,started,started+duration,provider,number+1,'terminal'))
+            # Completed historical samples already served their real OFF interval.
+            db.execute('INSERT INTO bge_provider_terminal_receipts VALUES(?,?)',
+                (f'history-{provider}-{number}',json.dumps(dict(observed_at=started+duration+1))))
 
 
 @pytest.mark.asyncio
