@@ -5,7 +5,7 @@ import hashlib
 import time
 
 from .kaggle_pg_snapshot_native import BlobRef, SnapshotError
-from .native_snapshot_transfer import SnapshotTicket, origin
+from .native_snapshot_transfer import SnapshotTicket, origin, MAX_SNAPSHOT_BYTES
 from .pg_snapshot_recovery import S3SnapshotTransport
 from .recovery_s3 import S3ConditionalRecoveryStore, _blocking
 
@@ -16,7 +16,7 @@ class SnapshotTicketIssuer:
         if (not isinstance(store, S3ConditionalRecoveryStore) or not callable(current)
                 or type(allowed_origins) is not frozenset or not allowed_origins
                 or any(origin(s) != s for s in allowed_origins)
-                or type(max_single_bytes) is not int or not 1 <= max_single_bytes <= 8 * 1024**3
+                or type(max_single_bytes) is not int or not 1 <= max_single_bytes <= MAX_SNAPSHOT_BYTES
                 or type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 900):
             raise TypeError('existing scoped S3 and explicit transfer bounds required')
         self.store, self.current = store, current

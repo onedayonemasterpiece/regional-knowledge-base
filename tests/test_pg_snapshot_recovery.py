@@ -177,3 +177,13 @@ async def test_native_replay_exact_receipts_precede_rollover_and_adoption(monkey
     observed=await factory.verify_reference(new_binding,reference)
     assert observed['applied_sequence']==2 and cap._binding is new_binding
     assert (await cap.verify_for(database,'run','nonce','inc'))['user']=='rkb_reader'
+
+
+def test_capture_workspace_budget_depends_on_cluster_not_capacity_ceiling(tmp_path):
+    from regional_knowledge.kaggle_pg_snapshot_native import backup_workspace_bytes
+    root=tmp_path/'cluster';root.mkdir()
+    (root/'PG_VERSION').write_bytes(b'17\n')
+    assert backup_workspace_bytes(root)==2*(3+4096)+10240
+    (root/'relation').write_bytes(b'x'*10000)
+    assert backup_workspace_bytes(root)==2*(10003+8192)+10240
+    assert SnapshotLimits().max_archive_bytes==200_000_000_000

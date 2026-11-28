@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from .kaggle_pg_snapshot_native import SnapshotError,SnapshotLimits,validate_versions,encode,sha
-from .native_snapshot_transfer import origin
+from .native_snapshot_transfer import origin, MAX_SNAPSHOT_BYTES
 
 _LOG=logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ class SourceSnapshotConfig:
     operation_key: str
     versions: object
     allowed_origins: tuple[str,...]
-    max_archive_bytes: int = 8*1024**3
-    max_unpacked_bytes: int = 16*1024**3
+    max_archive_bytes: int = MAX_SNAPSHOT_BYTES
+    max_unpacked_bytes: int = MAX_SNAPSHOT_BYTES
     seconds: int = 900
 
     def __post_init__(self):
@@ -34,8 +34,8 @@ class SourceSnapshotConfig:
                 or type(self.allowed_origins) is not tuple or not 1<=len(self.allowed_origins)<=4
                 or len(set(self.allowed_origins))!=len(self.allowed_origins)
                 or any(origin(value)!=value for value in self.allowed_origins)
-                or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=8*1024**3
-                or type(self.max_unpacked_bytes) is not int or not 1<=self.max_unpacked_bytes<=16*1024**3
+                or type(self.max_archive_bytes) is not int or not 1<=self.max_archive_bytes<=MAX_SNAPSHOT_BYTES
+                or type(self.max_unpacked_bytes) is not int or not 1<=self.max_unpacked_bytes<=MAX_SNAPSHOT_BYTES
                 or type(self.seconds) is not int or not 1<=self.seconds<=900):
             raise ValueError('explicit bounded first snapshot owner required')
         object.__setattr__(self,'versions',MappingProxyType(dict(self.versions)))
