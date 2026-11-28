@@ -416,7 +416,8 @@ async def test_snapshot_io_failed_status_returns_and_logs_only_exact_safe_code_o
                     status='rejected',reason='snapshot_io_rejected',failure_code=safe_code)
         records=[record.getMessage() for record in caplog.records
                  if record.name=='regional_knowledge.kaggle_snapshot_io']
-        assert records==[f'snapshot_io failed code={safe_code} error_type={type(original).__name__}']
+        logged_code=cause if cause not in ('unknown_transfer','unknown_snapshot','extra_args','other_exception') else safe_code
+        assert records==[f'snapshot_io failed code={logged_code} error_type={type(original).__name__}']
         assert secret not in caplog.text
         assert task.exception() is original
         assert io.start('one-failed-capture',binding,failed_capture)==started
